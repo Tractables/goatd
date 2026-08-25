@@ -17,6 +17,7 @@ readme = "README.md"
 include = [
     "src/**/*.rs",
     "tests/**/*.rs",
+    "examples/**/*.rs",
     "build.rs",
     "Cargo.toml",
     "README.md",

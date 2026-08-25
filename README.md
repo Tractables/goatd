@@ -43,15 +43,12 @@ order cannot act on is an error naming both; `goatd --help` has the full list.
 goatd = "0.1"
 ```
 
-```rust
-use goatd::Graph;
-use goatd::elimination::{Config, elimination_td};
+The bundled [`basic` example](examples/basic.rs) constructs a four-vertex
+graph, computes a decomposition with the min-fill order and writes it in PACE
+`.td` format:
 
-// The 4-cycle with one chord: treewidth 2.
-let graph = Graph::new(4, [(0, 1), (1, 2), (2, 3), (3, 0), (0, 2)]);
-let td = elimination_td(&graph, Config::MinFill, 0, None);
-assert_eq!(td.treewidth(), 2);
-println!("{}", td.to_td(graph.num_vertices));
+```sh
+cargo run --example basic
 ```
 
 `Graph::from_gr` and `TreeDecomposition::from_td` read the PACE formats;
