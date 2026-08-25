@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The vendored FlowCutter is C++20, compiled by build.rs with the
+      # runner's g++; nothing else has to be installed.
+
+      # `--locked` builds against the committed `Cargo.lock` and fails rather
+      # than resolving something else. This job runs whatever toolchain the
+      # runner image ships; the `msrv` job below checks the declared minimum.
+      - name: Build
+        run: cargo build --release --locked
+
+      # After the build so a crate that does not compile is reported as a
+      # compile error rather than as lint failures. `--all-targets` carries
+      # the lint past the library to the solver, the tests and the build
+      # script; `-D warnings` makes a new finding fail the job.
+      - name: Lint
+        run: cargo clippy --release --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --release --all-targets --locked
+
+      - name: Test the documentation examples
+        run: cargo test --release --doc --locked
+
+      # Warnings denied: a broken intra-doc link fails the job rather than
+      # shipping.
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --locked
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      # `package` builds the crate as a consumer receives it: from the
+      # `include` allowlist alone, unpacked into a fresh directory — the only
+      # step that notices a new source directory falling outside the list.
+      - name: Package
+        run: cargo package --locked
+
+  # The `rust-version` in Cargo.toml is a promise to anyone building against
+  # an older toolchain. This job pins the declared minimum and compiles the
+  # crate with it, so raising the real minimum fails here instead of in a
+  # downstream build.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Read from the manifest rather than repeated here, so a copy that fell
+      # behind `rust-version` cannot leave this job checking the old floor.
+      - name: Read the declared minimum from Cargo.toml
+        run: |
+          msrv=$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)
+          test -n "$msrv" || { echo "no rust-version in Cargo.toml"; exit 1; }
+          echo "MSRV=$msrv" >> "$GITHUB_ENV"
+
+      - name: Install the declared minimum toolchain
+        run: rustup toolchain install ${{ env.MSRV }} --profile minimal --no-self-update
+
+      - name: Check
+        run: cargo +${{ env.MSRV }} check --locked

@@ -1,0 +1,45 @@
+[package]
+name = "goatd"
+version = "0.1.0"
+edition = "2024"
+# The floor let-chains (`if let … && let …`) set for edition 2024.
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://github.com/Tractables/goatd"
+documentation = "https://docs.rs/goatd"
+description = "Greatest Of All Tree Decompositions: tree decompositions of graphs — elimination orders, FlowCutter, multilevel bisection — with PACE .gr/.td I/O and a command-line solver."
+keywords = ["treewidth", "tree-decomposition", "graph", "pace", "elimination-order"]
+categories = ["algorithms", "science", "mathematics", "command-line-utilities"]
+readme = "README.md"
+# Allowlist: `cargo package` ships exactly these. `vendor/treedecomp` is the
+# C++ FlowCutter builder `build.rs` compiles; it sits under the package root
+# because `include` cannot reach outside it.
+include = [
+    "src/**/*.rs",
+    "tests/**/*.rs",
+    "build.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+    "THIRD-PARTY.md",
+    "ACKNOWLEDGEMENTS.md",
+    "vendor/**",
+]
+# `build.rs` compiles the vendored FlowCutter into `libtreedecomp.a`. Declaring
+# `links` reserves that native library name, so two copies of this crate can
+# never be linked into one program.
+links = "treedecomp"
+
+[lib]
+name = "goatd"
+
+[[bin]]
+name = "goatd"
+path = "src/bin/goatd.rs"
+
+[dependencies]
+rand = "0.10"
+rustc-hash = "2"
+
+[build-dependencies]
+cc = "1"
