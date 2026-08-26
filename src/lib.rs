@@ -16,7 +16,8 @@
 //! Beside them: [`multilevel_bisect`] and [`multilevel_hg_bisect`], the
 //! multilevel graph and hypergraph bisectors the orders above are built on;
 //! [`td_ops`], surgery on a decomposition — rooting, projecting onto a vertex
-//! subset, gluing two at a separator; and PACE `.gr`/`.td` reading and writing
+//! subset, gluing two at a separator; validation
+//! ([`TreeDecomposition::validate`]); and PACE `.gr`/`.td` reading and writing
 //! on the two types ([`Graph::from_gr`], [`TreeDecomposition::to_td`]).
 //!
 //! Every decomposition returned covers each vertex and each edge and has the

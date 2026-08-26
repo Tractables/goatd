@@ -2,14 +2,16 @@
 
 use std::fmt;
 
-/// What can go wrong reading a PACE file or asking the FlowCutter builder for a
-/// decomposition. Every other entry point returns a decomposition
-/// unconditionally.
+/// What can go wrong reading a PACE file, validating a decomposition, or
+/// asking the FlowCutter builder for a decomposition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// PACE text that does not describe a graph or a decomposition; the
     /// sentence names the line or id at fault.
     Parse(String),
+    /// A tree decomposition that does not satisfy its structural or graph
+    /// contract; the sentence names the first violation found.
+    InvalidDecomposition(String),
     /// A graph the FlowCutter builder cannot be handed at all: the sentence
     /// names the size that is over its limit.
     TooLarge(String),
@@ -20,7 +22,9 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Parse(what) | Error::TooLarge(what) => f.write_str(what),
+            Error::Parse(what) | Error::InvalidDecomposition(what) | Error::TooLarge(what) => {
+                f.write_str(what)
+            }
             Error::NoDecomposition => f.write_str("FlowCutter returned no decomposition"),
         }
     }

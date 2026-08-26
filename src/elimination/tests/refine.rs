@@ -1,6 +1,6 @@
-use crate::TreeDecomposition;
 use crate::elimination::refine::*;
-use crate::tests::td_fixture::{assert_rip, is_connected, make_td};
+use crate::tests::td_fixture::make_td;
+use crate::{Graph, TreeDecomposition};
 
 fn trivial_td(num_vertices: u32) -> TreeDecomposition {
     make_td(vec![(0..num_vertices).collect()], Vec::new())
@@ -29,16 +29,6 @@ fn refine_preserves_coverage_and_rip_on_path() {
 
     let out = refine_td_with_flowcutter_cut(td.clone(), &vars, &edges, None);
 
-    let mut covered = std::collections::HashSet::new();
-    for bag in &out.bags {
-        for &v in &bag.vertices {
-            covered.insert(v);
-        }
-    }
-    for v in 0..num_vertices {
-        assert!(covered.contains(&v), "vertex {} lost after refinement", v);
-    }
-
-    assert!(is_connected(&out));
-    assert_rip(&out);
+    out.validate(&Graph::new(num_vertices, edges))
+        .expect("refinement preserves the decomposition contract");
 }

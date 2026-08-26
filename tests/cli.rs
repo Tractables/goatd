@@ -64,42 +64,6 @@ fn stderr_of(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// Every vertex and every edge is in some bag, and the bags holding any one
-/// vertex are connected in the tree.
-fn assert_valid_td(td: &TreeDecomposition, graph: &Graph) {
-    let n = graph.num_vertices as usize;
-    let in_bag = |v: u32| td.bags.iter().filter(move |b| b.vertices.contains(&v));
-    for v in 0..graph.num_vertices {
-        assert!(in_bag(v).next().is_some(), "vertex {v} is in no bag");
-    }
-    for &(u, v) in &graph.edges {
-        assert!(
-            td.bags
-                .iter()
-                .any(|b| b.vertices.contains(&u) && b.vertices.contains(&v)),
-            "edge ({u}, {v}) is in no bag"
-        );
-    }
-    for v in 0..n as u32 {
-        let holding: Vec<usize> = in_bag(v).map(|b| b.id).collect();
-        let mut seen = vec![false; td.bags.len()];
-        let mut stack = vec![holding[0]];
-        seen[holding[0]] = true;
-        while let Some(b) = stack.pop() {
-            for &nb in &td.adj[b] {
-                if !seen[nb] && holding.contains(&nb) {
-                    seen[nb] = true;
-                    stack.push(nb);
-                }
-            }
-        }
-        assert!(
-            holding.iter().all(|&b| seen[b]),
-            "the bags holding vertex {v} are not connected"
-        );
-    }
-}
-
 #[test]
 fn every_order_writes_a_valid_decomposition_of_the_grid() {
     let dir = scratch("every_order");
@@ -133,7 +97,8 @@ fn every_order_writes_a_valid_decomposition_of_the_grid() {
         );
         let text = std::fs::read_to_string(&td_path).expect("the .td was written");
         let td = TreeDecomposition::from_td(&text).expect("goatd wrote a well-formed .td");
-        assert_valid_td(&td, &graph);
+        td.validate(&graph)
+            .unwrap_or_else(|error| panic!("{order:?}: {error}"));
         assert!(
             td.treewidth() <= 4,
             "{order:?}: width {} on a treewidth-3 grid",
@@ -149,7 +114,8 @@ fn stdin_in_and_stdout_out_by_default() {
     let text = String::from_utf8(out.stdout).expect("utf-8");
     assert!(text.starts_with("s td "), "not a .td: {text}");
     let td = TreeDecomposition::from_td(&text).expect("a well-formed .td on stdout");
-    assert_valid_td(&td, &Graph::from_gr(&grid_gr()).unwrap());
+    td.validate(&Graph::from_gr(&grid_gr()).unwrap())
+        .expect("the decomposition written to stdout is valid");
 }
 
 #[test]

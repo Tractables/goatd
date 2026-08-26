@@ -1,5 +1,6 @@
+use crate::Graph;
 use crate::td_ops::*;
-use crate::tests::td_fixture::{assert_rip, is_connected, make_td, make_test_td};
+use crate::tests::td_fixture::{make_td, make_test_td};
 use rustc_hash::FxHashSet;
 
 #[test]
@@ -21,7 +22,9 @@ fn glue_at_separator_preserves_rip_and_covers_all_vertices() {
         assert!(seen.contains(&v), "vertex {} missing from glued TD", v);
     }
 
-    assert_rip(&glued);
+    glued
+        .validate(&Graph::new(6, []))
+        .expect("the glued decomposition is valid");
 
     // Root bag (index 0) is the separator bag.
     assert_eq!(glued.bags[0].vertices, vec![2, 3]);
@@ -38,7 +41,9 @@ fn glue_at_separator_handles_sep_not_in_any_single_bag() {
     let sep = vec![1u32, 2u32, 3u32];
     let glued = glue_at_separator(td_a, td_b, &sep).expect("glue should succeed");
 
-    assert_rip(&glued);
+    glued
+        .validate(&Graph::new(7, []))
+        .expect("the glued decomposition is valid");
 
     // Separator bag at index 0 contains exactly S.
     assert_eq!(glued.bags[0].vertices, vec![1, 2, 3]);
@@ -57,11 +62,9 @@ fn augmenting_a_disconnected_side_for_a_separator_keeps_the_running_intersection
     let td_b = make_td(vec![vec![0, 3, 4, 5]], Vec::new());
 
     let glued = glue_at_separator(td_a, td_b, &[0u32, 5u32]).expect("glue should succeed");
-    assert_rip(&glued);
-    assert!(
-        is_connected(&glued),
-        "a decomposition is one tree, not several",
-    );
+    glued
+        .validate(&Graph::new(6, []))
+        .expect("the glued decomposition is valid");
 
     let mut seen: FxHashSet<u32> = FxHashSet::default();
     for bag in &glued.bags {
@@ -94,7 +97,8 @@ fn project_td_keeping_global_ids_preserves_ids() {
     for v in [0, 1, 2, 3] {
         assert!(seen.contains(&v), "vertex {} missing after projection", v);
     }
-    assert_rip(&proj);
+    proj.validate(&Graph::new(4, []))
+        .expect("the projected decomposition is valid");
 }
 
 #[test]

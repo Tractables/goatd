@@ -56,7 +56,8 @@ cargo run --example basic
 ```
 
 `Graph::from_gr` and `TreeDecomposition::from_td` read the PACE formats;
-`to_gr` and `to_td` write them. `goatd::flowcutter::flowcutter_td` runs
+`to_gr` and `to_td` write them, and `TreeDecomposition::validate` checks a
+decomposition against a graph. `goatd::flowcutter::flowcutter_td` runs
 FlowCutter under an `FcBudget`; `goatd::elimination::refined_td` is the
 scheduled-and-refined construction the solver's `--order schedule --refine`
 runs; `goatd::td_ops` roots, projects and glues decompositions. The rustdoc
