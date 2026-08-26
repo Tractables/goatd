@@ -24,6 +24,7 @@ include = [
     "LICENSE",
     "THIRD-PARTY.md",
     "ACKNOWLEDGEMENTS.md",
+    "assets/logo.png",
     "vendor/**",
 ]
 # `build.rs` compiles the vendored FlowCutter into `libtreedecomp.a`. Declaring

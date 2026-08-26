@@ -1,5 +1,9 @@
 # goatd — Greatest Of All Tree Decompositions
 
+<p align="center">
+  <img src="assets/logo.png" alt="goatd logo" width="280">
+</p>
+
 Tree decompositions of graphs, as a Rust library and a command-line solver.
 A graph goes in as an edge list and a tree decomposition comes out, by one of
 three routes:
