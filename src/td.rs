@@ -160,30 +160,34 @@ impl TreeDecomposition {
                     graph.num_vertices
                 ));
             }
-            if !holders[u as usize]
-                .iter()
-                .any(|&bag| self.bags[bag].vertices.contains(&v))
-            {
+            if !sorted_lists_intersect(&holders[u as usize], &holders[v as usize]) {
                 return invalid(format!("edge ({u}, {v}) is covered by no bag"));
             }
         }
 
+        let mut holding_mark = vec![0usize; num_bags];
+        let mut reached_mark = vec![0usize; num_bags];
         for (vertex, vertex_holders) in holders.iter().enumerate() {
             if vertex_holders.len() < 2 {
                 continue;
             }
-            let holding: FxHashSet<usize> = vertex_holders.iter().copied().collect();
-            let mut reached = FxHashSet::default();
+            let mark = vertex + 1;
+            for &bag in vertex_holders {
+                holding_mark[bag] = mark;
+            }
             let mut stack = vec![vertex_holders[0]];
-            reached.insert(vertex_holders[0]);
+            reached_mark[vertex_holders[0]] = mark;
+            let mut reached = 1usize;
             while let Some(bag) = stack.pop() {
                 for &neighbour in &self.adj[bag] {
-                    if holding.contains(&neighbour) && reached.insert(neighbour) {
+                    if holding_mark[neighbour] == mark && reached_mark[neighbour] != mark {
+                        reached_mark[neighbour] = mark;
+                        reached += 1;
                         stack.push(neighbour);
                     }
                 }
             }
-            if reached.len() != vertex_holders.len() {
+            if reached != vertex_holders.len() {
                 return invalid(format!(
                     "the bags holding vertex {vertex} are not connected"
                 ));
@@ -194,6 +198,21 @@ impl TreeDecomposition {
     }
 }
 
+fn sorted_lists_intersect(left: &[usize], right: &[usize]) -> bool {
+    let (mut left_index, mut right_index) = (0, 0);
+    while left_index < left.len() && right_index < right.len() {
+        match left[left_index].cmp(&right[right_index]) {
+            std::cmp::Ordering::Less => left_index += 1,
+            std::cmp::Ordering::Greater => right_index += 1,
+            std::cmp::Ordering::Equal => return true,
+        }
+    }
+    false
+}
+
 fn invalid<T>(message: impl Into<String>) -> Result<T, Error> {
     Err(Error::InvalidDecomposition(message.into()))
 }
+
+#[cfg(test)]
+mod tests;
