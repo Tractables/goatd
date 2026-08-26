@@ -50,12 +50,16 @@ fn goatd(args: &[&str], stdin: Option<&str>) -> Output {
         .spawn()
         .expect("spawn goatd");
     if let Some(text) = stdin {
-        child
+        let write_result = child
             .stdin
             .take()
             .expect("stdin is piped")
-            .write_all(text.as_bytes())
-            .expect("write the graph to stdin");
+            .write_all(text.as_bytes());
+        if let Err(error) = write_result
+            && error.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            panic!("write the graph to stdin: {error}");
+        }
     }
     child.wait_with_output().expect("goatd runs to completion")
 }
