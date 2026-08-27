@@ -714,7 +714,7 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
   // Deadline only fires once we already have *some* TD.  Otherwise we would
   // return an empty TreeDecomposition on graphs where every heuristic was
   // skipped (size gates) and the first flow-cutter iteration didn't finish in
-  // time.  Producing a vtree late beats producing none at all.
+  // time. Producing a decomposition late beats producing none at all.
   auto deadline_fired = [&]() {
     return clock_decides
       && best_bag_size < std::numeric_limits<int>::max()
@@ -785,15 +785,13 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
 
         {
           // goatd: the min-shortcut heuristic's cost is driven by density,
-          // not node count — on a clique-dominated primal graph (a few hundred
-          // nodes but hundreds of thousands of arcs, from a single clause of
-          // several hundred literals) compute_greedy_min_shortcut_order alone
-          // consumed nearly the entire constructTD budget, and its order did
-          // not even beat the min-degree TD.
+          // not node count — on a clique-dominated graph with a few hundred
+          // nodes and hundreds of thousands of arcs, the heuristic alone
+          // consumed nearly the entire constructTD budget without beating the
+          // min-degree decomposition.
           // Gate it on mean degree in addition to the node-count gate; the
-          // threshold is far above typical CNF primal graphs (mean degree
-          // usually < 30), so sparse inputs are unaffected. Deterministic —
-          // graph-shape gates keep step/iter-budgeted runs reproducible.
+          // threshold leaves sparse inputs unaffected. Deterministic graph-
+          // shape gates keep step/iter-budgeted runs reproducible.
           const int64_t arc_count = (int64_t)head.preimage_count_;
           const bool sc_density_ok = arc_count < 64 * (int64_t)node_count;
           // goatd: tightness-gated for the same reason as md_limit above.
@@ -949,4 +947,3 @@ SeparatorOutput IFlowCutter::computeSeparator(int64_t conf_steps, int conf_iters
 
   return result;
 }
-

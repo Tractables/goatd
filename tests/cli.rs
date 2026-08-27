@@ -180,11 +180,10 @@ fn a_weights_file_biases_the_sample_and_is_checked_against_the_graph() {
     );
 }
 
-/// A flag that means nothing under the chosen order is refused, and the
-/// message names the flag, the order it was given under, and the order it
-/// needs.
+/// An order-specific flag is refused under another order, and the message
+/// names the flag and both orders.
 #[test]
-fn an_inert_flag_is_refused_naming_the_flag_and_the_order() {
+fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
     let cases: &[(&[&str], &[&str])] = &[
         (&["--steps", "10"], &["--steps", "minfill", "flowcutter"]),
         (
@@ -201,10 +200,15 @@ fn an_inert_flag_is_refused_naming_the_flag_and_the_order() {
         ),
         (&["--weights", "w.txt"], &["--weights", "--ties sample"]),
         (
+            &["--order", "flowcutter", "--weights", "w.txt"],
+            &["--weights", "flowcutter", "minfill or mindegree"],
+        ),
+        (
             &["--order", "flowcutter", "--steps", "10", "--budget", "10"],
             &["--steps", "--budget"],
         ),
         (&["--ties", "salt"], &["--ties"]),
+        (&["--budget", "0"], &["--budget", "positive"]),
         (&["--order", "treewidth"], &["--order"]),
         (&[], &["no input graph"]),
     ];
@@ -247,14 +251,4 @@ fn help_prints_the_usage_and_exits_zero() {
     let help = String::from_utf8_lossy(&out.stdout);
     assert!(help.starts_with("usage: goatd"));
     assert!(help.contains("portfolio"));
-    assert!(!help.contains("schedule"));
-}
-
-#[test]
-fn the_retired_schedule_order_is_rejected_in_favour_of_portfolio() {
-    let out = goatd(&["-", "--order", "schedule"], Some(&grid_gr()));
-
-    assert_eq!(out.status.code(), Some(2));
-    let error = stderr_of(&out);
-    assert!(error.contains("--order") && error.contains("schedule"));
 }

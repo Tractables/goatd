@@ -1,6 +1,8 @@
 // C FFI wrapper for meelgroup/treedecomp (in-process FlowCutter).
 #include <cstddef>  // goatd: size_t — not guaranteed transitively on all stdlibs
 #include <cstdint>  // goatd: int64_t
+#include <memory>
+#include <utility>
 #include "ffi.h"
 #include "TreeDecomposition.hpp"
 #include "IFlowCutter.hpp"
@@ -11,54 +13,40 @@ struct TdResult {
     std::vector<std::vector<int>> adj;
 };
 
-extern "C" {
-
-static TdResult* td_compute_impl(int num_nodes, int num_edges,
-                                  const int* edges, int64_t steps, int iters,
-                                  int64_t timeout_ms, int64_t* iters_done,
-                                  int64_t* greedy_touches, int64_t unit_budget,
-                                  int64_t units_per_iter) {
-    // Build the TWD::Graph
-    TWD::Graph g(num_nodes);
+static void add_edges(TWD::Graph& graph, int num_edges, const int* edges) {
     for (int i = 0; i < num_edges; i++) {
-        int u = edges[2 * i];
-        int v = edges[2 * i + 1];
-        g.addEdge(u, v);
+        graph.addEdge(edges[2 * i], edges[2 * i + 1]);
     }
-
-    // Run FlowCutter
-    TWD::IFlowCutter fc(num_nodes, num_edges, /*verb=*/0);
-    fc.importGraph(g);
-    TWD::TreeDecomposition td = (timeout_ms > 0)
-        ? fc.constructTD_timed(steps, iters, timeout_ms, iters_done, greedy_touches, unit_budget, units_per_iter)
-        : fc.constructTD(steps, iters, iters_done, greedy_touches, unit_budget, units_per_iter);
-
-    auto* result = new TdResult();
-    result->td = std::move(td);
-
-    // Cache adjacency list for bag neighbors
-    int nb = result->td.numNodes();
-    result->adj.resize(nb);
-    for (int i = 0; i < nb; i++) {
-        result->adj[i] = result->td.Neighbors(i);
-    }
-
-    return result;
 }
+
+static TdResult* store_result(TWD::TreeDecomposition td) {
+    auto result = std::make_unique<TdResult>();
+    result->td = std::move(td);
+    const int num_bags = result->td.numNodes();
+    result->adj.resize(num_bags);
+    for (int bag = 0; bag < num_bags; bag++) {
+        result->adj[bag] = result->td.Neighbors(bag);
+    }
+    return result.release();
+}
+
+extern "C" {
 
 TdResult* td_compute(int num_nodes, int num_edges,
                      const int* edges, int64_t steps, int iters,
                      int64_t* iters_done, int64_t* greedy_touches,
                      int64_t unit_budget, int64_t units_per_iter) {
-    return td_compute_impl(num_nodes, num_edges, edges, steps, iters, 0,
-                           iters_done, greedy_touches, unit_budget, units_per_iter);
-}
-
-TdResult* td_compute_timed(int num_nodes, int num_edges,
-                           const int* edges, int64_t steps, int iters,
-                           int64_t timeout_ms) {
-    return td_compute_impl(num_nodes, num_edges, edges, steps, iters, timeout_ms,
-                           nullptr, nullptr, 0, 0);
+    try {
+        TWD::Graph g(num_nodes);
+        add_edges(g, num_edges, edges);
+        TWD::IFlowCutter fc(num_nodes, num_edges, /*verb=*/0);
+        fc.importGraph(g);
+        return store_result(fc.constructTD(steps, iters, iters_done,
+                                           greedy_touches, unit_budget,
+                                           units_per_iter));
+    } catch (...) {
+        return nullptr;
+    }
 }
 
 TdResult* td_compute_timed_patience(int num_nodes, int num_edges,
@@ -67,37 +55,21 @@ TdResult* td_compute_timed_patience(int num_nodes, int num_edges,
                                     int tight_gates, int64_t* iters_done,
                                     int64_t* greedy_touches,
                                     int64_t unit_budget, int64_t units_per_iter) {
-    TWD::Graph g(num_nodes);
-    for (int i = 0; i < num_edges; i++) {
-        int u = edges[2 * i];
-        int v = edges[2 * i + 1];
-        g.addEdge(u, v);
+    try {
+        TWD::Graph g(num_nodes);
+        add_edges(g, num_edges, edges);
+        TWD::IFlowCutter fc(num_nodes, num_edges, /*verb=*/0);
+        fc.importGraph(g);
+        return store_result(fc.constructTD_timed_patience(
+            steps, iters, timeout_ms, patience_ms, tight_gates != 0,
+            iters_done, greedy_touches, unit_budget, units_per_iter));
+    } catch (...) {
+        return nullptr;
     }
-
-    TWD::IFlowCutter fc(num_nodes, num_edges, /*verb=*/0);
-    fc.importGraph(g);
-    TWD::TreeDecomposition td = fc.constructTD_timed_patience(
-        steps, iters, timeout_ms, patience_ms, tight_gates != 0, iters_done,
-        greedy_touches, unit_budget, units_per_iter);
-
-    auto* result = new TdResult();
-    result->td = std::move(td);
-
-    int nb = result->td.numNodes();
-    result->adj.resize(nb);
-    for (int i = 0; i < nb; i++) {
-        result->adj[i] = result->td.Neighbors(i);
-    }
-
-    return result;
 }
 
 int td_num_bags(const TdResult* td) {
     return td->td.numNodes();
-}
-
-int td_width(const TdResult* td) {
-    return td->td.width();
 }
 
 int td_bag_size(const TdResult* td, int bag_idx) {

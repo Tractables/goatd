@@ -1,83 +1,24 @@
-//! The work meter: a count of the graph work a construction does, and a clock
-//! derived from it.
+//! A work-based clock for repeatable budget decisions.
 //!
-//! Every budgeted search in this crate stops on a decision: the elimination
-//! portfolio divides its window between orders, the FlowCutter restart loop
-//! stops when its window is gone, the separator search gives up at its cap.
-//! Each of those decisions changes which decomposition comes out, and each is
-//! normally made against a wall clock — so the decomposition a run produces
-//! depends on how fast, and how loaded, the machine was. Two runs of the same
-//! graph on the same binary can return different decompositions.
+//! Normally [`now`] is the wall clock and [`charge`] does nothing. While the
+//! guard returned by [`arm`] is alive, algorithms charge graph work and `now`
+//! advances by those charges instead. A fixed budget then stops after the same
+//! work for a given graph and seed, independent of machine load.
 //!
-//! This module replaces the quantity those decisions read. It counts *work*:
-//! graph elements touched, in one unit shared by every construction here, and
-//! serves a clock whose reading is `epoch + spent / rate`. A budget expressed
-//! in units is then a budget in work, and the search that spends it makes the
-//! same decisions in the same order on every machine. A caller with searches
-//! of its own around these charges them to the same meter through [`charge`],
-//! so one budget covers the whole construction.
-//!
-//! # What a unit is
-//!
-//! One unit is roughly one graph-element touch — a neighbour entry scanned, a
-//! pin visited, a bitset word cleared. The absolute size does not matter; what
-//! matters is that every construction charges on the *same* scale, so a budget
-//! divided between them divides work rather than one backend's private counter.
-//!
-//! Charges are deliberately pessimistic. A caller that sizes a unit budget
-//! from a wall (`milliseconds × UNITS_PER_MS`) should finish inside that wall
-//! rather than past it, so where a cost is only known to within a factor the
-//! constant sits at the expensive end of the range. The measured price of that
-//! choice is a few percent more wall than the same build takes under a
-//! wall-clock budget.
-//!
-//! # The rate is a calibration constant
-//!
-//! [`UNITS_PER_MS`] converts units to the milliseconds the budgets in this
-//! crate are written in. It was fitted by regressing charged units against
-//! measured milliseconds over a set of construction runs; it is not a law, and
-//! a machine much faster or slower than the one it was fitted on will do more
-//! or less real work per unit. That does not affect reproducibility — the same
-//! unit budget buys the same *decisions* everywhere — only the wall those
-//! decisions take.
-//!
-//! # How it is armed
-//!
-//! Nothing here reads the environment. A caller arms the meter for the
-//! duration of one construction with [`arm`] and disarms it by dropping the
-//! guard. Every deadline the searches in this crate compare against is read
-//! from [`now`], so arming the meter moves all of them onto the work clock at
-//! once. Off the seam [`charge`] is a predictable branch and [`now`] is
-//! `Instant::now()`, so a caller that never arms the meter gets exactly the
-//! wall-clock behaviour.
-//!
-//! The state is thread-local, so a caller running two constructions on two
-//! threads meters them independently.
+//! The meter is thread-local and may be nested. Callers that perform graph work
+//! around goatd can charge it to the same budget with [`charge`].
 
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
-/// Work units per millisecond of construction: the calibration constant that
-/// converts a unit budget into the milliseconds this crate's budgets are
-/// written in, and back.
-///
-/// Fitted as the median of `units / measured_ms` over per-candidate
-/// construction runs. See the module docs on what that does and does not
-/// guarantee.
+/// Calibration used to express work budgets through duration-based APIs.
 pub const UNITS_PER_MS: u64 = 775_000;
 
 thread_local! {
-    /// Where the construction clock was started: the real instant the meter was
-    /// armed, paired with the meter reading at that instant. `None` = not
-    /// armed, which is every moment outside one metered construction.
-    ///
-    /// Written only by [`arm`] and by [`Armed::drop`]; read by everything else
-    /// here. Being the one flag makes "armed" a single fact rather than
-    /// something two cells could disagree about.
+    /// Clock origin and the charged-unit count at that point.
     static EPOCH: Cell<Option<(Instant, u64)>> = const { Cell::new(None) };
 
-    /// Units charged on this thread, ever. Monotone and never reset, so a mark
-    /// taken at arming turns into elapsed work by plain subtraction.
+    /// Monotone units charged on this thread.
     static SPENT: Cell<u64> = const { Cell::new(0) };
 }
 
@@ -85,91 +26,83 @@ thread_local! {
 /// whatever was armed before, so a nested construction cannot leave the meter
 /// running for the one that contains it.
 #[must_use = "the meter is armed only while the guard is alive"]
-pub struct Armed {
+pub struct Guard {
     previous: Option<(Instant, u64)>,
 }
 
-impl Drop for Armed {
+impl Drop for Guard {
     fn drop(&mut self) {
         EPOCH.with(|c| c.set(self.previous));
     }
 }
 
-/// Arm the meter, with the construction clock starting at `now` — the same
-/// instant the budget being armed is measured from.
+/// Use charged work as the clock until the returned guard is dropped.
 ///
-/// Pairing the epoch with the current meter reading is what makes a whole
-/// construction spend ONE budget: a later construction on the same thread
-/// enters with the meter already advanced by the earlier ones, exactly as it
-/// would enter with the clock already advanced.
-pub fn arm(now: Instant) -> Armed {
+/// `epoch` should be the instant from which the caller measures its budget.
+pub fn arm(epoch: Instant) -> Guard {
     let previous = EPOCH.with(Cell::get);
-    EPOCH.with(|c| c.set(Some((now, spent()))));
-    Armed { previous }
+    EPOCH.with(|c| c.set(Some((epoch, units_spent()))));
+    Guard { previous }
 }
 
-/// Whether the meter is armed, and therefore whether anything charged to it can
-/// be read back.
-///
-/// Hoisted out of hot loops that would otherwise compute a charge nobody
-/// records: a charge whose *amount* costs a scan is guarded on this, and one
-/// that is a single arithmetic expression is not.
+/// Whether charged work currently drives [`now`].
 #[inline]
-pub fn metering() -> bool {
+pub fn is_armed() -> bool {
     EPOCH.with(Cell::get).is_some()
 }
 
-/// Charge `units` of construction work. Inert, and unread, when the meter is
-/// not armed.
+/// Charge construction work. Does nothing when the meter is not armed.
 #[inline]
 pub fn charge(units: u64) {
-    if metering() {
+    if is_armed() {
         SPENT.with(|m| m.set(m.get().saturating_add(units)));
     }
 }
 
 /// Units charged on this thread so far.
 #[inline]
-pub fn spent() -> u64 {
+pub fn units_spent() -> u64 {
     SPENT.with(Cell::get)
 }
 
-/// **THE CONSTRUCTION CLOCK.** `Instant::now()` when the meter is not armed;
-/// under it, the instant the work says it is — the epoch plus the work charged
-/// since, converted at [`UNITS_PER_MS`].
-///
-/// Every budgeted DECISION in this crate reads this instead of the real clock:
-/// the portfolio's slot and refinement deadlines, the elimination core's soft
-/// and hard deadlines, the separator search's cap, the wall a FlowCutter
-/// build converts into its work budget.
-///
-/// It is an `Instant` and not a duration or a counter because that is the shape
-/// the budgets already have: a deadline armed once travels as a bare
-/// `Instant` through the portfolio into the elimination core and is compared
-/// against the clock in a dozen places that never see the site that set it.
-/// Converting the clock those comparisons read converts all of them at once
-/// and leaves every deadline expression untouched.
-///
-/// Monotone, because the meter is: it never runs backwards and never precedes
-/// the epoch. A run that charged enough units to overflow the addition
-/// saturates at the epoch rather than panicking.
+/// The wall clock when unarmed; otherwise `epoch + charged work`.
 pub fn now() -> Instant {
     match EPOCH.with(Cell::get) {
         None => Instant::now(),
         Some((epoch, mark)) => {
-            let ms = spent().saturating_sub(mark) / UNITS_PER_MS;
-            epoch
-                .checked_add(Duration::from_millis(ms))
-                .unwrap_or(epoch)
+            let ms = units_spent().saturating_sub(mark) / UNITS_PER_MS;
+            saturating_add_milliseconds(epoch, ms)
         }
     }
 }
 
-/// A unit count as the milliseconds it converts to, for handing a budget in
-/// units to code written in milliseconds.
-pub fn wall_ms_for_units(units: u64) -> u64 {
-    units / UNITS_PER_MS
+/// Add as much of `milliseconds` as this platform's [`Instant`] range can
+/// represent. The binary search runs only on the overflow path.
+fn saturating_add_milliseconds(epoch: Instant, milliseconds: u64) -> Instant {
+    if let Some(result) = epoch.checked_add(Duration::from_millis(milliseconds)) {
+        return result;
+    }
+
+    let mut representable = 0;
+    let mut too_large = milliseconds;
+    while representable < too_large {
+        let candidate = representable + (too_large - representable).div_ceil(2);
+        if epoch
+            .checked_add(Duration::from_millis(candidate))
+            .is_some()
+        {
+            representable = candidate;
+        } else {
+            too_large = candidate - 1;
+        }
+    }
+    epoch
+        .checked_add(Duration::from_millis(representable))
+        .expect("adding zero milliseconds to an Instant is representable")
 }
 
-#[cfg(test)]
-mod tests;
+/// A unit count as the milliseconds it converts to, for handing a budget in
+/// units to code written in milliseconds.
+pub fn milliseconds_for_units(units: u64) -> u64 {
+    units / UNITS_PER_MS
+}

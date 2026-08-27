@@ -17,14 +17,14 @@ const BITSET_THRESH: usize = 16384;
 /// Mutable graph used by goatd during preprocessing, min-fill, and nested
 /// dissection. Supports active/inactive vertices for constant-time elimination.
 #[derive(Clone)]
-pub(crate) struct Graph {
-    pub adj: Vec<Vec<u32>>,
-    pub active: Vec<bool>,
-    pub num_active: usize,
+pub(super) struct EliminationGraph {
+    pub(super) adj: Vec<Vec<u32>>,
+    pub(super) active: Vec<bool>,
+    pub(super) num_active: usize,
     /// Count of undirected edges among active vertices. Enables O(1)
     /// clique-residual detection: the residual is complete iff
     /// `num_edges == num_active*(num_active-1)/2`.
-    pub num_edges: usize,
+    pub(super) num_edges: usize,
     /// Stamp-marker scratch for deduping fill-edge additions in
     /// O(Σdeg + k²) instead of O(k²·deg_avg). u16 halves memory footprint vs
     /// u32; the stamp wraps and clears the marker array when it does.
@@ -33,14 +33,14 @@ pub(crate) struct Graph {
     /// Flat bitset adjacency: vertex `v` occupies words
     /// `v * bitset_words .. (v+1) * bitset_words`; bit `u` in that slice is
     /// set iff edge (v, u) exists. Empty when bitset mode is disabled.
-    pub bitset: Vec<u64>,
+    pub(super) bitset: Vec<u64>,
     /// Number of u64 words per vertex in `bitset`. 0 iff bitset is disabled.
-    pub bitset_words: usize,
+    pub(super) bitset_words: usize,
 }
 
-impl Graph {
-    pub(crate) fn with_capacity(n: usize) -> Self {
-        Graph {
+impl EliminationGraph {
+    pub(super) fn new(n: usize) -> Self {
+        EliminationGraph {
             adj: vec![Vec::new(); n],
             active: vec![true; n],
             num_active: n,
@@ -52,11 +52,15 @@ impl Graph {
         }
     }
 
-    pub(crate) fn from_edges(n: u32, edges: &[(u32, u32)]) -> Self {
+    pub(super) fn from_edges(n: u32, edges: &[(u32, u32)]) -> Self {
         let n = n as usize;
-        let mut g = Graph::with_capacity(n);
+        let mut g = EliminationGraph::new(n);
         for &(u, v) in edges {
-            if (u as usize) < n && (v as usize) < n && u != v && !g.adj[u as usize].contains(&v) {
+            assert!(
+                (u as usize) < n && (v as usize) < n,
+                "elimination edge ({u}, {v}) has an endpoint outside 0..{n}"
+            );
+            if u != v && !g.adj[u as usize].contains(&v) {
                 g.adj[u as usize].push(v);
                 g.adj[v as usize].push(u);
                 g.num_edges += 1;
@@ -120,7 +124,7 @@ impl Graph {
     /// valid when `bitset_words > 0`.
     pub(super) fn clone_bitset_only(&self) -> Self {
         debug_assert!(self.bitset_words > 0);
-        Graph {
+        EliminationGraph {
             adj: vec![Vec::new(); self.adj.len()],
             active: self.active.clone(),
             num_active: self.num_active,
@@ -148,17 +152,15 @@ impl Graph {
         }
         self.bitset[vi * w + word_u] |= bit_u;
         self.bitset[ui * w + vi / 64] |= 1u64 << (vi % 64);
-        self.adj[ui].push(v);
-        self.adj[vi].push(u);
         self.num_edges += 1;
         true
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub(super) fn len(&self) -> usize {
         self.adj.len()
     }
 
-    pub(crate) fn degree(&self, v: u32) -> usize {
+    pub(super) fn degree(&self, v: u32) -> usize {
         if self.bitset_words > 0 {
             let vi = v as usize;
             let w = self.bitset_words;
@@ -172,10 +174,8 @@ impl Graph {
         }
     }
 
-    pub(crate) fn collect_live_nbrs_into(&self, v: u32, buf: &mut Vec<u32>) {
-        // Both paths touch every live neighbour once; the bitset path also
-        // walks every word of `v`'s row, empty ones included, to find them.
-        crate::meter::charge((self.degree(v) as u64).saturating_add(self.bitset_words as u64));
+    pub(super) fn collect_live_nbrs_into(&self, v: u32, buf: &mut Vec<u32>) {
+        let start_len = buf.len();
         if self.bitset_words > 0 {
             let vi = v as usize;
             let w = self.bitset_words;
@@ -191,19 +191,26 @@ impl Graph {
         } else {
             buf.extend_from_slice(&self.adj[v as usize]);
         }
+        // Both paths touch every live neighbour once; the bitset path also
+        // walks every word of `v`'s row, including empty words.
+        crate::meter::charge(
+            ((buf.len() - start_len) as u64).saturating_add(self.bitset_words as u64),
+        );
     }
 
-    pub(crate) fn contains_edge(&self, u: u32, v: u32) -> bool {
+    pub(super) fn contains_edge(&self, u: u32, v: u32) -> bool {
         if self.bitset_words > 0 {
+            crate::meter::charge(1);
             let w = self.bitset_words;
             let vi = v as usize;
             self.bitset[u as usize * w + vi / 64] & (1u64 << (vi % 64)) != 0
         } else {
+            crate::meter::charge(self.adj[u as usize].len() as u64);
             self.adj[u as usize].contains(&v)
         }
     }
 
-    pub(crate) fn add_edge(&mut self, u: u32, v: u32) -> bool {
+    pub(super) fn add_edge(&mut self, u: u32, v: u32) -> bool {
         if u == v {
             return false;
         }
@@ -222,17 +229,13 @@ impl Graph {
 
     /// Return a copy of `v`'s live neighbour list. In bitset mode this reads
     /// set bits directly and is correct even though `adj` itself goes stale.
-    pub(crate) fn live_neighbours(&self, v: u32) -> Vec<u32> {
-        if self.bitset_words > 0 {
-            let mut buf = Vec::new();
-            self.collect_live_nbrs_into(v, &mut buf);
-            buf
-        } else {
-            self.adj[v as usize].clone()
-        }
+    pub(super) fn live_neighbours(&self, v: u32) -> Vec<u32> {
+        let mut neighbours = Vec::new();
+        self.collect_live_nbrs_into(v, &mut neighbours);
+        neighbours
     }
 
-    pub(crate) fn eliminate(&mut self, v: u32) -> Vec<u32> {
+    pub(super) fn eliminate(&mut self, v: u32) -> Vec<u32> {
         let neighbours = self.live_neighbours(v);
         self.eliminate_with_nbrs(v, &neighbours);
         neighbours
@@ -241,7 +244,7 @@ impl Graph {
     /// Eliminate vertex `v` given its pre-collected live neighbours. Avoids
     /// the extra `live_neighbours` allocation when the caller already has
     /// them.
-    pub(crate) fn eliminate_with_nbrs(&mut self, v: u32, neighbours: &[u32]) {
+    pub(super) fn eliminate_with_nbrs(&mut self, v: u32, neighbours: &[u32]) {
         // The construction meter's single largest charge: one elimination is
         // the unit of work every goatd configuration loops over, so what this
         // costs sets the scale everything else in construction is charged
@@ -319,12 +322,14 @@ impl Graph {
             }
             let s = self.elim_stamp;
             let row = &mut self.adj[u];
-            let mut v_pos = usize::MAX;
+            let mut v_pos = None;
             for (idx, &w) in row.iter().enumerate() {
-                v_pos = if w == v { idx } else { v_pos };
+                if w == v {
+                    v_pos = Some(idx);
+                }
                 marker[w as usize] = s;
             }
-            if v_pos != usize::MAX {
+            if let Some(v_pos) = v_pos {
                 row.swap_remove(v_pos);
             }
             marker[u] = s;
@@ -349,7 +354,7 @@ impl Graph {
     /// Remove vertex `v` without filling its neighbourhood — safe only when
     /// the caller already knows `v`'s removal cannot need a fill edge.
     /// Returns the vertex's live neighbours.
-    pub(crate) fn remove_without_fill(&mut self, v: u32) -> Vec<u32> {
+    pub(super) fn remove_without_fill(&mut self, v: u32) -> Vec<u32> {
         let neighbours = self.live_neighbours(v);
         self.remove_without_fill_nbrs(v, &neighbours);
         neighbours
@@ -358,7 +363,7 @@ impl Graph {
     /// Remove `v`, given its live neighbours, without filling — safe only
     /// when the caller has verified N(v) is already a clique (no fill edges
     /// needed). Cheaper than `eliminate_with_nbrs`: no stamp-marker work.
-    pub(crate) fn remove_without_fill_nbrs(&mut self, v: u32, nbrs: &[u32]) {
+    pub(super) fn remove_without_fill_nbrs(&mut self, v: u32, nbrs: &[u32]) {
         // Simplicial elimination adds no fill, so there is no k² term. The
         // sparse path still searches each neighbour's row for `v` and pays the
         // same Σ deg(u) scan as the filling path; the bitset path clears one
@@ -404,7 +409,7 @@ impl Graph {
     /// would be pure overhead in every run that asked for no unit budget.
     #[inline]
     fn nbr_scan_units(&self, nbrs: &[u32]) -> u64 {
-        if !crate::meter::metering() {
+        if !crate::meter::is_armed() {
             return 0;
         }
         nbrs.iter()
@@ -413,18 +418,20 @@ impl Graph {
     }
 
     /// O(1) check: is the active residual a complete graph?
-    pub(crate) fn is_residual_clique(&self) -> bool {
+    pub(super) fn is_residual_clique(&self) -> bool {
         let n = self.num_active;
-        self.num_edges == n * (n - 1) / 2
+        let complete_edges = (n as u64) * (n.saturating_sub(1) as u64) / 2;
+        n < 2 || self.num_edges as u64 == complete_edges
     }
 
     /// Is the live neighbourhood of `v` a clique?
-    pub(crate) fn is_simplicial(&self, v: u32) -> bool {
+    pub(super) fn is_simplicial(&self, v: u32) -> bool {
         if self.bitset_words > 0 {
             let vi = v as usize;
             let w = self.bitset_words;
             let vb = vi * w;
             let vbs = &self.bitset[vb..vb + w];
+            let mut words_scanned = 0u64;
             for j in 0..w {
                 let mut word = vbs[j];
                 while word != 0 {
@@ -435,6 +442,7 @@ impl Graph {
                     // not a neighbour of u, i.e. N(v) & ~N(u) has a bit set
                     // besides u's own.
                     for (l, &v_word) in vbs.iter().enumerate() {
+                        words_scanned += 1;
                         let non_nbrs = v_word & !self.bitset[ub + l];
                         let masked = if l == u / 64 {
                             non_nbrs & !(1u64 << (u % 64))
@@ -442,12 +450,14 @@ impl Graph {
                             non_nbrs
                         };
                         if masked != 0 {
+                            crate::meter::charge(words_scanned);
                             return false;
                         }
                     }
                     word &= word - 1;
                 }
             }
+            crate::meter::charge(words_scanned);
             true
         } else {
             let neighbours = &self.adj[v as usize];
@@ -466,7 +476,7 @@ impl Graph {
     /// popcount(bitset[u] & bitset[v]) counts N(v) members adjacent to u;
     /// summed and halved gives edges within N(v). O(k · words) vs
     /// O(k · avg_deg) for the marker path.
-    pub(crate) fn fill_count_of_bs(&self, v: u32) -> u64 {
+    pub(super) fn fill_count_of_bs(&self, v: u32) -> u64 {
         let vi = v as usize;
         let w = self.bitset_words;
         let vb = vi * w;

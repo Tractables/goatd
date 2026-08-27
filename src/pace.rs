@@ -5,9 +5,9 @@
 //! crate is 0-based. A `.td`'s bag vertices are bounded by the vertex count its
 //! solution line declares.
 
+use crate::decomposition::{TdBag, TreeDecomposition};
 use crate::error::Error;
-use crate::graph::{Graph, canonical};
-use crate::td::{TdBag, TreeDecomposition};
+use crate::graph::Graph;
 
 impl Graph {
     /// Render as a PACE `.gr` graph (1-indexed vertices).
@@ -48,8 +48,8 @@ impl Graph {
                 if tokens.len() != 4 || tokens[1] != "tw" {
                     return Err(Error::Parse(format!("malformed problem line: {line}")));
                 }
-                num_vertices = Some(parse_count(tokens[2])?);
-                declared_edge_lines = parse_count(tokens[3])?;
+                num_vertices = Some(parse_count("vertex count", tokens[2])?);
+                declared_edge_lines = parse_count("edge count", tokens[3])?;
                 continue;
             }
             let Some(n) = num_vertices else {
@@ -60,12 +60,10 @@ impl Graph {
             if tokens.len() != 2 {
                 return Err(Error::Parse(format!("malformed edge line: {line}")));
             }
-            let u: u32 = to_zero_based("vertex", parse_count(tokens[0])?, n as usize)?;
-            let v: u32 = to_zero_based("vertex", parse_count(tokens[1])?, n as usize)?;
+            let u: u32 = to_zero_based("vertex", parse_count("vertex id", tokens[0])?, n as usize)?;
+            let v: u32 = to_zero_based("vertex", parse_count("vertex id", tokens[1])?, n as usize)?;
             num_edge_lines += 1;
-            if u != v {
-                edges.push((u.min(v), u.max(v)));
-            }
+            edges.push((u, v));
         }
         let Some(num_vertices) = num_vertices else {
             return Err(Error::Parse("no problem line".into()));
@@ -76,22 +74,17 @@ impl Graph {
                  {num_edge_lines}"
             )));
         }
-        Ok(Graph {
-            num_vertices,
-            edges: canonical(edges),
-        })
+        Ok(Graph::new(num_vertices, edges))
     }
 }
 
 impl TreeDecomposition {
-    /// Render as a PACE `.td` decomposition (1-indexed bags and vertices) of a
-    /// graph over `num_vertices` vertices — the count the solution line has to
-    /// declare, which the bags alone do not determine. A decomposition forest
-    /// is connected between component roots for the PACE format; an empty
-    /// decomposition is written as one empty bag.
-    pub fn to_td(&self, num_vertices: u32) -> String {
+    /// Render as a PACE `.td` decomposition (1-indexed bags and vertices).
+    /// A decomposition forest is connected between component roots for the
+    /// PACE format; an empty decomposition is written as one empty bag.
+    pub fn to_td(&self) -> String {
         if self.bags.is_empty() {
-            return format!("s td 1 0 {num_vertices}\nb 1\n");
+            return format!("s td 1 0 {}\nb 1\n", self.num_vertices);
         }
         let max_bag = self
             .bags
@@ -99,9 +92,14 @@ impl TreeDecomposition {
             .map(|b| b.vertices.len())
             .max()
             .unwrap_or(0);
-        let mut out = format!("s td {} {} {}\n", self.bags.len(), max_bag, num_vertices);
-        for bag in &self.bags {
-            out.push_str(&format!("b {}", bag.id + 1));
+        let mut out = format!(
+            "s td {} {} {}\n",
+            self.bags.len(),
+            max_bag,
+            self.num_vertices
+        );
+        for (bag_id, bag) in self.bags.iter().enumerate() {
+            out.push_str(&format!("b {}", bag_id + 1));
             for &v in &bag.vertices {
                 out.push_str(&format!(" {}", v + 1));
             }
@@ -146,13 +144,14 @@ impl TreeDecomposition {
     /// solution or bag line, an unparseable id, a bag or vertex id outside the
     /// range the solution line declares, a bag list that does not define each
     /// declared bag exactly once, a maximum-bag-size mismatch, a bag graph that
-    /// is not one tree, or no bags at all.
+    /// is not one tree, a missing declared vertex, a failed running-intersection
+    /// check, or no bags at all.
     pub fn from_td(text: &str) -> Result<Self, Error> {
-        let mut bags: Vec<TdBag> = Vec::new();
+        let mut bags: Vec<(usize, TdBag)> = Vec::new();
         let mut adj: Vec<Vec<usize>> = Vec::new();
         let mut num_bags = 0usize;
         let mut declared_max_bag_size = 0usize;
-        let mut declared_vertices = 0usize;
+        let mut declared_vertices = 0u32;
         let mut saw_solution_line = false;
 
         for line in text.lines() {
@@ -169,11 +168,11 @@ impl TreeDecomposition {
                         return Err(Error::Parse(format!("more than one solution line: {line}")));
                     }
                     if tokens.len() != 5 || tokens[1] != "td" {
-                        return Err(Error::Parse(format!("Malformed solution line: {line}")));
+                        return Err(Error::Parse(format!("malformed solution line: {line}")));
                     }
-                    num_bags = parse_count(tokens[2])?;
-                    declared_max_bag_size = parse_count(tokens[3])?;
-                    declared_vertices = parse_count(tokens[4])?;
+                    num_bags = parse_count("bag count", tokens[2])?;
+                    declared_max_bag_size = parse_count("maximum bag size", tokens[3])?;
+                    declared_vertices = parse_count("vertex count", tokens[4])?;
                     bags = Vec::with_capacity(num_bags);
                     adj = vec![Vec::new(); num_bags];
                     saw_solution_line = true;
@@ -181,22 +180,38 @@ impl TreeDecomposition {
                 "b" => {
                     // "b <bag_id> <v1> <v2> ..."
                     if tokens.len() < 2 {
-                        return Err(Error::Parse(format!("Malformed bag line: {line}")));
+                        return Err(Error::Parse(format!("malformed bag line: {line}")));
                     }
                     if !saw_solution_line {
                         return Err(Error::Parse(format!(
                             "bag line before the solution line: {line}"
                         )));
                     }
-                    let bag_id = to_zero_based("bag id", parse_count(tokens[1])?, num_bags)?;
+                    let bag_id =
+                        to_zero_based("bag id", parse_count("bag id", tokens[1])?, num_bags)?;
                     let vertices: Vec<u32> = tokens[2..]
                         .iter()
-                        .map(|t| to_zero_based("vertex", parse_count(t)?, declared_vertices))
+                        .map(|t| {
+                            to_zero_based(
+                                "vertex",
+                                parse_count("vertex id", t)?,
+                                declared_vertices as usize,
+                            )
+                        })
                         .collect::<Result<_, Error>>()?;
-                    bags.push(TdBag {
-                        id: bag_id,
-                        vertices,
-                    });
+                    let bag = TdBag::new(vertices);
+                    if let Some(vertex) = bag
+                        .vertices
+                        .windows(2)
+                        .find_map(|pair| (pair[0] == pair[1]).then_some(pair[0]))
+                    {
+                        return Err(Error::Parse(format!(
+                            "bag {} contains vertex {} more than once",
+                            bag_id + 1,
+                            vertex + 1
+                        )));
+                    }
+                    bags.push((bag_id, bag));
                 }
                 _ => {
                     // Tree edge: two bare integers "<bag_id1> <bag_id2>".
@@ -206,15 +221,22 @@ impl TreeDecomposition {
                         )));
                     }
                     if tokens.len() != 2 {
-                        return Err(Error::Parse(format!("Malformed tree edge: {line}")));
+                        return Err(Error::Parse(format!("malformed tree edge: {line}")));
                     }
-                    let a: usize =
-                        to_zero_based("bag id", parse_count::<usize>(tokens[0])?, num_bags)?;
-                    let b: usize =
-                        to_zero_based("bag id", parse_count::<usize>(tokens[1])?, num_bags)?;
-                    if a >= b {
+                    let a: usize = to_zero_based(
+                        "bag id",
+                        parse_count::<usize>("bag id", tokens[0])?,
+                        num_bags,
+                    )?;
+                    let b: usize = to_zero_based(
+                        "bag id",
+                        parse_count::<usize>("bag id", tokens[1])?,
+                        num_bags,
+                    )?;
+                    if a == b {
                         return Err(Error::Parse(format!(
-                            "a tree edge must name its smaller bag id first: {line}"
+                            "bag {} is adjacent to itself in the bag tree: {line}",
+                            a + 1
                         )));
                     }
                     adj[a].push(b);
@@ -225,16 +247,16 @@ impl TreeDecomposition {
 
         if !saw_solution_line {
             return Err(Error::Parse(
-                "No solution line in tree decomposition output".into(),
+                "no solution line in tree decomposition output".into(),
             ));
         }
         if bags.is_empty() {
             return Err(Error::Parse(
-                "No bags found in tree decomposition output".into(),
+                "no bags found in tree decomposition output".into(),
             ));
         }
 
-        bags.sort_by_key(|b| b.id);
+        bags.sort_by_key(|(bag_id, _)| *bag_id);
 
         // `adj` is sized from the solution line and `bags` from the bag lines,
         // so the two are co-indexed only when the file defines each declared
@@ -245,14 +267,22 @@ impl TreeDecomposition {
                 bags.len()
             )));
         }
-        if let Some((_, bag)) = bags.iter().enumerate().find(|(i, b)| b.id != *i) {
+        if let Some((_, (bag_id, _))) = bags
+            .iter()
+            .enumerate()
+            .find(|(position, (bag_id, _))| *bag_id != *position)
+        {
             return Err(Error::Parse(format!(
                 "bag {} is defined more than once; each of the {num_bags} declared bags is \
                  defined once",
-                bag.id + 1
+                bag_id + 1
             )));
         }
-        let actual_max_bag_size = bags.iter().map(|bag| bag.vertices.len()).max().unwrap_or(0);
+        let actual_max_bag_size = bags
+            .iter()
+            .map(|(_, bag)| bag.vertices.len())
+            .max()
+            .unwrap_or(0);
         if actual_max_bag_size != declared_max_bag_size {
             return Err(Error::Parse(format!(
                 "the solution line declares maximum bag size {declared_max_bag_size} but the \
@@ -285,14 +315,28 @@ impl TreeDecomposition {
             )));
         }
 
-        Ok(TreeDecomposition { bags, adj })
+        let decomposition = TreeDecomposition::from_parts(
+            declared_vertices,
+            bags.into_iter().map(|(_, bag)| bag).collect(),
+            adj,
+        );
+        // The input graph is not available yet, but an edgeless graph over the
+        // declared vertex universe checks every decomposition invariant except
+        // coverage of the eventual graph's edges.
+        decomposition
+            .validate(&Graph::new(declared_vertices, []))
+            .map_err(|error| Error::Parse(error.to_string()))?;
+        Ok(decomposition)
     }
 }
 
 fn parse_count<T: std::str::FromStr<Err = std::num::ParseIntError>>(
+    what: &str,
     token: &str,
 ) -> Result<T, Error> {
-    token.parse::<T>().map_err(|e| Error::Parse(e.to_string()))
+    token
+        .parse::<T>()
+        .map_err(|error| Error::Parse(format!("invalid {what} {token:?}: {error}")))
 }
 
 /// Ids are written 1-based and stored 0-based, so `0` is not an id at all;

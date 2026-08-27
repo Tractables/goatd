@@ -4,7 +4,7 @@
 //!
 //! Every construction starts from the same preprocessing and then picks an
 //! order — or, for nested dissection, derives one from a separator
-//! recursion. [`Config`] holds the five that exist:
+//! recursion. [`Order`] holds the five that exist:
 //!
 //!   * **min-fill** and **min-degree** — the plain greedy orders, ties broken
 //!     by a seeded salt.
@@ -12,35 +12,32 @@
 //!     (resp. degree-only) priority, the whole tie set sampled by a per-vertex
 //!     weight the caller supplies. These two are the orders the portfolios
 //!     run.
-//!   * **nested dissection** via [`multilevel_bisect`](crate::multilevel_bisect),
+//!   * **nested dissection** via
+//!     [`multilevel_graph_bisect`](crate::partition::multilevel_graph_bisect),
 //!     separating on a König-Egerváry minimum vertex cover.
 //!
-//! [`elimination_td`] runs one order once. The portfolio functions run several
-//! `(order, seed)` pairs under a wall-clock budget and, on the refined path,
-//! finish with FlowCutter-cut refinement ([`refine_td_with_flowcutter_cut`]).
+//! [`decompose`] runs one order once. [`crate::portfolio`] combines
+//! several orders, and [`crate::decomposition::refine_with_flowcutter`]
+//! improves an existing decomposition with FlowCutter separators.
 
 use std::time::Duration;
 
 mod build_td;
-mod flow_cut;
+pub(crate) mod engine;
+pub(crate) mod execution;
 mod graph;
-mod minfill_core;
-mod nested_diss;
-mod portfolio;
+mod greedy;
+mod nested_dissection;
+mod order;
 mod preprocess;
-mod refine;
-mod width_opt;
+mod vertex_cover_separator;
 
 #[cfg(test)]
 mod tests;
 
-use minfill_core::ElimStop;
+use execution::ElimStop;
 
-pub use portfolio::{
-    PortfolioConfig, five_slot_portfolio, refined_select_key, refined_td, single_slot_portfolio,
-};
-pub use refine::refine_td_with_flowcutter_cut;
-pub use width_opt::Config;
+pub use order::Order;
 
 /// Run one elimination order over `graph` and return its tree decomposition.
 ///
@@ -48,33 +45,53 @@ pub use width_opt::Config;
 /// draws the sampling orders make; one seed gives one decomposition. A
 /// sampling order's weight must have one entry per vertex of `graph`.
 ///
-/// `soft_budget` bounds construction: past it the elimination falls back to
-/// its cheaper stale-heap path, and past twice it the elimination bails to a
-/// path decomposition of what is left, so a decomposition is always
-/// produced. `None` runs to completion.
-pub fn elimination_td(
+/// `soft_budget`, measured from before preprocessing, sets two cutoffs.
+/// Deterministic min-fill and min-degree switch to cheaper stale-heap scoring
+/// at the first cutoff. Sampled orders and nested dissection have no equivalent
+/// cheap mode and continue unchanged. At twice the budget, every order stops
+/// and completes the residual as a path decomposition, so a valid result is
+/// always produced. `None` runs to completion.
+///
+/// # Errors
+///
+/// Returns an error when a sampled order's weight count differs from the graph
+/// vertex count, or when the budget cannot be represented as a deadline.
+pub fn decompose(
     graph: &crate::Graph,
-    order: Config<'_>,
+    order: Order<'_>,
     seed: u64,
     soft_budget: Option<Duration>,
-) -> crate::TreeDecomposition {
-    let prebuilt = width_opt::prebuild(graph.num_vertices, &graph.edges);
-    let start = crate::meter::now();
-    let soft = soft_budget.map(|b| start + b);
-    let hard = soft_budget.map(|b| start + b.saturating_mul(2));
-    width_opt::run_config_prebuilt(
-        &prebuilt,
-        width_opt::RunSpec {
-            config: order,
+) -> Result<crate::TreeDecomposition, crate::Error> {
+    if let Some(weights) = order.tie_weights()
+        && weights.len() != graph.num_vertices as usize
+    {
+        return Err(crate::Error::InvalidInput(format!(
+            "sampled elimination has {} weights for {} vertices",
+            weights.len(),
+            graph.num_vertices
+        )));
+    }
+    let deadlines = crate::deadline::two_stage(crate::meter::now(), soft_budget, "elimination")?;
+    let mut prebuilt = engine::prebuild(graph);
+    let run = engine::run_order_prebuilt(
+        &mut prebuilt,
+        engine::RunSpec {
+            order,
             seed,
             stop: ElimStop {
-                deadline: soft,
-                hard_deadline: hard,
+                soft_deadline: deadlines.soft,
+                hard_deadline: deadlines.hard,
                 width_bound: None,
             },
             // Always produce a valid TD.
-            force_emit: true,
+            complete_on_deadline: true,
         },
-    )
-    .td
+    );
+    match run {
+        engine::OrderRun::Completed(decomposition)
+        | engine::OrderRun::CompletedAtDeadline(decomposition) => Ok(decomposition),
+        engine::OrderRun::DeadlineAborted | engine::OrderRun::WidthAborted => {
+            unreachable!("a deadline-completing, unbounded run must produce a decomposition")
+        }
+    }
 }

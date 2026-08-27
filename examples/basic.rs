@@ -1,5 +1,5 @@
 use goatd::Graph;
-use goatd::elimination::{Config, elimination_td};
+use goatd::elimination::{Order, decompose};
 
 fn main() {
     let graph = Graph::new(
@@ -20,8 +20,8 @@ fn main() {
             (6, 7),
         ],
     );
-    let td = elimination_td(&graph, Config::MinFill, 0, None);
+    let td = decompose(&graph, Order::MinFill, 0, None).expect("valid order");
 
     td.validate(&graph).expect("a valid decomposition");
-    print!("{}", td.to_td(graph.num_vertices));
+    print!("{}", td.to_td());
 }

@@ -7,8 +7,8 @@ fn a_gr_file_parses_to_a_canonical_graph_and_writes_back_the_same() {
     // Comment lines, an edge given both ways, a self-loop and a duplicate.
     let text = "c a comment\np tw 4 5\n1 2\n2 1\n3 3\n2 3\n2 3\n";
     let graph = Graph::from_gr(text).expect("a well-formed .gr");
-    assert_eq!(graph.num_vertices, 4);
-    assert_eq!(graph.edges, vec![(0, 1), (1, 2)]);
+    assert_eq!(graph.num_vertices(), 4);
+    assert_eq!(graph.edges(), [(0, 1), (1, 2)]);
     assert_eq!(graph.to_gr(), "p tw 4 2\n1 2\n2 3\n");
     assert_eq!(
         Graph::from_gr(&graph.to_gr()).expect("what to_gr wrote parses"),
@@ -74,26 +74,30 @@ fn a_td_file_parses_its_bags_and_tree_edges() {
     // Hand-crafted .td: 2 bags, 1 tree edge
     // Bag 1: vertices 1,2 → stored as 0,1
     // Bag 2: vertices 2,3 → stored as 1,2
-    // Tree edge: 1-2
-    let td_str = "s td 2 2 3\nb 1 1 2\nb 2 2 3\n1 2\n";
+    // The undirected tree edge is deliberately written in descending order.
+    let td_str = "s td 2 2 3\nb 1 2 1\nb 2 3 2\n2 1\n";
     let td = TreeDecomposition::from_td(td_str).expect("Should parse");
-    assert_eq!(td.bags.len(), 2);
+    assert_eq!(td.bags().len(), 2);
 
-    assert_eq!(td.bags[0].id, 0);
-    assert_eq!(td.bags[0].vertices, vec![0, 1]);
-    assert_eq!(td.bags[1].id, 1);
-    assert_eq!(td.bags[1].vertices, vec![1, 2]);
+    assert_eq!(td.bags()[0].vertices(), [0, 1]);
+    assert_eq!(td.bags()[1].vertices(), [1, 2]);
 
-    assert!(td.adj[0].contains(&1), "Bag 0 should be adjacent to bag 1");
-    assert!(td.adj[1].contains(&0), "Bag 1 should be adjacent to bag 0");
+    assert!(
+        td.adjacency()[0].contains(&1),
+        "Bag 0 should be adjacent to bag 1"
+    );
+    assert!(
+        td.adjacency()[1].contains(&0),
+        "Bag 1 should be adjacent to bag 0"
+    );
 }
 
 #[test]
 fn td_comments_are_ignored() {
     let td_str = "c comment line\ns td 1 2 2\nb 1 1 2\n";
     let td = TreeDecomposition::from_td(td_str).expect("Should parse with comments");
-    assert_eq!(td.bags.len(), 1);
-    assert_eq!(td.bags[0].vertices, vec![0, 1]);
+    assert_eq!(td.bags().len(), 1);
+    assert_eq!(td.bags()[0].vertices(), [0, 1]);
 }
 
 #[test]
@@ -114,7 +118,7 @@ fn blank_lines_are_not_a_tree_decomposition() {
     assert!(result.is_err(), "blank lines should give no bags");
 }
 
-/// Malformed output is rejected, never a panic — and the rejection names the id
+/// Malformed output is rejected, never a panic, and the rejection names the id
 /// it read and the count that id had to fit inside, which is the pair a reader
 /// of the file needs to find the line at fault. Bag and vertex ids are written
 /// 1-based, so `0` is not an id and the solution line's counts bound the rest.
@@ -155,14 +159,9 @@ fn a_rejected_td_names_the_offending_id_and_the_count_it_was_checked_against() {
             &["bag id 9", "declares 2"],
         ),
         (
-            "s td 2 1 2\nb 1 1\nb 2 2\n2 1\n",
-            "a tree edge whose ids are reversed",
-            &["smaller bag id first", "2 1"],
-        ),
-        (
             "s td 1 1 1\nb 1 1\n1 1\n",
             "a self-loop in the bag tree",
-            &["smaller bag id first", "1 1"],
+            &["adjacent to itself", "1 1"],
         ),
         (
             "b 1 1 2\n",
@@ -173,13 +172,13 @@ fn a_rejected_td_names_the_offending_id_and_the_count_it_was_checked_against() {
         (
             "s td 1\nb 1 1 2\n",
             "a truncated solution line",
-            &["Malformed solution line"],
+            &["malformed solution line"],
         ),
         ("s td 1 2 2\nb 1 1 x\n", "a non-numeric vertex", &[]),
         (
             "s not-td 1 2 2\nb 1 1 2\n",
             "the wrong solution kind",
-            &["Malformed solution line"],
+            &["malformed solution line"],
         ),
         (
             "s td 1 x 2\nb 1 1 2\n",
@@ -190,6 +189,11 @@ fn a_rejected_td_names_the_offending_id_and_the_count_it_was_checked_against() {
             "s td 1 1 2\nb 1 1 2\n",
             "a bag larger than the declared maximum",
             &["maximum bag size 1", "contains 2 vertices"],
+        ),
+        (
+            "s td 1 2 1\nb 1 1 1\n",
+            "a repeated vertex within one bag",
+            &["bag 1", "vertex 1", "more than once"],
         ),
         (
             "s td 1 3 2\nb 1 1 2\n",
@@ -204,7 +208,7 @@ fn a_rejected_td_names_the_offending_id_and_the_count_it_was_checked_against() {
         (
             "s td 1 1 1\nb 1 1\nnot a tree edge\n",
             "a malformed tree edge",
-            &["Malformed tree edge"],
+            &["malformed tree edge"],
         ),
         (
             "s td 1 1 1\nb 1 1\none two\n",
@@ -220,6 +224,16 @@ fn a_rejected_td_names_the_offending_id_and_the_count_it_was_checked_against() {
             "s td 3 1 3\nb 1 1\nb 2 2\nb 3 3\n1 2\n1 3\n2 3\n",
             "a cycle in the bag graph",
             &["bag tree has 3 edges", "tree on 3 bags has 2"],
+        ),
+        (
+            "s td 2 1 3\nb 1 1\nb 2 2\n1 2\n",
+            "a declared vertex absent from every bag",
+            &["vertex 2", "no bag"],
+        ),
+        (
+            "s td 3 2 3\nb 1 1 2\nb 2 2 3\nb 3 1 3\n1 2\n2 3\n",
+            "a vertex whose bags are disconnected",
+            &["vertex 0", "not connected"],
         ),
     ];
     for &(td_str, what, expected) in cases {

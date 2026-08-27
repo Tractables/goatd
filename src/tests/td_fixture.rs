@@ -18,19 +18,32 @@ pub(crate) type GraphAtItsWidth = (&'static str, u32, &'static [(u32, u32)], u32
 /// A `TreeDecomposition` built by hand. `tree_edges` names bags by index and
 /// is undirected — each edge is recorded on both sides.
 pub(crate) fn make_td(bags: Vec<Vec<u32>>, tree_edges: Vec<(usize, usize)>) -> TreeDecomposition {
+    let num_vertices = bags
+        .iter()
+        .flatten()
+        .copied()
+        .max()
+        .map_or(0, |vertex| vertex + 1);
+    make_td_for(num_vertices, bags, tree_edges)
+}
+
+/// A hand-built decomposition with an explicit vertex universe, including
+/// vertices deliberately absent from its bags.
+pub(crate) fn make_td_for(
+    num_vertices: u32,
+    bags: Vec<Vec<u32>>,
+    tree_edges: Vec<(usize, usize)>,
+) -> TreeDecomposition {
     let mut adj = vec![Vec::new(); bags.len()];
     for &(a, b) in &tree_edges {
         adj[a].push(b);
         adj[b].push(a);
     }
-    TreeDecomposition {
-        bags: bags
-            .into_iter()
-            .enumerate()
-            .map(|(id, vertices)| TdBag { id, vertices })
-            .collect(),
+    TreeDecomposition::from_parts(
+        num_vertices,
+        bags.into_iter().map(TdBag::new).collect(),
         adj,
-    }
+    )
 }
 
 /// Everything a tree decomposition of a graph must satisfy: every vertex is in

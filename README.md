@@ -4,6 +4,16 @@
   <img src="assets/logo.png" alt="goatd logo" width="280">
 </p>
 
+<p align="center">
+  <a href="https://github.com/Tractables/goatd/actions/workflows/ci.yml"><img
+     src="https://github.com/Tractables/goatd/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img
+     src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
+  <!-- Once the crate is on crates.io, add:
+       <a href="https://crates.io/crates/goatd"><img src="https://img.shields.io/crates/v/goatd.svg" alt="crates.io"></a>
+       <a href="https://docs.rs/goatd"><img src="https://docs.rs/goatd/badge.svg" alt="docs.rs"></a> -->
+</p>
+
 Tree decompositions of graphs, as a Rust library and command-line solver. The
 portfolio runs several constructions and keeps the narrowest result:
 
@@ -46,8 +56,8 @@ cargo run --example basic
 ```
 
 The public API also exposes graph and hypergraph bisection, the Rust separator
-search, the C++ FlowCutter decomposer, and decomposition projection and gluing.
-Rustdoc documents each entry point.
+search, the C++ FlowCutter decomposer, and decomposition projection and
+refinement. Rustdoc documents each entry point.
 
 ## Building and contributing
 

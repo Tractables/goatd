@@ -21,9 +21,9 @@ Build setup, including the C++ compiler used for FlowCutter, is documented in
 ## Code guidelines
 
 - Every successful graph-to-decomposition entry point returns a valid tree
-  decomposition. Parsing, validation, and FlowCutter failures return `Error`;
-  panics are reserved for documented programming contracts such as matching a
-  weight vector to the graph's vertices.
+  decomposition. Invalid caller data, parsing failures, validation failures,
+  and FlowCutter failures return `Error`. Panics are limited to documented
+  programming contracts.
 - The library is single-threaded. Do not add thread pools or spawn threads;
   callers decide how instances are parallelized.
 - Budgets and seeds are explicit arguments. Do not read process environment
@@ -38,12 +38,10 @@ Build setup, including the C++ compiler used for FlowCutter, is documented in
 
 ## Tests
 
-- Tests using only public or crate-visible items belong in `src/tests/`.
-  CLI, format, and other public end-to-end tests belong in the top-level
-  `tests/` directory.
-- Tests needing private items belong in a `tests/` directory inside the module
-  they exercise, such as `src/elimination/tests/`. Do not create a module
-  directory whose only content is a test file.
+- Tests using only the public API belong in the top-level `tests/` directory.
+- Tests needing private or crate-visible items belong in a `tests/` directory
+  inside the module they exercise, such as `src/elimination/tests/`. Do not
+  create a module directory whose only content is a test file.
 - Keep only the `#[cfg(test)] mod tests;` registration in production files.
 - Give each test a sentence-like name for one behavior. Use fixed seeds, no
   sleeps, and small graphs constructed in the test.

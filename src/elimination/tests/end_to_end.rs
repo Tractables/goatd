@@ -2,18 +2,16 @@
 
 use std::time::Duration;
 
-use crate::elimination::graph::Graph;
+use crate::elimination::Order;
+use crate::elimination::decompose;
+use crate::elimination::graph::EliminationGraph;
 use crate::elimination::preprocess::preprocess;
-use crate::elimination::width_opt::Config;
-use crate::elimination::{
-    PortfolioConfig, elimination_td, five_slot_portfolio, refined_td, single_slot_portfolio,
-};
 use crate::tests::td_fixture::{GraphAtItsWidth, assert_valid_td};
 
-use super::width_opt::run_config;
+use super::engine::run_order;
 
 fn minfill(num_vertices: u32, edges: &[(u32, u32)]) -> crate::TreeDecomposition {
-    run_config(num_vertices, edges, Config::MinFill, 0).td
+    run_order(num_vertices, edges, Order::MinFill, 0)
 }
 
 #[test]
@@ -74,7 +72,7 @@ fn preprocessing_preserves_covering() {
     // Series-reducible pentagon: preprocessing should completely eliminate
     // every vertex via series reductions.
     let edges = vec![(0, 1), (1, 2), (2, 3), (3, 4), (4, 0)];
-    let graph = Graph::from_edges(5, &edges);
+    let graph = EliminationGraph::from_edges(5, &edges);
     let reduced = preprocess(graph);
     assert_eq!(reduced.prefix.bags.len(), 5);
     assert_eq!(reduced.graph.num_active, 0);
@@ -84,7 +82,7 @@ fn preprocessing_preserves_covering() {
 fn multi_seed_produces_valid_tds() {
     let edges = vec![(0, 1), (0, 2), (1, 3), (2, 3), (3, 4)];
     for seed in 0..4u64 {
-        let td = run_config(5, &edges, Config::MinFill, seed).td;
+        let td = run_order(5, &edges, Order::MinFill, seed);
         assert_valid_td(&td, 5, &edges);
     }
 }
@@ -103,20 +101,20 @@ fn every_elimination_config_decomposes_every_graph_through_five_vertices() {
                 }
             }
             let graph = crate::Graph::new(num_vertices, edges.iter().copied());
-            let weight = vec![1; num_vertices as usize];
-            let configs = [
-                Config::MinFill,
-                Config::MinDegree,
-                Config::NestedDissection,
-                Config::MinFillSampled { weight: &weight },
-                Config::MinDegreeSampled { weight: &weight },
+            let weights = vec![1; num_vertices as usize];
+            let orders = [
+                Order::MinFill,
+                Order::MinDegree,
+                Order::NestedDissection,
+                Order::MinFillSampled { weights: &weights },
+                Order::MinDegreeSampled { weights: &weights },
             ];
 
-            for config in configs {
-                let td = elimination_td(&graph, config, 17, None);
+            for order in orders {
+                let td = decompose(&graph, order, 17, None).unwrap();
                 td.validate(&graph).unwrap_or_else(|error| {
                     panic!(
-                        "{config:?} returned an invalid decomposition of n={num_vertices}, \
+                        "{order:?} returned an invalid decomposition of n={num_vertices}, \
                          mask={mask:#x}: {error}"
                     )
                 });
@@ -125,10 +123,10 @@ fn every_elimination_config_decomposes_every_graph_through_five_vertices() {
     }
 }
 
-/// The public entry points, on a graph with something for each of them to
-/// do: a 4x4 grid, whose treewidth is 4.
+/// The public elimination entry point on a graph with enough structure for
+/// both greedy orders to do work: a 4x4 grid, whose treewidth is 4.
 #[test]
-fn the_public_entry_points_decompose_a_grid() {
+fn the_public_elimination_entry_point_decomposes_a_grid() {
     let mut edges: Vec<(u32, u32)> = Vec::new();
     for row in 0..4u32 {
         for col in 0..4u32 {
@@ -142,89 +140,17 @@ fn the_public_entry_points_decompose_a_grid() {
         }
     }
     let graph = crate::Graph::new(16, edges.iter().copied());
-    let weight = vec![1u32; 16];
-
-    let single = elimination_td(&graph, Config::MinFill, 0, Some(Duration::from_secs(10)));
+    let single = decompose(&graph, Order::MinFill, 0, Some(Duration::from_secs(10))).unwrap();
     assert_valid_td(&single, 16, &edges);
     assert!(single.treewidth() >= 4);
 
-    let unbounded = elimination_td(&graph, Config::MinDegree, 0, None);
+    let unbounded = decompose(&graph, Order::MinDegree, 0, None).unwrap();
     assert_valid_td(&unbounded, 16, &edges);
-
-    let tds = five_slot_portfolio(&graph, &weight, 0, PortfolioConfig::five_slot(None));
-    assert!(!tds.is_empty(), "slot 0 always produces a decomposition");
-    for td in &tds {
-        assert_valid_td(td, 16, &edges);
-    }
-    let keys: Vec<(u32, usize)> = tds
-        .iter()
-        .map(|td| (td.treewidth(), td.total_bag_size()))
-        .collect();
-    assert!(
-        keys.windows(2).all(|w| w[0] <= w[1]),
-        "the list is sorted by (width, total bag size): {keys:?}",
-    );
-
-    let refined = refined_td(&graph, &weight, 0, PortfolioConfig::five_slot(None), None);
-    assert_valid_td(&refined, 16, &edges);
-    assert!(
-        (refined.treewidth(), refined.total_bag_size()) <= keys[0],
-        "refinement never returns a worse decomposition than the winner",
-    );
-
-    let compact = single_slot_portfolio(&graph, &weight, 0, PortfolioConfig::single_slot(false));
-    assert!(!compact.is_empty());
-    for td in &compact {
-        assert_valid_td(td, 16, &edges);
-    }
-}
-
-#[test]
-fn portfolio_config_constructors_name_their_public_budget_contracts() {
-    assert_eq!(
-        PortfolioConfig::single_slot(false),
-        PortfolioConfig {
-            timeout_ms: Some(1_000),
-            refine_cap: 100,
-            fc_slot_cap_ms: None,
-        },
-    );
-    assert_eq!(
-        PortfolioConfig::single_slot(true),
-        PortfolioConfig {
-            timeout_ms: Some(1_000),
-            refine_cap: 100,
-            fc_slot_cap_ms: Some(2_000),
-        },
-    );
-    assert_eq!(
-        PortfolioConfig::five_slot(Some(75)),
-        PortfolioConfig {
-            timeout_ms: Some(75),
-            refine_cap: 100,
-            fc_slot_cap_ms: None,
-        },
-    );
-}
-
-/// The refined path keys on `(width, total_bag_size)`: at equal width it
-/// prefers the smaller total bag size, whatever else a caller might know
-/// about the candidates.
-#[test]
-fn refined_key_orders_by_width_then_bagsize() {
-    use crate::elimination::refined_select_key;
-    let cands = [("small_bag", 5u32, 10usize), ("big_bag", 5, 20)];
-    let winner = cands
-        .iter()
-        .min_by_key(|&&(_, w, b)| refined_select_key(w, b))
-        .unwrap();
-    assert_eq!(winner.0, "small_bag");
-    assert!(refined_select_key(4, 100) < refined_select_key(5, 10));
 }
 
 /// The six smallest shapes a decomposer meets — one vertex, a path, a cycle, a
 /// star, a complete graph and a forest with an isolated vertex — through every
-/// elimination config there is.
+/// elimination order there is.
 ///
 /// The width bound is the shape's own treewidth, and no decomposition can go
 /// below it, so an upper bound pins it exactly.
@@ -245,26 +171,26 @@ fn every_elimination_config_decomposes_the_tiny_graph_family() {
     ];
 
     for &(shape, num_vertices, edges, treewidth) in shapes {
-        let weight = vec![1u32; num_vertices as usize];
-        let configs: [(&str, Config<'_>); 5] = [
-            ("min-fill", Config::MinFill),
-            ("min-degree", Config::MinDegree),
-            ("nested dissection", Config::NestedDissection),
+        let weights = vec![1u32; num_vertices as usize];
+        let orders: [(&str, Order<'_>); 5] = [
+            ("min-fill", Order::MinFill),
+            ("min-degree", Order::MinDegree),
+            ("nested dissection", Order::NestedDissection),
             (
                 "sampled min-fill",
-                Config::MinFillSampled { weight: &weight },
+                Order::MinFillSampled { weights: &weights },
             ),
             (
                 "sampled min-degree",
-                Config::MinDegreeSampled { weight: &weight },
+                Order::MinDegreeSampled { weights: &weights },
             ),
         ];
-        for (config_name, config) in configs {
-            let td = run_config(num_vertices, edges, config, 0).td;
+        for (order_name, order) in orders {
+            let td = run_order(num_vertices, edges, order, 0);
             assert_valid_td(&td, num_vertices, edges);
             assert!(
                 td.treewidth() <= treewidth,
-                "{config_name} on {shape} must reach width {treewidth}, got {}",
+                "{order_name} on {shape} must reach width {treewidth}, got {}",
                 td.treewidth(),
             );
         }
@@ -291,9 +217,15 @@ fn a_seeded_sampling_elimination_repeats_its_decomposition() {
             }
         }
     }
-    let weight: Vec<u32> = (0..12u32).map(|v| v + 1).collect();
-    let sampled =
-        |seed: u64| run_config(12, &edges, Config::MinFillSampled { weight: &weight }, seed).td;
+    let weights: Vec<u32> = (0..12u32).map(|v| v + 1).collect();
+    let sampled = |seed: u64| {
+        run_order(
+            12,
+            &edges,
+            Order::MinFillSampled { weights: &weights },
+            seed,
+        )
+    };
 
     for seed in [0u64, 7, 99] {
         assert_eq!(

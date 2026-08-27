@@ -1,67 +1,51 @@
 //! goatd — Greatest Of All Tree Decompositions: tree decompositions of graphs.
 //!
-//! A graph goes in as an edge list ([`Graph`]) and a [`TreeDecomposition`]
-//! comes out, by one of three routes:
+//! A [`Graph`] goes in and a [`TreeDecomposition`] comes out.
 //!
-//! * [`elimination`] — greedy elimination orders (min-fill, min-degree, nested
-//!   dissection, and the two sampled variants that break ties by a per-vertex
-//!   weight), each run after a safe-reduction preprocessing pass; a portfolio
-//!   that runs several under a time budget and keeps the narrowest; and a
-//!   refinement pass that re-cuts a decomposition along FlowCutter separators.
-//! * [`flowcutter`] — the FlowCutter treewidth solver (PACE 2017), vendored in
-//!   C++ and driven in process, under a wall-clock or a step budget.
-//! * [`flowcutter_rs`] — one balanced vertex separator from a pure-Rust port of
-//!   FlowCutter's separator search.
+//! [`elimination`] provides min-fill, min-degree, and nested-dissection orders.
+//! [`flowcutter`] provides the vendored FlowCutter decomposer and a Rust
+//! separator search. [`portfolio`] combines constructions, and
+//! [`decomposition`] contains the result type and its separator-based
+//! refinement. [`partition`] exposes
+//! the multilevel graph and hypergraph bisectors used by those constructions.
 //!
-//! Beside them: [`multilevel_bisect`] and [`multilevel_hg_bisect`], the
-//! multilevel graph and hypergraph bisectors the orders above are built on;
-//! [`td_ops`], surgery on a decomposition — rooting, projecting onto a vertex
-//! subset, gluing two at a separator; validation
-//! ([`TreeDecomposition::validate`]); and PACE `.gr`/`.td` reading and writing
-//! on the two types ([`Graph::from_gr`], [`TreeDecomposition::to_td`]).
-//!
-//! Every decomposition returned covers each vertex and each edge and has the
-//! running intersection property. Nothing here spawns a thread or reads the
-//! process environment; a search that reads a clock says so in its signature,
-//! and the clock it reads is [`meter::now`] — arm the work meter ([`meter`])
-//! and every budget in the crate is spent in graph work instead of wall time,
-//! so the same budget picks the same decomposition on every machine. The
-//! `goatd` binary runs the same routes over PACE files.
+//! [`Graph::from_gr`] and [`TreeDecomposition::to_td`] handle the PACE formats.
+//! [`TreeDecomposition::validate`] checks a result against its graph. The
+//! library is single-threaded. [`meter::arm`] makes duration budgets advance by
+//! charged graph work instead of wall time when repeatable stopping points are
+//! needed.
 //!
 //! ```
 //! use goatd::Graph;
-//! use goatd::elimination::{Config, elimination_td};
+//! use goatd::elimination::{Order, decompose};
 //!
 //! // The 4-cycle with one chord: treewidth 2.
 //! let graph = Graph::new(4, [(0, 1), (1, 2), (2, 3), (3, 0), (0, 2)]);
-//! let td = elimination_td(&graph, Config::MinFill, 0, None);
+//! let td = decompose(&graph, Order::MinFill, 0, None)?;
 //! assert_eq!(td.treewidth(), 2);
 //!
-//! let text = td.to_td(graph.num_vertices);
+//! let text = td.to_td();
 //! assert!(text.starts_with("s td "));
+//! # Ok::<(), goatd::Error>(())
 //! ```
 
-mod bisect_seed;
+#![deny(missing_docs)]
+
 mod deadline;
-mod error;
-mod fm_common;
-mod graph;
-mod pace;
-mod rng;
-mod td;
-
+pub mod decomposition;
 pub mod elimination;
+mod error;
 pub mod flowcutter;
-pub mod flowcutter_rs;
+mod graph;
 pub mod meter;
-pub mod multilevel_bisect;
-pub mod multilevel_hg_bisect;
-pub mod td_ops;
+mod pace;
+pub mod partition;
+pub mod portfolio;
+mod rng;
 
+pub use decomposition::{TdBag, TreeDecomposition};
 pub use error::Error;
-pub use graph::{Graph, local_index, restrict_to_subset};
-pub use rng::Xorshift64;
-pub use td::{TdBag, TreeDecomposition};
+pub use graph::Graph;
 
 #[cfg(test)]
 mod tests;

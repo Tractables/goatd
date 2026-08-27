@@ -2,7 +2,7 @@ use crate::elimination::graph::*;
 
 #[test]
 fn from_edges_builds_undirected_adjacency() {
-    let g = Graph::from_edges(3, &[(0, 1), (1, 2)]);
+    let g = EliminationGraph::from_edges(3, &[(0, 1), (1, 2)]);
     assert_eq!(g.degree(0), 1);
     assert_eq!(g.degree(1), 2);
     assert_eq!(g.degree(2), 1);
@@ -11,7 +11,7 @@ fn from_edges_builds_undirected_adjacency() {
 
 #[test]
 fn eliminate_fills_clique_and_deactivates() {
-    let mut g = Graph::from_edges(3, &[(0, 1), (1, 2)]);
+    let mut g = EliminationGraph::from_edges(3, &[(0, 1), (1, 2)]);
     let bag = g.eliminate(1);
     assert_eq!(bag.len(), 2);
     assert!(g.contains_edge(0, 2));
@@ -21,23 +21,23 @@ fn eliminate_fills_clique_and_deactivates() {
 
 #[test]
 fn simplicial_detection() {
-    let g = Graph::from_edges(3, &[(0, 1), (0, 2), (1, 2)]);
+    let g = EliminationGraph::from_edges(3, &[(0, 1), (0, 2), (1, 2)]);
     assert!(g.is_simplicial(0));
-    let g = Graph::from_edges(3, &[(0, 1), (1, 2)]);
+    let g = EliminationGraph::from_edges(3, &[(0, 1), (1, 2)]);
     assert!(!g.is_simplicial(1));
     assert!(g.is_simplicial(0));
 }
 
 #[test]
 fn from_edges_dedups_repeated_inputs() {
-    let g = Graph::from_edges(2, &[(0, 1), (1, 0), (0, 1)]);
+    let g = EliminationGraph::from_edges(2, &[(0, 1), (1, 0), (0, 1)]);
     assert_eq!(g.degree(0), 1);
     assert_eq!(g.degree(1), 1);
 }
 
 #[test]
 fn edge_query_agrees_with_the_adjacency_lists() {
-    let g = Graph::from_edges(5, &[(0, 1), (1, 2), (2, 3), (3, 4), (0, 4)]);
+    let g = EliminationGraph::from_edges(5, &[(0, 1), (1, 2), (2, 3), (3, 4), (0, 4)]);
     assert!(g.bitset_words > 0);
     for u in 0u32..5 {
         for v in 0u32..5 {
@@ -50,10 +50,10 @@ fn edge_query_agrees_with_the_adjacency_lists() {
 
 #[test]
 fn fill_count_is_the_edges_missing_among_the_neighbours() {
-    let g = Graph::from_edges(3, &[(0, 1), (1, 2)]);
+    let g = EliminationGraph::from_edges(3, &[(0, 1), (1, 2)]);
     assert_eq!(g.fill_count_of_bs(1), 1);
     assert_eq!(g.fill_count_of_bs(0), 0);
-    let g2 = Graph::from_edges(3, &[(0, 1), (0, 2), (1, 2)]);
+    let g2 = EliminationGraph::from_edges(3, &[(0, 1), (0, 2), (1, 2)]);
     assert_eq!(g2.fill_count_of_bs(0), 0);
     assert_eq!(g2.fill_count_of_bs(1), 0);
 }
@@ -62,7 +62,7 @@ fn fill_count_is_the_edges_missing_among_the_neighbours() {
 fn promote_bitset_from_sparse_graph() {
     let n = 200u32;
     let edges: Vec<(u32, u32)> = (0..n - 1).map(|v| (v, v + 1)).collect();
-    let mut g = Graph::from_edges(n, &edges);
+    let mut g = EliminationGraph::from_edges(n, &edges);
     assert_eq!(g.bitset_words, 0, "sparse path expected");
     assert!(!g.should_promote_bitset(), "sparse density below threshold");
     g.promote_bitset();
@@ -87,7 +87,7 @@ fn should_promote_bitset_triggers_when_dense() {
     }
     // Construct sparse (first 10 edges only) then add_edge the rest, so the
     // graph starts adj-only regardless of what from_edges' own threshold does.
-    let mut g = Graph::from_edges(n, &edges[..10]);
+    let mut g = EliminationGraph::from_edges(n, &edges[..10]);
     for &(u, v) in &edges[10..] {
         g.add_edge(u, v);
     }
@@ -100,7 +100,7 @@ fn should_promote_bitset_triggers_when_dense() {
 
 #[test]
 fn eliminating_a_vertex_replaces_its_edges_with_the_fill_edge() {
-    let mut g = Graph::from_edges(3, &[(0, 1), (1, 2)]);
+    let mut g = EliminationGraph::from_edges(3, &[(0, 1), (1, 2)]);
     assert!(g.bitset_words > 0, "should use bitset for n=3");
     g.eliminate(1);
     assert!(g.contains_edge(0, 2));

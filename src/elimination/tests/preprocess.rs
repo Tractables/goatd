@@ -1,9 +1,9 @@
-use crate::elimination::graph::Graph;
+use crate::elimination::graph::EliminationGraph;
 use crate::elimination::preprocess::*;
 
 #[test]
 fn a_single_edge_and_an_isolate_reduce_to_one_bag_per_vertex() {
-    let g = Graph::from_edges(3, &[(0, 1)]);
+    let g = EliminationGraph::from_edges(3, &[(0, 1)]);
     let reduced = preprocess(g);
     assert_eq!(reduced.graph.num_active, 0);
     assert_eq!(reduced.prefix.bags.len(), 3);
@@ -11,14 +11,24 @@ fn a_single_edge_and_an_isolate_reduce_to_one_bag_per_vertex() {
 
 #[test]
 fn twig_removes_leaves() {
-    let g = Graph::from_edges(4, &[(0, 1), (1, 2), (2, 3)]);
+    let g = EliminationGraph::from_edges(4, &[(0, 1), (1, 2), (2, 3)]);
     let reduced = preprocess(g);
     assert_eq!(reduced.graph.num_active, 0);
 }
 
 #[test]
+fn low_degree_rules_revisit_vertices_before_series() {
+    // The path order is 4-0-3-1-2. Removing the high-index leaf 4 exposes
+    // vertex 0 after the scan cursor has passed it.
+    let edges = [(4, 0), (0, 3), (3, 1), (1, 2)];
+    let reduced = preprocess(EliminationGraph::from_edges(5, &edges));
+    assert_eq!(reduced.graph.num_active, 0);
+    assert!(reduced.prefix.bags.iter().all(|bag| bag.len() <= 2));
+}
+
+#[test]
 fn simplicial_triangle_collapses() {
-    let g = Graph::from_edges(3, &[(0, 1), (0, 2), (1, 2)]);
+    let g = EliminationGraph::from_edges(3, &[(0, 1), (0, 2), (1, 2)]);
     let reduced = preprocess(g);
     assert_eq!(reduced.graph.num_active, 0);
     assert_eq!(reduced.prefix.bags[0].len(), 3);
@@ -26,7 +36,7 @@ fn simplicial_triangle_collapses() {
 
 #[test]
 fn series_adds_fill_then_contracts() {
-    let g = Graph::from_edges(4, &[(0, 1), (1, 2), (2, 3), (3, 0)]);
+    let g = EliminationGraph::from_edges(4, &[(0, 1), (1, 2), (2, 3), (3, 0)]);
     let reduced = preprocess(g);
     assert_eq!(reduced.graph.num_active, 0);
 }
@@ -55,7 +65,7 @@ fn almost_simplicial_fires_under_lb() {
         (9, 11),
         (10, 11),
     ];
-    let g = Graph::from_edges(12, &edges);
+    let g = EliminationGraph::from_edges(12, &edges);
     let reduced = preprocess(g);
     assert_eq!(reduced.graph.num_active, 0);
     let max_bag = reduced.prefix.bags.iter().map(|b| b.len()).max().unwrap();
@@ -67,7 +77,7 @@ fn almost_simplicial_skipped_without_tw_lb() {
     // Two triangles sharing an edge: fully reduces via simplicial+twig
     // without ever needing almost-simplicial — verifies the rule doesn't
     // over-fire when tw_lb hasn't been established.
-    let g = Graph::from_edges(4, &[(0, 1), (0, 2), (1, 2), (0, 3), (1, 3)]);
+    let g = EliminationGraph::from_edges(4, &[(0, 1), (0, 2), (1, 2), (0, 3), (1, 3)]);
     let reduced = preprocess(g);
     assert_eq!(reduced.graph.num_active, 0);
 }

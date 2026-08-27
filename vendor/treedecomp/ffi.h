@@ -15,7 +15,8 @@ typedef struct TdResult TdResult;
 // `edges` is a flat array of [u0,v0, u1,v1, ...] (0-indexed), length = 2*num_edges.
 // `steps` controls the computation budget (higher = more time, better quality).
 // `iters` controls the number of FlowCutter iterations.
-// Returns a TdResult handle (caller must free with td_free).
+// Returns a TdResult handle (caller must free with td_free), or NULL when the
+// backend fails.
 //
 // The last four arguments meter the construction. `iters_done` (may be NULL)
 // receives the restart iterations the loop actually consumed and
@@ -29,24 +30,13 @@ TdResult* td_compute(int num_nodes, int num_edges,
                      int64_t* iters_done, int64_t* greedy_touches,
                      int64_t unit_budget, int64_t units_per_iter);
 
-// Like td_compute but with a wall-clock timeout in milliseconds.
-// The computation stops when either the step/iter budget is exhausted or
-// the timeout expires, whichever comes first. timeout_ms=0 means no timeout.
-TdResult* td_compute_timed(int num_nodes, int num_edges,
-                           const int* edges, int64_t steps, int iters,
-                           int64_t timeout_ms);
-
-// Like td_compute_timed but with early convergence detection.
+// Run with a wall-clock timeout and optional early convergence detection.
 // Stops early if the treewidth hasn't improved for `patience_ms` milliseconds.
-// patience_ms=0 means no early stopping (behaves like td_compute_timed).
+// patience_ms=0 means no early stopping.
 //
-// `tight_gates` says whether the deadline is expected to BITE (nonzero) or is
-// only an outer bound (0), and is independent of how large `timeout_ms` is. A
-// bound-only deadline keeps the untimed pre-loop heuristic gates and the
-// step-count clamp, so arming a generous wall does not change which
-// decompositions the search considers — it only stops the search once the wall
-// has passed. Pass nonzero when the deadline is small enough that a single
-// unbounded ordering pass could consume it whole.
+// `tight_gates` selects shortened pre-loop heuristics for a timeout that is
+// expected to stop the search. Zero keeps the untimed heuristic limits and
+// uses the timeout only as a stopping condition.
 //
 // The last four arguments mean what they mean for td_compute. A nonzero
 // `unit_budget` also stands the deadline and the patience check down, so that
@@ -60,9 +50,6 @@ TdResult* td_compute_timed_patience(int num_nodes, int num_edges,
 
 // Get the number of bags in the tree decomposition.
 int td_num_bags(const TdResult* td);
-
-// Get the treewidth (max bag size - 1).
-int td_width(const TdResult* td);
 
 // Get the size of bag `bag_idx`.
 int td_bag_size(const TdResult* td, int bag_idx);
@@ -84,7 +71,8 @@ void td_free(TdResult* td);
 // contains/get_key, and — the bug #18 regression — that the child-index
 // arithmetic (k*pos+1) does not overflow signed int32 at large heap positions.
 // Returns 0 on success, or a nonzero check id identifying the first failing
-// assertion (see ffi.cpp). Runs in milliseconds and allocates only modest memory.
+// assertion (see heap_selftest.cpp). Runs in milliseconds and allocates only
+// modest memory.
 int treedecomp_heap_selftest(void);
 
 #ifdef __cplusplus

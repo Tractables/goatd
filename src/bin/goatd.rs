@@ -1,20 +1,17 @@
 //! `goatd`: a PACE `.gr` graph in, a `.td` tree decomposition out, by any of
 //! the library's routes.
 //!
-//! Usage and every option are in [`USAGE`]. A flag that means nothing under
-//! the chosen order is an error naming both, never silently ignored.
+//! Usage and every option are in [`USAGE`]. Order-specific flags are rejected
+//! when used with another construction.
 
 use std::io::{Read, Write};
 use std::process::exit;
 use std::time::{Duration, Instant};
 
-use goatd::elimination::{
-    Config, PortfolioConfig, elimination_td, five_slot_portfolio, refine_td_with_flowcutter_cut,
-};
-use goatd::flowcutter::{
-    FC_BARE_TIMEOUT_MS, FC_DEFAULT_ITERS, FC_DEFAULT_STEPS_ITERS, FC_PATIENCE_MS_PARAMETRIZED,
-    FcBudget, flowcutter_td,
-};
+use goatd::decomposition::refine_with_flowcutter;
+use goatd::elimination::{Order, decompose as eliminate};
+use goatd::flowcutter::{Budget, decompose as flowcutter};
+use goatd::portfolio::{PortfolioConfig, decompose as portfolio};
 use goatd::{Graph, TreeDecomposition};
 
 const USAGE: &str = "\
@@ -49,9 +46,14 @@ options:
   -h, --help            this text
 ";
 
+const FLOWCUTTER_DEFAULT_TIMEOUT: Duration = Duration::from_millis(200);
+const FLOWCUTTER_PATIENCE: Duration = Duration::from_millis(150);
+const FLOWCUTTER_TIMED_ITERATIONS: u32 = 100_000;
+const FLOWCUTTER_STEP_ITERATIONS: u32 = 900;
+
 /// Which construction `--order` named.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Order {
+enum Method {
     MinFill,
     MinDegree,
     NestedDissection,
@@ -59,25 +61,25 @@ enum Order {
     Portfolio,
 }
 
-impl Order {
+impl Method {
     fn parse(name: &str) -> Option<Self> {
         Some(match name {
-            "minfill" => Order::MinFill,
-            "mindegree" => Order::MinDegree,
-            "nested-dissection" => Order::NestedDissection,
-            "flowcutter" => Order::FlowCutter,
-            "portfolio" => Order::Portfolio,
+            "minfill" => Method::MinFill,
+            "mindegree" => Method::MinDegree,
+            "nested-dissection" => Method::NestedDissection,
+            "flowcutter" => Method::FlowCutter,
+            "portfolio" => Method::Portfolio,
             _ => return None,
         })
     }
 
     fn name(self) -> &'static str {
         match self {
-            Order::MinFill => "minfill",
-            Order::MinDegree => "mindegree",
-            Order::NestedDissection => "nested-dissection",
-            Order::FlowCutter => "flowcutter",
-            Order::Portfolio => "portfolio",
+            Method::MinFill => "minfill",
+            Method::MinDegree => "mindegree",
+            Method::NestedDissection => "nested-dissection",
+            Method::FlowCutter => "flowcutter",
+            Method::Portfolio => "portfolio",
         }
     }
 }
@@ -87,12 +89,12 @@ impl Order {
 struct Args {
     input: String,
     out: Option<String>,
-    order: Order,
+    order: Method,
     seed: Option<u64>,
     sample: bool,
     weights: Option<String>,
-    budget_ms: Option<u64>,
-    steps: Option<i64>,
+    budget: Option<Duration>,
+    steps: Option<u64>,
     refine: bool,
 }
 
@@ -113,7 +115,7 @@ fn parse_args(argv: &[String]) -> Args {
     let mut seed = None;
     let mut sample = false;
     let mut weights = None;
-    let mut budget_ms = None;
+    let mut budget = None;
     let mut steps = None;
     let mut refine = false;
 
@@ -141,7 +143,7 @@ fn parse_args(argv: &[String]) -> Args {
             "--order" => {
                 let name = value(&mut i, arg);
                 order = Some(
-                    Order::parse(&name)
+                    Method::parse(&name)
                         .unwrap_or_else(|| usage_error(&format!("unknown --order {name:?}"))),
                 );
             }
@@ -154,15 +156,19 @@ fn parse_args(argv: &[String]) -> Args {
                 sample = true;
             }
             "--weights" => weights = Some(value(&mut i, arg)),
-            "--budget" => budget_ms = Some(number(&mut i, arg)),
+            "--budget" => {
+                let milliseconds = number(&mut i, arg);
+                if milliseconds == 0 {
+                    usage_error("--budget wants a positive millisecond count");
+                }
+                budget = Some(Duration::from_millis(milliseconds));
+            }
             "--steps" => {
                 let n = number(&mut i, arg);
-                steps = Some(
-                    i64::try_from(n)
-                        .ok()
-                        .filter(|&n| n > 0)
-                        .unwrap_or_else(|| usage_error("--steps wants a positive step count")),
-                );
+                if n == 0 {
+                    usage_error("--steps wants a positive step count");
+                }
+                steps = Some(n);
             }
             "--refine" => refine = true,
             _ if arg.starts_with('-') && arg != "-" => {
@@ -180,34 +186,37 @@ fn parse_args(argv: &[String]) -> Args {
     let Some(input) = input else {
         usage_error("no input graph given");
     };
-    let order = order.unwrap_or(Order::MinFill);
+    let order = order.unwrap_or(Method::MinFill);
 
-    // Every flag the chosen order cannot act on is an error naming both.
+    // Validate order-specific flags after the order and all flags are known.
     let needs = |flag: &str, ok: bool, orders: &str| {
         if !ok {
             usage_error(&format!(
-                "{flag} means nothing under --order {}; it needs --order {orders}",
+                "{flag} is not valid with --order {}; use --order {orders}",
                 order.name()
             ));
         }
     };
-    let greedy = matches!(order, Order::MinFill | Order::MinDegree);
+    let greedy = matches!(order, Method::MinFill | Method::MinDegree);
     if sample {
         needs("--ties sample", greedy, "minfill or mindegree");
     }
-    if weights.is_some() && !sample {
-        usage_error("--weights means nothing without --ties sample");
+    if weights.is_some() {
+        needs("--weights", greedy, "minfill or mindegree");
+        if !sample {
+            usage_error("--weights requires --ties sample");
+        }
     }
     if seed.is_some() {
         needs(
             "--seed",
-            order != Order::FlowCutter,
+            order != Method::FlowCutter,
             "minfill, mindegree, nested-dissection or portfolio",
         );
     }
     if steps.is_some() {
-        needs("--steps", order == Order::FlowCutter, "flowcutter");
-        if budget_ms.is_some() {
+        needs("--steps", order == Method::FlowCutter, "flowcutter");
+        if budget.is_some() {
             usage_error("--steps and --budget both bound flowcutter; give one");
         }
     }
@@ -219,7 +228,7 @@ fn parse_args(argv: &[String]) -> Args {
         seed,
         sample,
         weights,
-        budget_ms,
+        budget,
         steps,
         refine,
     }
@@ -259,54 +268,52 @@ fn read_weights(path: &str, num_vertices: u32) -> Vec<u32> {
     weights
 }
 
-fn decompose(args: &Args, graph: &Graph) -> TreeDecomposition {
+fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
     let seed = args.seed.unwrap_or(0);
-    let budget = args.budget_ms.map(Duration::from_millis);
-    let n = graph.num_vertices as usize;
-    let weight: Vec<u32> = match &args.weights {
-        Some(path) => read_weights(path, graph.num_vertices),
-        None => vec![1; n],
-    };
+    let budget = args.budget;
     match args.order {
-        Order::MinFill | Order::MinDegree => {
+        Method::MinFill | Method::MinDegree => {
+            let weights = args.sample.then(|| match &args.weights {
+                Some(path) => read_weights(path, graph.num_vertices()),
+                None => vec![1; graph.num_vertices() as usize],
+            });
             let config = match (args.order, args.sample) {
-                (Order::MinFill, false) => Config::MinFill,
-                (Order::MinFill, true) => Config::MinFillSampled { weight: &weight },
-                (_, false) => Config::MinDegree,
-                (_, true) => Config::MinDegreeSampled { weight: &weight },
-            };
-            elimination_td(graph, config, seed, budget)
-        }
-        Order::NestedDissection => elimination_td(graph, Config::NestedDissection, seed, budget),
-        Order::FlowCutter => {
-            let fc_budget = match (args.steps, args.budget_ms) {
-                (Some(steps), _) => FcBudget::Steps {
-                    steps,
-                    iters: FC_DEFAULT_STEPS_ITERS,
+                (Method::MinFill, false) => Order::MinFill,
+                (Method::MinFill, true) => Order::MinFillSampled {
+                    weights: weights.as_deref().expect("sampling creates weights"),
                 },
-                (None, Some(ms)) => FcBudget::timed(
-                    i64::try_from(ms).unwrap_or(i64::MAX),
-                    FC_PATIENCE_MS_PARAMETRIZED,
-                    FC_DEFAULT_ITERS,
+                (_, false) => Order::MinDegree,
+                (_, true) => Order::MinDegreeSampled {
+                    weights: weights.as_deref().expect("sampling creates weights"),
+                },
+            };
+            eliminate(graph, config, seed, budget).unwrap_or_else(|error| fail(&error.to_string()))
+        }
+        Method::NestedDissection => eliminate(graph, Order::NestedDissection, seed, budget)
+            .unwrap_or_else(|error| fail(&error.to_string())),
+        Method::FlowCutter => {
+            let fc_budget = match (args.steps, budget) {
+                (Some(steps), _) => Budget::steps(steps, FLOWCUTTER_STEP_ITERATIONS),
+                (None, Some(budget)) => Budget::timed(
+                    budget,
+                    Some(FLOWCUTTER_PATIENCE),
+                    FLOWCUTTER_TIMED_ITERATIONS,
                 ),
-                (None, None) => FcBudget::timed(
-                    FC_BARE_TIMEOUT_MS,
-                    FC_PATIENCE_MS_PARAMETRIZED,
-                    FC_DEFAULT_ITERS,
+                (None, None) => Budget::timed(
+                    FLOWCUTTER_DEFAULT_TIMEOUT,
+                    Some(FLOWCUTTER_PATIENCE),
+                    FLOWCUTTER_TIMED_ITERATIONS,
                 ),
             };
-            flowcutter_td(graph, fc_budget).unwrap_or_else(|e| fail(&e.to_string()))
+            flowcutter(graph, fc_budget).unwrap_or_else(|e| fail(&e.to_string()))
         }
-        Order::Portfolio => {
-            let tds = five_slot_portfolio(
-                graph,
-                &weight,
-                seed,
-                PortfolioConfig::five_slot(args.budget_ms),
-            );
-            tds.into_iter()
-                .next()
-                .unwrap_or_else(|| fail("the portfolio produced no decomposition"))
+        Method::Portfolio => {
+            let weights = vec![1; graph.num_vertices() as usize];
+            let config = budget.map_or_else(PortfolioConfig::standard, |budget| {
+                PortfolioConfig::standard().with_soft_budget(budget)
+            });
+            portfolio(graph, &weights, seed, config)
+                .unwrap_or_else(|error| fail(&error.to_string()))
         }
     }
 }
@@ -319,14 +326,16 @@ fn main() {
     let graph = Graph::from_gr(&read_input(&args.input))
         .unwrap_or_else(|e| fail(&format!("{}: {e}", args.input)));
 
-    let mut td = decompose(&args, &graph);
+    let mut td = construct(&args, &graph);
     if args.refine {
-        let deadline = args.budget_ms.map(|ms| start + Duration::from_millis(ms));
-        let all_vertices: Vec<u32> = (0..graph.num_vertices).collect();
-        td = refine_td_with_flowcutter_cut(td, &all_vertices, &graph.edges, deadline);
+        let remaining = args
+            .budget
+            .map(|budget| budget.saturating_sub(start.elapsed()));
+        td = refine_with_flowcutter(td, &graph, remaining)
+            .unwrap_or_else(|error| fail(&error.to_string()));
     }
 
-    let text = td.to_td(graph.num_vertices);
+    let text = td.to_td();
     let written = match &args.out {
         Some(path) => std::fs::write(path, text).map_err(|e| format!("cannot write {path}: {e}")),
         None => std::io::stdout()

@@ -1,10 +1,8 @@
 # Third-party components
 
-`goatd` is Apache-2.0 (`LICENSE`). This file records every third-party
-component that ships inside the crate or is linked into a build of it, and the
-licence each is used under. For the BSD-2-Clause and MIT components below,
-reproducing the notice is a **licence condition**, not a courtesy — the
-required texts are at the end of this file.
+`goatd` is Apache-2.0 (`LICENSE`). This file records the third-party components
+that ship inside the crate or are linked into a build. The required
+BSD-2-Clause and MIT notices are reproduced below.
 
 ## Rust dependencies
 
@@ -25,11 +23,8 @@ in the table below are relative to it.
 | `treedecomp_defs.hpp` | [treedecomp](https://github.com/meelgroup/treedecomp) | MIT | © 2023 Authors of treedecomp |
 | `time_mem.hpp` | [MiniSat](https://github.com/niklasso/minisat) / [CryptoMiniSat](https://github.com/msoos/cryptominisat) | MIT | © 2003–2006 Niklas Eén, Niklas Sörensson; © 2009–2020 the CryptoMiniSat authors |
 
-One directory up, outside `upstream/`, sit the three files that are goatd's own
-and carry goatd's licence: `ffi.cpp` / `ffi.h`, the C ABI shim over the above,
-and `heap_selftest.cpp`, which drives upstream's k-way id-heap from a unit test.
-The split is the boundary itself — everything under `upstream/` is somebody
-else's source, and nothing else is.
+The files beside `upstream/` are goatd's own and carry goatd's licence:
+`ffi.cpp`, `ffi.h`, and `heap_selftest.cpp`.
 
 **These files are modified.** The BSD-2-Clause and MIT licences above permit
 modification and require the notice be kept, which it is; this states the
@@ -39,13 +34,14 @@ a `// goatd:` comment naming the reason:
 - missing `<cstdint>` / `<cstddef>` includes added, for types the upstream files
   use but only received transitively on the standard libraries they were written
   against;
-- two memory-safety guards, in `IFlowCutter.cpp` and
-  `flow-cutter-pace17/src/heap.hpp`: a budget on the bag-adjacency arc count and
-  64-bit child-index arithmetic in the k-ary heap. Both convert an
-  out-of-memory or integer-overflow crash on a pathological graph into a clean
-  error the caller can handle;
-- a null check on the `sspp::Bitset` allocation, in `bitset.hpp`, for the same
-  reason;
+- a budget on the bag-adjacency arc count in `IFlowCutter.cpp`, reported to the
+  Rust caller as a missing backend result;
+- 64-bit child-index arithmetic in the k-ary heap in
+  `flow-cutter-pace17/src/heap.hpp`, avoiding signed integer overflow on large
+  heaps;
+- a null check on the `sspp::Bitset` allocation in `bitset.hpp`, which prints
+  the requested byte count before aborting if allocation still fails after the
+  Rust-side size guard;
 - a density gate on FlowCutter's min-shortcut ordering heuristic, in
   `IFlowCutter.cpp`, so a clique-dominated graph does not spend the whole
   construction budget in one heuristic;
@@ -65,15 +61,8 @@ a `// goatd:` comment naming the reason:
   passes, in `flow-cutter-pace17/src/greedy_order.{cpp,hpp}`, which is what lets
   those passes be bounded and charged the same way.
 
-Upstream's heap arithmetic is also exercised from a unit test, through
-`heap_selftest.cpp`; that file is goatd's own and adds nothing to the upstream
-sources.
-
-Diffing `vendor/treedecomp/upstream/` against the upstream projects named in the
-table shows each of the modifications above.
-
-No third-party test data ships with this crate: every test fixture is generated
-in test code from a construction written here.
+The goatd-owned C ABI shim catches C++ exceptions before they reach Rust and
+reports them as a missing backend result.
 
 No GPL-licensed component is included in or linked by this crate.
 

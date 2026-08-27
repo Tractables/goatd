@@ -6,8 +6,8 @@ implementation or from the upstream code.
 
 ## Portfolio
 
-`five_slot_portfolio` shares one graph build and one preprocessing pass across
-five elimination runs:
+`portfolio::candidates` shares one graph build and one preprocessing pass
+across five elimination runs:
 
 1. sampled min-degree;
 2. nested dissection;
@@ -17,26 +17,45 @@ five elimination runs:
 
 The inexpensive order runs first so a valid candidate exists early. Later
 runs receive the best width already found and stop when a bag is too wide to
-win. With time left, the portfolio tries further sampled min-fill seeds. The
-winner minimizes `(treewidth, total bag size)`. `single_slot_portfolio` exposes
-the smaller variant used by callers that want to apply their own ranking.
+win. With time left, the portfolio tries further sampled min-fill seeds; on a
+very large residual it uses sampled min-degree and skips the expensive fixed
+orders instead. Initial fill counts are computed only when sampled min-fill
+first runs, then reused across its seeds. The winner minimizes `(treewidth,
+total bag size)`. `sampled_min_fill_candidates` exposes the smaller variant
+used by callers that want to apply their own ranking.
 
-A soft budget changes expensive greedy bookkeeping to a cheaper mode. A hard
-budget completes the first candidate with a valid path decomposition of the
-remaining graph; later candidates can stop without completing because a valid
-candidate already exists. The library remains single-threaded throughout.
+A soft budget, measured from before preprocessing, stops the portfolio from
+starting further candidates and samples. A hard budget completes the first
+candidate with a valid path decomposition of the remaining graph; later
+candidates can stop without completion because a valid candidate already
+exists. The library remains single-threaded throughout.
 
-## Safe reductions
+## Preprocessing
 
-Every elimination construction starts with a fixed-point pass over five
-reductions: isolated vertices, leaves, degree-two series vertices, simplicial
-vertices, and almost-simplicial vertices. The last rule is applied only when
-the vertex degree does not exceed the lower bound accumulated by earlier safe
-eliminations. The emitted prefix bags can therefore be attached to a
-decomposition of the residual graph without increasing its width.
+Every elimination construction starts with the same deterministic reduction
+pass:
 
-The reduced graph, prefix bags, connected components, and initial fill counts
-are computed once and reused by the portfolio.
+| rule | condition | action |
+| --- | --- | --- |
+| islet | degree 0 | remove `v` and record `{v}` |
+| twig | degree 1, with neighbour `u` | remove `v` and record `{v, u}` |
+| series | degree 2, with non-adjacent neighbours `a` and `b` | add `a-b`, remove `v`, and record `{v, a, b}` |
+| simplicial | the live neighbours of `v` form a clique | remove `v` and record `{v} ∪ N(v)` |
+| almost simplicial | the live neighbours have exactly one missing edge, and `degree(v)` does not exceed the running width lower bound | add the missing edge, remove `v`, and record `{v} ∪ N(v)` |
+
+Islet and twig elimination run to a fixed point first. This removes forest
+components without introducing a width-2 series bag. The pass then scans the
+series, simplicial, and almost-simplicial rules in that order and starts again
+if any rule fired. Series and simplicial eliminations raise the running lower
+bound used to admit the almost-simplicial rule.
+
+The recorded bags form the beginning of the elimination sequence. A solver
+continues on the residual graph, then the decomposition builder attaches these
+prefix bags in reverse elimination order. The graph keeps its original vertex
+ids; removed vertices are marked inactive rather than renumbered.
+
+The portfolio performs this work once. Its elimination candidates share the
+reduced graph and prefix, then compute their own order for the residual graph.
 
 ## Min-fill and min-degree
 
@@ -74,17 +93,22 @@ The same multilevel graph bisector is public on its own. A separate public
 hypergraph bisector minimizes cut hyperedges, with FM and flow-based
 refinement; it is not used to disguise a hypergraph as a graph.
 
+Partition refinement is part of the partitioner. It improves the temporary
+0/1 bisection during uncoarsening and returns another bisection. Decomposition
+refinement is under `decomposition`: it starts from complete bags and a bag
+tree, then rewrites them around a separator supplied by FlowCutter.
+
 ## Flow-based separators
 
 [FlowCutter](https://github.com/kit-algo/flow-cutter-pace17) explores the
 tradeoff between cut size and balance by repeatedly advancing max-flow cuts.
 goatd contains two related implementations:
 
-- `flowcutter_rs` is a Rust separator search. It returns the separator and its
-  two sides, and is used by decomposition refinement.
-- `flowcutter` is the vendored PACE 2017 C++ tree-decomposition builder. It
-  constructs a full decomposition and remains useful because its complete
-  search is not the same operation as the Rust separator call.
+- `flowcutter::separator::find` is a Rust separator search. It returns the
+  separator and its two sides, and is used by decomposition refinement.
+- `flowcutter::decompose` is the vendored PACE 2017 C++ tree-decomposition
+  builder. It constructs a full decomposition and remains useful because its
+  complete search is not the same operation as the Rust separator call.
 
 The Rust separator search uses one cutter per restart instead of increasing a
 multi-cutter batch, and uses goatd's seeded RNG. Refinement projects an existing
@@ -106,24 +130,19 @@ The complete list of source changes and licences is in
 
 ## Decomposition operations
 
-`td_ops` provides the graph-only operations used by refinement: rooting a bag
-forest, projecting a decomposition onto a vertex subset while preserving
-global ids, and gluing two decompositions at a separator. These functions are
-public so other construction and local-improvement algorithms can reuse the
-same path.
+`decomposition` contains the tree-decomposition type, validation, projection,
+and FlowCutter-based refinement. Refinement preserves global vertex ids while
+it projects each side and glues them at a separator.
 
 ## Correctness and reproducibility
 
-`TreeDecomposition::validate` checks bag ids, the bag forest, vertex and edge
-coverage, and the running intersection property. The test suite validates all
-five elimination configurations on every undirected graph through five
-vertices, tests the separator and FlowCutter routes on larger graph families,
-and exercises malformed decompositions one invariant at a time.
+`TreeDecomposition::validate` checks bag contents, the bag forest, vertex and edge
+coverage, and the running intersection property.
 
-Seeded, step-budgeted runs are reproducible. Wall-clock budgets are explicitly
-different: they may stop after different amounts of work on different
-machines. `meter::arm` replaces wall time with charged graph work when a caller
-needs budget decisions to be repeatable.
+Seeded, step-budgeted runs are reproducible. Machine speed and load can change
+where a wall-clock budget stops. While a caller holds the guard returned by
+`meter::arm`, duration budgets advance by charged graph work instead. Dropping
+the guard restores wall-clock budgets.
 
 The main algorithmic sources are the
 [FlowCutter bisection paper](https://arxiv.org/abs/1504.03812), the

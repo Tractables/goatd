@@ -1,19 +1,23 @@
-//! The one error type this crate reports.
+//! Errors returned by goatd operations.
 
 use std::fmt;
 
-/// What can go wrong reading a PACE file, validating a decomposition, or
-/// asking the FlowCutter builder for a decomposition.
+/// An invalid input, malformed PACE file, invalid decomposition, oversized
+/// problem, or failed FlowCutter construction.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Error {
+    /// Invalid arguments to an algorithm; the sentence names the violated
+    /// input contract.
+    InvalidInput(String),
     /// PACE text that does not describe a graph or a decomposition; the
     /// sentence names the line or id at fault.
     Parse(String),
     /// A tree decomposition that does not satisfy its structural or graph
     /// contract; the sentence names the first violation found.
     InvalidDecomposition(String),
-    /// A graph the FlowCutter builder cannot be handed at all: the sentence
-    /// names the size that is over its limit.
+    /// An input exceeds an algorithm's supported representation or allocation
+    /// limit; the sentence names the limit.
     TooLarge(String),
     /// The FlowCutter builder returned no decomposition.
     NoDecomposition,
@@ -22,9 +26,10 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Parse(what) | Error::InvalidDecomposition(what) | Error::TooLarge(what) => {
-                f.write_str(what)
-            }
+            Error::InvalidInput(what)
+            | Error::Parse(what)
+            | Error::InvalidDecomposition(what)
+            | Error::TooLarge(what) => f.write_str(what),
             Error::NoDecomposition => f.write_str("FlowCutter returned no decomposition"),
         }
     }

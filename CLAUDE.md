@@ -20,8 +20,8 @@ vendored dependencies live here. Every tracked file and commit is public.
   environment.
 - Reject an inert CLI flag with an error naming both the flag and the order
   that accepts it.
-- Put public-surface tests in `src/tests/` or top-level `tests/`; put tests of
-  private items in a `tests/` directory inside their module.
+- Put public-surface tests in top-level `tests/`; put tests of private or
+  crate-visible items in a `tests/` directory inside their module.
 - Extend shared implementations, fixtures, and tables instead of creating a
   second path that must be kept in sync.
 - Update [docs/algorithms.md](docs/algorithms.md) when an algorithm or its
