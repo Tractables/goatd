@@ -636,10 +636,10 @@ TreeDecomposition IFlowCutter::constructTD_timed(int64_t conf_steps, int conf_it
 {
   // goatd: this entry has always meant "a deadline is present and expected to
   // bite", so it keeps the tight heuristic gates.
-  return constructTD_timed_patience(conf_steps, conf_iters, timeout_ms, 0, /*tight_gates=*/true, iters_done, greedy_touches, unit_budget, units_per_iter);
+  return constructTD_timed_patience(conf_steps, conf_iters, timeout_ms, 0, 0, /*tight_gates=*/true, iters_done, greedy_touches, unit_budget, units_per_iter);
 }
 
-TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, int conf_iters, int64_t timeout_ms, int64_t patience_ms, bool tight_gates, int64_t* iters_done, int64_t* greedy_touches, int64_t unit_budget, int64_t units_per_iter)
+TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, int conf_iters, int64_t timeout_ms, int64_t patience_ms, int64_t patience_unit_budget, bool tight_gates, int64_t* iters_done, int64_t* greedy_touches, int64_t unit_budget, int64_t units_per_iter)
 {
   TreeDecomposition td;
   // goatd: declared at FUNCTION scope, outside every try, so the single
@@ -652,6 +652,9 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
   // spend from ONE `unit_budget`, and each records what it spent here.
   int64_t greedy_spent = 0;
   int64_t loop_units = 0;
+  // goatd: metered patience is measured from the loop work at the last
+  // accepted improvement, just as wall patience is measured from its time.
+  int64_t last_improvement_units = 0;
   // Clear whatever a previous build left in the greedy counter, so the reading
   // taken below belongs to this construction.
   greedy_order_take_touches();
@@ -678,7 +681,8 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
   // otherwise run on.
   const bool clock_decides = has_deadline && !metered;
 
-  auto has_patience = patience_ms > 0 && !metered;
+  const bool has_clock_patience = patience_ms > 0 && !metered;
+  const bool has_unit_patience = patience_unit_budget > 0 && metered;
   auto last_improvement = start;
 
   // goatd: the pre-loop heuristics take their tight node gates only when a
@@ -744,6 +748,7 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
       td = output_tree_decompostion_of_multilevel_partition(tail, head, preorder, multilevel_partition);
       best_bag_size = tw;
       last_improvement = std::chrono::steady_clock::now();
+      last_improvement_units = loop_units;
     };
 
     {
@@ -828,11 +833,17 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
             // Patience check: stop if no improvement for patience_ms.
             // Only applies after the first improvement (best_bag_size < INT_MAX),
             // so large graphs that need time to find any TD aren't cut short.
-            if(has_patience && best_bag_size < std::numeric_limits<int>::max()) {
+            if(has_clock_patience && best_bag_size < std::numeric_limits<int>::max()) {
               auto now = std::chrono::steady_clock::now();
               auto since_improvement = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_improvement).count();
               if(since_improvement >= patience_ms) break;
             }
+            // goatd: the same patience contract on the deterministic work
+            // clock used when the Rust meter is armed.
+            if(has_unit_patience
+               && best_bag_size < std::numeric_limits<int>::max()
+               && loop_units - last_improvement_units >= patience_unit_budget)
+              break;
 
             const int64_t iter_steps = (std::sqrt((int64_t)nodes) * std::sqrt((int64_t)head.preimage_count_))/50;
             // goatd: the deterministic terminator — do not start an iteration

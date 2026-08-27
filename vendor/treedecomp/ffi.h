@@ -31,19 +31,21 @@ TdResult* td_compute(int num_nodes, int num_edges,
                      int64_t unit_budget, int64_t units_per_iter);
 
 // Run with a wall-clock timeout and optional early convergence detection.
-// Stops early if the treewidth hasn't improved for `patience_ms` milliseconds.
-// patience_ms=0 means no early stopping.
+// Stops early if the treewidth hasn't improved for `patience_ms` milliseconds,
+// or `patience_unit_budget` work units while metered. Zero means no early
+// stopping for that clock.
 //
 // `tight_gates` selects shortened pre-loop heuristics for a timeout that is
 // expected to stop the search. Zero keeps the untimed heuristic limits and
 // uses the timeout only as a stopping condition.
 //
 // The last four arguments mean what they mean for td_compute. A nonzero
-// `unit_budget` also stands the deadline and the patience check down, so that
-// the work budget alone decides where the search stops.
+// A nonzero `unit_budget` stands the wall deadline down, so that work alone
+// decides where the search stops.
 TdResult* td_compute_timed_patience(int num_nodes, int num_edges,
                                     const int* edges, int64_t steps, int iters,
                                     int64_t timeout_ms, int64_t patience_ms,
+                                    int64_t patience_unit_budget,
                                     int tight_gates, int64_t* iters_done,
                                     int64_t* greedy_touches,
                                     int64_t unit_budget, int64_t units_per_iter);

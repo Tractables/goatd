@@ -42,6 +42,7 @@ mod ffi {
             iterations: c_int,
             timeout_ms: i64,
             patience_ms: i64,
+            patience_unit_budget: i64,
             adapt_search: c_int,
             iterations_done: *mut i64,
             greedy_touches: *mut i64,
@@ -79,13 +80,16 @@ impl NativeDecomposition {
         // A timed budget is measured on the work clock while the meter is
         // armed, so converting it at that clock's rate gives the native loop
         // the same share in work units. Zero means no work-unit limit.
-        let unit_budget = match budget.kind {
-            BudgetKind::Timed { timeout, .. } if crate::meter::is_armed() => {
-                let milliseconds = timeout.as_millis().min(u64::MAX as u128) as u64;
-                let units = milliseconds.saturating_mul(crate::meter::UNITS_PER_MS);
-                i64::try_from(units).unwrap_or(i64::MAX)
+        let metered = crate::meter::is_armed();
+        let (unit_budget, patience_unit_budget) = match budget.kind {
+            BudgetKind::Timed {
+                timeout, patience, ..
+            } if metered => {
+                let timeout = duration_work_units(timeout);
+                let patience = patience.map(duration_work_units).unwrap_or(0);
+                (timeout, patience)
             }
-            _ => 0,
+            _ => (0, 0),
         };
 
         let setup_units = SETUP_UNITS_PER_ELEMENT.saturating_mul(elements);
@@ -131,6 +135,7 @@ impl NativeDecomposition {
                         iterations,
                         timeout_ms,
                         patience_ms,
+                        patience_unit_budget,
                         timeout_behavior.as_ffi(),
                         &mut iterations_done,
                         &mut greedy_touches,
@@ -165,6 +170,12 @@ impl NativeDecomposition {
 
         (!raw.is_null()).then_some(Self(raw))
     }
+}
+
+fn duration_work_units(duration: std::time::Duration) -> i64 {
+    let milliseconds = duration_ms(duration) as u64;
+    let units = milliseconds.saturating_mul(crate::meter::UNITS_PER_MS);
+    i64::try_from(units).unwrap_or(i64::MAX)
 }
 
 /// Run the native backend and validate everything copied across the boundary.
