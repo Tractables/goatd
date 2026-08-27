@@ -5,8 +5,7 @@
 //! Structural port only — it does **not** match the C++ output bit-for-bit:
 //! the inner RNG (mt19937 → `SmallRng`) and BFS tie-breaking don't reproduce
 //! C++ STL behaviour, and `cutter_count` is deliberately pinned to 1 rather
-//! than incremented every 16 iterations as upstream does. Parity is verified
-//! empirically, not by construction.
+//! than incremented every 16 iterations as upstream does.
 //!
 //! **Scope — this is the separator subroutine only, not a tree decomposer.**
 //! Entry point [`compute_separator`] returns ONE balanced vertex separator, and
@@ -83,9 +82,9 @@ pub fn compute_separator(
     // around a finished build: the iteration it stops is an iteration that might
     // have found a smaller separator, so wherever the cap binds it picks which
     // separator comes back, hence the decomposition assembled from that
-    // separator and the vtree read off the decomposition. A cap that chooses the
-    // answer has to be measured on the same clock as the budget it was derived
-    // from, or the answer moves with how fast and how loaded the machine was.
+    // separator. A cap that chooses the answer has to be measured on the same
+    // clock as the budget it was derived from, or the answer moves with how
+    // fast and how loaded the machine was.
     let start = crate::meter::now();
     let has_deadline = timeout_ms > 0;
     let deadline_ms = timeout_ms as u128;
@@ -104,7 +103,7 @@ pub fn compute_separator(
     let iter_cap = iters.max(1);
     let mut steps_left = steps;
 
-    // C++ schedule increments cutter_count every 16 iters; we pin it to 1
+    // The C++ implementation increments cutter_count every 16 iters; we pin it to 1
     // because in differential tests on small graphs MultiCutter's switching
     // rule discards good single-cutter trajectories.
     for i in 0..iter_cap {

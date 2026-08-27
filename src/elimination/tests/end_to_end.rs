@@ -5,7 +5,9 @@ use std::time::Duration;
 use crate::elimination::graph::Graph;
 use crate::elimination::preprocess::preprocess;
 use crate::elimination::width_opt::Config;
-use crate::elimination::{ScheduleConfig, elimination_td, five_slot_schedule, refined_td};
+use crate::elimination::{
+    PortfolioConfig, elimination_td, five_slot_portfolio, refined_td, single_slot_portfolio,
+};
 use crate::tests::td_fixture::{GraphAtItsWidth, assert_valid_td};
 
 use super::width_opt::run_config;
@@ -87,6 +89,42 @@ fn multi_seed_produces_valid_tds() {
     }
 }
 
+#[test]
+fn every_elimination_config_decomposes_every_graph_through_five_vertices() {
+    for num_vertices in 0..=5u32 {
+        let possible_edges: Vec<(u32, u32)> = (0..num_vertices)
+            .flat_map(|u| ((u + 1)..num_vertices).map(move |v| (u, v)))
+            .collect();
+        for mask in 0..(1u64 << possible_edges.len()) {
+            let mut edges: Vec<(u32, u32)> = Vec::new();
+            for (bit, &edge) in possible_edges.iter().enumerate() {
+                if (mask >> bit) & 1 == 1 {
+                    edges.push(edge);
+                }
+            }
+            let graph = crate::Graph::new(num_vertices, edges.iter().copied());
+            let weight = vec![1; num_vertices as usize];
+            let configs = [
+                Config::MinFill,
+                Config::MinDegree,
+                Config::NestedDissection,
+                Config::MinFillSampled { weight: &weight },
+                Config::MinDegreeSampled { weight: &weight },
+            ];
+
+            for config in configs {
+                let td = elimination_td(&graph, config, 17, None);
+                td.validate(&graph).unwrap_or_else(|error| {
+                    panic!(
+                        "{config:?} returned an invalid decomposition of n={num_vertices}, \
+                         mask={mask:#x}: {error}"
+                    )
+                });
+            }
+        }
+    }
+}
+
 /// The public entry points, on a graph with something for each of them to
 /// do: a 4x4 grid, whose treewidth is 4.
 #[test]
@@ -113,7 +151,7 @@ fn the_public_entry_points_decompose_a_grid() {
     let unbounded = elimination_td(&graph, Config::MinDegree, 0, None);
     assert_valid_td(&unbounded, 16, &edges);
 
-    let tds = five_slot_schedule(&graph, &weight, 0, ScheduleConfig::five_slot(None));
+    let tds = five_slot_portfolio(&graph, &weight, 0, PortfolioConfig::five_slot(None));
     assert!(!tds.is_empty(), "slot 0 always produces a decomposition");
     for td in &tds {
         assert_valid_td(td, 16, &edges);
@@ -127,11 +165,45 @@ fn the_public_entry_points_decompose_a_grid() {
         "the list is sorted by (width, total bag size): {keys:?}",
     );
 
-    let refined = refined_td(&graph, &weight, 0, ScheduleConfig::five_slot(None), None);
+    let refined = refined_td(&graph, &weight, 0, PortfolioConfig::five_slot(None), None);
     assert_valid_td(&refined, 16, &edges);
     assert!(
         (refined.treewidth(), refined.total_bag_size()) <= keys[0],
         "refinement never returns a worse decomposition than the winner",
+    );
+
+    let compact = single_slot_portfolio(&graph, &weight, 0, PortfolioConfig::single_slot(false));
+    assert!(!compact.is_empty());
+    for td in &compact {
+        assert_valid_td(td, 16, &edges);
+    }
+}
+
+#[test]
+fn portfolio_config_constructors_name_their_public_budget_contracts() {
+    assert_eq!(
+        PortfolioConfig::single_slot(false),
+        PortfolioConfig {
+            timeout_ms: Some(1_000),
+            refine_cap: 100,
+            fc_slot_cap_ms: None,
+        },
+    );
+    assert_eq!(
+        PortfolioConfig::single_slot(true),
+        PortfolioConfig {
+            timeout_ms: Some(1_000),
+            refine_cap: 100,
+            fc_slot_cap_ms: Some(2_000),
+        },
+    );
+    assert_eq!(
+        PortfolioConfig::five_slot(Some(75)),
+        PortfolioConfig {
+            timeout_ms: Some(75),
+            refine_cap: 100,
+            fc_slot_cap_ms: None,
+        },
     );
 }
 

@@ -6,8 +6,8 @@
 //! entries to skip, and a priority structure that has to be kept exact rather
 //! than corrected on pop. `eliminate_minfill_sampling` also has no
 //! clique-residual fast drain — at fill 0 every remaining vertex ties, and
-//! draining them in index order instead of sampling order produced a
-//! measurably worse vtree — and updates its buckets *before* the vertex is
+//! draining them in index order would change the sampled order — and updates
+//! its buckets *before* the vertex is
 //! removed on the bitset path, where the skeleton updates after. Folding them
 //! in would mean two more hooks that only they use, and the sampling loop
 //! would be harder to read for it, not easier.

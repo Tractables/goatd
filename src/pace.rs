@@ -27,9 +27,12 @@ impl Graph {
     ///
     /// [`Error::Parse`] naming a malformed problem or edge line, an unparseable
     /// id, a vertex id outside the range the problem line declares, or a
-    /// missing problem line.
+    /// mismatch between the declared and actual edge-line counts, or a missing
+    /// problem line.
     pub fn from_gr(text: &str) -> Result<Self, Error> {
         let mut num_vertices: Option<u32> = None;
+        let mut declared_edge_lines = 0usize;
+        let mut num_edge_lines = 0usize;
         let mut edges: Vec<(u32, u32)> = Vec::new();
         for line in text.lines() {
             let line = line.trim();
@@ -39,10 +42,14 @@ impl Graph {
             let tokens: Vec<&str> = line.split_whitespace().collect();
             if tokens[0] == "p" {
                 // "p tw <num_vertices> <num_edges>"
-                if tokens.len() < 4 || tokens[1] != "tw" {
+                if num_vertices.is_some() {
+                    return Err(Error::Parse(format!("more than one problem line: {line}")));
+                }
+                if tokens.len() != 4 || tokens[1] != "tw" {
                     return Err(Error::Parse(format!("malformed problem line: {line}")));
                 }
                 num_vertices = Some(parse_count(tokens[2])?);
+                declared_edge_lines = parse_count(tokens[3])?;
                 continue;
             }
             let Some(n) = num_vertices else {
@@ -55,6 +62,7 @@ impl Graph {
             }
             let u: u32 = to_zero_based("vertex", parse_count(tokens[0])?, n as usize)?;
             let v: u32 = to_zero_based("vertex", parse_count(tokens[1])?, n as usize)?;
+            num_edge_lines += 1;
             if u != v {
                 edges.push((u.min(v), u.max(v)));
             }
@@ -62,6 +70,12 @@ impl Graph {
         let Some(num_vertices) = num_vertices else {
             return Err(Error::Parse("no problem line".into()));
         };
+        if num_edge_lines != declared_edge_lines {
+            return Err(Error::Parse(format!(
+                "the problem line declares {declared_edge_lines} edge lines but the file contains \
+                 {num_edge_lines}"
+            )));
+        }
         Ok(Graph {
             num_vertices,
             edges: canonical(edges),
@@ -72,8 +86,13 @@ impl Graph {
 impl TreeDecomposition {
     /// Render as a PACE `.td` decomposition (1-indexed bags and vertices) of a
     /// graph over `num_vertices` vertices — the count the solution line has to
-    /// declare, which the bags alone do not determine.
+    /// declare, which the bags alone do not determine. A decomposition forest
+    /// is connected between component roots for the PACE format; an empty
+    /// decomposition is written as one empty bag.
     pub fn to_td(&self, num_vertices: u32) -> String {
+        if self.bags.is_empty() {
+            return format!("s td 1 0 {num_vertices}\nb 1\n");
+        }
         let max_bag = self
             .bags
             .iter()
@@ -95,6 +114,27 @@ impl TreeDecomposition {
                 }
             }
         }
+        let mut seen = vec![false; self.bags.len()];
+        let mut component_roots = Vec::new();
+        for start in 0..self.bags.len() {
+            if seen[start] {
+                continue;
+            }
+            component_roots.push(start);
+            seen[start] = true;
+            let mut stack = vec![start];
+            while let Some(bag) = stack.pop() {
+                for &neighbour in &self.adj[bag] {
+                    if !seen[neighbour] {
+                        seen[neighbour] = true;
+                        stack.push(neighbour);
+                    }
+                }
+            }
+        }
+        for roots in component_roots.windows(2) {
+            out.push_str(&format!("{} {}\n", roots[0] + 1, roots[1] + 1));
+        }
         out
     }
 
@@ -105,11 +145,13 @@ impl TreeDecomposition {
     /// [`Error::Parse`] describing what is wrong with `text`: a malformed
     /// solution or bag line, an unparseable id, a bag or vertex id outside the
     /// range the solution line declares, a bag list that does not define each
-    /// declared bag exactly once, or no bags at all.
+    /// declared bag exactly once, a maximum-bag-size mismatch, a bag graph that
+    /// is not one tree, or no bags at all.
     pub fn from_td(text: &str) -> Result<Self, Error> {
         let mut bags: Vec<TdBag> = Vec::new();
         let mut adj: Vec<Vec<usize>> = Vec::new();
         let mut num_bags = 0usize;
+        let mut declared_max_bag_size = 0usize;
         let mut declared_vertices = 0usize;
         let mut saw_solution_line = false;
 
@@ -123,10 +165,14 @@ impl TreeDecomposition {
                 "s" => {
                     // "s td <num_bags> <max_bag_size> <num_vertices>" — the
                     // counts every id below is checked against.
-                    if tokens.len() < 5 {
+                    if saw_solution_line {
+                        return Err(Error::Parse(format!("more than one solution line: {line}")));
+                    }
+                    if tokens.len() != 5 || tokens[1] != "td" {
                         return Err(Error::Parse(format!("Malformed solution line: {line}")));
                     }
                     num_bags = parse_count(tokens[2])?;
+                    declared_max_bag_size = parse_count(tokens[3])?;
                     declared_vertices = parse_count(tokens[4])?;
                     bags = Vec::with_capacity(num_bags);
                     adj = vec![Vec::new(); num_bags];
@@ -154,19 +200,34 @@ impl TreeDecomposition {
                 }
                 _ => {
                     // Tree edge: two bare integers "<bag_id1> <bag_id2>".
-                    if tokens.len() == 2
-                        && let (Ok(a), Ok(b)) =
-                            (tokens[0].parse::<usize>(), tokens[1].parse::<usize>())
-                    {
-                        let a: usize = to_zero_based("bag id", a, num_bags)?;
-                        let b: usize = to_zero_based("bag id", b, num_bags)?;
-                        adj[a].push(b);
-                        adj[b].push(a);
+                    if !saw_solution_line {
+                        return Err(Error::Parse(format!(
+                            "tree edge before the solution line: {line}"
+                        )));
                     }
+                    if tokens.len() != 2 {
+                        return Err(Error::Parse(format!("Malformed tree edge: {line}")));
+                    }
+                    let a: usize =
+                        to_zero_based("bag id", parse_count::<usize>(tokens[0])?, num_bags)?;
+                    let b: usize =
+                        to_zero_based("bag id", parse_count::<usize>(tokens[1])?, num_bags)?;
+                    if a >= b {
+                        return Err(Error::Parse(format!(
+                            "a tree edge must name its smaller bag id first: {line}"
+                        )));
+                    }
+                    adj[a].push(b);
+                    adj[b].push(a);
                 }
             }
         }
 
+        if !saw_solution_line {
+            return Err(Error::Parse(
+                "No solution line in tree decomposition output".into(),
+            ));
+        }
         if bags.is_empty() {
             return Err(Error::Parse(
                 "No bags found in tree decomposition output".into(),
@@ -189,6 +250,38 @@ impl TreeDecomposition {
                 "bag {} is defined more than once; each of the {num_bags} declared bags is \
                  defined once",
                 bag.id + 1
+            )));
+        }
+        let actual_max_bag_size = bags.iter().map(|bag| bag.vertices.len()).max().unwrap_or(0);
+        if actual_max_bag_size != declared_max_bag_size {
+            return Err(Error::Parse(format!(
+                "the solution line declares maximum bag size {declared_max_bag_size} but the \
+                 largest bag contains {actual_max_bag_size} vertices"
+            )));
+        }
+        let num_tree_edges = adj.iter().map(Vec::len).sum::<usize>() / 2;
+        let expected_tree_edges = num_bags - 1;
+        if num_tree_edges != expected_tree_edges {
+            return Err(Error::Parse(format!(
+                "the bag tree has {num_tree_edges} edges; a tree on {num_bags} bags has \
+                 {expected_tree_edges}"
+            )));
+        }
+        let mut seen = vec![false; num_bags];
+        seen[0] = true;
+        let mut stack = vec![0usize];
+        while let Some(bag) = stack.pop() {
+            for &neighbour in &adj[bag] {
+                if !seen[neighbour] {
+                    seen[neighbour] = true;
+                    stack.push(neighbour);
+                }
+            }
+        }
+        if let Some(disconnected) = seen.iter().position(|&reached| !reached) {
+            return Err(Error::Parse(format!(
+                "bag {} is not connected to the bag tree rooted at 1",
+                disconnected + 1
             )));
         }
 

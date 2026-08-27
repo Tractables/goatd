@@ -10,12 +10,12 @@
 //!     by a seeded salt.
 //!   * **min-fill and min-degree with weighted tie-set sampling** — fill-only
 //!     (resp. degree-only) priority, the whole tie set sampled by a per-vertex
-//!     weight the caller supplies. These two are the orders the schedules
+//!     weight the caller supplies. These two are the orders the portfolios
 //!     run.
 //!   * **nested dissection** via [`multilevel_bisect`](crate::multilevel_bisect),
 //!     separating on a König-Egerváry minimum vertex cover.
 //!
-//! [`elimination_td`] runs one order once. The schedule functions run several
+//! [`elimination_td`] runs one order once. The portfolio functions run several
 //! `(order, seed)` pairs under a wall-clock budget and, on the refined path,
 //! finish with FlowCutter-cut refinement ([`refine_td_with_flowcutter_cut`]).
 
@@ -26,9 +26,9 @@ mod flow_cut;
 mod graph;
 mod minfill_core;
 mod nested_diss;
+mod portfolio;
 mod preprocess;
 mod refine;
-mod schedule;
 mod width_opt;
 
 #[cfg(test)]
@@ -36,10 +36,10 @@ mod tests;
 
 use minfill_core::ElimStop;
 
-pub use refine::refine_td_with_flowcutter_cut;
-pub use schedule::{
-    ScheduleConfig, five_slot_schedule, refined_select_key, refined_td, single_slot_schedule,
+pub use portfolio::{
+    PortfolioConfig, five_slot_portfolio, refined_select_key, refined_td, single_slot_portfolio,
 };
+pub use refine::refine_td_with_flowcutter_cut;
 pub use width_opt::Config;
 
 /// Run one elimination order over `graph` and return its tree decomposition.

@@ -22,7 +22,7 @@ use super::graph::Graph;
 use super::minfill_core::ElimSteps;
 
 /// Output of preprocessing. `Clone` so a single preprocess result can be
-/// reused across multiple configs in the schedule — preprocessing is
+/// reused across multiple configs in the portfolio — preprocessing is
 /// deterministic (no salt/seed) so sharing is safe.
 #[derive(Clone)]
 pub(crate) struct Reduced {

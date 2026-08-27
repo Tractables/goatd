@@ -3,7 +3,7 @@
 //! These tests drive single `(config, seed)` pairs straight from raw edges.
 //! Production never does — it always goes through `prebuild` +
 //! `run_config_prebuilt`, which amortize graph construction and preprocessing
-//! across a whole schedule — so the raw-edges entry point lives here, next to
+//! across a whole portfolio — so the raw-edges entry point lives here, next to
 //! the module's private internals it needs.
 
 use crate::elimination::graph::Graph;

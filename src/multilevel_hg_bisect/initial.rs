@@ -85,8 +85,8 @@ pub(super) fn hg_greedy_growing(hg: &Hypergraph, seed: usize) -> Vec<u8> {
 /// Summed weight of the hyperedges with pins on both sides.
 ///
 /// A hyperedge is charged once however its pins are spread, so this is the
-/// hyperedge-count metric rather than anything that grows with how badly a
-/// clause is split.
+/// hyperedge-count metric rather than anything that grows with how many pins
+/// lie on each side.
 pub(super) fn hg_cut(hg: &Hypergraph, part: &[u8]) -> u32 {
     let mut cut = 0u32;
     for hei in 0..hg.num_hyperedges() {

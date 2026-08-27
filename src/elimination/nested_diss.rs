@@ -62,9 +62,9 @@ pub(super) struct NdParams<'a> {
     /// complete TD). Without this, the deadline overshoots inside `nd_order`
     /// before the caller's elim loop ever gets a chance to bail.
     pub(super) hard_deadline: Option<Instant>,
-    /// The schedule slot's seed, carried unchanged down the whole recursion to
+    /// The portfolio slot's seed, carried unchanged down the whole recursion to
     /// `multilevel_bisect`. Without it the bisector runs on a fixed RNG stream
-    /// and the schedule's two `NestedDissection` slots produce identical
+    /// and the portfolio's two `NestedDissection` slots produce identical
     /// separators — see `bisect_seed`.
     pub(super) base_seed: u64,
 }

@@ -5,7 +5,7 @@
 //!
 //! * [`elimination`] — greedy elimination orders (min-fill, min-degree, nested
 //!   dissection, and the two sampled variants that break ties by a per-vertex
-//!   weight), each run after a safe-reduction preprocessing pass; a schedule
+//!   weight), each run after a safe-reduction preprocessing pass; a portfolio
 //!   that runs several under a time budget and keeps the narrowest; and a
 //!   refinement pass that re-cuts a decomposition along FlowCutter separators.
 //! * [`flowcutter`] — the FlowCutter treewidth solver (PACE 2017), vendored in

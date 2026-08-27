@@ -26,11 +26,11 @@ use crate::td_ops::{glue_at_separator, project_td_keeping_global_ids};
 /// pairs the anytime search tries per level.
 const FC_REFINE_ITERS: i32 = 50;
 
-/// Per-level FlowCutter step budget = `all_vars.len()` clamped to
+/// Per-level FlowCutter step budget = `all_vertices.len()` clamped to
 /// `[REFINE_STEPS_MIN, REFINE_STEPS_MAX]`. A COMPUTATION-STEP budget rather
-/// than a wall-clock one is what makes the refined decomposition — and hence
-/// the vtree built from it — a pure function of the graph, identical however
-/// loaded the machine is. A large top-level subgraph gets the full budget;
+/// than a wall-clock one is what makes the refined decomposition a pure
+/// function of the graph, identical however loaded the machine is. A large
+/// top-level subgraph gets the full budget;
 /// deeper (smaller) subgraphs get proportionally fewer steps but, because
 /// FlowCutter's internal per-iteration `step_cost` (~sqrt(n·m)) also shrinks,
 /// still run enough iterations.
@@ -38,27 +38,27 @@ const REFINE_STEPS_PER_VERTEX: i64 = 1;
 const REFINE_STEPS_MIN: i64 = 2_000;
 const REFINE_STEPS_MAX: i64 = 20_000;
 
-/// Below this number of active variables, do not attempt to cut and refine.
+/// Below this number of active vertices, do not attempt to cut and refine.
 const DEFAULT_MIN_SIDE_SIZE: usize = 16;
-/// Safety valve against unbounded recursion.  A real CNF should terminate
+/// Safety valve against unbounded recursion. A normal input should terminate
 /// well before this, driven by the dominance guard.
 const MAX_RECURSION_DEPTH: u32 = 20;
 /// Above this number of active vertices, a single FlowCutter iteration can
 /// take seconds and is uninterruptible mid-iteration (the FC deadline check
-/// only fires between iterations).  Incidence graphs of the hardest CNFs
-/// blow past 300k vertices, at which point post-process refinement reliably
+/// only fires between iterations). Very large graphs can exceed this bound,
+/// at which point post-process refinement reliably
 /// overruns the deadline it was given.  Above this gate, skip refinement
 /// and return the input TD unchanged — the dominance guard would make the
 /// call a no-op anyway in most cases, so the only cost is losing a
 /// occasional win on a very large graph.
 const MAX_VERTICES_FOR_REFINE: usize = 100_000;
 
-/// Refine `td` by finding a FlowCutter-induced balanced separator on `all_vars`,
+/// Refine `td` by finding a FlowCutter-induced balanced separator on `all_vertices`,
 /// projecting `td` onto each side of the separator, and recursing while the
 /// refinement strictly improves `(width, total_bag_size)`.
 ///
 /// `all_edges` must be the full edge list of the graph `td` decomposes.
-/// `all_vars` are the vertices active in the current subproblem, numbered as
+/// `all_vertices` are the vertices active in the current subproblem, numbered as
 /// in `all_edges` (the top-level caller passes every vertex). `deadline`
 /// bounds the recursion between separator searches, never inside one; it
 /// also arms a gate that skips subgraphs over 100 000 vertices, where one
@@ -66,16 +66,23 @@ const MAX_VERTICES_FOR_REFINE: usize = 100_000;
 /// than `td` under `(width, total_bag_size)`.
 pub fn refine_td_with_flowcutter_cut(
     td: TreeDecomposition,
-    all_vars: &[u32],
+    all_vertices: &[u32],
     all_edges: &[(u32, u32)],
     deadline: Option<Instant>,
 ) -> TreeDecomposition {
-    refine_inner(td, all_vars, all_edges, DEFAULT_MIN_SIDE_SIZE, 0, deadline)
+    refine_inner(
+        td,
+        all_vertices,
+        all_edges,
+        DEFAULT_MIN_SIDE_SIZE,
+        0,
+        deadline,
+    )
 }
 
 fn refine_inner(
     td: TreeDecomposition,
-    all_vars: &[u32],
+    all_vertices: &[u32],
     all_edges: &[(u32, u32)],
     min_side_size: usize,
     depth: u32,
@@ -84,12 +91,12 @@ fn refine_inner(
     if depth >= MAX_RECURSION_DEPTH {
         return td;
     }
-    if all_vars.len() < min_side_size {
+    if all_vertices.len() < min_side_size {
         return td;
     }
     // Large-graph gate: only applies when a deadline is set. A caller with no
     // deadline passes `None`, which bypasses the gate.
-    if deadline.is_some() && all_vars.len() > MAX_VERTICES_FOR_REFINE {
+    if deadline.is_some() && all_vertices.len() > MAX_VERTICES_FOR_REFINE {
         return td;
     }
     // Deadline guard: once the shared hard deadline passes, return the
@@ -98,7 +105,7 @@ fn refine_inner(
         return td;
     }
 
-    let local_edges = restrict_to_subset(all_edges, all_vars);
+    let local_edges = restrict_to_subset(all_edges, all_vertices);
     if local_edges.is_empty() {
         return td;
     }
@@ -107,11 +114,11 @@ fn refine_inner(
     // the search is bounded purely by `fc_steps`. The shared `deadline` still
     // bounds the recursion between levels, but never reaches inside one
     // separator search.
-    let fc_steps =
-        (REFINE_STEPS_PER_VERTEX * all_vars.len() as i64).clamp(REFINE_STEPS_MIN, REFINE_STEPS_MAX);
+    let fc_steps = (REFINE_STEPS_PER_VERTEX * all_vertices.len() as i64)
+        .clamp(REFINE_STEPS_MIN, REFINE_STEPS_MAX);
 
     let sep_result = match flowcutter_compute_separator(
-        all_vars.len(),
+        all_vertices.len(),
         &local_edges,
         fc_steps,
         FC_REFINE_ITERS,
@@ -138,17 +145,17 @@ fn refine_inner(
     let sep_global: Vec<u32> = sep_result
         .separator
         .iter()
-        .map(|&i| all_vars[i as usize])
+        .map(|&i| all_vertices[i as usize])
         .collect();
     let side_a_global: Vec<u32> = sep_result
         .side_a
         .iter()
-        .map(|&i| all_vars[i as usize])
+        .map(|&i| all_vertices[i as usize])
         .collect();
     let side_b_global: Vec<u32> = sep_result
         .side_b
         .iter()
-        .map(|&i| all_vars[i as usize])
+        .map(|&i| all_vertices[i as usize])
         .collect();
 
     let keep_a: FxHashSet<u32> = side_a_global

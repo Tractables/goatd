@@ -21,6 +21,10 @@ mod graph;
 mod initial;
 mod refine_flow;
 mod refine_fm;
+
+#[cfg(test)]
+mod tests;
+
 use coarsen::*;
 use graph::*;
 use initial::*;
@@ -106,7 +110,7 @@ fn hg_multilevel_pass(
     };
 
     // Coarse hyperedges carry the summed weight of every fine hyperedge merged
-    // into them, so a move here is worth many fine clauses.
+    // into them, so a move here can be worth many fine hyperedges.
     hg_fm_refine(current, &mut part, imbalance);
 
     // Uncoarsening. Each step hands every fine vertex its coarse vertex's side,

@@ -4,6 +4,17 @@ use crate::tests::td_fixture::{make_td, make_test_td};
 use rustc_hash::FxHashSet;
 
 #[test]
+fn rooted_forest_walks_each_component_in_breadth_first_order() {
+    let adj = vec![vec![1, 2], vec![0], vec![0], vec![4], vec![3]];
+    let rooted = rooted_forest(&adj, [2, 0, 3, 4, 1]);
+
+    assert_eq!(rooted.order, vec![2, 0, 1, 3, 4]);
+    assert_eq!(rooted.parent, vec![2, 0, NO_PARENT, NO_PARENT, 3]);
+    assert_eq!(rooted.depth, vec![1, 2, 0, 0, 1]);
+    assert_eq!(rooted.component_roots, vec![2, 3]);
+}
+
+#[test]
 fn glue_at_separator_preserves_rip_and_covers_all_vertices() {
     // Side A: two bags covering {0, 1, 2, 3}; S = {2, 3}.
     let td_a = make_td(vec![vec![0, 1, 2], vec![1, 2, 3]], vec![(0, 1)]);
@@ -144,4 +155,22 @@ fn project_td_single_vertex() {
     // renumbering).
     assert!(!proj.td.bags.is_empty());
     assert_eq!(proj.local_to_global, vec![3]);
+}
+
+#[test]
+fn projection_returns_none_when_no_bag_retains_a_vertex() {
+    let td = make_test_td();
+    let keep = FxHashSet::default();
+
+    assert!(project_td_keeping_global_ids(&td, &keep).is_none());
+    assert!(project_td(&td, &keep).is_none());
+}
+
+#[test]
+fn gluing_requires_a_bag_on_each_side() {
+    let empty = make_td(Vec::new(), Vec::new());
+    let one = make_td(vec![vec![0]], Vec::new());
+
+    assert!(glue_at_separator(empty.clone(), one.clone(), &[]).is_none());
+    assert!(glue_at_separator(one, empty, &[]).is_none());
 }

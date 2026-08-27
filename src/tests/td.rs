@@ -69,6 +69,13 @@ fn treewidth_is_the_largest_bag_less_one_and_zero_when_there_is_nothing_to_decom
     }
 }
 
+#[test]
+fn total_bag_size_is_the_sum_of_all_bag_cardinalities() {
+    let td = make_td(vec![vec![0, 1], vec![1, 2, 3], vec![], vec![4]], Vec::new());
+
+    assert_eq!(td.total_bag_size(), 6);
+}
+
 /// What `to_td` writes, `from_td` reads back as the same decomposition, and
 /// the solution line carries the largest bag and the vertex count it was
 /// given.
@@ -85,6 +92,33 @@ fn a_decomposition_written_as_td_reads_back_as_itself() {
     );
     let back = TreeDecomposition::from_td(&text).expect("what to_td wrote parses");
     assert_eq!(back, td);
+}
+
+#[test]
+fn pace_serialization_connects_a_decomposition_forest() {
+    let forest = make_td(vec![vec![0], vec![1], vec![2]], Vec::new());
+
+    let parsed = TreeDecomposition::from_td(&forest.to_td(3))
+        .expect("PACE serialization connects the three bag components");
+    assert_eq!(parsed.adj, vec![vec![1], vec![0, 2], vec![1]]);
+    parsed
+        .validate(&Graph::new(3, []))
+        .expect("connecting components preserves the decomposition");
+}
+
+#[test]
+fn an_empty_decomposition_is_written_as_one_empty_pace_bag() {
+    let empty = TreeDecomposition {
+        bags: Vec::new(),
+        adj: Vec::new(),
+    };
+
+    let text = empty.to_td(0);
+    assert_eq!(text, "s td 1 0 0\nb 1\n");
+    let parsed = TreeDecomposition::from_td(&text).expect("one empty bag is a PACE tree");
+    parsed
+        .validate(&Graph::new(0, []))
+        .expect("the empty graph needs no vertices in its bag");
 }
 
 #[test]
@@ -117,6 +151,20 @@ fn an_empty_decomposition_validates_for_an_empty_graph() {
 }
 
 #[test]
+fn an_empty_decomposition_does_not_validate_for_a_nonempty_graph() {
+    let td = TreeDecomposition {
+        bags: Vec::new(),
+        adj: Vec::new(),
+    };
+
+    let error = td
+        .validate(&Graph::new(1, []))
+        .expect_err("vertex 0 has no bag")
+        .to_string();
+    assert!(error.contains("vertex 0") && error.contains("no bag"));
+}
+
+#[test]
 fn validation_requires_bag_ids_to_index_the_bag_list() {
     let mut td = make_td(vec![vec![0]], Vec::new());
     td.bags[0].id = 7;
@@ -126,6 +174,102 @@ fn validation_requires_bag_ids_to_index_the_bag_list() {
         .expect_err("the bag id is not its position")
         .to_string();
     assert!(error.contains("bag 7") && error.contains("position 0"));
+}
+
+#[test]
+fn validation_requires_one_adjacency_list_per_bag() {
+    let td = TreeDecomposition {
+        bags: make_td(vec![vec![0], vec![1]], Vec::new()).bags,
+        adj: vec![Vec::new()],
+    };
+
+    let error = td
+        .validate(&Graph::new(2, []))
+        .expect_err("two bags need two adjacency lists")
+        .to_string();
+    assert!(error.contains("2 bags") && error.contains("1 adjacency"));
+}
+
+#[test]
+fn validation_requires_bag_vertices_to_be_in_the_graph() {
+    let td = make_td(vec![vec![0, 3]], Vec::new());
+
+    let error = td
+        .validate(&Graph::new(3, []))
+        .expect_err("vertex 3 is outside 0..3")
+        .to_string();
+    assert!(error.contains("vertex 3") && error.contains("0..3"));
+}
+
+#[test]
+fn validation_requires_each_vertex_to_occur_once_per_bag() {
+    let td = make_td(vec![vec![0, 0]], Vec::new());
+
+    let error = td
+        .validate(&Graph::new(1, []))
+        .expect_err("a bag is a set")
+        .to_string();
+    assert!(
+        error.contains("bag 0") && error.contains("vertex 0") && error.contains("more than once")
+    );
+}
+
+#[test]
+fn validation_requires_bag_neighbours_to_exist() {
+    let td = TreeDecomposition {
+        bags: make_td(vec![vec![0]], Vec::new()).bags,
+        adj: vec![vec![1]],
+    };
+
+    let error = td
+        .validate(&Graph::new(1, []))
+        .expect_err("bag 1 does not exist")
+        .to_string();
+    assert!(error.contains("bag 0") && error.contains("neighbour 1") && error.contains("1 bags"));
+}
+
+#[test]
+fn validation_rejects_a_bag_adjacent_to_itself() {
+    let td = TreeDecomposition {
+        bags: make_td(vec![vec![0]], Vec::new()).bags,
+        adj: vec![vec![0]],
+    };
+
+    let error = td
+        .validate(&Graph::new(1, []))
+        .expect_err("a loop is not a bag-tree edge")
+        .to_string();
+    assert!(error.contains("bag 0") && error.contains("itself"));
+}
+
+#[test]
+fn validation_rejects_a_duplicate_bag_neighbour() {
+    let td = TreeDecomposition {
+        bags: make_td(vec![vec![0], vec![0]], Vec::new()).bags,
+        adj: vec![vec![1, 1], vec![0]],
+    };
+
+    let error = td
+        .validate(&Graph::new(1, []))
+        .expect_err("one bag edge cannot be listed twice")
+        .to_string();
+    assert!(
+        error.contains("bag 1") && error.contains("more than once") && error.contains("list 0")
+    );
+}
+
+#[test]
+fn validation_requires_bag_adjacency_to_be_symmetric() {
+    let td = TreeDecomposition {
+        bags: make_td(vec![vec![0], vec![0]], Vec::new()).bags,
+        adj: vec![vec![1], Vec::new()],
+    };
+
+    let error = td
+        .validate(&Graph::new(1, []))
+        .expect_err("an undirected bag edge needs both directions")
+        .to_string();
+    assert!(error.contains("bag 0") && error.contains("1") && error.contains("reverse"));
 }
 
 #[test]
@@ -162,6 +306,21 @@ fn validation_requires_every_graph_edge_to_be_in_a_bag() {
         .expect_err("the endpoints never share a bag")
         .to_string();
     assert!(error.contains("edge (0, 2)") && error.contains("no bag"));
+}
+
+#[test]
+fn validation_rejects_a_graph_edge_with_an_out_of_range_endpoint() {
+    let td = make_td(vec![vec![0]], Vec::new());
+    let graph = Graph {
+        num_vertices: 1,
+        edges: vec![(0, 2)],
+    };
+
+    let error = td
+        .validate(&graph)
+        .expect_err("vertex 2 is not in the graph")
+        .to_string();
+    assert!(error.contains("edge (0, 2)") && error.contains("outside 0..1"));
 }
 
 #[test]

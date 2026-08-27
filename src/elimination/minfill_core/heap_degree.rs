@@ -2,8 +2,8 @@
 //! current degree, ties broken by the caller's salt and then by vertex id.
 //!
 //! One instantiation of the greedy skeleton in `greedy`. `width_opt` runs it as
-//! a slot of the elimination schedule; the bags it emits through the sink are
-//! what a tree decomposition — and then a vtree — is built from.
+//! a slot of the elimination portfolio; the bags it emits through the sink are
+//! what a tree decomposition is built from.
 
 use super::greedy::{ElimPolicy, eliminate_greedy};
 use super::*;

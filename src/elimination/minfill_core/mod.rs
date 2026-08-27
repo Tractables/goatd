@@ -48,7 +48,7 @@ pub(super) use sampling::{eliminate_mindegree_sampling, eliminate_minfill_sampli
 /// pathologically dense graphs. `hard_deadline` ends it, leaving a path
 /// decomposition over whatever is still active, so a complete decomposition
 /// comes back even where cheap-mode overshoots by seconds per elimination.
-/// `width_bound` is the best width the caller's schedule already holds: a bag
+/// `width_bound` is the best width the caller's portfolio already holds: a bag
 /// wider than that cannot win, so finishing is wasted work.
 ///
 /// One value rather than three parameters, so which of them a core reads is
@@ -436,14 +436,13 @@ fn sample_tie_set(tie_set: &[u32], weight: &[u32], rng: &mut Xorshift64) -> u32 
             break;
         }
     }
-    // The dominant cost of weighted min-degree and min-fill sampling. Ties are
-    // enormous on an incidence residual — thousands of same-degree vertices sit
-    // in one bucket — so the two passes over `tie_set` above outweigh the graph
-    // mutation that follows them by more than an order of magnitude: measured
-    // on one incidence residual, 316 M tie-set touches over an elimination run
-    // against 12 M units of charged graph work. A touch here costs what a
-    // charged graph touch costs, so the scan goes on the meter at face value
-    // and needs no weight of its own.
+    // The dominant cost of weighted min-degree and min-fill sampling. Some
+    // residuals put thousands of same-degree vertices in one bucket, so the two
+    // passes over `tie_set` above outweigh the graph mutation that follows them
+    // by more than an order of magnitude: measured on one such residual, 316 M
+    // tie-set touches over an elimination run against 12 M units of charged
+    // graph work. A touch here costs what a charged graph touch costs, so the
+    // scan goes on the meter at face value and needs no weight of its own.
     crate::meter::charge(tie_set.len() as u64 + pick as u64 + 1);
     tie_set[pick]
 }

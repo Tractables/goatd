@@ -479,16 +479,20 @@ pub const FC_MAX_EDGES: usize = 20_000_000;
 
 /// Refuse a graph the vendored builder cannot be handed at all.
 fn vendor_size_guard(graph: &Graph) -> Result<(), Error> {
-    if graph.num_vertices > FC_MAX_VERTICES {
+    vendor_size_guard_counts(graph.num_vertices, graph.edges.len())
+}
+
+fn vendor_size_guard_counts(num_vertices: u32, num_edges: usize) -> Result<(), Error> {
+    if num_vertices > FC_MAX_VERTICES {
         return Err(Error::TooLarge(format!(
             "graph too large for FlowCutter ({} vertices; the n×n adjacency matrix would exceed memory)",
-            graph.num_vertices
+            num_vertices
         )));
     }
-    if graph.edges.len() > FC_MAX_EDGES {
+    if num_edges > FC_MAX_EDGES {
         return Err(Error::TooLarge(format!(
             "graph too dense for FlowCutter ({} edges; the builder would exceed memory)",
-            graph.edges.len()
+            num_edges
         )));
     }
     Ok(())

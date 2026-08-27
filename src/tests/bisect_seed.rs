@@ -13,11 +13,11 @@ fn zero_base_seed_preserves_the_legacy_stream() {
     }
 }
 
-/// The repair: the two seeds goatd's schedule actually uses (`s` and
+/// The repair: the two seeds goatd's portfolio actually uses (`s` and
 /// `s + 42`) land on different RNG streams at every restart. Before the
 /// fix `base_seed` was discarded and these were equal.
 #[test]
-fn schedule_slot_seeds_land_on_different_streams() {
+fn portfolio_slot_seeds_land_on_different_streams() {
     for base in [1u64, 7, 42, 12_345, u64::MAX / 3] {
         for restart in 0..8 {
             assert_ne!(
@@ -45,7 +45,7 @@ fn nonzero_base_seed_leaves_the_legacy_stream() {
 }
 
 // End-to-end on the two bisectors. The seed pair is `(s, s + 42)` — exactly
-// the pair the five-slot schedule hands its two `NestedDissection`
+// the pair the five-slot portfolio hands its two `NestedDissection`
 // slots.
 
 const SLOT_A: u64 = 12_345;
@@ -81,7 +81,7 @@ fn assert_proper_bisection(part: &[u8], n: usize) {
     assert!(part.contains(&1), "side 1 non-empty");
 }
 
-fn primal_part(seed: u64, edges: &[(u32, u32)], n: usize) -> Vec<u8> {
+fn graph_part(seed: u64, edges: &[(u32, u32)], n: usize) -> Vec<u8> {
     crate::multilevel_bisect::multilevel_bisect(n, edges, 0.2, seed)
 }
 
@@ -89,29 +89,29 @@ fn hg_part(seed: u64, hyperedges: &[Vec<u32>], n: usize) -> Vec<u8> {
     crate::multilevel_hg_bisect::multilevel_hg_bisect(n, hyperedges, None, 0.03, seed, 1.0)
 }
 
-/// THE REGRESSION: goatd's two schedule seeds must reach the primal
+/// THE REGRESSION: goatd's two portfolio seeds must reach the graph
 /// bisector and produce genuinely different partitions. Before the fix the
 /// bisector discarded the seed and these two were byte-identical.
 #[test]
-fn primal_bisect_differs_across_schedule_seeds() {
+fn graph_bisect_differs_across_portfolio_seeds() {
     let n = 200;
     let edges = random_graph(n, 800);
-    let a = primal_part(SLOT_A, &edges, n);
-    let b = primal_part(SLOT_B, &edges, n);
+    let a = graph_part(SLOT_A, &edges, n);
+    let b = graph_part(SLOT_B, &edges, n);
     assert_proper_bisection(&a, n);
     assert_proper_bisection(&b, n);
     assert_ne!(
         a, b,
-        "distinct schedule seeds must give distinct partitions"
+        "distinct portfolio seeds must give distinct partitions"
     );
     // Same seed, same answer: the fix must not make the bisector
     // nondeterministic.
-    assert_eq!(a, primal_part(SLOT_A, &edges, n), "deterministic per seed");
+    assert_eq!(a, graph_part(SLOT_A, &edges, n), "deterministic per seed");
 }
 
 /// Same regression in the hypergraph twin.
 #[test]
-fn hg_bisect_differs_across_schedule_seeds() {
+fn hg_bisect_differs_across_portfolio_seeds() {
     let n = 120;
     let hyperedges: Vec<Vec<u32>> = random_graph(n, 480)
         .into_iter()
@@ -123,7 +123,7 @@ fn hg_bisect_differs_across_schedule_seeds() {
     assert_proper_bisection(&b, n);
     assert_ne!(
         a, b,
-        "distinct schedule seeds must give distinct partitions"
+        "distinct portfolio seeds must give distinct partitions"
     );
     assert_eq!(a, hg_part(SLOT_A, &hyperedges, n), "deterministic per seed");
 }

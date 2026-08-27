@@ -1,4 +1,4 @@
-//! The schedule executor: run a schedule of elimination configs under a
+//! The portfolio executor: run a portfolio of elimination configs under a
 //! wall-clock budget and keep per-slot outcomes.
 //!
 //! The slots themselves come from [`super::width_opt`]; the single-order
@@ -24,7 +24,7 @@ const FC_SLOT_PATIENCE_MS: i64 = 500;
 
 /// Per-slot soft cap on `Config::MinFill` (eager fill-count recompute is
 /// 10–20× more expensive per step than the lazy variants). Applied
-/// unconditionally so a run with no schedule deadline still bounds MinFill at
+/// unconditionally so a run with no portfolio deadline still bounds MinFill at
 /// 1 s.
 const MINFILL_SLOT_MAX_MS: u64 = 1_000;
 
@@ -33,16 +33,16 @@ const MINFILL_SLOT_MAX_MS: u64 = 1_000;
 /// costs construction time without improving the decomposition.
 const MAX_REFINE_SLOTS: u64 = 100;
 
-/// Soft deadline (ms) of the single-slot schedule. The hard deadline inside
+/// Soft deadline (ms) of the single-slot portfolio. The hard deadline inside
 /// the elimination core is `2×` this. Measured knee across benchmark graphs:
 /// sub-second budgets give a worse decomposition on hard instances, and
 /// budgets above ~2 s do not improve it further.
 const SINGLE_SLOT_TIMEOUT_MS: u64 = 1000;
 
-/// What a schedule runs under, beyond the slot list.
+/// What a portfolio runs under, beyond the slot list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ScheduleConfig {
-    /// Soft schedule deadline. `None` runs to completion with no between-slot
+pub struct PortfolioConfig {
+    /// Soft portfolio deadline. `None` runs to completion with no between-slot
     /// deadline. `Some(N)` puts the soft deadline at `start+N` ms and the hard
     /// one at `start+2N`; the elimination core emergency-bails to a path
     /// decomposition once the hard deadline passes.
@@ -56,8 +56,8 @@ pub struct ScheduleConfig {
     pub fc_slot_cap_ms: Option<i64>,
 }
 
-impl ScheduleConfig {
-    /// The single-slot schedule's configuration: 1 s soft / 2 s hard deadline,
+impl PortfolioConfig {
+    /// The single-slot portfolio's configuration: 1 s soft / 2 s hard deadline,
     /// 100 refinement samples, and a 2 s trailing FlowCutter slot when
     /// `fc_slot` is set.
     pub fn single_slot(fc_slot: bool) -> Self {
@@ -68,7 +68,7 @@ impl ScheduleConfig {
         }
     }
 
-    /// The five-slot schedule's configuration: `timeout_ms` as the soft
+    /// The five-slot portfolio's configuration: `timeout_ms` as the soft
     /// deadline (`None` runs to completion), 100 refinement samples, and no
     /// trailing FlowCutter slot — the refined entry point ends in a FlowCutter
     /// refinement pass instead.
@@ -88,7 +88,7 @@ fn is_mindegree_variant(c: width_opt::Config<'_>) -> bool {
     )
 }
 
-/// One slot's outcome inside one run of `run_schedule`.
+/// One slot's outcome inside one run of `run_portfolio`.
 enum SlotResult {
     /// A decomposition and its width.
     Produced { td: TreeDecomposition, width: u32 },
@@ -115,15 +115,15 @@ impl SlotResult {
     }
 }
 
-/// Fill remaining schedule slots with empty stubs starting at index
+/// Fill remaining portfolio slots with empty stubs starting at index
 /// `from_idx`. Called after `hard_deadline` trips so all downstream slots get
 /// a recorded stub without re-entering elimination.
 fn emit_skipped_stubs(
     results: &mut Vec<SlotResult>,
-    schedule: &[(width_opt::Config<'_>, u64)],
+    portfolio: &[(width_opt::Config<'_>, u64)],
     from_idx: usize,
 ) {
-    let skipped = schedule.len().saturating_sub(from_idx);
+    let skipped = portfolio.len().saturating_sub(from_idx);
     results.extend(std::iter::repeat_with(|| SlotResult::Empty).take(skipped));
 }
 
@@ -150,7 +150,7 @@ fn run_fc_slot(
     }
 }
 
-/// What one schedule slot's elimination left behind.
+/// What one portfolio slot's elimination left behind.
 enum SlotOutcome {
     /// A decomposition, recorded and folded into the best width so far.
     Produced,
@@ -195,9 +195,9 @@ fn record_slot(
 }
 
 /// Builds a run's slot list for a seed, given the weight vector.
-type ScheduleBuilder = for<'w> fn(u64, &'w [u32]) -> Vec<(width_opt::Config<'w>, u64)>;
+type PortfolioBuilder = for<'w> fn(u64, &'w [u32]) -> Vec<(width_opt::Config<'w>, u64)>;
 
-/// Run a schedule: large-residual skip on non-MinDegree configs, 1 s soft cap
+/// Run a portfolio: large-residual skip on non-MinDegree configs, 1 s soft cap
 /// on `Config::MinFill`, then refinement samples with the remaining budget,
 /// then the trailing FlowCutter slot where configured. Returns one
 /// `SlotResult` per slot, plus one per refinement sample and one for the
@@ -210,12 +210,12 @@ type ScheduleBuilder = for<'w> fn(u64, &'w [u32]) -> Vec<(width_opt::Config<'w>,
 ///
 /// `weight` has one entry per vertex and is what the sampling orders draw tie
 /// sets with; every slot and every refinement sample shares it.
-fn run_schedule(
+fn run_portfolio(
     graph: &Graph,
     weight: &[u32],
     seed: u64,
-    schedule: ScheduleBuilder,
-    cfg: ScheduleConfig,
+    portfolio: PortfolioBuilder,
+    cfg: PortfolioConfig,
 ) -> Vec<SlotResult> {
     let start = crate::meter::now();
     let deadline: Option<Instant> = cfg.timeout_ms.map(|ms| start + Duration::from_millis(ms));
@@ -225,7 +225,7 @@ fn run_schedule(
         .timeout_ms
         .map(|ms| start + Duration::from_millis(ms.saturating_mul(2)));
     let prebuilt = width_opt::prebuild(graph.num_vertices, &graph.edges);
-    let schedule = schedule(seed, weight);
+    let portfolio = portfolio(seed, weight);
     let large_residual = prebuilt.num_active() > width_opt::NESTED_DISS_MAX_ACTIVE;
     let mut results: Vec<SlotResult> = Vec::with_capacity(5);
 
@@ -241,7 +241,7 @@ fn run_schedule(
     // elimination only to immediately emergency-bail again.
     let mut hard_deadline_tripped = false;
 
-    for (i, (config, s)) in schedule.iter().copied().enumerate() {
+    for (i, (config, s)) in portfolio.iter().copied().enumerate() {
         // Honour the deadline between configs (when set), but always run
         // config 0 so we return something even on huge graphs that would
         // otherwise time out inside the first config.
@@ -256,9 +256,9 @@ fn run_schedule(
             continue;
         }
         let slot_start = crate::meter::now();
-        // MinFill cap: with no schedule deadline this is the only MinFill
+        // MinFill cap: with no portfolio deadline this is the only MinFill
         // bound; with one it tightens MinFill to min(slot_start + 1 s,
-        // schedule deadline).
+        // portfolio deadline).
         let soft_deadline = if config == width_opt::Config::MinFill {
             let cap = slot_start + Duration::from_millis(MINFILL_SLOT_MAX_MS);
             Some(deadline.map_or(cap, |d| d.min(cap)))
@@ -287,13 +287,13 @@ fn run_schedule(
             // Out of time, and the bags this slot holds are not a
             // decomposition — nothing later will fare better.
             SlotOutcome::Bailed => true,
-            // Nothing usable from this slot, but the schedule is still inside
+            // Nothing usable from this slot, but the portfolio is still inside
             // its budget.
             SlotOutcome::WidthAborted => false,
             SlotOutcome::Produced => expired(hard_deadline),
         };
         if hard_deadline_tripped {
-            emit_skipped_stubs(&mut results, &schedule, i + 1);
+            emit_skipped_stubs(&mut results, &portfolio, i + 1);
             break;
         }
     }
@@ -301,7 +301,7 @@ fn run_schedule(
     // config with any remaining budget. Measured ≥79% of min-fill pops have
     // ≥2 tied candidates, so different seeds explore genuinely different
     // elimination orders and can lower width on small/medium graphs where the
-    // base schedule returns in tens of ms. Falls back to MinDegreeSampled on
+    // base portfolio returns in tens of ms. Falls back to MinDegreeSampled on
     // large residuals, matching the main loop's skip rule. Stops at `deadline`
     // when there is one, and at `refine_cap` samples regardless.
     let refine_config = if large_residual {
@@ -344,7 +344,7 @@ fn run_schedule(
             SlotOutcome::Produced | SlotOutcome::WidthAborted => refine_k += 1,
         }
     }
-    // Runs vanilla FlowCutter once as a final schedule candidate. Placed after
+    // Runs vanilla FlowCutter once as a final portfolio candidate. Placed after
     // the sampling-refinement loop so it runs in the remaining hard-deadline
     // margin without starving sampling — under a typical `timeout_ms`
     // contract, `hard_deadline` = 2×`soft_deadline`, leaving up to
@@ -360,7 +360,7 @@ fn run_schedule(
     results
 }
 
-/// The decompositions a schedule produced, in slot order, with the slots that
+/// The decompositions a portfolio produced, in slot order, with the slots that
 /// produced nothing left out.
 fn produced(results: Vec<SlotResult>) -> Vec<TreeDecomposition> {
     results
@@ -372,64 +372,64 @@ fn produced(results: Vec<SlotResult>) -> Vec<TreeDecomposition> {
         .collect()
 }
 
-/// Run the single-slot schedule — one sampled min-fill slot, then up to
+/// Run the single-slot portfolio — one sampled min-fill slot, then up to
 /// `cfg.refine_cap` further seeds of it, then the trailing FlowCutter slot
 /// when `cfg` names one — and return every decomposition it produced, in
 /// slot order. Never empty: slot 0 always produces one.
 ///
 /// The caller picks among them; [`refined_select_key`] is the order the
 /// refined path uses, and a caller with a cost of its own can rank by that.
-pub fn single_slot_schedule(
+pub fn single_slot_portfolio(
     graph: &Graph,
     weight: &[u32],
     seed: u64,
-    cfg: ScheduleConfig,
+    cfg: PortfolioConfig,
 ) -> Vec<TreeDecomposition> {
-    produced(run_schedule(
+    produced(run_portfolio(
         graph,
         weight,
         seed,
-        width_opt::single_slot_schedule,
+        width_opt::single_slot_portfolio,
         cfg,
     ))
 }
 
-/// Run the five-slot schedule and return every decomposition it produced,
+/// Run the five-slot portfolio and return every decomposition it produced,
 /// sorted ascending by [`refined_select_key`] with ties kept in slot order
-/// (a stable sort), so the first is the schedule's winner. Never empty.
-pub fn five_slot_schedule(
+/// (a stable sort), so the first is the portfolio's winner. Never empty.
+pub fn five_slot_portfolio(
     graph: &Graph,
     weight: &[u32],
     seed: u64,
-    cfg: ScheduleConfig,
+    cfg: PortfolioConfig,
 ) -> Vec<TreeDecomposition> {
-    let mut tds = produced(run_schedule(
+    let mut tds = produced(run_portfolio(
         graph,
         weight,
         seed,
-        width_opt::five_slot_schedule,
+        width_opt::five_slot_portfolio,
         cfg,
     ));
     tds.sort_by_key(|td| refined_select_key(td.treewidth(), td.total_bag_size()));
     tds
 }
 
-/// The five-slot schedule's winner, refined by FlowCutter cuts
+/// The five-slot portfolio's winner, refined by FlowCutter cuts
 /// ([`refine_td_with_flowcutter_cut`](super::refine_td_with_flowcutter_cut)).
 ///
 /// `refine_deadline` bounds the refinement pass; it is absolute, so a
-/// schedule that spent its whole budget leaves the refinement no time rather
-/// than doubling the cost. Both halves are anytime — the schedule keeps the
+/// portfolio that spent its whole budget leaves the refinement no time rather
+/// than doubling the cost. Both halves are anytime — the portfolio keeps the
 /// best decomposition found so far, and a skipped refinement returns it
 /// unchanged — so a bounded build still yields a decomposition.
 pub fn refined_td(
     graph: &Graph,
     weight: &[u32],
     seed: u64,
-    cfg: ScheduleConfig,
+    cfg: PortfolioConfig,
     refine_deadline: Option<Instant>,
 ) -> TreeDecomposition {
-    let td = five_slot_schedule(graph, weight, seed, cfg)
+    let td = five_slot_portfolio(graph, weight, seed, cfg)
         .into_iter()
         .next()
         .expect("slot 0 always produces a decomposition");

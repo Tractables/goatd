@@ -2,7 +2,7 @@
 //!
 //! Adjacency is `Vec<Vec<u32>>` rather than `Vec<FxHashSet<u32>>`: Vec
 //! iteration is more cache-friendly than hashbrown bucket scanning at the
-//! degrees min-fill's hot path sees on CNF-derived graphs. Vertices are never
+//! degrees min-fill's hot path sees. Vertices are never
 //! removed from the top-level vector; elimination marks them inactive and
 //! clears their row.
 //!
@@ -250,12 +250,11 @@ impl Graph {
         // The sparse path's cost is not k². `eliminate_with_nbrs_marker` walks
         // every neighbour's whole adjacency row — once to stamp it, and to
         // find `v` in it — so it pays Σ deg(u) for u ∈ N(v) before it pays the
-        // k² fill test. On an incidence graph the clause vertices are
-        // high-degree, and that scan term then dominates k² by orders of
-        // magnitude. Charging k² alone made elimination read some fifty times
-        // cheaper than it runs, which let a configuration spend its schedule's
-        // whole window and more while the work clock believed it had barely
-        // started. Measured on one incidence residual: 3.8 M units charged
+        // k² fill test. Around high-degree hubs that scan term can dominate k²
+        // by orders of magnitude. Charging k² alone made elimination read some
+        // fifty times cheaper than it runs, which let a configuration spend its
+        // portfolio's whole window and more while the work clock believed it had
+        // barely started. Measured on one such residual: 3.8 M units charged
         // against 265 ms of elimination.
         let k = neighbours.len() as u64;
         crate::meter::charge(if self.bitset_words > 0 {

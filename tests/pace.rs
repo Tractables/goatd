@@ -33,6 +33,27 @@ fn a_rejected_gr_names_what_is_wrong() {
         ),
         ("p tw 2 1\n1\n", "an edge with one endpoint", &["edge line"]),
         ("p tw x 1\n1 2\n", "a non-numeric vertex count", &[]),
+        ("p tw 2 x\n1 2\n", "a non-numeric edge count", &[]),
+        (
+            "p tw 2 1 extra\n1 2\n",
+            "extra fields on a problem line",
+            &["problem line"],
+        ),
+        (
+            "p tw 2 1\np tw 2 1\n1 2\n",
+            "a second problem line",
+            &["more than one problem line"],
+        ),
+        (
+            "p tw 2 0\n1 2\n",
+            "more edge lines than the problem line declares",
+            &["declares 0 edge lines", "contains 1"],
+        ),
+        (
+            "p tw 2 2\n1 2\n",
+            "fewer edge lines than the problem line declares",
+            &["declares 2 edge lines", "contains 1"],
+        ),
     ];
     for &(text, what, expected) in cases {
         let err = Graph::from_gr(text)
@@ -49,7 +70,7 @@ fn a_rejected_gr_names_what_is_wrong() {
 }
 
 #[test]
-fn test_parse_pace_td_small() {
+fn a_td_file_parses_its_bags_and_tree_edges() {
     // Hand-crafted .td: 2 bags, 1 tree edge
     // Bag 1: vertices 1,2 → stored as 0,1
     // Bag 2: vertices 2,3 → stored as 1,2
@@ -68,7 +89,7 @@ fn test_parse_pace_td_small() {
 }
 
 #[test]
-fn test_parse_pace_td_with_comments() {
+fn td_comments_are_ignored() {
     let td_str = "c comment line\ns td 1 2 2\nb 1 1 2\n";
     let td = TreeDecomposition::from_td(td_str).expect("Should parse with comments");
     assert_eq!(td.bags.len(), 1);
@@ -76,19 +97,19 @@ fn test_parse_pace_td_with_comments() {
 }
 
 #[test]
-fn test_parse_pace_td_empty() {
+fn empty_text_is_not_a_tree_decomposition() {
     let result = TreeDecomposition::from_td("");
     assert!(result.is_err(), "empty TD should error");
 }
 
 #[test]
-fn test_parse_pace_td_no_bags() {
+fn a_solution_line_without_bags_is_not_a_tree_decomposition() {
     let result = TreeDecomposition::from_td("s td 2 2 3\n");
     assert!(result.is_err(), "TD with header but no bags should error");
 }
 
 #[test]
-fn test_parse_pace_td_blank_lines_only() {
+fn blank_lines_are_not_a_tree_decomposition() {
     let result = TreeDecomposition::from_td("\n\n\n");
     assert!(result.is_err(), "blank lines should give no bags");
 }
@@ -134,6 +155,16 @@ fn a_rejected_td_names_the_offending_id_and_the_count_it_was_checked_against() {
             &["bag id 9", "declares 2"],
         ),
         (
+            "s td 2 1 2\nb 1 1\nb 2 2\n2 1\n",
+            "a tree edge whose ids are reversed",
+            &["smaller bag id first", "2 1"],
+        ),
+        (
+            "s td 1 1 1\nb 1 1\n1 1\n",
+            "a self-loop in the bag tree",
+            &["smaller bag id first", "1 1"],
+        ),
+        (
             "b 1 1 2\n",
             "a bag line before the solution line",
             &["before the solution line"],
@@ -145,6 +176,51 @@ fn a_rejected_td_names_the_offending_id_and_the_count_it_was_checked_against() {
             &["Malformed solution line"],
         ),
         ("s td 1 2 2\nb 1 1 x\n", "a non-numeric vertex", &[]),
+        (
+            "s not-td 1 2 2\nb 1 1 2\n",
+            "the wrong solution kind",
+            &["Malformed solution line"],
+        ),
+        (
+            "s td 1 x 2\nb 1 1 2\n",
+            "a non-numeric maximum bag size",
+            &[],
+        ),
+        (
+            "s td 1 1 2\nb 1 1 2\n",
+            "a bag larger than the declared maximum",
+            &["maximum bag size 1", "contains 2 vertices"],
+        ),
+        (
+            "s td 1 3 2\nb 1 1 2\n",
+            "a declared maximum larger than every bag",
+            &["maximum bag size 3", "contains 2 vertices"],
+        ),
+        (
+            "s td 1 1 1\ns td 1 1 1\nb 1 1\n",
+            "a second solution line",
+            &["more than one solution line"],
+        ),
+        (
+            "s td 1 1 1\nb 1 1\nnot a tree edge\n",
+            "a malformed tree edge",
+            &["Malformed tree edge"],
+        ),
+        (
+            "s td 1 1 1\nb 1 1\none two\n",
+            "a non-numeric tree edge",
+            &[],
+        ),
+        (
+            "s td 2 1 2\nb 1 1\nb 2 2\n",
+            "a disconnected bag graph",
+            &["bag tree has 0 edges", "tree on 2 bags has 1"],
+        ),
+        (
+            "s td 3 1 3\nb 1 1\nb 2 2\nb 3 3\n1 2\n1 3\n2 3\n",
+            "a cycle in the bag graph",
+            &["bag tree has 3 edges", "tree on 3 bags has 2"],
+        ),
     ];
     for &(td_str, what, expected) in cases {
         let err = TreeDecomposition::from_td(td_str)

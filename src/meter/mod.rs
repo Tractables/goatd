@@ -2,7 +2,7 @@
 //! derived from it.
 //!
 //! Every budgeted search in this crate stops on a decision: the elimination
-//! schedule divides its window between orders, the FlowCutter restart loop
+//! portfolio divides its window between orders, the FlowCutter restart loop
 //! stops when its window is gone, the separator search gives up at its cap.
 //! Each of those decisions changes which decomposition comes out, and each is
 //! normally made against a wall clock — so the decomposition a run produces
@@ -139,13 +139,13 @@ pub fn spent() -> u64 {
 /// since, converted at [`UNITS_PER_MS`].
 ///
 /// Every budgeted DECISION in this crate reads this instead of the real clock:
-/// the schedule's slot and refinement deadlines, the elimination core's soft
+/// the portfolio's slot and refinement deadlines, the elimination core's soft
 /// and hard deadlines, the separator search's cap, the wall a FlowCutter
 /// build converts into its work budget.
 ///
 /// It is an `Instant` and not a duration or a counter because that is the shape
 /// the budgets already have: a deadline armed once travels as a bare
-/// `Instant` through the schedule into the elimination core and is compared
+/// `Instant` through the portfolio into the elimination core and is compared
 /// against the clock in a dozen places that never see the site that set it.
 /// Converting the clock those comparisons read converts all of them at once
 /// and leaves every deadline expression untouched.

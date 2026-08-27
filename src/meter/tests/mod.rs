@@ -61,6 +61,23 @@ fn the_guard_disarms_when_it_drops() {
     assert!(!metering(), "the meter stayed armed past its guard");
 }
 
+#[test]
+fn a_nested_guard_restores_the_outer_construction_clock() {
+    let outer_epoch = Instant::now();
+    let _outer = arm(outer_epoch);
+    charge(UNITS_PER_MS * 3);
+    assert_eq!(now(), outer_epoch + Duration::from_millis(3));
+
+    {
+        let inner_epoch = outer_epoch + Duration::from_secs(10);
+        let _inner = arm(inner_epoch);
+        charge(UNITS_PER_MS * 2);
+        assert_eq!(now(), inner_epoch + Duration::from_millis(2));
+    }
+
+    assert_eq!(now(), outer_epoch + Duration::from_millis(5));
+}
+
 /// A budget in units and the milliseconds it converts to are the same budget.
 #[test]
 fn units_and_milliseconds_convert_back_and_forth() {

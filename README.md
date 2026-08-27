@@ -4,77 +4,58 @@
   <img src="assets/logo.png" alt="goatd logo" width="280">
 </p>
 
-Tree decompositions of graphs, as a Rust library and a command-line solver.
-A graph goes in as an edge list and a tree decomposition comes out, by one of
-three routes:
+Tree decompositions of graphs, as a Rust library and command-line solver. The
+portfolio runs several constructions and keeps the narrowest result:
 
-- **elimination orders** — min-fill, min-degree and nested dissection, each
-  run after a safe-reduction preprocessing pass, with two sampled variants
-  that break ties by a per-vertex weight; a schedule that runs several under a
-  time budget and keeps the narrowest; and a refinement pass that re-cuts a
-  decomposition along FlowCutter separators;
-- **FlowCutter** — the PACE 2017 treewidth solver, vendored in C++ and driven
-  in process under a wall-clock or a step budget;
-- **multilevel bisection** — the graph and hypergraph bisectors the orders
-  above are built on, usable on their own.
+- **portfolio search** — safe reductions, several seeds and construction
+  methods, then optional separator refinement;
+- **greedy elimination** — min-fill and min-degree, with deterministic or
+  weighted-sampling tie breaking;
+- **nested dissection** — recursive multilevel bisection, with each separator
+  eliminated after its two sides;
+- **flow-based separation** — balanced cuts for constructing and refining
+  decompositions. goatd includes a Rust FlowCutter separator search and the
+  vendored PACE 2017 FlowCutter decomposer.
 
-Every decomposition returned covers each vertex and each edge and has the
-running intersection property. The library spawns no thread and reads no
-environment variable; a search that reads a clock says so in its signature,
-and every other route is deterministic for a given seed.
+See [Algorithms](docs/algorithms.md) for the details and the differences from
+the upstream methods.
 
-## The solver
+## Solver
 
 ```sh
 cargo install goatd
 goatd graph.gr > graph.td
 ```
 
-`goatd` reads a PACE `.gr` file (or `-` for stdin) and writes a PACE `.td` to
-stdout or to `--out`. `--order` picks the route: `minfill` (the default),
-`mindegree`, `nested-dissection`, `flowcutter`, or `schedule`, which runs
-several orders under one budget. `--seed` fixes the tie-breaking, `--budget
-<ms>` bounds the run, `--steps <n>` gives FlowCutter a step budget so a run
-repeats exactly, `--ties sample` breaks min-fill and min-degree ties by
-weighted sampling (with `--weights <file>`, one integer per vertex), and
-`--refine` finishes with the FlowCutter-cut refinement. A flag the chosen
-order cannot act on is an error naming both; `goatd --help` has the full list.
+`goatd` reads and writes the PACE `.gr` and `.td` formats. Choose `--order
+minfill`, `mindegree`, `nested-dissection`, `flowcutter`, or `portfolio`; run
+`goatd --help` for budgets, seeds, weighted ties, and refinement.
 
-## The library
+## Library
 
 ```toml
 [dependencies]
 goatd = "0.1"
 ```
 
-The bundled [`basic` example](examples/basic.rs) constructs a four-vertex
-graph, computes a decomposition with the min-fill order and writes it in PACE
-`.td` format:
+The [`basic` example](examples/basic.rs) constructs a graph, computes a
+decomposition, validates it, and writes it in PACE format:
 
 ```sh
 cargo run --example basic
 ```
 
-`Graph::from_gr` and `TreeDecomposition::from_td` read the PACE formats;
-`to_gr` and `to_td` write them, and `TreeDecomposition::validate` checks a
-decomposition against a graph. `goatd::flowcutter::flowcutter_td` runs
-FlowCutter under an `FcBudget`; `goatd::elimination::refined_td` is the
-scheduled-and-refined construction the solver's `--order schedule --refine`
-runs; `goatd::td_ops` roots, projects and glues decompositions. The rustdoc
-has the rest.
+The public API also exposes graph and hypergraph bisection, the Rust separator
+search, the C++ FlowCutter decomposer, and decomposition projection and gluing.
+Rustdoc documents each entry point.
 
-## Building
+## Building and contributing
 
-The FlowCutter backend is C++ and is compiled by `build.rs` with the system
-C++ compiler, so a build needs one that speaks C++20: `build.rs` looks for
-`g++-14`, `g++-13`, `g++-12`, then plain `g++`, and `GOATD_CXX` names one
-outright (GCC 12 or newer, or a recent Clang). Nothing else is needed: no
-CMake, no system libraries, no network.
+Build setup is in [Building](docs/building.md). Contributions follow
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licence
 
-Apache-2.0. The vendored FlowCutter sources are BSD-2-Clause and the graph
-layer they sit on is MIT; [`THIRD-PARTY.md`](THIRD-PARTY.md) lists every
-component and the modifications made to it, and
-[`ACKNOWLEDGEMENTS.md`](ACKNOWLEDGEMENTS.md) credits the work the heuristics
-come from.
+Apache-2.0. Vendored code and modifications are recorded in
+[THIRD-PARTY.md](THIRD-PARTY.md); [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md)
+credits the work behind the algorithms.

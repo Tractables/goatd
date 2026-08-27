@@ -9,7 +9,7 @@ use std::process::exit;
 use std::time::{Duration, Instant};
 
 use goatd::elimination::{
-    Config, ScheduleConfig, elimination_td, five_slot_schedule, refine_td_with_flowcutter_cut,
+    Config, PortfolioConfig, elimination_td, five_slot_portfolio, refine_td_with_flowcutter_cut,
 };
 use goatd::flowcutter::{
     FC_BARE_TIMEOUT_MS, FC_DEFAULT_ITERS, FC_DEFAULT_STEPS_ITERS, FC_PATIENCE_MS_PARAMETRIZED,
@@ -30,7 +30,7 @@ options:
                           mindegree           greedy min-degree order
                           nested-dissection   multilevel nested dissection
                           flowcutter          the FlowCutter solver
-                          schedule            several orders under one budget,
+                          portfolio           several orders under one budget,
                                               keeping the narrowest
   --seed <n>            tie-breaking seed for every order but flowcutter
                         (default: 0)
@@ -40,7 +40,7 @@ options:
                         line; a smaller weight is eliminated earlier
                         (default: every vertex weighs the same)
   --budget <ms>         wall-clock budget: the elimination orders' soft
-                        deadline, flowcutter's run time, the schedule's
+                        deadline, flowcutter's run time, the portfolio's
                         soft deadline, and the refinement's deadline
   --steps <n>           flowcutter only: a step budget in place of a clock,
                         for a run that repeats exactly
@@ -56,7 +56,7 @@ enum Order {
     MinDegree,
     NestedDissection,
     FlowCutter,
-    Schedule,
+    Portfolio,
 }
 
 impl Order {
@@ -66,7 +66,7 @@ impl Order {
             "mindegree" => Order::MinDegree,
             "nested-dissection" => Order::NestedDissection,
             "flowcutter" => Order::FlowCutter,
-            "schedule" => Order::Schedule,
+            "portfolio" => Order::Portfolio,
             _ => return None,
         })
     }
@@ -77,7 +77,7 @@ impl Order {
             Order::MinDegree => "mindegree",
             Order::NestedDissection => "nested-dissection",
             Order::FlowCutter => "flowcutter",
-            Order::Schedule => "schedule",
+            Order::Portfolio => "portfolio",
         }
     }
 }
@@ -202,7 +202,7 @@ fn parse_args(argv: &[String]) -> Args {
         needs(
             "--seed",
             order != Order::FlowCutter,
-            "minfill, mindegree, nested-dissection or schedule",
+            "minfill, mindegree, nested-dissection or portfolio",
         );
     }
     if steps.is_some() {
@@ -297,16 +297,16 @@ fn decompose(args: &Args, graph: &Graph) -> TreeDecomposition {
             };
             flowcutter_td(graph, fc_budget).unwrap_or_else(|e| fail(&e.to_string()))
         }
-        Order::Schedule => {
-            let tds = five_slot_schedule(
+        Order::Portfolio => {
+            let tds = five_slot_portfolio(
                 graph,
                 &weight,
                 seed,
-                ScheduleConfig::five_slot(args.budget_ms),
+                PortfolioConfig::five_slot(args.budget_ms),
             );
             tds.into_iter()
                 .next()
-                .unwrap_or_else(|| fail("the schedule produced no decomposition"))
+                .unwrap_or_else(|| fail("the portfolio produced no decomposition"))
         }
     }
 }

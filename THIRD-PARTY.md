@@ -20,10 +20,10 @@ in the table below are relative to it.
 | Files | Upstream | Licence | Copyright |
 |---|---|---|---|
 | `flow-cutter-pace17/**`, `IFlowCutter.{cpp,hpp}` | [FlowCutter, PACE 2017](https://github.com/kit-algo/flow-cutter-pace17) | BSD-2-Clause | © 2016 Ben Strasser |
-| `graph.{cpp,hpp}`, `bitset.hpp`, `utils.hpp` | sharpSAT-TD | MIT | © 2021 Tuukka Korhonen and Matti Järvisalo |
-| `TreeDecomposition.{cpp,hpp}` | treedecomp | MIT | © 2023 Kenji Hashimoto |
-| `treedecomp_defs.hpp` | treedecomp | MIT | © 2023 Authors of treedecomp |
-| `time_mem.hpp` | MiniSat / CryptoMiniSat | MIT | © 2003–2006 Niklas Eén, Niklas Sörensson; © 2009–2020 the CryptoMiniSat authors |
+| `graph.{cpp,hpp}`, `bitset.hpp`, `utils.hpp` | [sharpSAT-TD](https://github.com/Laakeri/sharpsat-td) | MIT | © 2021 Tuukka Korhonen and Matti Järvisalo |
+| `TreeDecomposition.{cpp,hpp}` | [treedecomp](https://github.com/meelgroup/treedecomp) | MIT | © 2023 Kenji Hashimoto |
+| `treedecomp_defs.hpp` | [treedecomp](https://github.com/meelgroup/treedecomp) | MIT | © 2023 Authors of treedecomp |
+| `time_mem.hpp` | [MiniSat](https://github.com/niklasso/minisat) / [CryptoMiniSat](https://github.com/msoos/cryptominisat) | MIT | © 2003–2006 Niklas Eén, Niklas Sörensson; © 2009–2020 the CryptoMiniSat authors |
 
 One directory up, outside `upstream/`, sit the three files that are goatd's own
 and carry goatd's licence: `ffi.cpp` / `ffi.h`, the C ABI shim over the above,

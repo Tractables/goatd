@@ -1,10 +1,12 @@
 # Contributing
 
-Build prerequisites: a C++20 compiler ([`README.md`](README.md), *Building*).
+Bug reports, focused pull requests, documentation corrections, and new graph
+families for tests are welcome. Describe the behavior you are changing and why;
+for algorithm changes, include the graph shape that exposes the difference.
 
-## Checks
+## Before opening a pull request
 
-Before opening a pull request, run:
+Run the same checks as CI:
 
 ```sh
 cargo test --all-targets && cargo test --doc
@@ -13,44 +15,42 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo fmt --check
 ```
 
-CI runs the same commands, plus a build on the MSRV from `Cargo.toml` and
-`cargo package`.
+Build setup, including the C++ compiler used for FlowCutter, is documented in
+[docs/building.md](docs/building.md).
 
-## Code
+## Code guidelines
 
-- Every entry point that takes a graph returns a valid decomposition: each
-  vertex and each edge in some bag, and the running intersection property.
-  The FlowCutter builder is the one route that can fail, and it returns an
-  `Error` that says why.
-- The library does not spawn threads and does not read the process
-  environment; callers run many instances in parallel and configure a run
-  through arguments.
-- A search that reads a clock takes its deadline or budget as an argument.
-  Everything else is deterministic for a given seed, and a change that alters
-  the decomposition a seed produces is a behaviour change to state in the
-  commit.
-- In the solver, a flag that has no effect under the chosen `--order` is an
-  error naming both the flag and the order it needs.
-- `vendor/treedecomp/upstream/` is third-party source. It has a few in-place
-  fixes, each marked `// goatd:` and listed in `THIRD-PARTY.md`; further
-  changes go in `ffi.cpp`.
+- Every successful graph-to-decomposition entry point returns a valid tree
+  decomposition. Parsing, validation, and FlowCutter failures return `Error`;
+  panics are reserved for documented programming contracts such as matching a
+  weight vector to the graph's vertices.
+- The library is single-threaded. Do not add thread pools or spawn threads;
+  callers decide how instances are parallelized.
+- Budgets and seeds are explicit arguments. Do not read process environment
+  variables from library code.
+- A CLI flag that has no effect for the selected order is a usage error that
+  names the flag and the order that accepts it.
+- Keep one implementation and one configuration owner for each operation.
+  Extend shared code instead of adding a parallel path.
+- Files under `vendor/treedecomp/upstream/` are third-party code. Existing
+  changes are marked `// goatd:` and listed in `THIRD-PARTY.md`; prefer making
+  new changes in the FFI shim.
 
 ## Tests
 
-- Tests that use only `pub`/`pub(crate)` items go in `src/tests/`; tests that
-  need a module's private items go in `src/<module>/tests/`; the solver and
-  the PACE formats are tested through the public surface in `tests/`.
-  Production files contain no `#[cfg(test)]` code other than the `mod tests;`
-  line.
-- A test name states the fact being checked, one per test.
-- Fixed seeds; no sleeps, no external binaries beyond the crate's own.
-- No third-party test data: fixtures are small graphs written or generated in
-  the test.
-- A bug fix comes with a regression test that fails on the parent commit, in
-  the same commit.
+- Tests using only public or crate-visible items belong in `src/tests/`.
+  CLI, format, and other public end-to-end tests belong in the top-level
+  `tests/` directory.
+- Tests needing private items belong in a `tests/` directory inside the module
+  they exercise, such as `src/elimination/tests/`. Do not create a module
+  directory whose only content is a test file.
+- Keep only the `#[cfg(test)] mod tests;` registration in production files.
+- Give each test a sentence-like name for one behavior. Use fixed seeds, no
+  sleeps, and small graphs constructed in the test.
+- A bug fix includes a regression test that fails on the unfixed parent.
 
-## Docs and commits
+## Documentation and commits
 
-- Docs state what exists, what to watch out for, and what is guaranteed. No
-  numbers that go stale.
-- Commit subjects are imperative and describe the behaviour changed.
+Update user-facing documentation with behavior changes. Keep prose direct and
+avoid benchmark numbers that will go stale. Commit subjects are imperative and
+name the behavior or contract changed.

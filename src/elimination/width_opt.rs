@@ -2,7 +2,7 @@
 //!
 //! htd-inspired shape: enumerate a small set of `(config, seed)` pairs, build
 //! a `TreeDecomposition` for each, and return all of them. Scoring/selection
-//! happens one level up in `schedule.rs`.
+//! happens one level up in `portfolio.rs`.
 
 use std::collections::VecDeque;
 
@@ -57,7 +57,7 @@ pub enum Config<'a> {
 impl<'a> Config<'a> {
     /// The weight this order samples tie sets with, or `None` for the
     /// deterministic orders, which read none.
-    pub(super) fn sat_weight(self) -> Option<&'a [u32]> {
+    pub(super) fn tie_weight(self) -> Option<&'a [u32]> {
         match self {
             Config::MinFillSampled { weight } | Config::MinDegreeSampled { weight } => Some(weight),
             Config::MinFill | Config::MinDegree | Config::NestedDissection => None,
@@ -67,7 +67,7 @@ impl<'a> Config<'a> {
     /// The same order reading `weight` instead — how a caller that re-indexed
     /// the vertices (a component solved on its own numbering) points the
     /// sampling at the slice that matches.
-    pub(super) fn with_sat_weight<'b>(self, weight: &'b [u32]) -> Config<'b> {
+    pub(super) fn with_tie_weight<'b>(self, weight: &'b [u32]) -> Config<'b> {
         match self {
             Config::MinFill => Config::MinFill,
             Config::MinDegree => Config::MinDegree,
@@ -84,17 +84,17 @@ pub(crate) struct ConfigRun {
     pub td: TreeDecomposition,
     /// How the elimination ended. `Natural` is a clean run. `DeadlineBailed`
     /// and `WidthAborted` both mean the elimination stopped early and the
-    /// returned `td` is incomplete (partial bags) — the mod.rs schedule MUST
+    /// returned `td` is incomplete (partial bags) — the mod.rs portfolio MUST
     /// record a `td: None` stub in either case, unless it asked for
     /// `force_emit` and the exit is `DeadlineBailed`, in which case the
     /// emergency path fill has already completed the decomposition.
     pub exit: ElimExit,
 }
 
-/// Graph + preprocessing result, shared across every config in a schedule.
+/// Graph + preprocessing result, shared across every config in a portfolio.
 /// `Graph::from_edges` and `preprocess` are deterministic (no salt/seed), so
 /// running them once and cloning per config replaces 5 builds with 1 build +
-/// 4 clones when the schedule runs to completion.
+/// 4 clones when the portfolio runs to completion.
 pub(super) struct Prebuilt {
     reduced: Reduced,
     /// Cached CC count from the preprocessed residual (BFS on adj).
@@ -106,7 +106,7 @@ pub(super) struct Prebuilt {
     initial_fill: Vec<u64>,
 }
 
-/// Build graph + preprocess once for reuse across every config in a schedule.
+/// Build graph + preprocess once for reuse across every config in a portfolio.
 pub(super) fn prebuild(total_vertices: u32, edges: &[(u32, u32)]) -> Prebuilt {
     let graph = Graph::from_edges(total_vertices, edges);
     let reduced = preprocess(graph);
@@ -139,7 +139,7 @@ impl Prebuilt {
 }
 
 /// One slot of the search: which core to run, on which RNG stream, under which
-/// cutoffs. It travels unchanged from the schedule down to the elimination
+/// cutoffs. It travels unchanged from the portfolio down to the elimination
 /// core, so a path that needs a variation — the per-component solver, with its
 /// own seed and its own slice of the weights — re-points those fields and
 /// passes the rest straight through.
@@ -281,8 +281,7 @@ fn run_elimination_raw(
             // path) leaves it empty with only `bitset` describing the residual.
             // Reading `adj` produced wrong edges — in the second case zero
             // edges, hence an order over isolated vertices and singleton bags,
-            // width 0 on any graph — and a malformed TD that leaks clause
-            // vertices into the vtree (incidence graph).
+            // width 0 on any graph — and a malformed TD that omits edges.
             let mut nbrs_buf: Vec<u32> = Vec::new();
             let mut edges: Vec<(u32, u32)> = Vec::new();
             for &v in &active {
@@ -397,13 +396,13 @@ fn run_config_per_component(
         // re-indexed with it; a deterministic core has none to re-index.
         let sub_weight: Option<Vec<u32>> = spec
             .config
-            .sat_weight()
+            .tie_weight()
             .map(|w| comp.iter().map(|&v| w[v as usize]).collect());
         // Vary seed per component so sampling configs get independent randomness.
         let sub_spec = RunSpec {
             seed: spec.seed.wrapping_add(comp_idx as u64 + 1),
             config: match sub_weight.as_deref() {
-                Some(w) => spec.config.with_sat_weight(w),
+                Some(w) => spec.config.with_tie_weight(w),
                 None => spec.config,
             },
             ..spec
@@ -457,8 +456,8 @@ pub(super) fn run_config_on_reduced(
     // Only the whole-residual path checks this: the per-component path
     // re-indexes each component and remaps the weight alongside, so its
     // lengths are its own business.
-    if let Some(w) = spec.config.sat_weight() {
-        assert_eq!(w.len(), n, "sat_weight length must match total_vertices");
+    if let Some(w) = spec.config.tie_weight() {
+        assert_eq!(w.len(), n, "tie_weight length must match total_vertices");
     }
 
     let (steps, exit) = run_elimination_raw(reduced, &salt, initial_fill, spec);
@@ -470,8 +469,8 @@ pub(super) fn run_config_on_reduced(
 /// This preserves whatever progress the elim heuristic made (so width ≤
 /// max(partial_width, remaining_active − 1)) rather than forcing width =
 /// n-1.
-/// The main schedule loop only sets `force_emit = true` while no slot has
-/// produced a TD yet — so at most one emergency fill runs per schedule.
+/// The main portfolio loop only sets `force_emit = true` while no slot has
+/// produced a TD yet — so at most one emergency fill runs per portfolio.
 fn maybe_fill_emergency(force_emit: bool, exit: ElimExit, g: &Graph, steps: &mut ElimSteps) {
     if force_emit && exit == ElimExit::DeadlineBailed {
         minfill_core::emergency_path_decomp(g, &mut steps.sink());
@@ -491,7 +490,7 @@ fn finalize(steps: ElimSteps, n: usize, exit: ElimExit) -> ConfigRun {
 
 /// Max residual size for which `nd_order` (via `multilevel_bisect`) can
 /// reasonably complete within a per-config slot of the hard-deadline budget.
-/// Exported so the schedule driver can recognize a large residual and skip
+/// Exported so the portfolio driver can recognize a large residual and skip
 /// the slots that would overshoot it — every non-min-degree slot after the
 /// first — instead of spending the budget on an elimination that will not
 /// finish.
@@ -504,7 +503,7 @@ fn to_sample_weight(argmin_weight: &[u32]) -> Vec<u32> {
     argmin_weight.iter().map(|&w| u32::MAX - w).collect()
 }
 
-/// The five-slot schedule the refined entry point runs.
+/// The five-slot portfolio the refined entry point runs.
 ///
 /// Ordered by ascending per-step cost so cheap algorithms run first and give
 /// the best chance for multiple configs to fit inside the wall-clock budget:
@@ -520,9 +519,9 @@ fn to_sample_weight(argmin_weight: &[u32]) -> Vec<u32> {
 /// Sampling (rather than deterministic `(secondary, salt)` tie-breaking) lets
 /// the `+42` seed produce a genuinely different elimination, not just a
 /// re-shuffled tie-break. Slot 0 is exempt from every between-slot skip in
-/// the budget-aware runner, which is what guarantees the schedule always
+/// the budget-aware runner, which is what guarantees the portfolio always
 /// returns a TD even when the wall-clock deadline elapses early.
-pub(super) fn five_slot_schedule(base_seed: u64, weight: &[u32]) -> Vec<(Config<'_>, u64)> {
+pub(super) fn five_slot_portfolio(base_seed: u64, weight: &[u32]) -> Vec<(Config<'_>, u64)> {
     vec![
         (Config::MinDegreeSampled { weight }, base_seed),
         (Config::NestedDissection, base_seed),
@@ -535,13 +534,13 @@ pub(super) fn five_slot_schedule(base_seed: u64, weight: &[u32]) -> Vec<(Config<
     ]
 }
 
-/// The single-slot schedule: one `MinFillSampled` slot. The refinement
-/// samples that follow it provide the diversity the five-slot schedule gets
+/// The single-slot portfolio: one `MinFillSampled` slot. The refinement
+/// samples that follow it provide the diversity the five-slot portfolio gets
 /// from its slots. Measured as strictly better than a 5-slot / 200-sample
 /// configuration on every axis: more instances decomposed well, smaller
 /// realized diagrams, and a faster build.
-pub(super) fn single_slot_schedule(base_seed: u64, weight: &[u32]) -> Vec<(Config<'_>, u64)> {
-    // The schedule deadline is 1 s soft / 2 s hard, so adding a second slot
-    // eats roughly half the post-schedule refinement budget.
+pub(super) fn single_slot_portfolio(base_seed: u64, weight: &[u32]) -> Vec<(Config<'_>, u64)> {
+    // The portfolio deadline is 1 s soft / 2 s hard, so adding a second slot
+    // eats roughly half the post-portfolio refinement budget.
     vec![(Config::MinFillSampled { weight }, base_seed)]
 }

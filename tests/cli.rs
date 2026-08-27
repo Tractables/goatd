@@ -82,7 +82,7 @@ fn every_order_writes_a_valid_decomposition_of_the_grid() {
         &["--order", "mindegree", "--ties", "sample"],
         &["--order", "nested-dissection"],
         &["--order", "flowcutter", "--steps", "2000"],
-        &["--order", "schedule", "--budget", "500"],
+        &["--order", "portfolio", "--budget", "500"],
         &["--order", "minfill", "--refine"],
     ];
     for (i, order) in orders.iter().enumerate() {
@@ -120,6 +120,18 @@ fn stdin_in_and_stdout_out_by_default() {
     let td = TreeDecomposition::from_td(&text).expect("a well-formed .td on stdout");
     td.validate(&Graph::from_gr(&grid_gr()).unwrap())
         .expect("the decomposition written to stdout is valid");
+}
+
+#[test]
+fn disconnected_and_empty_graphs_are_written_as_one_pace_bag_tree() {
+    for graph in [Graph::new(4, [(0, 1), (2, 3)]), Graph::new(0, [])] {
+        let out = goatd(&["-"], Some(&graph.to_gr()));
+        assert!(out.status.success(), "{}", stderr_of(&out));
+        let text = String::from_utf8(out.stdout).expect("utf-8");
+        let td = TreeDecomposition::from_td(&text).expect("one PACE bag tree");
+        td.validate(&graph)
+            .expect("the serialized decomposition remains valid");
+    }
 }
 
 #[test]
@@ -184,8 +196,8 @@ fn an_inert_flag_is_refused_naming_the_flag_and_the_order() {
             &["--ties sample", "nested-dissection", "minfill or mindegree"],
         ),
         (
-            &["--order", "schedule", "--ties", "sample"],
-            &["--ties sample", "schedule"],
+            &["--order", "portfolio", "--ties", "sample"],
+            &["--ties sample", "portfolio"],
         ),
         (&["--weights", "w.txt"], &["--weights", "--ties sample"]),
         (
@@ -232,5 +244,17 @@ fn a_bad_graph_is_an_error_naming_the_input() {
 fn help_prints_the_usage_and_exits_zero() {
     let out = goatd(&["--help"], None);
     assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stdout).starts_with("usage: goatd"));
+    let help = String::from_utf8_lossy(&out.stdout);
+    assert!(help.starts_with("usage: goatd"));
+    assert!(help.contains("portfolio"));
+    assert!(!help.contains("schedule"));
+}
+
+#[test]
+fn the_retired_schedule_order_is_rejected_in_favour_of_portfolio() {
+    let out = goatd(&["-", "--order", "schedule"], Some(&grid_gr()));
+
+    assert_eq!(out.status.code(), Some(2));
+    let error = stderr_of(&out);
+    assert!(error.contains("--order") && error.contains("schedule"));
 }

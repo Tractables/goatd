@@ -1,7 +1,7 @@
 //! Min-fill elimination: repeatedly remove the active vertex whose removal adds
 //! the fewest fill edges, ties broken by degree and then by the caller's salt.
 //!
-//! One instantiation of the greedy skeleton in `greedy`, and the schedule's
+//! One instantiation of the greedy skeleton in `greedy`, and the portfolio's
 //! main order. Fill is costly enough to be maintained rather than recomputed
 //! per pop: a seeding scan measures every active vertex, each elimination
 //! re-scores its live neighbours, and a dirty flag lets an untouched entry pop
