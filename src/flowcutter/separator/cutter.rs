@@ -33,9 +33,7 @@ impl Flow {
         }
     }
     fn clear(&mut self) {
-        for x in &mut self.f {
-            *x = 1;
-        }
+        self.f.fill(1);
     }
     #[inline]
     fn get(&self, a: u32) -> i8 {
@@ -68,9 +66,7 @@ impl NodeSet {
         }
     }
     fn clear(&mut self) {
-        for x in &mut self.inside {
-            *x = false;
-        }
+        self.inside.fill(false);
         self.count = 0;
         self.extra = None;
     }
