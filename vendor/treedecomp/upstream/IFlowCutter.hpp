@@ -81,7 +81,9 @@ public:
   //           whole budget.
   // Conflating the two made every deadline-armed build search less patiently
   // whether or not the deadline was ever reached.
-  TreeDecomposition constructTD_timed_patience(int64_t steps, int iters, int64_t timeout_ms, int64_t patience_ms, bool tight_gates,
+  // goatd: `patience_unit_budget` is the deterministic counterpart of
+  // `patience_ms`; it is used only when `unit_budget` arms work metering.
+  TreeDecomposition constructTD_timed_patience(int64_t steps, int iters, int64_t timeout_ms, int64_t patience_ms, int64_t patience_unit_budget, bool tight_gates,
                                                int64_t* iters_done = nullptr,
                                                int64_t* greedy_touches = nullptr,
                                                int64_t unit_budget = 0,

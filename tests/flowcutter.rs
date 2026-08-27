@@ -1,6 +1,7 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use goatd::flowcutter::{Budget, TimeoutBehavior, decompose};
+use goatd::meter::{UNITS_PER_MS, arm, units_spent};
 use goatd::{Error, Graph, TreeDecomposition};
 
 type GraphAtWidth = (&'static str, u32, &'static [(u32, u32)], u32);
@@ -96,6 +97,51 @@ fn circulant_graph(n: u32) -> Graph {
             .into_iter()
             .flat_map(|[a, b, c]| [(a, b), (a, c), (b, c)]),
     )
+}
+
+fn cycle_graph(n: u32) -> Graph {
+    Graph::new(n, (0..n).map(|vertex| (vertex, (vertex + 1) % n)))
+}
+
+#[test]
+fn metered_patience_stops_before_the_timeout_after_the_width_stalls() {
+    let graph = cycle_graph(100);
+    let before = units_spent();
+    let result = {
+        let _meter = arm(Instant::now());
+        decompose(
+            &graph,
+            Budget::timed(
+                Duration::from_millis(10),
+                Some(Duration::from_millis(1)),
+                1_000,
+            ),
+        )
+    };
+    let spent = units_spent() - before;
+
+    result.unwrap().validate(&graph).unwrap();
+    assert!(
+        spent < 5 * UNITS_PER_MS,
+        "patience spent {spent} work units"
+    );
+}
+
+#[test]
+fn metered_positive_submillisecond_timeout_is_not_treated_as_unmetered() {
+    let graph = cycle_graph(50);
+    let before = units_spent();
+    let result = {
+        let _meter = arm(Instant::now());
+        decompose(&graph, Budget::timed(Duration::from_nanos(1), None, 100))
+    };
+    let spent = units_spent() - before;
+
+    assert!(matches!(result, Err(Error::NoDecomposition)));
+    assert!(
+        spent < UNITS_PER_MS,
+        "a one-millisecond work budget spent {spent} units"
+    );
 }
 
 fn circulant_incidence(n: u32) -> Graph {

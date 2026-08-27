@@ -52,6 +52,7 @@ TdResult* td_compute(int num_nodes, int num_edges,
 TdResult* td_compute_timed_patience(int num_nodes, int num_edges,
                                     const int* edges, int64_t steps, int iters,
                                     int64_t timeout_ms, int64_t patience_ms,
+                                    int64_t patience_unit_budget,
                                     int tight_gates, int64_t* iters_done,
                                     int64_t* greedy_touches,
                                     int64_t unit_budget, int64_t units_per_iter) {
@@ -61,7 +62,8 @@ TdResult* td_compute_timed_patience(int num_nodes, int num_edges,
         TWD::IFlowCutter fc(num_nodes, num_edges, /*verb=*/0);
         fc.importGraph(g);
         return store_result(fc.constructTD_timed_patience(
-            steps, iters, timeout_ms, patience_ms, tight_gates != 0,
+            steps, iters, timeout_ms, patience_ms, patience_unit_budget,
+            tight_gates != 0,
             iters_done, greedy_touches, unit_budget, units_per_iter));
     } catch (...) {
         return nullptr;
