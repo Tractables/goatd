@@ -17,7 +17,16 @@ impl TdBag {
         Self { vertices }
     }
 
-    /// Vertices in this bag, sorted in ascending order.
+    /// A bag emitted by an algorithm whose stable vertex order is part of its
+    /// traversal result. Public constructors still enter through [`Self::new`]
+    /// and canonicalize arbitrary caller input.
+    pub(crate) fn from_algorithm_order(vertices: Vec<u32>) -> Self {
+        Self { vertices }
+    }
+
+    /// Vertices in this bag. Publicly constructed decompositions expose them in
+    /// ascending order; algorithm results may retain a stable algorithm-defined
+    /// order.
     pub fn vertices(&self) -> &[u32] {
         &self.vertices
     }
@@ -51,6 +60,11 @@ impl TreeDecomposition {
         tree_edges: impl IntoIterator<Item = (usize, usize)>,
     ) -> Result<Self, Error> {
         let bags: Vec<TdBag> = bags.into_iter().map(TdBag::new).collect();
+        let mut tree_edges: Vec<(usize, usize)> = tree_edges
+            .into_iter()
+            .map(|(left, right)| (left.min(right), left.max(right)))
+            .collect();
+        tree_edges.sort_unstable();
         let mut adj = vec![Vec::new(); bags.len()];
         for (left, right) in tree_edges {
             if left >= bags.len() || right >= bags.len() {
@@ -85,7 +99,10 @@ impl TreeDecomposition {
         &self.bags
     }
 
-    /// Undirected bag adjacency, indexed like [`Self::bags`].
+    /// Undirected bag adjacency, indexed like [`Self::bags`]. A decomposition
+    /// built with [`Self::new`] has neighbours sorted by bag index; algorithms
+    /// constructing a decomposition directly may expose their stable traversal
+    /// order instead.
     pub fn adjacency(&self) -> &[Vec<usize>] {
         &self.adj
     }

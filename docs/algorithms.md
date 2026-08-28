@@ -134,6 +134,12 @@ The complete list of source changes and licences is in
 and FlowCutter-based refinement. Refinement preserves global vertex ids while
 it projects each side and glues them at a separator.
 
+Public constructors canonicalize each bag's contents and the undirected bag
+edges, so equivalent caller inputs expose the same rooted walk. Native
+algorithms may retain stable algorithm-defined vertex and neighbour order when
+it carries useful traversal information; FlowCutter preserves both at its
+adapter boundary.
+
 ## Correctness and reproducibility
 
 `TreeDecomposition::validate` checks bag contents, the bag forest, vertex and edge

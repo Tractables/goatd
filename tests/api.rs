@@ -78,6 +78,22 @@ fn decomposition_rooting_rejects_an_unknown_bag() {
 }
 
 #[test]
+fn decomposition_constructor_canonicalizes_bag_edge_order() {
+    let graph = Graph::new(5, []);
+    let bags = [vec![0], vec![0, 1], vec![0, 2], vec![0, 3], vec![0, 4]];
+    let ascending =
+        TreeDecomposition::new(&graph, bags.clone(), [(0, 1), (0, 2), (0, 3), (0, 4)]).unwrap();
+    let descending =
+        TreeDecomposition::new(&graph, bags, [(4, 0), (3, 0), (2, 0), (1, 0)]).unwrap();
+
+    assert_eq!(ascending.adjacency(), descending.adjacency());
+    assert_eq!(
+        ascending.rooted_forest([0]).unwrap(),
+        descending.rooted_forest([0]).unwrap(),
+    );
+}
+
+#[test]
 fn decomposition_rooting_visits_every_component() {
     let graph = Graph::new(3, []);
     let td = TreeDecomposition::new(&graph, [vec![0], vec![1], vec![2]], []).unwrap();

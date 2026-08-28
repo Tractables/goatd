@@ -233,7 +233,7 @@ fn extract(native: &NativeDecomposition, graph: &Graph) -> Result<TreeDecomposit
                         })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            bags.push(TdBag::new(vertices));
+            bags.push(TdBag::from_algorithm_order(vertices));
 
             let neighbor_count = ffi::td_bag_num_neighbors(native.0, bag_index as c_int);
             if neighbor_count < 0 || neighbor_count as usize > num_bags {
@@ -259,10 +259,28 @@ fn extract(native: &NativeDecomposition, graph: &Graph) -> Result<TreeDecomposit
             adjacency.push(neighbors);
         }
 
+        let adjacency = reconstruct_native_adjacency(&adjacency);
         let decomposition = TreeDecomposition::from_parts(graph.num_vertices, bags, adjacency);
         decomposition.validate(graph)?;
         Ok(decomposition)
     }
+}
+
+/// Rebuild undirected adjacency in the native adapter's stable orientation:
+/// edges are admitted when their lower-index endpoint is visited. Lower
+/// neighbours therefore precede a bag's forward neighbours, while the
+/// decomposer's meaningful forward-neighbour order is retained.
+pub(super) fn reconstruct_native_adjacency(native: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    let mut adjacency = vec![Vec::new(); native.len()];
+    for (bag, neighbours) in native.iter().enumerate() {
+        for &neighbour in neighbours {
+            if neighbour > bag {
+                adjacency[bag].push(neighbour);
+                adjacency[neighbour].push(bag);
+            }
+        }
+    }
+    adjacency
 }
 
 /// Fitted setup charge per vertex or directed edge touched by the backend.
