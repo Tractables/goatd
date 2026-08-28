@@ -643,6 +643,12 @@ function renderWidthProfileChart(instances) {
 }
 
 function renderAggregate(instances) {
+  const treeComponents = state.data.instances.filter(BenchmarkStatistics.isTreeComponent).length;
+  const widthSelection = state.minimumBestWidth === 0
+    ? "No minimum width is applied."
+    : `The active filter keeps graphs whose best observed width is at least ${state.minimumBestWidth}; graphs with no validated result remain.`;
+  document.querySelector("#methodology-note").textContent =
+    `Method: each observation is one component graph after preprocessing. ${formatInteger(treeComponents)} tree components are excluded. ${widthSelection} “Best observed” is the smallest validated width among the displayed configurations, not a proven optimum; a missing or invalid result meets no quality threshold.`;
   document.querySelector("#aggregate-scope").textContent = instances.length === 0
     ? "No component graphs match the current filters."
     : `${formatInteger(instances.length)} selected component graphs. Higher counts are better.`;

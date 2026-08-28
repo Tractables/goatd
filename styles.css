@@ -338,6 +338,16 @@ main > .scope {
   background: linear-gradient(90deg, hsl(136 62% 84%), hsl(48 72% 86%), hsl(5 62% 87%));
 }
 
+.methodology-note {
+  margin: -0.15rem 0 0.8rem;
+  padding: 0.65rem 0.8rem;
+  border-left: 3px solid var(--ucla-blue);
+  background: var(--ucla-blue-soft);
+  color: #46535d;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
 .aggregate-list {
   border: 1px solid var(--rule-strong);
   background: var(--paper);
