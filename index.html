@@ -87,6 +87,22 @@
               <option value="unavailable">Has unavailable solver</option>
             </select>
           </label>
+
+          <label>
+            <span>Aggregate unit</span>
+            <select id="aggregate-unit">
+              <option value="components">Component graphs</option>
+              <option value="sources">Source graph views</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Graph structure</span>
+            <select id="structure-filter">
+              <option value="non-tree">Non-tree components</option>
+              <option value="all">All component graphs</option>
+            </select>
+          </label>
         </div>
       </section>
 
@@ -94,7 +110,7 @@
         <div class="section-heading">
           <div>
             <h2 id="aggregate-heading">Aggregate comparison</h2>
-            <p id="aggregate-scope">Statistics over the selected source graph views.</p>
+            <p id="aggregate-scope">Statistics over the selected component graphs.</p>
           </div>
         </div>
 
@@ -140,9 +156,10 @@
             <h2 id="matrix-heading">Instance results</h2>
             <p>All selected graphs, with one result status per solver.</p>
           </div>
-          <div class="rank-key" aria-label="Width rank notation">
-            <span><i class="rank-swatch rank-one"></i> best observed width</span>
-            <span><i class="rank-swatch rank-two"></i> second observed width</span>
+          <div class="quality-key" aria-label="Width quality color scale">
+            <span>best observed</span>
+            <i class="quality-gradient" aria-hidden="true"></i>
+            <span>widest valid result</span>
           </div>
         </div>
 
@@ -209,6 +226,18 @@
           <div>
             <dt>Width profile</dt>
             <dd>The denominator is every selected graph; missing and invalid results therefore reduce the percentage.</dd>
+          </div>
+          <div>
+            <dt>Component graph</dt>
+            <dd>One connected graph passed independently to every solver. This is the default aggregate unit.</dd>
+          </div>
+          <div>
+            <dt>Source graph view</dt>
+            <dd>The combined result for all components derived from one source. One missing component makes the combined result incomplete.</dd>
+          </div>
+          <div>
+            <dt>Tree component</dt>
+            <dd>A connected component with |E| = |V| − 1, hence exact width one. These components are omitted by default.</dd>
           </div>
           <div>
             <dt>Width</dt>

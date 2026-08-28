@@ -23,9 +23,10 @@ explicitly when developing the view:
 ?data=results.fixture.json
 ```
 
-Filters update both aggregate tables and the detailed results. Sorting applies
-only to the detailed table, which is paged so a large corpus does not create
-every row at once.
+Filters update both aggregate tables and the detailed results. Component graphs
+are the default aggregate unit. The optional source view combines every
+component derived from one source. Sorting applies only to the detailed table,
+which is paged so a large corpus does not create every row at once.
 
 ## Aggregate statistics
 
@@ -45,13 +46,14 @@ reports the share with a valid width at most 0, 1, 2, 4, 8 or 16 above the
 best observed width. Missing, invalid and timed-out results do not satisfy a
 profile threshold.
 
-When an export includes `source_instances`, the aggregate tables use those
-rows and the detailed matrix continues to show the deduplicated component
-graphs. This gives each source CNF the same aggregate weight. For a disconnected
-source, width is the maximum component width; total bag size, bag count and
-elapsed time are summed. A missing component result makes the source result
-incomplete. Graph views with no nontrivial component are omitted from the
-solver comparison.
+When an export includes `source_instances`, the aggregate-unit control can use
+those rows while the detailed matrix continues to show the deduplicated
+component graphs. This gives each source CNF the same aggregate weight. For a
+disconnected source, width is the maximum component width; total bag size, bag
+count and elapsed time are summed. A missing component result makes the source
+result incomplete. The structural filter applies only to component graphs.
+By default it omits connected graphs with `|E| = |V| - 1`, whose exact width is
+one. Graph views with no nontrivial component are absent from the export.
 
 ## Result format
 

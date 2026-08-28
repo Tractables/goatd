@@ -4,6 +4,7 @@ const numberFormat = new Intl.NumberFormat("en");
 const profileDeltas = [0, 1, 2, 4, 8, 16];
 const profileStyles = {
   "goatd-portfolio": { color: "#2774ae", dash: "" },
+  "goatd-portfolio-refined": { color: "#005587", dash: "8 3" },
   "flowcutter-pace17": { color: "#17232d", dash: "" },
   "htd-default": { color: "#009e73", dash: "9 4" },
   "tamaki-pace17": { color: "#d55e00", dash: "3 3" },
@@ -20,6 +21,8 @@ const state = {
   group: "all",
   kind: "all",
   status: "all",
+  aggregateUnit: "components",
+  structure: "non-tree",
   sort: "instance",
   direction: "asc",
   page: 1,
@@ -204,6 +207,9 @@ function populateFilters() {
     .sort((a, b) => a.localeCompare(b));
   populateSelect("#group-filter", groups);
   populateSelect("#kind-filter", kinds);
+  const sourceOption = document.querySelector('#aggregate-unit option[value="sources"]');
+  sourceOption.disabled = !Array.isArray(state.data.source_instances)
+    || state.data.source_instances.length === 0;
 }
 
 function bindControls() {
@@ -227,6 +233,17 @@ function bindControls() {
 
   document.querySelector("#status-filter").addEventListener("change", (event) => {
     state.status = event.target.value;
+    state.page = 1;
+    render();
+  });
+
+  document.querySelector("#aggregate-unit").addEventListener("change", (event) => {
+    state.aggregateUnit = event.target.value;
+    render();
+  });
+
+  document.querySelector("#structure-filter").addEventListener("change", (event) => {
+    state.structure = event.target.value;
     state.page = 1;
     render();
   });
@@ -293,7 +310,7 @@ function sortValue(instance) {
   return values[state.sort];
 }
 
-function visibleInstances(collection = state.data.instances) {
+function visibleInstances(collection = state.data.instances, filterStructure = true) {
   const matches = collection.filter((instance) => {
     const searchable = [
       instance.id,
@@ -310,7 +327,10 @@ function visibleInstances(collection = state.data.instances) {
     const queryMatches = !state.query || searchable.includes(state.query);
     const groupMatches = state.group === "all" || instance.group === state.group;
     const kindMatches = state.kind === "all" || instance.kind === state.kind;
-    return queryMatches && groupMatches && kindMatches && outcomeMatches(instance);
+    const structureMatches = !filterStructure
+      || state.structure === "all"
+      || !BenchmarkStatistics.isTreeComponent(instance);
+    return queryMatches && groupMatches && kindMatches && structureMatches && outcomeMatches(instance);
   });
 
   return matches.sort((a, b) => {
@@ -595,8 +615,9 @@ function renderWidthProfileChart(instances) {
       const previousOrdinate = points[index - 1][1];
       return `${segments} L${abscissa},${previousOrdinate} L${abscissa},${ordinate}`;
     }, "");
+    const goatdSolver = solver.id.startsWith("goatd-portfolio");
     const pathNode = svgElement("path", {
-      class: `profile-series${solver.id === "goatd-portfolio" ? " is-goatd" : ""}`,
+      class: `profile-series${goatdSolver ? " is-goatd" : ""}`,
       d: path,
       stroke: style.color,
     });
@@ -609,7 +630,7 @@ function renderWidthProfileChart(instances) {
           class: "profile-point",
           cx: xDelta(delta),
           cy: y(chartValues[delta]),
-          r: solver.id === "goatd-portfolio" ? 3.5 : 3,
+          r: goatdSolver ? 3.5 : 3,
           stroke: style.color,
         }),
       );
@@ -623,7 +644,7 @@ function renderWidthProfileChart(instances) {
       y1: 4,
       y2: 4,
       stroke: style.color,
-      "stroke-width": solver.id === "goatd-portfolio" ? 3 : 2,
+      "stroke-width": goatdSolver ? 3 : 2,
     });
     if (style.dash) line.setAttribute("stroke-dasharray", style.dash);
     append(swatch, line);
@@ -639,23 +660,15 @@ function renderWidthProfileChart(instances) {
 }
 
 function renderAggregate(instances, sourceWeighted) {
-  const unit = sourceWeighted ? "source graph views" : "graphs";
+  const unit = sourceWeighted ? "source graph views" : "component graphs";
+  const structureNote = sourceWeighted
+    ? " The component-structure filter does not apply to this aggregate."
+    : "";
   document.querySelector("#aggregate-scope").textContent = instances.length === 0
     ? `No ${unit} match the current filters.`
-    : `${formatInteger(instances.length)} selected ${unit}. Higher coverage and best-width shares are better; lower excess and elapsed values are better.`;
+    : `${formatInteger(instances.length)} selected ${unit}. Higher coverage and best-width shares are better; lower excess and elapsed values are better.${structureNote}`;
   renderAggregateTable(instances);
   renderWidthProfile(instances);
-}
-
-function rankFor(instance, result, metric) {
-  if (result.status !== "ok") return null;
-  const sorted = [...new Set(
-    completedResults(instance)
-      .map((entry) => entry[metric])
-      .filter(Number.isFinite),
-  )].sort((a, b) => a - b);
-  const index = sorted.indexOf(result[metric]);
-  return index === -1 ? null : index + 1;
 }
 
 function isBest(instance, result, metric) {
@@ -694,13 +707,22 @@ function resultCell(instance, solverId) {
     return cell;
   }
 
-  const widthRank = rankFor(instance, result, "width");
+  const quality = BenchmarkStatistics.widthQuality(instance, solverIds(), solverId);
+  if (quality) {
+    const hue = 205 - 175 * quality.fraction;
+    cell.classList.add("has-width-quality");
+    cell.style.setProperty("--quality-background", `hsl(${hue} 52% 95%)`);
+    cell.style.setProperty("--quality-accent", `hsl(${hue} 58% 42%)`);
+  }
   const width = element("div", "width-result");
   append(width, element("span", "width-label", "width"), element("strong", "", formatInteger(result.width)));
-  if (widthRank !== null && widthRank <= 2) {
-    const rank = element("span", `rank-badge rank-${widthRank}`, widthRank === 1 ? "best" : "2nd");
-    rank.setAttribute("aria-label", `Width rank ${widthRank}`);
-    append(width, rank);
+  if (quality) {
+    const badge = element("span", "quality-badge", quality.delta === 0 ? "best" : `+${formatInteger(quality.delta)}`);
+    badge.setAttribute(
+      "aria-label",
+      quality.delta === 0 ? "Best observed width" : `${quality.delta} above the best observed width`,
+    );
+    append(width, badge);
   }
   append(cell, width);
 
@@ -809,10 +831,11 @@ function renderPagination(totalMatches) {
 
 function render() {
   const matches = visibleInstances();
-  const sourceWeighted = Array.isArray(state.data.source_instances)
+  const sourceWeighted = state.aggregateUnit === "sources"
+    && Array.isArray(state.data.source_instances)
     && state.data.source_instances.length > 0;
   const aggregateMatches = sourceWeighted
-    ? visibleInstances(state.data.source_instances)
+    ? visibleInstances(state.data.source_instances, false)
     : matches;
   const totalPages = Math.max(1, Math.ceil(matches.length / state.pageSize));
   state.page = Math.min(state.page, totalPages);

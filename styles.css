@@ -10,8 +10,6 @@
   --ucla-blue-dark: #005587;
   --ucla-blue-soft: #eaf2f7;
   --ucla-gold: #ffd100;
-  --gold-soft: #fff9d9;
-  --second-soft: #edf4f8;
   --warning: #6b5200;
   --warning-paper: #fff8d8;
   --danger: #8a352a;
@@ -238,7 +236,7 @@ main > .scope {
 
 .scope-grid {
   display: grid;
-  grid-template-columns: minmax(260px, 1.5fr) repeat(3, minmax(155px, 0.75fr));
+  grid-template-columns: minmax(240px, 1.5fr) repeat(5, minmax(135px, 0.72fr));
   gap: 0.75rem;
   align-items: end;
 }
@@ -534,7 +532,7 @@ main > .scope {
   align-items: end;
 }
 
-.rank-key {
+.quality-key {
   display: flex;
   flex-wrap: wrap;
   justify-content: end;
@@ -543,23 +541,18 @@ main > .scope {
   font-size: 0.72rem;
 }
 
-.rank-key span {
+.quality-key span {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
 }
 
-.rank-swatch {
+.quality-gradient {
   display: inline-block;
-  width: 0.8rem;
-  height: 0.35rem;
-  border-top: 2px solid var(--ucla-gold);
-  background: var(--gold-soft);
-}
-
-.rank-swatch.rank-two {
-  border-top-color: var(--ucla-blue);
-  background: var(--second-soft);
+  width: 5rem;
+  height: 0.45rem;
+  border: 1px solid var(--rule-strong);
+  background: linear-gradient(90deg, hsl(205 52% 91%), hsl(30 52% 91%));
 }
 
 .table-controls {
@@ -645,6 +638,11 @@ main > .scope {
 
 .graph-row:nth-child(even) .result-cell {
   background: #fafbfc;
+}
+
+.graph-row .result-cell.has-width-quality {
+  background: var(--quality-background);
+  box-shadow: inset 0 3px 0 var(--quality-accent);
 }
 
 .instance-cell {
@@ -777,21 +775,15 @@ main > .scope {
   line-height: 1;
 }
 
-.rank-badge {
+.quality-badge {
   align-self: center;
   padding: 0.06rem 0.22rem;
-  border-top: 2px solid var(--ucla-gold);
-  background: var(--gold-soft);
-  color: var(--warning);
+  border-top: 2px solid var(--quality-accent);
+  background: rgb(255 255 255 / 68%);
+  color: var(--ink);
   font-family: var(--font-body);
   font-size: 0.53rem;
   font-weight: 650;
-}
-
-.rank-2 {
-  border-top-color: var(--ucla-blue);
-  background: var(--second-soft);
-  color: var(--ucla-blue-dark);
 }
 
 .result-details {
@@ -1016,7 +1008,7 @@ footer {
     align-items: start;
   }
 
-  .rank-key {
+  .quality-key {
     justify-content: start;
   }
 

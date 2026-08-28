@@ -26,6 +26,31 @@ const BenchmarkStatistics = (() => {
     return values.length > 0 ? Math.min(...values) : null;
   }
 
+  function widthQuality(instance, solverIds, solverId) {
+    const result = resultFor(instance, solverId);
+    if (result.status !== "ok" || !Number.isFinite(result.width)) return null;
+    const widths = validResults(instance, solverIds)
+      .map((entry) => entry.width)
+      .filter(Number.isFinite);
+    if (widths.length === 0) return null;
+    const best = Math.min(...widths);
+    const worst = Math.max(...widths);
+    return {
+      best,
+      worst,
+      delta: result.width - best,
+      fraction: worst === best ? 0 : (result.width - best) / (worst - best),
+    };
+  }
+
+  function isTreeComponent(instance) {
+    return instance?.component_count === undefined
+      && Number.isInteger(instance?.vertices)
+      && instance.vertices > 1
+      && Number.isInteger(instance?.edges)
+      && instance.edges === instance.vertices - 1;
+  }
+
   function percentageExcess(value, baseline) {
     if (!Number.isFinite(value) || !Number.isFinite(baseline)) return null;
     if (baseline === 0) return value === 0 ? 0 : null;
@@ -101,7 +126,9 @@ const BenchmarkStatistics = (() => {
     percentageExcess,
     resultFor,
     share,
+    isTreeComponent,
     validResults,
+    widthQuality,
     widthProfileShare,
   });
 })();
