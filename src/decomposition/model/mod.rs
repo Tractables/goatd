@@ -51,6 +51,11 @@ impl TreeDecomposition {
         tree_edges: impl IntoIterator<Item = (usize, usize)>,
     ) -> Result<Self, Error> {
         let bags: Vec<TdBag> = bags.into_iter().map(TdBag::new).collect();
+        let mut tree_edges: Vec<(usize, usize)> = tree_edges
+            .into_iter()
+            .map(|(left, right)| (left.min(right), left.max(right)))
+            .collect();
+        tree_edges.sort_unstable();
         let mut adj = vec![Vec::new(); bags.len()];
         for (left, right) in tree_edges {
             if left >= bags.len() || right >= bags.len() {
@@ -67,14 +72,7 @@ impl TreeDecomposition {
         Ok(td)
     }
 
-    pub(crate) fn from_parts(
-        num_vertices: u32,
-        bags: Vec<TdBag>,
-        mut adj: Vec<Vec<usize>>,
-    ) -> Self {
-        for neighbours in &mut adj {
-            neighbours.sort_unstable();
-        }
+    pub(crate) fn from_parts(num_vertices: u32, bags: Vec<TdBag>, adj: Vec<Vec<usize>>) -> Self {
         Self {
             num_vertices,
             bags,
@@ -92,8 +90,10 @@ impl TreeDecomposition {
         &self.bags
     }
 
-    /// Undirected bag adjacency, indexed like [`Self::bags`], with each bag's
-    /// neighbours sorted by bag index.
+    /// Undirected bag adjacency, indexed like [`Self::bags`]. A decomposition
+    /// built with [`Self::new`] has neighbours sorted by bag index; algorithms
+    /// constructing a decomposition directly may expose their stable traversal
+    /// order instead.
     pub fn adjacency(&self) -> &[Vec<usize>] {
         &self.adj
     }

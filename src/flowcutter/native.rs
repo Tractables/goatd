@@ -259,10 +259,28 @@ fn extract(native: &NativeDecomposition, graph: &Graph) -> Result<TreeDecomposit
             adjacency.push(neighbors);
         }
 
+        let adjacency = reconstruct_native_adjacency(&adjacency);
         let decomposition = TreeDecomposition::from_parts(graph.num_vertices, bags, adjacency);
         decomposition.validate(graph)?;
         Ok(decomposition)
     }
+}
+
+/// Rebuild undirected adjacency in the native adapter's stable orientation:
+/// edges are admitted when their lower-index endpoint is visited. Lower
+/// neighbours therefore precede a bag's forward neighbours, while the
+/// decomposer's meaningful forward-neighbour order is retained.
+fn reconstruct_native_adjacency(native: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    let mut adjacency = vec![Vec::new(); native.len()];
+    for (bag, neighbours) in native.iter().enumerate() {
+        for &neighbour in neighbours {
+            if neighbour > bag {
+                adjacency[bag].push(neighbour);
+                adjacency[neighbour].push(bag);
+            }
+        }
+    }
+    adjacency
 }
 
 /// Fitted setup charge per vertex or directed edge touched by the backend.
@@ -300,4 +318,19 @@ fn charge_build(vertices: u64, edges: u64, iterations_done: i64, greedy_touches:
 /// Clamp the backend's step ceiling to the amount small graphs can use.
 fn scaled_steps(steps: i64, num_edges: usize) -> i64 {
     steps.min(10_000i64.max(50 * num_edges as i64))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reconstruct_native_adjacency;
+
+    #[test]
+    fn readback_orders_lower_bags_before_native_forward_neighbors() {
+        let native = vec![vec![4, 2, 1], vec![3, 0], vec![0], vec![1], vec![0]];
+
+        assert_eq!(
+            reconstruct_native_adjacency(&native),
+            vec![vec![4, 2, 1], vec![0, 3], vec![0], vec![1], vec![0]],
+        );
+    }
 }

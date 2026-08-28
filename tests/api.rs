@@ -84,7 +84,7 @@ fn decomposition_constructor_canonicalizes_bag_edge_order() {
     let ascending =
         TreeDecomposition::new(&graph, bags.clone(), [(0, 1), (0, 2), (0, 3), (0, 4)]).unwrap();
     let descending =
-        TreeDecomposition::new(&graph, bags, [(0, 4), (0, 3), (0, 2), (0, 1)]).unwrap();
+        TreeDecomposition::new(&graph, bags, [(4, 0), (3, 0), (2, 0), (1, 0)]).unwrap();
 
     assert_eq!(ascending.adjacency(), descending.adjacency());
     assert_eq!(
