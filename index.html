@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="description" content="Aggregate and instance-level results for tree-decomposition solvers.">
+    <title>Tree-decomposition solver comparison</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="statistics.js" defer></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#results">Skip to results</a>
+
+    <header class="report-header">
+      <div class="title-block">
+        <p class="report-label">Benchmark report</p>
+        <h1>Tree-decomposition solver comparison</h1>
+        <p class="lede">
+          Aggregate statistics and validated decompositions for a common set
+          of graphs under a fixed per-solver time budget.
+        </p>
+      </div>
+
+      <dl class="run-record" aria-label="Run metadata">
+        <div>
+          <dt>Dataset</dt>
+          <dd id="dataset-title">Loading…</dd>
+        </div>
+        <div>
+          <dt>Budget</dt>
+          <dd id="run-budget">—</dd>
+        </div>
+        <div>
+          <dt>Graph views</dt>
+          <dd id="instance-count">—</dd>
+        </div>
+        <div>
+          <dt>Generated</dt>
+          <dd id="generated-at">—</dd>
+        </div>
+      </dl>
+    </header>
+
+    <div id="fixture-notice" class="fixture-notice" role="status" hidden>
+      <strong>Synthetic data.</strong>
+      These values test the interface and are not benchmark measurements.
+    </div>
+
+    <main id="results">
+      <section class="scope" aria-labelledby="scope-heading">
+        <div class="section-heading compact">
+          <div>
+            <h2 id="scope-heading">Analysis scope</h2>
+            <p>Filters apply to the aggregate statistics and detailed results.</p>
+          </div>
+          <p id="visible-count" class="visible-count" aria-live="polite"></p>
+        </div>
+
+        <div class="scope-grid">
+          <label class="search-control">
+            <span>Search</span>
+            <input id="search" type="search" placeholder="Instance, source, or collection" autocomplete="off">
+          </label>
+
+          <label>
+            <span>Collection</span>
+            <select id="group-filter">
+              <option value="all">All collections</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Graph kind</span>
+            <select id="kind-filter">
+              <option value="all">All kinds</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Result coverage</span>
+            <select id="status-filter">
+              <option value="all">All graphs</option>
+              <option value="complete">All solvers valid</option>
+              <option value="failures">Has timeout or error</option>
+              <option value="unavailable">Has unavailable solver</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section class="aggregate-section" aria-labelledby="aggregate-heading">
+        <div class="section-heading">
+          <div>
+            <h2 id="aggregate-heading">Aggregate comparison</h2>
+            <p id="aggregate-scope">Statistics over the selected source graph views.</p>
+          </div>
+        </div>
+
+        <div class="table-scroll aggregate-scroll" tabindex="0" aria-label="Scrollable aggregate solver table">
+          <table id="aggregate-table">
+            <caption>Loading aggregate solver statistics…</caption>
+          </table>
+        </div>
+
+        <div class="profile-block">
+          <div class="subsection-heading">
+            <h3>Width quality profile</h3>
+            <p>
+              Percentage of selected graphs with a validated width no more
+              than Δ above the best width observed for that graph.
+            </p>
+          </div>
+          <figure class="profile-figure" tabindex="0" aria-label="Scrollable width quality profile chart">
+            <svg id="width-profile-chart" viewBox="0 0 940 360" role="img" aria-labelledby="profile-chart-title profile-chart-description">
+              <title id="profile-chart-title">Width quality profile</title>
+              <desc id="profile-chart-description">Solver coverage at reported width excess thresholds.</desc>
+            </svg>
+            <figcaption>
+              Empirical cumulative profiles; higher is better. Legend values
+              report Δ ≤ 16.
+            </figcaption>
+            <div id="width-profile-legend" class="profile-legend" aria-label="Solver line styles"></div>
+          </figure>
+          <details class="profile-values">
+            <summary>Exact profile values</summary>
+            <div class="table-scroll profile-scroll" tabindex="0" aria-label="Scrollable width quality profile values">
+              <table id="width-profile-table">
+                <caption>Loading width quality profile…</caption>
+              </table>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <section class="matrix-section" aria-labelledby="matrix-heading">
+        <div class="section-heading matrix-heading-row">
+          <div>
+            <h2 id="matrix-heading">Instance results</h2>
+            <p>All selected graphs, with one result status per solver.</p>
+          </div>
+          <div class="rank-key" aria-label="Width rank notation">
+            <span><i class="rank-swatch rank-one"></i> best observed width</span>
+            <span><i class="rank-swatch rank-two"></i> second observed width</span>
+          </div>
+        </div>
+
+        <div class="table-controls" aria-label="Detailed-result table controls">
+          <label>
+            <span>Sort rows by</span>
+            <select id="sort-by">
+              <option value="instance">Instance</option>
+              <option value="width">Best width</option>
+              <option value="vertices">Vertex count</option>
+              <option value="edges">Edge count</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Rows per page</span>
+            <select id="page-size">
+              <option value="25">25</option>
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+              <option value="250">250</option>
+            </select>
+          </label>
+
+          <button id="sort-direction" class="direction-button" type="button" aria-label="Sort ascending">
+            <span aria-hidden="true">↑</span> Ascending
+          </button>
+        </div>
+
+        <div id="matrix-scroll" class="matrix-scroll" tabindex="0" aria-label="Scrollable solver result matrix">
+          <table id="result-matrix">
+            <caption id="matrix-caption">Loading instance results…</caption>
+          </table>
+        </div>
+        <div class="matrix-footer">
+          <p class="scroll-hint">Scroll horizontally to inspect every solver.</p>
+          <nav class="pagination" aria-label="Result pages">
+            <button id="previous-page" type="button">Previous</button>
+            <span id="page-status" aria-live="polite">Page —</span>
+            <button id="next-page" type="button">Next</button>
+          </nav>
+        </div>
+      </section>
+
+      <section class="definitions" aria-labelledby="definitions-heading">
+        <div class="section-heading">
+          <div>
+            <h2 id="definitions-heading">Methods and definitions</h2>
+          </div>
+        </div>
+        <dl>
+          <div>
+            <dt>Valid</dt>
+            <dd>A decomposition accepted by the common validator. Coverage is valid results divided by selected graphs.</dd>
+          </div>
+          <div>
+            <dt>Best observed</dt>
+            <dd>The minimum metric among valid results for one graph. Ties count for every tied solver.</dd>
+          </div>
+          <div>
+            <dt>Median excess</dt>
+            <dd>The median difference from the best observed value, evaluated where that solver returned a valid result.</dd>
+          </div>
+          <div>
+            <dt>Width profile</dt>
+            <dd>The denominator is every selected graph; missing and invalid results therefore reduce the percentage.</dd>
+          </div>
+          <div>
+            <dt>Width</dt>
+            <dd>The largest bag size minus one.</dd>
+          </div>
+          <div>
+            <dt>Total bag size</dt>
+            <dd>The sum of bag sizes, counting a vertex once for each bag containing it.</dd>
+          </div>
+          <div>
+            <dt>Bag count</dt>
+            <dd>The number of bags in the decomposition.</dd>
+          </div>
+          <div>
+            <dt>Elapsed</dt>
+            <dd>Search time before normal exit or the fixed budget signal.</dd>
+          </div>
+        </dl>
+        <p class="ranking-note">
+          Aggregate excess statistics exclude missing results and should be
+          read together with coverage. Instance-level highlighting compares
+          only validated results for the same graph.
+        </p>
+      </section>
+
+      <div id="load-error" class="load-error" role="alert" hidden></div>
+    </main>
+
+    <footer>
+      <p>Result schema and metric fields are documented in <a href="README.md">view/README.md</a>.</p>
+    </footer>
+
+    <noscript>
+      <p class="load-error">JavaScript is required to load and summarize the result file.</p>
+    </noscript>
+  </body>
+</html>
