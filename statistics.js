@@ -110,7 +110,11 @@ const BenchmarkStatistics = (() => {
   }
 
   function widthProfileShare(instances, solverIds, solverId, maximumDelta) {
-    const within = instances.reduce((count, instance) => {
+    return share(widthProfileCount(instances, solverIds, solverId, maximumDelta), instances.length);
+  }
+
+  function widthProfileCount(instances, solverIds, solverId, maximumDelta) {
+    return instances.reduce((count, instance) => {
       const result = resultFor(instance, solverId);
       const best = bestObserved(instance, solverIds, "width");
       return result.status === "ok"
@@ -120,7 +124,6 @@ const BenchmarkStatistics = (() => {
         ? count + 1
         : count;
     }, 0);
-    return share(within, instances.length);
   }
 
   return Object.freeze({
@@ -133,6 +136,7 @@ const BenchmarkStatistics = (() => {
     isTreeComponent,
     validResults,
     widthQuality,
+    widthProfileCount,
     widthProfileShare,
   });
 })();

@@ -18,8 +18,9 @@
         <p class="report-label">Benchmark report</p>
         <h1>Tree-decomposition solver comparison</h1>
         <p class="lede">
-          Aggregate statistics and validated decompositions for a common set
-          of graphs under a fixed per-solver time budget.
+          Validated decompositions of primal and incidence graphs derived from
+          preprocessed model-counting formulas. Every solver receives the same
+          ten-second wall-clock limit.
         </p>
       </div>
 
@@ -53,7 +54,7 @@
         <div class="section-heading compact">
           <div>
             <h2 id="scope-heading">Analysis scope</h2>
-            <p>Filters apply to the aggregate statistics and detailed results.</p>
+            <p>Tree components are omitted. Filters apply to the comparison and graph records.</p>
           </div>
           <p id="visible-count" class="visible-count" aria-live="polite"></p>
         </div>
@@ -79,40 +80,19 @@
           </label>
 
           <label>
-            <span>Graph size</span>
-            <select id="size-filter">
-              <option value="all">All sizes</option>
-              <option value="up-to-100">Up to 100 vertices</option>
-              <option value="101-500">101–500 vertices</option>
-              <option value="501-2000">501–2,000 vertices</option>
-              <option value="2001-10000">2,001–10,000 vertices</option>
-              <option value="above-10000">Above 10,000 vertices</option>
-            </select>
-          </label>
-
-          <label>
-            <span>Result coverage</span>
-            <select id="status-filter">
-              <option value="all">All graphs</option>
-              <option value="complete">All solvers valid</option>
-              <option value="failures">Has timeout or error</option>
-              <option value="unavailable">Has unavailable solver</option>
-            </select>
-          </label>
-
-          <label>
-            <span>Aggregate unit</span>
-            <select id="aggregate-unit">
-              <option value="components">Component graphs</option>
-              <option value="sources">Source graph views</option>
-            </select>
-          </label>
-
-          <label>
-            <span>Graph structure</span>
-            <select id="structure-filter">
-              <option value="non-tree">Non-tree graphs</option>
-              <option value="all">All graphs</option>
+            <span
+              class="metric-help"
+              tabindex="0"
+              aria-label="Minimum best-observed width: Keep graphs whose narrowest validated result from a displayed solver is at least this width. Graphs with no validated result are retained."
+              data-tooltip="Keep graphs whose narrowest validated result is at least this width. Graphs with no validated result are retained."
+            >Minimum best-observed width</span>
+            <select id="minimum-width-filter">
+              <option value="0">No minimum</option>
+              <option value="10">10</option>
+              <option value="20">20</option>
+              <option value="30" selected>30</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
             </select>
           </label>
         </div>
@@ -121,8 +101,8 @@
       <section class="aggregate-section" aria-labelledby="aggregate-heading">
         <div class="section-heading">
           <div>
-            <h2 id="aggregate-heading">Aggregate comparison</h2>
-            <p id="aggregate-scope">Statistics over the selected component graphs.</p>
+            <h2 id="aggregate-heading">Quality coverage at 10 seconds</h2>
+            <p id="aggregate-scope">How often each solver returns a decomposition close to the best width observed.</p>
           </div>
           <div class="aggregate-quality-key" aria-label="Relative quality color scale">
             <span>stronger</span>
@@ -131,18 +111,14 @@
           </div>
         </div>
 
-        <div class="table-scroll aggregate-scroll" tabindex="0" aria-label="Scrollable aggregate solver table">
-          <table id="aggregate-table">
-            <caption>Loading aggregate solver statistics…</caption>
-          </table>
-        </div>
+        <div id="aggregate-list" class="aggregate-list" aria-label="Aggregate solver statistics"></div>
 
         <div class="profile-block">
           <div class="subsection-heading">
-            <h3>Width quality profile</h3>
+            <h3>Quality–coverage curve</h3>
             <p>
-              Percentage of selected graphs with a validated width no more
-              than Δ above the best width observed for that graph.
+              Number of selected graphs with a validated width no more than Δ
+              above the best observed for that graph.
             </p>
           </div>
           <figure class="profile-figure" tabindex="0" aria-label="Scrollable width quality profile chart">
@@ -151,19 +127,11 @@
               <desc id="profile-chart-description">Solver coverage at reported width excess thresholds.</desc>
             </svg>
             <figcaption>
-              Empirical cumulative profiles; higher is better. Legend values
-              report Δ ≤ 16.
+              Higher is better. A missing or invalid result does not satisfy
+              any threshold. Hover or focus a point for its exact value.
             </figcaption>
             <div id="width-profile-legend" class="profile-legend" aria-label="Solver line styles"></div>
           </figure>
-          <details class="profile-values">
-            <summary>Exact profile values</summary>
-            <div class="table-scroll profile-scroll" tabindex="0" aria-label="Scrollable width quality profile values">
-              <table id="width-profile-table">
-                <caption>Loading width quality profile…</caption>
-              </table>
-            </div>
-          </details>
         </div>
       </section>
 
@@ -171,7 +139,7 @@
         <div class="section-heading matrix-heading-row">
           <div>
             <h2 id="matrix-heading">Instance results</h2>
-            <p>All selected graphs, with one result status per solver.</p>
+            <p>All selected graphs, with every displayed solver visible without horizontal scrolling.</p>
           </div>
           <div class="quality-key" aria-label="Width quality color scale">
             <span>best observed</span>
@@ -206,13 +174,8 @@
           </button>
         </div>
 
-        <div id="matrix-scroll" class="matrix-scroll" tabindex="0" aria-label="Scrollable solver result matrix">
-          <table id="result-matrix">
-            <caption id="matrix-caption">Loading instance results…</caption>
-          </table>
-        </div>
+        <div id="result-list" class="result-list" aria-live="polite"></div>
         <div class="matrix-footer">
-          <p class="scroll-hint">Scroll horizontally to inspect every solver.</p>
           <nav class="pagination" aria-label="Result pages">
             <button id="previous-page" type="button">Previous</button>
             <span id="page-status" aria-live="polite">Page —</span>
@@ -234,27 +197,19 @@
           </div>
           <div>
             <dt>Best observed</dt>
-            <dd>The minimum metric among valid results for one graph. Ties count for every tied solver.</dd>
-          </div>
-          <div>
-            <dt>Median excess</dt>
-            <dd>The median difference from the best observed value, evaluated where that solver returned a valid result.</dd>
+            <dd>The minimum width among validated results from the solvers displayed here. It is an empirical reference, not a proven optimum.</dd>
           </div>
           <div>
             <dt>Deadline</dt>
             <dd>The runner stops search at the stated budget. Solvers with an internal deadline receive an earlier warning so they can finish and write a decomposition before that cutoff.</dd>
           </div>
           <div>
-            <dt>Width profile</dt>
-            <dd>The denominator is every selected graph; missing and invalid results therefore reduce the percentage.</dd>
+            <dt>Quality coverage</dt>
+            <dd>The number of selected graphs on which a solver returns a validated width within Δ of the best observed width. Missing results count against coverage.</dd>
           </div>
           <div>
             <dt>Component graph</dt>
             <dd>One connected graph passed independently to every solver. This is the default aggregate unit.</dd>
-          </div>
-          <div>
-            <dt>Source graph view</dt>
-            <dd>The combined result for all components derived from one source. One missing component makes the combined result incomplete.</dd>
           </div>
           <div>
             <dt>Tree component</dt>
@@ -278,9 +233,9 @@
           </div>
         </dl>
         <p class="ranking-note">
-          Aggregate excess statistics exclude missing results and should be
-          read together with coverage. Instance-level highlighting compares
-          only validated results for the same graph.
+          The default minimum width of 30 keeps the headline comparison focused
+          on graphs where small absolute width differences are less informative.
+          Set it to “No minimum” to inspect the complete non-tree dataset.
         </p>
       </section>
 

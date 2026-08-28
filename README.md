@@ -23,37 +23,29 @@ explicitly when developing the view:
 ?data=results.fixture.json
 ```
 
-Filters update both aggregate tables and the detailed results. Component graphs
-are the default aggregate unit. The optional source view combines every
-component derived from one source. Sorting applies only to the detailed table,
-which is paged so a large corpus does not create every row at once.
+Filters update both the aggregate comparison and the detailed results. Tree
+components are omitted. The default minimum best-observed width is 30; the
+control can remove or change that floor. Sorting applies only to the detailed
+records, which are paged so a large corpus does not create every row at once.
 
 ## Aggregate statistics
 
-The first table reports, for every solver:
+The summary reports, for every displayed solver:
 
-- valid decompositions and best-observed widths as counts and shares of all
-  selected graphs;
-- median absolute width excess over the best width observed for each graph;
-- median percentage excess in total bag size and bag count;
-- median elapsed time for valid decompositions; and
-- how many valid decompositions were returned at the time budget.
+- validated decompositions;
+- exact ties with the best width observed for each graph; and
+- validated widths within one and four of the best observed width.
 
-Excess medians use graphs on which that solver returned a valid decomposition;
-coverage is shown separately. Tied minima count as best for every tied solver.
-The width quality profile uses every selected graph as its denominator and
-reports the share with a valid width at most 0, 1, 2, 4, 8 or 16 above the
-best observed width. Missing, invalid and timed-out results do not satisfy a
-profile threshold.
+Tied minima count as best for every tied solver. The quality--coverage curve
+reports the count with a valid width at most 0, 1, 2, 4 or 8 above the best
+observed width. Missing, invalid and timed-out results do not satisfy a profile
+threshold. Hovering or focusing a metric label explains its denominator and
+interpretation.
 
-When an export includes `source_instances`, the aggregate-unit control can use
-those rows while the detailed matrix continues to show the deduplicated
-component graphs. This gives each source CNF the same aggregate weight. For a
-disconnected source, width is the maximum component width; total bag size, bag
-count and elapsed time are summed. A missing component result makes the source
-result incomplete. The structural filter applies only to component graphs.
-By default it omits connected graphs with `|E| = |V| - 1`, whose exact width is
-one. Graph views with no nontrivial component are absent from the export.
+The detailed view lays out every solver in a responsive grid under its graph;
+it does not require horizontal scrolling. Connected graphs with
+`|E| = |V| - 1`, whose exact width is one, are omitted. Graph views with no
+nontrivial component are absent from the export.
 
 ## Result format
 

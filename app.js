@@ -1,7 +1,8 @@
 "use strict";
 
 const numberFormat = new Intl.NumberFormat("en");
-const profileDeltas = [0, 1, 2, 4, 8, 16];
+const profileDeltas = [0, 1, 2, 4, 8];
+const omittedSolverIds = new Set(["goatd-portfolio-refined"]);
 const profileStyles = {
   "goatd-portfolio": { color: "#2774ae", dash: "" },
   "goatd-portfolio-refined": { color: "#005587", dash: "8 3" },
@@ -20,10 +21,7 @@ const state = {
   query: "",
   group: "all",
   kind: "all",
-  size: "all",
-  status: "all",
-  aggregateUnit: "components",
-  structure: "non-tree",
+  minimumBestWidth: 30,
   sort: "instance",
   direction: "asc",
   page: 1,
@@ -49,6 +47,14 @@ function append(parent, ...children) {
   return parent;
 }
 
+function metricHelp(label, explanation) {
+  const term = element("span", "metric-help", label);
+  term.tabIndex = 0;
+  term.dataset.tooltip = explanation;
+  term.setAttribute("aria-label", `${label}: ${explanation}`);
+  return term;
+}
+
 function formatInteger(value) {
   return Number.isFinite(value) ? numberFormat.format(value) : "—";
 }
@@ -58,11 +64,6 @@ function formatElapsed(value) {
   if (value < 1000) return `${numberFormat.format(value)} ms`;
   if (value < 10000) return `${(value / 1000).toFixed(2)} s`;
   return `${(value / 1000).toFixed(1)} s`;
-}
-
-function formatNumber(value) {
-  if (!Number.isFinite(value)) return "—";
-  return Number.isInteger(value) ? numberFormat.format(value) : value.toFixed(1);
 }
 
 function formatPercentage(value) {
@@ -75,8 +76,12 @@ function formatCountShare(count, total) {
     : "—";
 }
 
+function comparisonSolvers() {
+  return state.data.solvers.filter((solver) => !omittedSolverIds.has(solver.id));
+}
+
 function solverIds() {
-  return state.data.solvers.map((solver) => solver.id);
+  return comparisonSolvers().map((solver) => solver.id);
 }
 
 function resultFor(instance, solverId) {
@@ -208,9 +213,6 @@ function populateFilters() {
     .sort((a, b) => a.localeCompare(b));
   populateSelect("#group-filter", groups);
   populateSelect("#kind-filter", kinds);
-  const sourceOption = document.querySelector('#aggregate-unit option[value="sources"]');
-  sourceOption.disabled = !Array.isArray(state.data.source_instances)
-    || state.data.source_instances.length === 0;
 }
 
 function bindControls() {
@@ -232,25 +234,8 @@ function bindControls() {
     render();
   });
 
-  document.querySelector("#size-filter").addEventListener("change", (event) => {
-    state.size = event.target.value;
-    state.page = 1;
-    render();
-  });
-
-  document.querySelector("#status-filter").addEventListener("change", (event) => {
-    state.status = event.target.value;
-    state.page = 1;
-    render();
-  });
-
-  document.querySelector("#aggregate-unit").addEventListener("change", (event) => {
-    state.aggregateUnit = event.target.value;
-    render();
-  });
-
-  document.querySelector("#structure-filter").addEventListener("change", (event) => {
-    state.structure = event.target.value;
+  document.querySelector("#minimum-width-filter").addEventListener("change", (event) => {
+    state.minimumBestWidth = Number(event.target.value);
     state.page = 1;
     render();
   });
@@ -290,30 +275,9 @@ function bindControls() {
   });
 }
 
-function outcomeMatches(instance) {
-  const results = state.data.solvers.map((solver) => resultFor(instance, solver.id));
-  if (state.status === "complete") return results.every((result) => result.status === "ok");
-  if (state.status === "failures") {
-    return results.some((result) => ["timeout", "error", "invalid", "incomplete"].includes(result.status));
-  }
-  if (state.status === "unavailable") {
-    return results.some((result) => ["skipped", "unavailable"].includes(result.status));
-  }
-  return true;
-}
-
 function bestWidth(instance) {
   const widths = completedResults(instance).map((result) => result.width);
   return widths.length ? Math.min(...widths) : null;
-}
-
-function sizeMatches(vertices) {
-  if (state.size === "up-to-100") return vertices <= 100;
-  if (state.size === "101-500") return vertices >= 101 && vertices <= 500;
-  if (state.size === "501-2000") return vertices >= 501 && vertices <= 2000;
-  if (state.size === "2001-10000") return vertices >= 2001 && vertices <= 10000;
-  if (state.size === "above-10000") return vertices > 10000;
-  return true;
 }
 
 function sortValue(instance) {
@@ -326,7 +290,7 @@ function sortValue(instance) {
   return values[state.sort];
 }
 
-function visibleInstances(collection = state.data.instances, filterStructure = true) {
+function visibleInstances(collection = state.data.instances) {
   const matches = collection.filter((instance) => {
     const searchable = [
       instance.id,
@@ -343,16 +307,15 @@ function visibleInstances(collection = state.data.instances, filterStructure = t
     const queryMatches = !state.query || searchable.includes(state.query);
     const groupMatches = state.group === "all" || instance.group === state.group;
     const kindMatches = state.kind === "all" || instance.kind === state.kind;
-    const graphSizeMatches = sizeMatches(instance.vertices);
-    const structureMatches = !filterStructure
-      || state.structure === "all"
-      || !BenchmarkStatistics.isTreeComponent(instance);
+    const observedWidth = bestWidth(instance);
+    const widthMatches = state.minimumBestWidth === 0
+      || !Number.isFinite(observedWidth)
+      || observedWidth >= state.minimumBestWidth;
     return queryMatches
       && groupMatches
       && kindMatches
-      && graphSizeMatches
-      && structureMatches
-      && outcomeMatches(instance);
+      && !BenchmarkStatistics.isTreeComponent(instance)
+      && widthMatches;
   });
 
   return matches.sort((a, b) => {
@@ -369,9 +332,8 @@ function visibleInstances(collection = state.data.instances, filterStructure = t
   });
 }
 
-function solverLabelCell(solver, index = 0) {
-  const cell = element("th", "aggregate-solver");
-  cell.scope = "row";
+function solverLabel(solver, index = 0) {
+  const cell = element("div", "aggregate-solver");
   const label = element("span", "aggregate-solver-label");
   const marker = element("i", "solver-marker");
   marker.style.setProperty("--solver-color", profileStyle(solver, index).color);
@@ -398,73 +360,29 @@ function relativeQuality(value, values, higherIsBetter) {
   return higherIsBetter ? fraction : 1 - fraction;
 }
 
-function aggregateCell(value, className = "") {
-  return element("td", className, value);
-}
-
-function scoreCell(primary, secondary, quality) {
-  const cell = element("td", "aggregate-score");
+function scoreCell(label, explanation, primary, secondary, quality) {
+  const cell = element("div", "aggregate-score");
   if (Number.isFinite(quality)) {
     const hue = qualityHue(quality);
     cell.classList.add("has-relative-quality");
     cell.style.setProperty("--summary-quality", `hsl(${hue} 62% 88%)`);
     cell.style.setProperty("--summary-accent", `hsl(${hue} 58% 38%)`);
   }
-  append(cell, element("strong", "aggregate-primary", primary));
+  append(cell, metricHelp(label, explanation), element("strong", "aggregate-primary", primary));
   if (secondary) append(cell, element("span", "aggregate-secondary", secondary));
   return cell;
 }
 
-function renderAggregateTable(instances) {
-  const table = document.querySelector("#aggregate-table");
+function renderAggregateSummary(instances) {
+  const list = document.querySelector("#aggregate-list");
   const ids = solverIds();
-  table.replaceChildren();
-  append(
-    table,
-    element(
-      "caption",
-      "visually-hidden",
-      `Aggregate solver statistics over ${instances.length} selected graphs`,
-    ),
-  );
+  list.replaceChildren();
 
-  const head = element("thead");
-  const groups = element("tr", "aggregate-groups");
-  const solverHeader = element("th", "", "Solver");
-  solverHeader.scope = "col";
-  solverHeader.rowSpan = 2;
-  append(groups, solverHeader);
-  [
-    ["Reliability", 1],
-    ["Width quality", 3],
-    ["Decomposition", 1],
-    ["Run", 1],
-  ].forEach(([label, span]) => {
-    const cell = element("th", "", label);
-    cell.scope = "colgroup";
-    cell.colSpan = span;
-    append(groups, cell);
-  });
-  const header = element("tr", "aggregate-metrics");
-  [
-    "Valid",
-    "Best observed",
-    "Within +1",
-    "Median Δ",
-    "Total-size excess",
-    "Median time",
-  ].forEach((label) => {
-    const cell = element("th", "", label);
-    cell.scope = "col";
-    append(header, cell);
-  });
-  append(head, groups, header);
-  append(table, head);
-
-  const rows = state.data.solvers.map((solver, index) => ({
+  const rows = comparisonSolvers().map((solver, index) => ({
     solver,
     index,
     aggregate: BenchmarkStatistics.aggregateSolver(instances, ids, solver.id),
+    withinFour: BenchmarkStatistics.widthProfileCount(instances, ids, solver.id, 4),
   }));
   rows.sort((a, b) => (
     b.aggregate.bestWidths - a.aggregate.bestWidths
@@ -476,105 +394,54 @@ function renderAggregateTable(instances) {
     valid: rows.map((row) => row.aggregate.valid.length),
     best: rows.map((row) => row.aggregate.bestWidths),
     withinOne: rows.map((row) => row.aggregate.withinOneWidths),
-    delta: rows.map((row) => row.aggregate.medianWidthDelta),
-    totalSize: rows.map((row) => row.aggregate.medianTotalSizeExcess),
-    elapsed: rows.map((row) => row.aggregate.medianElapsed),
+    withinFour: rows.map((row) => row.withinFour),
   };
 
-  const body = element("tbody");
-  rows.forEach(({ solver, index, aggregate }) => {
-    const row = element("tr");
+  if (rows.length === 0) {
+    append(list, element("p", "empty-result", "No solvers are available."));
+    return;
+  }
+
+  rows.forEach(({ solver, index, aggregate, withinFour }) => {
+    const row = element("article", "aggregate-row");
     append(
       row,
-      solverLabelCell(solver, index),
+      solverLabel(solver, index),
       scoreCell(
+        "Valid",
+        "A tree decomposition accepted by the common validator. The denominator is every selected graph.",
         formatPercentage(BenchmarkStatistics.share(aggregate.valid.length, instances.length)),
         `${formatInteger(aggregate.valid.length)} / ${formatInteger(instances.length)}`,
         relativeQuality(aggregate.valid.length, metricValues.valid, true),
       ),
       scoreCell(
+        "Exact best",
+        "The solver tied the smallest validated width observed for this graph. The reference is not a proven optimum.",
         formatPercentage(BenchmarkStatistics.share(aggregate.bestWidths, instances.length)),
         `${formatInteger(aggregate.bestWidths)} graphs`,
         relativeQuality(aggregate.bestWidths, metricValues.best, true),
       ),
       scoreCell(
+        "Within +1",
+        "The solver returned a validated width at most one above the best observed width for this graph.",
         formatPercentage(BenchmarkStatistics.share(aggregate.withinOneWidths, instances.length)),
         `${formatInteger(aggregate.withinOneWidths)} graphs`,
         relativeQuality(aggregate.withinOneWidths, metricValues.withinOne, true),
       ),
       scoreCell(
-        formatNumber(aggregate.medianWidthDelta),
-        "above best width",
-        relativeQuality(aggregate.medianWidthDelta, metricValues.delta, false),
-      ),
-      scoreCell(
-        formatPercentage(aggregate.medianTotalSizeExcess),
-        "median excess",
-        relativeQuality(aggregate.medianTotalSizeExcess, metricValues.totalSize, false),
-      ),
-      scoreCell(
-        formatElapsed(aggregate.medianElapsed),
-        aggregate.valid.length > 0
-          ? `${formatInteger(aggregate.atBudget)} at limit`
-          : "no valid runs",
-        relativeQuality(aggregate.medianElapsed, metricValues.elapsed, false),
+        "Within +4",
+        "The solver returned a validated width at most four above the best observed width for this graph.",
+        formatPercentage(BenchmarkStatistics.share(withinFour, instances.length)),
+        `${formatInteger(withinFour)} graphs`,
+        relativeQuality(withinFour, metricValues.withinFour, true),
       ),
     );
-    append(body, row);
+    append(list, row);
   });
-  append(table, body);
 }
 
 function renderWidthProfile(instances) {
   renderWidthProfileChart(instances);
-  const table = document.querySelector("#width-profile-table");
-  const ids = solverIds();
-  table.replaceChildren();
-  append(
-    table,
-    element(
-      "caption",
-      "visually-hidden",
-      `Width quality profile over ${instances.length} selected graphs`,
-    ),
-  );
-
-  const head = element("thead");
-  const header = element("tr");
-  const solverHeader = element("th", "", "Solver");
-  solverHeader.scope = "col";
-  append(header, solverHeader);
-  profileDeltas.forEach((delta) => {
-    const cell = element("th", "", delta === 0 ? "Best" : `Δ ≤ ${delta}`);
-    cell.scope = "col";
-    append(header, cell);
-  });
-  append(head, header);
-  append(table, head);
-
-  const body = element("tbody");
-  state.data.solvers.forEach((solver) => {
-    const row = element("tr");
-    append(row, solverLabelCell(solver, state.data.solvers.indexOf(solver)));
-    profileDeltas.forEach((delta) => {
-      append(
-        row,
-        aggregateCell(
-          formatPercentage(
-            BenchmarkStatistics.widthProfileShare(
-              instances,
-              ids,
-              solver.id,
-              delta,
-            ),
-          ),
-          "profile-value",
-        ),
-      );
-    });
-    append(body, row);
-  });
-  append(table, body);
 }
 
 function profileStyle(solver, index) {
@@ -594,41 +461,42 @@ function renderWidthProfileChart(instances) {
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
   const xDelta = (delta) => margin.left + (plotWidth * delta) / profileDeltas.at(-1);
-  const y = (value) => margin.top + plotHeight * (1 - value / 100);
+  const y = (value) => margin.top + plotHeight * (1 - value / Math.max(instances.length, 1));
 
   svg.replaceChildren(
-    svgElement("title", { id: "profile-chart-title" }, "Width quality profile"),
+    svgElement("title", { id: "profile-chart-title" }, "Quality coverage at ten seconds"),
     svgElement(
       "desc",
       { id: "profile-chart-description" },
-      `Validated width coverage for ${instances.length} selected graph views at six reported excess thresholds.`,
+      `Number of selected graphs with a validated width within each reported excess threshold.`,
     ),
   );
   legend.replaceChildren();
 
-  [0, 25, 50, 75, 100].forEach((value) => {
-    const ordinate = y(value);
-    append(
-      svg,
-      svgElement("line", {
-        class: "profile-grid-line",
-        x1: margin.left,
-        x2: width - margin.right,
-        y1: ordinate,
-        y2: ordinate,
-      }),
-      svgElement(
-        "text",
-        {
-          class: "profile-axis-label",
-          x: margin.left - 10,
-          y: ordinate + 4,
-          "text-anchor": "end",
-        },
-        `${value}%`,
-      ),
-    );
-  });
+  [...new Set([0, 0.25, 0.5, 0.75, 1].map((fraction) => Math.round(instances.length * fraction)))]
+    .forEach((value) => {
+      const ordinate = y(value);
+      append(
+        svg,
+        svgElement("line", {
+          class: "profile-grid-line",
+          x1: margin.left,
+          x2: width - margin.right,
+          y1: ordinate,
+          y2: ordinate,
+        }),
+        svgElement(
+          "text",
+          {
+            class: "profile-axis-label",
+            x: margin.left - 10,
+            y: ordinate + 4,
+            "text-anchor": "end",
+          },
+          formatInteger(value),
+        ),
+      );
+    });
 
   profileDeltas.forEach((delta, index) => {
     const abscissa = xDelta(delta);
@@ -687,7 +555,7 @@ function renderWidthProfileChart(instances) {
         transform: `translate(17 ${margin.top + plotHeight / 2}) rotate(-90)`,
         "text-anchor": "middle",
       },
-      "Selected graph views",
+      "Graphs within threshold",
     ),
   );
 
@@ -708,11 +576,11 @@ function renderWidthProfileChart(instances) {
     return;
   }
 
-  state.data.solvers.forEach((solver, solverIndex) => {
+  comparisonSolvers().forEach((solver, solverIndex) => {
     const style = profileStyle(solver, solverIndex);
     const chartDeltas = Array.from({ length: profileDeltas.at(-1) + 1 }, (_, delta) => delta);
     const chartValues = chartDeltas.map((delta) =>
-      BenchmarkStatistics.widthProfileShare(instances, ids, solver.id, delta));
+      BenchmarkStatistics.widthProfileCount(instances, ids, solver.id, delta));
     const values = profileDeltas.map((delta) => chartValues[delta]);
     const points = chartDeltas.map((delta) => [xDelta(delta), y(chartValues[delta])]);
     const path = points.reduce((segments, [abscissa, ordinate], index) => {
@@ -729,16 +597,26 @@ function renderWidthProfileChart(instances) {
     if (style.dash) pathNode.setAttribute("stroke-dasharray", style.dash);
     append(svg, pathNode);
     profileDeltas.forEach((delta) => {
+      const count = chartValues[delta];
+      const point = svgElement("circle", {
+        class: "profile-point",
+        cx: xDelta(delta),
+        cy: y(count),
+        r: goatdSolver ? 4 : 3.5,
+        stroke: style.color,
+        tabindex: 0,
+        role: "img",
+        "aria-label": `${solver.name}: ${formatInteger(count)} of ${formatInteger(instances.length)} graphs at delta at most ${delta}`,
+      });
       append(
-        svg,
-        svgElement("circle", {
-          class: "profile-point",
-          cx: xDelta(delta),
-          cy: y(chartValues[delta]),
-          r: goatdSolver ? 3.5 : 3,
-          stroke: style.color,
-        }),
+        point,
+        svgElement(
+          "title",
+          {},
+          `${solver.name}: ${formatCountShare(count, instances.length)} at Δ ≤ ${delta}`,
+        ),
       );
+      append(svg, point);
     });
 
     const item = element("div", "profile-legend-item");
@@ -757,22 +635,18 @@ function renderWidthProfileChart(instances) {
       item,
       swatch,
       element("span", "profile-legend-name", solver.name),
-      element("span", "profile-legend-value", formatPercentage(values.at(-1))),
+      element("span", "profile-legend-value", formatCountShare(values.at(-1), instances.length)),
     );
-    item.title = `${solver.name}: ${formatPercentage(values.at(-1))} at Δ ≤ ${profileDeltas.at(-1)}`;
+    item.title = `${solver.name}: ${formatCountShare(values.at(-1), instances.length)} at Δ ≤ ${profileDeltas.at(-1)}`;
     append(legend, item);
   });
 }
 
-function renderAggregate(instances, sourceWeighted) {
-  const unit = sourceWeighted ? "source graph views" : "component graphs";
-  const structureNote = sourceWeighted
-    ? " The component-structure filter does not apply to this aggregate."
-    : "";
+function renderAggregate(instances) {
   document.querySelector("#aggregate-scope").textContent = instances.length === 0
-    ? `No ${unit} match the current filters.`
-    : `${formatInteger(instances.length)} selected ${unit}. Higher coverage and best-width shares are better; lower excess and elapsed values are better.${structureNote}`;
-  renderAggregateTable(instances);
+    ? "No component graphs match the current filters."
+    : `${formatInteger(instances.length)} selected component graphs. Higher counts are better.`;
+  renderAggregateSummary(instances);
   renderWidthProfile(instances);
 }
 
@@ -786,15 +660,25 @@ function isBest(instance, result, metric) {
   return values.length > 0 && result[metric] === Math.min(...values);
 }
 
-function detailMetric(label, value, best) {
+function detailMetric(label, explanation, value, best) {
   const metric = element("div", best ? "detail-metric is-best" : "detail-metric");
-  append(metric, element("dt", "", label), element("dd", "", value));
+  const term = element("dt", "metric-help", label);
+  term.tabIndex = 0;
+  term.dataset.tooltip = explanation;
+  term.setAttribute("aria-label", `${label}: ${explanation}`);
+  append(metric, term, element("dd", "", value));
   return metric;
 }
 
-function resultCell(instance, solverId) {
-  const result = resultFor(instance, solverId);
-  const cell = element("td", `result-cell status-${result.status}`);
+function resultCard(instance, solver, solverIndex) {
+  const result = resultFor(instance, solver.id);
+  const cell = element("div", `result-cell status-${result.status}`);
+  const solverHeading = element("div", "result-solver");
+  const marker = element("i", "solver-marker");
+  marker.style.setProperty("--solver-color", profileStyle(solver, solverIndex).color);
+  append(solverHeading, marker, element("span", "solver-name", solver.name));
+  if (solver.version) solverHeading.title = `Revision ${solver.version}`;
+  append(cell, solverHeading);
   const status = element("div", "result-status");
   const statusLabel = result.status === "ok" && result.budget_reached
     ? "At budget"
@@ -812,7 +696,7 @@ function resultCell(instance, solverId) {
     return cell;
   }
 
-  const quality = BenchmarkStatistics.widthQuality(instance, solverIds(), solverId);
+  const quality = BenchmarkStatistics.widthQuality(instance, solverIds(), solver.id);
   if (quality) {
     const hue = qualityHue(1 - quality.fraction);
     cell.classList.add("has-width-quality");
@@ -834,17 +718,31 @@ function resultCell(instance, solverId) {
   const details = element("dl", "result-details");
   append(
     details,
-    detailMetric("total size", formatInteger(result.total_bag_size), isBest(instance, result, "total_bag_size")),
-    detailMetric("bags", formatInteger(result.bag_count), isBest(instance, result, "bag_count")),
-    detailMetric("time", formatElapsed(result.elapsed_ms), isBest(instance, result, "elapsed_ms")),
+    detailMetric(
+      "total size",
+      "Sum of all bag sizes, counting a vertex once for every bag that contains it.",
+      formatInteger(result.total_bag_size),
+      isBest(instance, result, "total_bag_size"),
+    ),
+    detailMetric(
+      "bags",
+      "Number of bags in the returned decomposition.",
+      formatInteger(result.bag_count),
+      isBest(instance, result, "bag_count"),
+    ),
+    detailMetric(
+      "time",
+      "Process time until the solver exited or received the fixed-budget signal. This is not time to the displayed incumbent.",
+      formatElapsed(result.elapsed_ms),
+      isBest(instance, result, "elapsed_ms"),
+    ),
   );
   append(cell, details);
   return cell;
 }
 
 function instanceHeading(instance) {
-  const cell = element("th", "instance-cell");
-  cell.scope = "row";
+  const cell = element("header", "instance-cell");
   append(cell, element("span", "instance-label", instance.label || instance.source || instance.id));
 
   const source = [instance.source, instance.kind].filter(Boolean).join(" / ");
@@ -876,50 +774,26 @@ function instanceHeading(instance) {
 }
 
 function renderMatrix(instances, totalMatches, firstIndex) {
-  const table = document.querySelector("#result-matrix");
-  table.replaceChildren();
+  const list = document.querySelector("#result-list");
+  list.replaceChildren();
   const displayStart = totalMatches === 0 ? 0 : firstIndex + 1;
-  append(
-    table,
-    element(
-      "caption",
-      "visually-hidden",
-      `${instances.length} displayed graphs, starting at ${displayStart}, from ${totalMatches} matches`,
-    ),
+  list.setAttribute(
+    "aria-label",
+    `${instances.length} displayed graphs, starting at ${displayStart}, from ${totalMatches} matches`,
   );
-
-  const head = element("thead");
-  const headerRow = element("tr");
-  const instanceHeader = element("th", "instance-column", "Graph instance");
-  instanceHeader.scope = "col";
-  append(headerRow, instanceHeader);
-
-  state.data.solvers.forEach((solver) => {
-    const cell = element("th", "solver-column");
-    cell.scope = "col";
-    append(cell, element("span", "solver-name", solver.name));
-    if (solver.version) append(cell, element("code", "solver-version", solver.version));
-    append(headerRow, cell);
-  });
-  append(head, headerRow);
-  append(table, head);
-
-  const body = element("tbody");
   if (instances.length === 0) {
-    const row = element("tr");
-    const cell = element("td", "empty-result", "No graphs match these filters.");
-    cell.colSpan = state.data.solvers.length + 1;
-    append(row, cell);
-    append(body, row);
+    append(list, element("p", "empty-result", "No graphs match these filters."));
   } else {
     instances.forEach((instance) => {
-      const row = element("tr", "graph-row");
-      append(row, instanceHeading(instance));
-      state.data.solvers.forEach((solver) => append(row, resultCell(instance, solver.id)));
-      append(body, row);
+      const row = element("article", "graph-row");
+      const solverGrid = element("div", "solver-results");
+      comparisonSolvers().forEach((solver, solverIndex) => {
+        append(solverGrid, resultCard(instance, solver, solverIndex));
+      });
+      append(row, instanceHeading(instance), solverGrid);
+      append(list, row);
     });
   }
-  append(table, body);
 }
 
 function renderPagination(totalMatches) {
@@ -936,19 +810,13 @@ function renderPagination(totalMatches) {
 
 function render() {
   const matches = visibleInstances();
-  const sourceWeighted = state.aggregateUnit === "sources"
-    && Array.isArray(state.data.source_instances)
-    && state.data.source_instances.length > 0;
-  const aggregateMatches = sourceWeighted
-    ? visibleInstances(state.data.source_instances, false)
-    : matches;
   const totalPages = Math.max(1, Math.ceil(matches.length / state.pageSize));
   state.page = Math.min(state.page, totalPages);
   const firstIndex = (state.page - 1) * state.pageSize;
   const instances = matches.slice(firstIndex, firstIndex + state.pageSize);
   document.querySelector("#visible-count").textContent =
     `${matches.length} of ${state.data.instances.length} graphs`;
-  renderAggregate(aggregateMatches, sourceWeighted);
+  renderAggregate(matches);
   renderMatrix(instances, matches.length, firstIndex);
   renderPagination(matches.length);
 }
@@ -963,6 +831,10 @@ async function load() {
     const data = await loadResultSet(resultUrl);
     validateData(data);
     state.data = data;
+    if (data.dataset.synthetic) {
+      state.minimumBestWidth = 0;
+      document.querySelector("#minimum-width-filter").value = "0";
+    }
     renderMetadata();
     populateFilters();
     bindControls();
@@ -972,7 +844,7 @@ async function load() {
     message.hidden = false;
     message.textContent =
       `${error.message} Serve this directory through a static web server and check the result path.`;
-    document.querySelector("#matrix-scroll").hidden = true;
+    document.querySelector("#result-list").hidden = true;
   }
 }
 
