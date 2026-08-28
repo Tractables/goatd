@@ -134,6 +134,10 @@ The complete list of source changes and licences is in
 and FlowCutter-based refinement. Refinement preserves global vertex ids while
 it projects each side and glues them at a separator.
 
+The representation canonicalizes the contents of each bag and sorts every
+bag-adjacency list. Equivalent decompositions therefore expose the same rooted
+walk regardless of the order in which their undirected bag edges were supplied.
+
 ## Correctness and reproducibility
 
 `TreeDecomposition::validate` checks bag contents, the bag forest, vertex and edge

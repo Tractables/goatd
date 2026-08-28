@@ -67,7 +67,14 @@ impl TreeDecomposition {
         Ok(td)
     }
 
-    pub(crate) fn from_parts(num_vertices: u32, bags: Vec<TdBag>, adj: Vec<Vec<usize>>) -> Self {
+    pub(crate) fn from_parts(
+        num_vertices: u32,
+        bags: Vec<TdBag>,
+        mut adj: Vec<Vec<usize>>,
+    ) -> Self {
+        for neighbours in &mut adj {
+            neighbours.sort_unstable();
+        }
         Self {
             num_vertices,
             bags,
@@ -85,7 +92,8 @@ impl TreeDecomposition {
         &self.bags
     }
 
-    /// Undirected bag adjacency, indexed like [`Self::bags`].
+    /// Undirected bag adjacency, indexed like [`Self::bags`], with each bag's
+    /// neighbours sorted by bag index.
     pub fn adjacency(&self) -> &[Vec<usize>] {
         &self.adj
     }
