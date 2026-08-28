@@ -40,7 +40,9 @@ Tied minima count as best for every tied solver. The quality--coverage curve
 reports the count with a valid width at most 0, 1, 2, 4 or 8 above the best
 observed width. Missing, invalid and timed-out results do not satisfy a profile
 threshold. Hovering or focusing a metric label explains its denominator and
-interpretation.
+interpretation. Aggregate metric labels appear once in the header. Each curve
+has a wider invisible pointer target; hovering or focusing it identifies the
+solver, while its marked thresholds report exact values.
 
 The detailed view lays out every solver in a responsive grid under its graph;
 it does not require horizontal scrolling. Connected graphs with

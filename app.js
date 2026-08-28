@@ -15,6 +15,24 @@ const profileStyles = {
   "arboretum-heuristic": { color: "#8c4f64", dash: "10 3 2 3" },
 };
 const fallbackProfileColors = ["#4d4d4d", "#648fff", "#785ef0", "#dc267f", "#fe6100"];
+const aggregateMetricDefinitions = [
+  [
+    "Valid",
+    "A tree decomposition accepted by the common validator. The denominator is every selected graph.",
+  ],
+  [
+    "Exact best",
+    "The solver tied the smallest validated width observed for this graph. The reference is not a proven optimum.",
+  ],
+  [
+    "Within +1",
+    "The solver returned a validated width at most one above the best observed width for this graph.",
+  ],
+  [
+    "Within +4",
+    "The solver returned a validated width at most four above the best observed width for this graph.",
+  ],
+];
 
 const state = {
   data: null,
@@ -360,15 +378,17 @@ function relativeQuality(value, values, higherIsBetter) {
   return higherIsBetter ? fraction : 1 - fraction;
 }
 
-function scoreCell(label, explanation, primary, secondary, quality) {
+function scoreCell(label, primary, secondary, quality) {
   const cell = element("div", "aggregate-score");
+  cell.dataset.metric = label;
+  cell.setAttribute("aria-label", `${label}: ${primary}; ${secondary}`);
   if (Number.isFinite(quality)) {
     const hue = qualityHue(quality);
     cell.classList.add("has-relative-quality");
     cell.style.setProperty("--summary-quality", `hsl(${hue} 62% 88%)`);
     cell.style.setProperty("--summary-accent", `hsl(${hue} 58% 38%)`);
   }
-  append(cell, metricHelp(label, explanation), element("strong", "aggregate-primary", primary));
+  append(cell, element("strong", "aggregate-primary", primary));
   if (secondary) append(cell, element("span", "aggregate-secondary", secondary));
   return cell;
 }
@@ -377,6 +397,12 @@ function renderAggregateSummary(instances) {
   const list = document.querySelector("#aggregate-list");
   const ids = solverIds();
   list.replaceChildren();
+  const header = element("div", "aggregate-header");
+  append(header, element("span", "aggregate-header-solver", "Solver"));
+  aggregateMetricDefinitions.forEach(([label, explanation]) => {
+    append(header, metricHelp(label, explanation));
+  });
+  append(list, header);
 
   const rows = comparisonSolvers().map((solver, index) => ({
     solver,
@@ -409,28 +435,24 @@ function renderAggregateSummary(instances) {
       solverLabel(solver, index),
       scoreCell(
         "Valid",
-        "A tree decomposition accepted by the common validator. The denominator is every selected graph.",
         formatPercentage(BenchmarkStatistics.share(aggregate.valid.length, instances.length)),
         `${formatInteger(aggregate.valid.length)} / ${formatInteger(instances.length)}`,
         relativeQuality(aggregate.valid.length, metricValues.valid, true),
       ),
       scoreCell(
         "Exact best",
-        "The solver tied the smallest validated width observed for this graph. The reference is not a proven optimum.",
         formatPercentage(BenchmarkStatistics.share(aggregate.bestWidths, instances.length)),
         `${formatInteger(aggregate.bestWidths)} graphs`,
         relativeQuality(aggregate.bestWidths, metricValues.best, true),
       ),
       scoreCell(
         "Within +1",
-        "The solver returned a validated width at most one above the best observed width for this graph.",
         formatPercentage(BenchmarkStatistics.share(aggregate.withinOneWidths, instances.length)),
         `${formatInteger(aggregate.withinOneWidths)} graphs`,
         relativeQuality(aggregate.withinOneWidths, metricValues.withinOne, true),
       ),
       scoreCell(
         "Within +4",
-        "The solver returned a validated width at most four above the best observed width for this graph.",
         formatPercentage(BenchmarkStatistics.share(withinFour, instances.length)),
         `${formatInteger(withinFour)} graphs`,
         relativeQuality(withinFour, metricValues.withinFour, true),
@@ -589,13 +611,21 @@ function renderWidthProfileChart(instances) {
       return `${segments} L${abscissa},${previousOrdinate} L${abscissa},${ordinate}`;
     }, "");
     const goatdSolver = solver.id.startsWith("goatd-portfolio");
+    const hitPath = svgElement("path", {
+      class: "profile-series-hit",
+      d: path,
+      tabindex: 0,
+      role: "img",
+      "aria-label": `${solver.name} quality coverage curve`,
+    });
+    append(hitPath, svgElement("title", {}, solver.name));
     const pathNode = svgElement("path", {
       class: `profile-series${goatdSolver ? " is-goatd" : ""}`,
       d: path,
       stroke: style.color,
     });
     if (style.dash) pathNode.setAttribute("stroke-dasharray", style.dash);
-    append(svg, pathNode);
+    append(svg, hitPath, pathNode);
     profileDeltas.forEach((delta) => {
       const count = chartValues[delta];
       const point = svgElement("circle", {

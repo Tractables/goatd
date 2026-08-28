@@ -353,9 +353,40 @@ main > .scope {
   background: var(--paper);
 }
 
+.aggregate-header,
 .aggregate-row {
   display: grid;
   grid-template-columns: minmax(210px, 1.3fr) repeat(4, minmax(120px, 1fr));
+}
+
+.aggregate-header {
+  border-bottom: 1px solid var(--rule-strong);
+  background: var(--ucla-blue-soft);
+  color: var(--ucla-blue-dark);
+  font-size: 0.68rem;
+  font-weight: 650;
+}
+
+.aggregate-header > span {
+  justify-self: center;
+  margin: 0.55rem 0;
+}
+
+.aggregate-header .aggregate-header-solver {
+  justify-self: start;
+  margin-left: 0.8rem;
+  border-bottom: 0;
+  cursor: default;
+}
+
+.aggregate-header .metric-help::after {
+  top: calc(100% + 0.55rem);
+  bottom: auto;
+}
+
+.aggregate-header .metric-help:nth-child(n + 4)::after {
+  right: 0;
+  left: auto;
 }
 
 .aggregate-row + .aggregate-row {
@@ -413,14 +444,6 @@ main > .scope {
 .aggregate-score.has-relative-quality {
   background: var(--summary-quality);
   box-shadow: inset 0 -3px 0 var(--summary-accent);
-}
-
-.aggregate-score .metric-help {
-  margin-bottom: 0.25rem;
-  color: #46535d;
-  font-family: var(--font-body);
-  font-size: 0.63rem;
-  font-weight: 600;
 }
 
 .aggregate-primary,
@@ -503,10 +526,31 @@ main > .scope {
 
 .profile-series {
   fill: none;
+  pointer-events: none;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2;
   vector-effect: non-scaling-stroke;
+}
+
+.profile-series-hit {
+  fill: none;
+  pointer-events: stroke;
+  stroke: transparent;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 14;
+  vector-effect: non-scaling-stroke;
+}
+
+.profile-series-hit:hover + .profile-series,
+.profile-series-hit:focus + .profile-series {
+  filter: drop-shadow(0 0 2px rgb(23 35 45 / 45%));
+  stroke-width: 4;
+}
+
+.profile-series-hit:focus {
+  outline: none;
 }
 
 .profile-series.is-goatd {
@@ -961,7 +1005,12 @@ footer {
     grid-template-columns: repeat(4, 1fr);
   }
 
-  .aggregate-solver {
+  .aggregate-header {
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  .aggregate-solver,
+  .aggregate-header-solver {
     grid-column: 1 / -1;
     border-right: 0;
     border-bottom: 1px solid var(--rule);
@@ -1012,6 +1061,10 @@ footer {
     grid-template-columns: 1fr;
   }
 
+  .aggregate-header {
+    display: none;
+  }
+
   .search-control,
   .aggregate-solver {
     grid-column: auto;
@@ -1025,6 +1078,15 @@ footer {
 
   .aggregate-score:last-child {
     border-bottom: 0;
+  }
+
+  .aggregate-score::before {
+    margin-bottom: 0.2rem;
+    color: var(--muted);
+    content: attr(data-metric);
+    font-family: var(--font-body);
+    font-size: 0.62rem;
+    font-weight: 600;
   }
 
   .matrix-heading-row {
