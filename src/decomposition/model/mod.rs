@@ -17,7 +17,16 @@ impl TdBag {
         Self { vertices }
     }
 
-    /// Vertices in this bag, sorted in ascending order.
+    /// A bag emitted by an algorithm whose stable vertex order is part of its
+    /// traversal result. Public constructors still enter through [`Self::new`]
+    /// and canonicalize arbitrary caller input.
+    pub(crate) fn from_algorithm_order(vertices: Vec<u32>) -> Self {
+        Self { vertices }
+    }
+
+    /// Vertices in this bag. Publicly constructed decompositions expose them in
+    /// ascending order; algorithm results may retain a stable algorithm-defined
+    /// order.
     pub fn vertices(&self) -> &[u32] {
         &self.vertices
     }

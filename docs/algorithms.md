@@ -134,11 +134,11 @@ The complete list of source changes and licences is in
 and FlowCutter-based refinement. Refinement preserves global vertex ids while
 it projects each side and glues them at a separator.
 
-The representation canonicalizes each bag's contents. The public edge-list
-constructor also canonicalizes undirected bag edges, so equivalent inputs expose
-the same rooted walk regardless of edge order. Native algorithms may retain a
-stable algorithm-defined neighbour order when it carries useful traversal
-information; FlowCutter reconstructs that order at its adapter boundary.
+Public constructors canonicalize each bag's contents and the undirected bag
+edges, so equivalent caller inputs expose the same rooted walk. Native
+algorithms may retain stable algorithm-defined vertex and neighbour order when
+it carries useful traversal information; FlowCutter preserves both at its
+adapter boundary.
 
 ## Correctness and reproducibility
 

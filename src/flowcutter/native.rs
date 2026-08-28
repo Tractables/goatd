@@ -233,7 +233,7 @@ fn extract(native: &NativeDecomposition, graph: &Graph) -> Result<TreeDecomposit
                         })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            bags.push(TdBag::new(vertices));
+            bags.push(TdBag::from_algorithm_order(vertices));
 
             let neighbor_count = ffi::td_bag_num_neighbors(native.0, bag_index as c_int);
             if neighbor_count < 0 || neighbor_count as usize > num_bags {
@@ -270,7 +270,7 @@ fn extract(native: &NativeDecomposition, graph: &Graph) -> Result<TreeDecomposit
 /// edges are admitted when their lower-index endpoint is visited. Lower
 /// neighbours therefore precede a bag's forward neighbours, while the
 /// decomposer's meaningful forward-neighbour order is retained.
-fn reconstruct_native_adjacency(native: &[Vec<usize>]) -> Vec<Vec<usize>> {
+pub(super) fn reconstruct_native_adjacency(native: &[Vec<usize>]) -> Vec<Vec<usize>> {
     let mut adjacency = vec![Vec::new(); native.len()];
     for (bag, neighbours) in native.iter().enumerate() {
         for &neighbour in neighbours {
@@ -318,19 +318,4 @@ fn charge_build(vertices: u64, edges: u64, iterations_done: i64, greedy_touches:
 /// Clamp the backend's step ceiling to the amount small graphs can use.
 fn scaled_steps(steps: i64, num_edges: usize) -> i64 {
     steps.min(10_000i64.max(50 * num_edges as i64))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::reconstruct_native_adjacency;
-
-    #[test]
-    fn readback_orders_lower_bags_before_native_forward_neighbors() {
-        let native = vec![vec![4, 2, 1], vec![3, 0], vec![0], vec![1], vec![0]];
-
-        assert_eq!(
-            reconstruct_native_adjacency(&native),
-            vec![vec![4, 2, 1], vec![0, 3], vec![0], vec![1], vec![0]],
-        );
-    }
 }
