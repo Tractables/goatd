@@ -63,6 +63,7 @@ const BenchmarkStatistics = (() => {
     const totalSizeExcesses = [];
     const bagCountExcesses = [];
     let bestWidths = 0;
+    let withinOneWidths = 0;
     let atBudget = 0;
 
     instances.forEach((instance) => {
@@ -73,8 +74,10 @@ const BenchmarkStatistics = (() => {
 
       const bestWidth = bestObserved(instance, solverIds, "width");
       if (Number.isFinite(bestWidth) && Number.isFinite(result.width)) {
-        widthDeltas.push(result.width - bestWidth);
-        if (result.width === bestWidth) bestWidths += 1;
+        const widthDelta = result.width - bestWidth;
+        widthDeltas.push(widthDelta);
+        if (widthDelta === 0) bestWidths += 1;
+        if (widthDelta <= 1) withinOneWidths += 1;
       }
 
       const totalSizeExcess = percentageExcess(
@@ -93,6 +96,7 @@ const BenchmarkStatistics = (() => {
     return {
       valid,
       bestWidths,
+      withinOneWidths,
       atBudget,
       medianWidthDelta: median(widthDeltas),
       medianTotalSizeExcess: median(totalSizeExcesses),

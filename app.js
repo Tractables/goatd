@@ -20,6 +20,7 @@ const state = {
   query: "",
   group: "all",
   kind: "all",
+  size: "all",
   status: "all",
   aggregateUnit: "components",
   structure: "non-tree",
@@ -231,6 +232,12 @@ function bindControls() {
     render();
   });
 
+  document.querySelector("#size-filter").addEventListener("change", (event) => {
+    state.size = event.target.value;
+    state.page = 1;
+    render();
+  });
+
   document.querySelector("#status-filter").addEventListener("change", (event) => {
     state.status = event.target.value;
     state.page = 1;
@@ -300,6 +307,15 @@ function bestWidth(instance) {
   return widths.length ? Math.min(...widths) : null;
 }
 
+function sizeMatches(vertices) {
+  if (state.size === "up-to-100") return vertices <= 100;
+  if (state.size === "101-500") return vertices >= 101 && vertices <= 500;
+  if (state.size === "501-2000") return vertices >= 501 && vertices <= 2000;
+  if (state.size === "2001-10000") return vertices >= 2001 && vertices <= 10000;
+  if (state.size === "above-10000") return vertices > 10000;
+  return true;
+}
+
 function sortValue(instance) {
   const values = {
     instance: instance.label || instance.source || instance.id,
@@ -327,10 +343,16 @@ function visibleInstances(collection = state.data.instances, filterStructure = t
     const queryMatches = !state.query || searchable.includes(state.query);
     const groupMatches = state.group === "all" || instance.group === state.group;
     const kindMatches = state.kind === "all" || instance.kind === state.kind;
+    const graphSizeMatches = sizeMatches(instance.vertices);
     const structureMatches = !filterStructure
       || state.structure === "all"
       || !BenchmarkStatistics.isTreeComponent(instance);
-    return queryMatches && groupMatches && kindMatches && structureMatches && outcomeMatches(instance);
+    return queryMatches
+      && groupMatches
+      && kindMatches
+      && graphSizeMatches
+      && structureMatches
+      && outcomeMatches(instance);
   });
 
   return matches.sort((a, b) => {
@@ -347,16 +369,50 @@ function visibleInstances(collection = state.data.instances, filterStructure = t
   });
 }
 
-function solverLabelCell(solver) {
+function solverLabelCell(solver, index = 0) {
   const cell = element("th", "aggregate-solver");
   cell.scope = "row";
-  append(cell, element("span", "aggregate-solver-name", solver.name));
+  const label = element("span", "aggregate-solver-label");
+  const marker = element("i", "solver-marker");
+  marker.style.setProperty("--solver-color", profileStyle(solver, index).color);
+  append(label, marker, element("span", "aggregate-solver-name", solver.name));
+  append(cell, label);
   if (solver.version) append(cell, element("code", "solver-version", solver.version));
   return cell;
 }
 
+function qualityHue(fraction) {
+  return fraction <= 0.5
+    ? 5 + 86 * fraction
+    : 48 + 176 * (fraction - 0.5);
+}
+
+function relativeQuality(value, values, higherIsBetter) {
+  if (!Number.isFinite(value)) return null;
+  const finite = values.filter(Number.isFinite);
+  if (finite.length === 0) return null;
+  const low = Math.min(...finite);
+  const high = Math.max(...finite);
+  if (low === high) return 0.5;
+  const fraction = (value - low) / (high - low);
+  return higherIsBetter ? fraction : 1 - fraction;
+}
+
 function aggregateCell(value, className = "") {
   return element("td", className, value);
+}
+
+function scoreCell(primary, secondary, quality) {
+  const cell = element("td", "aggregate-score");
+  if (Number.isFinite(quality)) {
+    const hue = qualityHue(quality);
+    cell.classList.add("has-relative-quality");
+    cell.style.setProperty("--summary-quality", `hsl(${hue} 62% 88%)`);
+    cell.style.setProperty("--summary-accent", `hsl(${hue} 58% 38%)`);
+  }
+  append(cell, element("strong", "aggregate-primary", primary));
+  if (secondary) append(cell, element("span", "aggregate-secondary", secondary));
+  return cell;
 }
 
 function renderAggregateTable(instances) {
@@ -373,46 +429,95 @@ function renderAggregateTable(instances) {
   );
 
   const head = element("thead");
-  const header = element("tr");
+  const groups = element("tr", "aggregate-groups");
+  const solverHeader = element("th", "", "Solver");
+  solverHeader.scope = "col";
+  solverHeader.rowSpan = 2;
+  append(groups, solverHeader);
   [
-    "Solver",
+    ["Reliability", 1],
+    ["Width quality", 3],
+    ["Decomposition", 1],
+    ["Run", 1],
+  ].forEach(([label, span]) => {
+    const cell = element("th", "", label);
+    cell.scope = "colgroup";
+    cell.colSpan = span;
+    append(groups, cell);
+  });
+  const header = element("tr", "aggregate-metrics");
+  [
     "Valid",
-    "Best width",
-    "Median width Δ",
-    "Median total-size excess",
-    "Median bag-count excess",
-    "Median elapsed",
-    "At budget",
+    "Best observed",
+    "Within +1",
+    "Median Δ",
+    "Total-size excess",
+    "Median time",
   ].forEach((label) => {
     const cell = element("th", "", label);
     cell.scope = "col";
     append(header, cell);
   });
-  append(head, header);
+  append(head, groups, header);
   append(table, head);
 
+  const rows = state.data.solvers.map((solver, index) => ({
+    solver,
+    index,
+    aggregate: BenchmarkStatistics.aggregateSolver(instances, ids, solver.id),
+  }));
+  rows.sort((a, b) => (
+    b.aggregate.bestWidths - a.aggregate.bestWidths
+    || b.aggregate.valid.length - a.aggregate.valid.length
+    || (a.aggregate.medianWidthDelta ?? Infinity) - (b.aggregate.medianWidthDelta ?? Infinity)
+    || a.solver.name.localeCompare(b.solver.name)
+  ));
+  const metricValues = {
+    valid: rows.map((row) => row.aggregate.valid.length),
+    best: rows.map((row) => row.aggregate.bestWidths),
+    withinOne: rows.map((row) => row.aggregate.withinOneWidths),
+    delta: rows.map((row) => row.aggregate.medianWidthDelta),
+    totalSize: rows.map((row) => row.aggregate.medianTotalSizeExcess),
+    elapsed: rows.map((row) => row.aggregate.medianElapsed),
+  };
+
   const body = element("tbody");
-  state.data.solvers.forEach((solver) => {
-    const aggregate = BenchmarkStatistics.aggregateSolver(
-      instances,
-      ids,
-      solver.id,
-    );
+  rows.forEach(({ solver, index, aggregate }) => {
     const row = element("tr");
     append(
       row,
-      solverLabelCell(solver),
-      aggregateCell(formatCountShare(aggregate.valid.length, instances.length)),
-      aggregateCell(formatCountShare(aggregate.bestWidths, instances.length)),
-      aggregateCell(formatNumber(aggregate.medianWidthDelta), "numeric-cell"),
-      aggregateCell(formatPercentage(aggregate.medianTotalSizeExcess), "numeric-cell"),
-      aggregateCell(formatPercentage(aggregate.medianBagCountExcess), "numeric-cell"),
-      aggregateCell(formatElapsed(aggregate.medianElapsed), "numeric-cell"),
-      aggregateCell(
+      solverLabelCell(solver, index),
+      scoreCell(
+        formatPercentage(BenchmarkStatistics.share(aggregate.valid.length, instances.length)),
+        `${formatInteger(aggregate.valid.length)} / ${formatInteger(instances.length)}`,
+        relativeQuality(aggregate.valid.length, metricValues.valid, true),
+      ),
+      scoreCell(
+        formatPercentage(BenchmarkStatistics.share(aggregate.bestWidths, instances.length)),
+        `${formatInteger(aggregate.bestWidths)} graphs`,
+        relativeQuality(aggregate.bestWidths, metricValues.best, true),
+      ),
+      scoreCell(
+        formatPercentage(BenchmarkStatistics.share(aggregate.withinOneWidths, instances.length)),
+        `${formatInteger(aggregate.withinOneWidths)} graphs`,
+        relativeQuality(aggregate.withinOneWidths, metricValues.withinOne, true),
+      ),
+      scoreCell(
+        formatNumber(aggregate.medianWidthDelta),
+        "above best width",
+        relativeQuality(aggregate.medianWidthDelta, metricValues.delta, false),
+      ),
+      scoreCell(
+        formatPercentage(aggregate.medianTotalSizeExcess),
+        "median excess",
+        relativeQuality(aggregate.medianTotalSizeExcess, metricValues.totalSize, false),
+      ),
+      scoreCell(
+        formatElapsed(aggregate.medianElapsed),
         aggregate.valid.length > 0
-          ? `${formatInteger(aggregate.atBudget)}/${formatInteger(aggregate.valid.length)}`
-          : "—",
-        "numeric-cell",
+          ? `${formatInteger(aggregate.atBudget)} at limit`
+          : "no valid runs",
+        relativeQuality(aggregate.medianElapsed, metricValues.elapsed, false),
       ),
     );
     append(body, row);
@@ -450,7 +555,7 @@ function renderWidthProfile(instances) {
   const body = element("tbody");
   state.data.solvers.forEach((solver) => {
     const row = element("tr");
-    append(row, solverLabelCell(solver));
+    append(row, solverLabelCell(solver, state.data.solvers.indexOf(solver)));
     profileDeltas.forEach((delta) => {
       append(
         row,
@@ -709,10 +814,10 @@ function resultCell(instance, solverId) {
 
   const quality = BenchmarkStatistics.widthQuality(instance, solverIds(), solverId);
   if (quality) {
-    const hue = 205 - 175 * quality.fraction;
+    const hue = qualityHue(1 - quality.fraction);
     cell.classList.add("has-width-quality");
-    cell.style.setProperty("--quality-background", `hsl(${hue} 52% 95%)`);
-    cell.style.setProperty("--quality-accent", `hsl(${hue} 58% 42%)`);
+    cell.style.setProperty("--quality-background", `hsl(${hue} 62% 93%)`);
+    cell.style.setProperty("--quality-accent", `hsl(${hue} 58% 38%)`);
   }
   const width = element("div", "width-result");
   append(width, element("span", "width-label", "width"), element("strong", "", formatInteger(result.width)));
