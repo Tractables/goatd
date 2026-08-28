@@ -91,7 +91,9 @@ all boundary vertices from the smaller side.
 
 The same multilevel graph bisector is public on its own. A separate public
 hypergraph bisector minimizes cut hyperedges, with FM and flow-based
-refinement; it is not used to disguise a hypergraph as a graph.
+refinement; it is not used to disguise a hypergraph as a graph. Hypergraph
+coarsening matches vertices by their total shared hyperedge weight, so explicit
+weights and repeated hyperedges affect both coarsening and the cut objective.
 
 Partition refinement is part of the partitioner. It improves the temporary
 0/1 bisection during uncoarsening and returns another bisection. Decomposition
