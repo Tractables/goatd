@@ -67,17 +67,19 @@ Model Counting Competition CNFs after two seconds of preprocessing. Each
 configuration receives ten seconds on one CPU, and every decomposition is
 checked by the same validator.
 
-The default view excludes tree components and selects graphs whose best
-observed width is at least 30. “Exact best” means a tie with the smallest
-validated width found by the displayed configurations, not a proven optimum.
+The default view excludes tree components and focuses on harder cases: graphs
+where the smallest validated width found is 30 or greater. It also retains 17
+graphs for which no displayed configuration returned a validated
+decomposition. “Exact best” means a tie with the smallest validated width
+found, not a proven optimum.
 
 <!-- Generated table; 6,640 selected graphs. -->
 
 | Solver | Valid | Exact best | Within +1 | Within +4 |
 | --- | ---: | ---: | ---: | ---: |
-| goatd portfolio | 6,442 (97.0%) | 4,047 (60.9%) | 5,203 (78.4%) | 6,166 (92.9%) |
+| goatd portfolio | 6,442 (97.0%) | **4,047 (60.9%)** | **5,203 (78.4%)** | **6,166 (92.9%)** |
 | Jdrasil heuristic | 6,361 (95.8%) | 2,745 (41.3%) | 3,993 (60.1%) | 5,718 (86.1%) |
-| FlowCutter PACE 2017 | 6,565 (98.9%) | 1,239 (18.7%) | 1,774 (26.7%) | 3,921 (59.1%) |
+| FlowCutter PACE 2017 | **6,565 (98.9%)** | 1,239 (18.7%) | 1,774 (26.7%) | 3,921 (59.1%) |
 | Tamaki PACE 2017 | 6,400 (96.4%) | 922 (13.9%) | 1,435 (21.6%) | 2,870 (43.2%) |
 | HTD | 6,401 (96.4%) | 381 (5.7%) | 579 (8.7%) | 1,991 (30.0%) |
 | NetworkX min-degree | 6,266 (94.4%) | 157 (2.4%) | 172 (2.6%) | 332 (5.0%) |
