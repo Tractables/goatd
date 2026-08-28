@@ -58,6 +58,22 @@ fn coarsening_contracts_connected_pairs_and_sums_vertex_weight() {
 }
 
 #[test]
+fn coarsening_matches_across_the_heaviest_shared_hyperedge() {
+    let hg = Hypergraph::from_hyperedges(
+        4,
+        &[vec![0, 1], vec![0, 2], vec![1, 3], vec![2, 3]],
+        Some(&[1, 10, 10, 1]),
+    );
+    let mut rng = Xorshift64::from_state(11);
+    let level = coarsen_one_level(&hg, 0, &mut rng, None)
+        .expect("the four vertices must contract into two pairs");
+
+    assert_eq!(level.mapping[0], level.mapping[2]);
+    assert_eq!(level.mapping[1], level.mapping[3]);
+    assert_ne!(level.mapping[0], level.mapping[1]);
+}
+
+#[test]
 fn a_flow_network_returns_the_maximum_flow_and_residual_source_side() {
     // 0 -> 1 -> 3 carries 2; 0 -> 2 -> 3 carries 1.
     let mut network = FlowNetwork::new(4);

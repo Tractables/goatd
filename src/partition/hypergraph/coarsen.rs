@@ -68,17 +68,21 @@ pub(super) fn coarsen_one_level(
             continue;
         }
 
-        // Candidates are ranked by how many hyperedges they share with `v`,
-        // counted here. The count ignores hyperedge weights, so a pair sharing several
-        // light hyperedges outranks one sharing a single heavy one. The graph
-        // bisector instead matches on edge weight.
+        // Candidates are ranked by the total weight of the hyperedges they
+        // share with `v`. This makes an explicitly weighted hyperedge, including
+        // canonicalized repeats whose weights were added, influence coarsening
+        // by the same amount that it influences the cut objective.
         let mut connectivity: FxHashMap<u32, u32> = FxHashMap::default();
 
         for &hei in hg.vertex_hyperedges(v) {
+            let weight = hg.hyperedge_weights[hei as usize];
             for &u in hg.charged_hyperedge_pins(hei as usize) {
                 let u = u as usize;
                 if u != v && match_of[u].is_none() {
-                    *connectivity.entry(u as u32).or_insert(0) += 1;
+                    let shared_weight = connectivity.entry(u as u32).or_insert(0);
+                    *shared_weight = shared_weight
+                        .checked_add(weight)
+                        .expect("validated total hyperedge weight fits in u32");
                 }
             }
         }
