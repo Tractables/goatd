@@ -46,7 +46,7 @@
 
 #include <cstdint>  // goatd: int64_t — not guaranteed transitively on all stdlibs
 #include <queue>
-#include <sys/time.h>
+// goatd: <sys/time.h> dropped — nothing here used it, and MSVC has no such header.
 
 #include <chrono>
 #include <iostream>

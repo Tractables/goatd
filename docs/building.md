@@ -8,7 +8,8 @@ cargo build
 cargo test --all-targets
 ```
 
-`build.rs` tries `g++-14`, `g++-13`, `g++-12`, and then `g++`. Set
+On Linux `build.rs` tries `g++-14`, `g++-13`, `g++-12`, and then `g++`; on
+macOS and Windows it uses the platform compiler (Apple clang, MSVC). Set
 `GOATD_CXX` to use another GCC 12-or-newer compiler or a recent Clang:
 
 ```sh

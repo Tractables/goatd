@@ -22,6 +22,7 @@ THE SOFTWARE.
 
 #pragma once
 
+#include <bit>  // goatd: countr_zero/popcount replace the GCC builtins (MSVC)
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -263,7 +264,7 @@ class Bitset {
     for (size_t i=0;i<chunks_;i++){
       uint64_t td = data_[i];
       while (td) {
-        ret.push_back(i*BITS + __builtin_ctzll(td));
+        ret.push_back(i*BITS + std::countr_zero(td));
         td &= ~-td;
       }
     }
@@ -272,7 +273,7 @@ class Bitset {
   int Popcount() const {
     int cnt = 0;
     for (size_t i=0;i<chunks_;i++) {
-      cnt += __builtin_popcountll(data_[i]);
+      cnt += std::popcount(data_[i]);
     }
     return cnt;
   }
@@ -285,14 +286,14 @@ class Bitset {
   int IntersectionPopcount(const Bitset& other) const {
     int cnt = 0;
     for (size_t i=0;i<chunks_;i++) {
-      cnt += __builtin_popcountll(data_[i] & other.data_[i]);
+      cnt += std::popcount(data_[i] & other.data_[i]);
     }
     return cnt;
   }
   int First() const {
     for (size_t i=0;i<chunks_;i++) {
       if (data_[i]) {
-        return i*BITS + __builtin_ctzll(data_[i]);
+        return i*BITS + std::countr_zero(data_[i]);
       }
     }
     return chunks_ * BITS;
@@ -319,7 +320,7 @@ class Bitset {
       return *this;
     }
     int operator*() const {
-      return pos_*BITS + __builtin_ctzll(tb_);
+      return pos_*BITS + std::countr_zero(tb_);
     }
   };
 

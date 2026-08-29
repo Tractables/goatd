@@ -1,0 +1,76 @@
+name: Release
+
+# Builds the CLI for each supported platform and attaches the archives to the
+# GitHub release for a tag. Creating a release in the GitHub UI pushes the
+# tag, so the release exists by the time the tag event arrives here; the
+# manual trigger re-runs the build for a tag that already has its release.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and attach binaries to
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  binaries:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      # `--target` rather than the implied host triple, so the archive name
+      # below states what was actually built.
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # LICENSE and the third-party notices travel inside the archive: the
+      # vendored FlowCutter is BSD-2-Clause, whose notice must accompany
+      # binary distributions.
+      - name: Package (tar.gz)
+        if: runner.os != 'Windows'
+        run: |
+          name="goatd-$TAG-${{ matrix.target }}"
+          mkdir "$name"
+          cp "target/${{ matrix.target }}/release/goatd" LICENSE docs/THIRD-PARTY.md "$name"
+          tar czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+
+      - name: Package (zip)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          name="goatd-$TAG-${{ matrix.target }}"
+          mkdir "$name"
+          cp "target/${{ matrix.target }}/release/goatd.exe" LICENSE docs/THIRD-PARTY.md "$name"
+          7z a "$name.zip" "$name"
+          sha256sum "$name.zip" > "$name.zip.sha256"
+
+      # `--clobber` so re-running a job replaces its assets instead of
+      # failing on the leftovers of the previous attempt.
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release upload "$TAG" goatd-"$TAG"-${{ matrix.target }}.* --clobber
