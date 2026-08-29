@@ -9,9 +9,10 @@
      src="https://github.com/Tractables/goatd/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img
      src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
-  <!-- Once the crate is on crates.io, add:
-       <a href="https://crates.io/crates/goatd"><img src="https://img.shields.io/crates/v/goatd.svg" alt="crates.io"></a>
-       <a href="https://docs.rs/goatd"><img src="https://docs.rs/goatd/badge.svg" alt="docs.rs"></a> -->
+  <a href="https://crates.io/crates/goatd"><img
+     src="https://img.shields.io/crates/v/goatd.svg" alt="crates.io"></a>
+  <a href="https://docs.rs/goatd"><img
+     src="https://docs.rs/goatd/badge.svg" alt="docs.rs"></a>
 </p>
 
 Tree decompositions of graphs, as a Rust library and command-line solver. The
