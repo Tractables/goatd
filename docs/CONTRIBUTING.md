@@ -16,7 +16,7 @@ cargo fmt --check
 ```
 
 Build setup, including the C++ compiler used for FlowCutter, is documented in
-[docs/building.md](docs/building.md).
+[building.md](building.md).
 
 ## Code guidelines
 
