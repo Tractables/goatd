@@ -8,7 +8,7 @@ goatd is a public Rust library and CLI: a graph goes in and a tree
 decomposition comes out. Library code, solver code, tests, documentation, and
 vendored dependencies live here. Every tracked file and commit is public.
 
-[`CONTRIBUTING.md`](CONTRIBUTING.md) binds in full. In particular:
+[`CONTRIBUTING.md`](docs/CONTRIBUTING.md) binds in full. In particular:
 
 - Run the complete gate set before reporting a change finished, including
   `--all-targets` so the CLI and examples are covered.

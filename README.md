@@ -1,7 +1,7 @@
 # goatd — Greatest Of All Tree Decompositions
 
 <p align="center">
-  <img src="assets/logo.png" alt="goatd logo" width="280">
+  <img src="docs/logo.png" alt="goatd logo" width="280">
 </p>
 
 <p align="center">
@@ -90,10 +90,11 @@ found, not a proven optimum.
 ## Building and contributing
 
 Build setup is in [Building](docs/building.md). Contributions follow
-[CONTRIBUTING.md](CONTRIBUTING.md).
+[CONTRIBUTING.md](docs/CONTRIBUTING.md).
 
 ## Licence
 
 Apache-2.0. Vendored code and modifications are recorded in
-[THIRD-PARTY.md](THIRD-PARTY.md); [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md)
+[THIRD-PARTY.md](docs/THIRD-PARTY.md);
+[ACKNOWLEDGEMENTS.md](docs/ACKNOWLEDGEMENTS.md)
 credits the work behind the algorithms.

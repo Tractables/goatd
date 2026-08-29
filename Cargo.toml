@@ -21,14 +21,11 @@ include = [
     "build.rs",
     "Cargo.toml",
     "README.md",
-    "CONTRIBUTING.md",
     "CLAUDE.md",
     "AGENTS.md",
     "docs/**/*.md",
+    "docs/logo.png",
     "LICENSE",
-    "THIRD-PARTY.md",
-    "ACKNOWLEDGEMENTS.md",
-    "assets/logo.png",
     "vendor/**",
 ]
 # `build.rs` compiles the vendored FlowCutter into `libtreedecomp.a`. Declaring

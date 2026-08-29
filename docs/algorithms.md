@@ -128,7 +128,7 @@ The C++ builder carries several practical changes over the PACE source:
   graphs.
 
 The complete list of source changes and licences is in
-[THIRD-PARTY.md](../THIRD-PARTY.md).
+[THIRD-PARTY.md](THIRD-PARTY.md).
 
 ## Decomposition operations
 
@@ -156,4 +156,4 @@ The main algorithmic sources are the
 [FlowCutter bisection paper](https://arxiv.org/abs/1504.03812), the
 [PACE 2017 decomposition paper](https://arxiv.org/abs/1709.08949), and the
 multilevel partitioning work credited in
-[ACKNOWLEDGEMENTS.md](../ACKNOWLEDGEMENTS.md).
+[ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).
