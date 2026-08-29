@@ -48,12 +48,15 @@ jobs:
       # LICENSE and the third-party notices travel inside the archive: the
       # vendored FlowCutter is BSD-2-Clause, whose notice must accompany
       # binary distributions.
+      # Tags up to v0.1.0 keep THIRD-PARTY.md at the repository root; later
+      # ones have it under docs/. Take whichever the checkout provides.
       - name: Package (tar.gz)
         if: runner.os != 'Windows'
         run: |
           name="goatd-$TAG-${{ matrix.target }}"
           mkdir "$name"
-          cp "target/${{ matrix.target }}/release/goatd" LICENSE docs/THIRD-PARTY.md "$name"
+          cp "target/${{ matrix.target }}/release/goatd" LICENSE "$name"
+          cp docs/THIRD-PARTY.md "$name" 2>/dev/null || cp THIRD-PARTY.md "$name"
           tar czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
 
@@ -63,7 +66,8 @@ jobs:
         run: |
           name="goatd-$TAG-${{ matrix.target }}"
           mkdir "$name"
-          cp "target/${{ matrix.target }}/release/goatd.exe" LICENSE docs/THIRD-PARTY.md "$name"
+          cp "target/${{ matrix.target }}/release/goatd.exe" LICENSE "$name"
+          cp docs/THIRD-PARTY.md "$name" 2>/dev/null || cp THIRD-PARTY.md "$name"
           7z a "$name.zip" "$name"
           sha256sum "$name.zip" > "$name.zip.sha256"
 
