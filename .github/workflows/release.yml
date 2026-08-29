@@ -48,6 +48,17 @@ jobs:
       # LICENSE and the third-party notices travel inside the archive: the
       # vendored FlowCutter is BSD-2-Clause, whose notice must accompany
       # binary distributions.
+      # A binary that links is not yet known to run. Solve a small graph on
+      # the runner before packaging, so nothing unexecuted is uploaded.
+      - name: Smoke test
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/goatd"
+          if [ "$RUNNER_OS" = Windows ]; then bin="$bin.exe"; fi
+          "$bin" --help > /dev/null
+          printf 'p tw 3 2\n1 2\n2 3\n' > grid.gr
+          "$bin" grid.gr --order portfolio --budget 100 | grep -q '^s td '
+
       # Tags up to v0.1.0 keep THIRD-PARTY.md at the repository root; later
       # ones have it under docs/. Take whichever the checkout provides.
       - name: Package (tar.gz)
