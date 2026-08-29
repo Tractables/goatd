@@ -59,7 +59,10 @@ a `// goatd:` comment naming the reason:
   by the clock; the timed entry also measures patience on that work budget;
 - a per-thread touch counter and a touch budget on the two greedy elimination
   passes, in `flow-cutter-pace17/src/greedy_order.{cpp,hpp}`, which is what lets
-  those passes be bounded and charged the same way.
+  those passes be bounded and charged the same way;
+- the GCC `__builtin_ctzll`/`__builtin_popcountll` intrinsics in `bitset.hpp`
+  replaced with their C++20 `<bit>` equivalents, and an unused `<sys/time.h>`
+  include dropped from `IFlowCutter.cpp`, so the sources compile under MSVC.
 
 The goatd-owned C ABI shim catches C++ exceptions before they reach Rust and
 reports them as a missing backend result.

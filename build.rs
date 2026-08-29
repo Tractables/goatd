@@ -14,18 +14,21 @@ fn main() {
     }
 
     println!("cargo:rerun-if-env-changed=GOATD_CXX");
-    let cxx = find_cxx();
-    assert!(
-        have(&cxx),
-        "goatd's vendored FlowCutter needs a C++20 compiler, and `{cxx}` does not run — \
-         install one (gcc 12 or newer, or a recent clang), or name another in GOATD_CXX."
-    );
-
-    cc::Build::new()
-        .cpp(true)
+    let mut build = cc::Build::new();
+    if let Some(cxx) = find_cxx() {
+        assert!(
+            have(&cxx),
+            "goatd's vendored FlowCutter needs a C++20 compiler, and `{cxx}` does not run — \
+             install one (gcc 12 or newer, or a recent clang), or name another in GOATD_CXX."
+        );
         // The compiler comes from `find_cxx`, not from `cc`'s own `CXX` lookup,
         // so `GOATD_CXX` chooses it whole.
-        .compiler(&cxx)
+        build.compiler(&cxx);
+    }
+
+    build
+        .cpp(true)
+        // `cc` spells this per toolchain: `-std=c++20` GNU-style, `/std:c++20` MSVC.
         .std("c++20")
         .opt_level(3)
         .define("NDEBUG", None)
@@ -47,22 +50,29 @@ fn main() {
     println!("cargo:rerun-if-changed=vendor/treedecomp/");
 }
 
-/// The upstream sources use C++20; Ubuntu 22.04 still ships gcc-11 as `g++`.
-/// Prefer an explicit `GOATD_CXX`, else the newest versioned gcc on PATH, else
-/// plain `g++`.
-fn find_cxx() -> String {
+/// An explicit `GOATD_CXX` wins everywhere. On Linux, where the default `g++`
+/// can predate C++20 (Ubuntu 22.04 still ships gcc-11), fall back to the
+/// newest versioned gcc on PATH, then plain `g++`. Elsewhere `None`: `cc`
+/// picks the platform's own compiler (Apple clang on macOS, MSVC on Windows),
+/// and a g++ found on PATH there could be one that cannot link with the rest
+/// of the build.
+fn find_cxx() -> Option<String> {
     if let Ok(cxx) = std::env::var("GOATD_CXX")
         && !cxx.is_empty()
     {
-        return cxx;
+        return Some(cxx);
+    }
+    // Set by cargo for build scripts; the target's OS, not the host's.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
+        return None;
     }
     for v in ["14", "13", "12"] {
         let candidate = format!("g++-{v}");
         if have(&candidate) {
-            return candidate;
+            return Some(candidate);
         }
     }
-    "g++".into()
+    Some("g++".into())
 }
 
 fn have(tool: &str) -> bool {
