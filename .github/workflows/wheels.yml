@@ -87,7 +87,7 @@ jobs:
       # vendored FlowCutter is BSD-2-Clause: its notice has to travel inside
       # the wheel.
       - name: Collect the licence and the third-party notices
-        run: cp LICENSE docs/THIRD-PARTY.md bindings/python/
+        run: mkdir -p bindings/python/notices && cp LICENSE docs/THIRD-PARTY.md bindings/python/notices/
 
       - name: Install maturin
         run: $PYTHON -m pip install --disable-pip-version-check maturin==$MATURIN_VERSION
@@ -154,7 +154,7 @@ jobs:
           python-version: "3.10"
 
       - name: Collect the licence and the third-party notices
-        run: cp LICENSE docs/THIRD-PARTY.md bindings/python/
+        run: mkdir -p bindings/python/notices && cp LICENSE docs/THIRD-PARTY.md bindings/python/notices/
 
       - name: Install maturin
         run: python -m pip install --disable-pip-version-check maturin==$MATURIN_VERSION

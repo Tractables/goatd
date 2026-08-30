@@ -3,5 +3,4 @@
 
 # Copied in from the repository root before a build; the tracked originals are
 # LICENSE and docs/THIRD-PARTY.md.
-/LICENSE
-/THIRD-PARTY.md
+/notices
