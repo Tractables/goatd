@@ -43,7 +43,8 @@ PEP 639 resolves `license-files` against the directory holding
 the repository root first rather than kept here in a second copy:
 
 ```sh
-cp LICENSE docs/THIRD-PARTY.md bindings/python/
+mkdir -p bindings/python/notices
+cp LICENSE docs/THIRD-PARTY.md bindings/python/notices/
 pip install maturin
 maturin build --release --manifest-path bindings/python/Cargo.toml
 ```

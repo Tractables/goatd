@@ -12,10 +12,12 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 # PEP 639 resolves these against this directory and forbids `..`, so both are
-# copied in from the repository root before a build; see README.md. The
-# vendored FlowCutter is BSD-2-Clause, whose notice has to travel with the
-# compiled extension.
-license-files = ["LICENSE", "THIRD-PARTY.md"]
+# copied in from the repository root before a build; see README.md. They go in
+# a subdirectory because the source distribution carries the whole repository
+# — the crate this wraps is the directory above — and a copy named `LICENSE`
+# here would land on the repository's own. The vendored FlowCutter is
+# BSD-2-Clause, whose notice has to travel with the compiled extension.
+license-files = ["notices/LICENSE", "notices/THIRD-PARTY.md"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Rust",

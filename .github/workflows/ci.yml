@@ -64,6 +64,13 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo package --locked
 
+      # Each binding wraps the core it sits beside and carries the core's
+      # version. Catch a bump that reached one crate and not another here,
+      # rather than at the tag that would ship the mismatch.
+      - name: Check that every crate carries the same version
+        if: runner.os == 'Linux'
+        run: .github/scripts/check-versions.sh
+
   # The `rust-version` in Cargo.toml is a promise to anyone building against
   # an older toolchain. This job pins the declared minimum and compiles the
   # crate with it, so raising the real minimum fails here instead of in a
