@@ -1,7 +1,6 @@
 # An empty `[workspace]` table keeps this crate out of any workspace cargo
-# would otherwise infer from the directories above it. It is built on its own,
-# against the goatd release on crates.io rather than the checkout it sits in,
-# so the wheel is built from the same sources a `cargo add goatd` gets.
+# would otherwise infer from the directories above it, so it is built on its
+# own.
 [workspace]
 
 [package]
@@ -21,7 +20,10 @@ name = "goatd"
 crate-type = ["cdylib"]
 
 [dependencies]
-goatd = "0.1.1"
+# The checkout this crate sits in, not the crates.io release, so a change to
+# the core is built and tested through the bindings before it is published.
+# `.github/scripts/check-versions.sh` keeps the two versions equal.
+goatd = { path = "../.." }
 # `extension-module` links against the interpreter that loads the wheel rather
 # than a libpython. `abi3-py310` builds against the stable ABI, so one wheel
 # per platform covers CPython 3.10 and later.

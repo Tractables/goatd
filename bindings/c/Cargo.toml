@@ -19,8 +19,8 @@ name = "goatd_c"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-# The published crate, not a path dependency, so these bindings are built
-# against the code a consumer gets from crates.io. The requirement is exact so
-# that `goatd_version` — this package's version — names the goatd release
-# behind it; raising one raises the other.
-goatd = "=0.1.1"
+# The checkout this crate sits in, not the crates.io release, so a change to
+# the core is built and tested through the bindings before it is published.
+# `goatd_version` reports this package's version, and
+# `.github/scripts/check-versions.sh` keeps it equal to the core's.
+goatd = { path = "../.." }

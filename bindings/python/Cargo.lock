@@ -59,8 +59,6 @@ dependencies = [
 [[package]]
 name = "goatd"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cb42bb242e4451793087ded69655a3acccbab55a9e1ab7d2d30ae2856473317"
 dependencies = [
  "cc",
  "rand",

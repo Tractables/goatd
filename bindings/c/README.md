@@ -9,9 +9,9 @@ refinement are the ones the `goatd` command line exposes.
 signatures can change in any release. Build against the version you ship with
 and check `goatd_version()` at run time.
 
-This is a separate crate with its own `Cargo.toml`. It depends on the
-published `goatd` crate rather than on the sources beside it, so it is built
-against the same code a crates.io consumer gets.
+This is a separate crate with its own `Cargo.toml`. It builds the `goatd`
+sources beside it and carries the same version, which `goatd_version()`
+reports.
 
 ## Building
 
