@@ -2,7 +2,7 @@ name: Wheels
 
 # Builds the Python extension in bindings/python for each supported platform,
 # runs the Python tests against the built wheel, and uploads the wheels as run
-# artifacts. Nothing here publishes to a package index.
+# artifacts. On a version tag it also publishes them to PyPI.
 
 on:
   push:
@@ -119,3 +119,61 @@ jobs:
         with:
           name: wheel-${{ matrix.target }}
           path: bindings/python/dist/*.whl
+
+  # A wheel exists only for the three platforms above. The source distribution
+  # is what pip falls back to everywhere else, and building it needs a Rust
+  # toolchain and a C++20 compiler, which the README says.
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+
+      - name: Collect the licence and the third-party notices
+        run: cp LICENSE docs/THIRD-PARTY.md bindings/python/
+
+      - name: Install maturin
+        run: python -m pip install --disable-pip-version-check maturin==$MATURIN_VERSION
+
+      - name: Build the source distribution
+        working-directory: bindings/python
+        run: maturin sdist --out dist
+
+      # A source distribution that does not build is worse than none, since
+      # pip falls back to it and fails there instead of at the index. Build it
+      # the way a consumer would and run the tests against the result.
+      - name: Install from the source distribution and test
+        working-directory: bindings/python
+        run: |
+          python -m pip install --disable-pip-version-check pytest
+          python -m pip install --disable-pip-version-check dist/*.tar.gz
+          python -m pytest tests -q
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: bindings/python/dist/*.tar.gz
+
+  # Only for a version tag, and only once every wheel has been built and
+  # tested. Trusted publishing means GitHub proves this workflow's identity to
+  # PyPI with a short-lived token, so no API token is stored in the repository;
+  # the `pypi` environment is where a required reviewer goes, since an upload
+  # can be yanked but never withdrawn.
+  publish:
+    needs: [wheels, sdist]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "{wheel-*,sdist}"
+          merge-multiple: true
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@v1.14.2
