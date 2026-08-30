@@ -29,7 +29,7 @@ dynamic = ["version"]
 
 [project.urls]
 Repository = "https://github.com/Tractables/goatd"
-Documentation = "https://docs.rs/goatd"
+Documentation = "https://github.com/Tractables/goatd/blob/main/bindings/python/README.md"
 
 [tool.maturin]
 # The Cargo package is `goatd-python` to keep it distinct from the library it
