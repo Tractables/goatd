@@ -46,11 +46,6 @@ options:
   -h, --help            this text
 ";
 
-const FLOWCUTTER_DEFAULT_TIMEOUT: Duration = Duration::from_millis(200);
-const FLOWCUTTER_PATIENCE: Duration = Duration::from_millis(150);
-const FLOWCUTTER_TIMED_ITERATIONS: u32 = 100_000;
-const FLOWCUTTER_STEP_ITERATIONS: u32 = 900;
-
 /// Which construction `--order` named.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Method {
@@ -291,22 +286,8 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
         }
         Method::NestedDissection => eliminate(graph, Order::NestedDissection, seed, budget)
             .unwrap_or_else(|error| fail(&error.to_string())),
-        Method::FlowCutter => {
-            let fc_budget = match (args.steps, budget) {
-                (Some(steps), _) => Budget::steps(steps, FLOWCUTTER_STEP_ITERATIONS),
-                (None, Some(budget)) => Budget::timed(
-                    budget,
-                    Some(FLOWCUTTER_PATIENCE),
-                    FLOWCUTTER_TIMED_ITERATIONS,
-                ),
-                (None, None) => Budget::timed(
-                    FLOWCUTTER_DEFAULT_TIMEOUT,
-                    Some(FLOWCUTTER_PATIENCE),
-                    FLOWCUTTER_TIMED_ITERATIONS,
-                ),
-            };
-            flowcutter(graph, fc_budget).unwrap_or_else(|e| fail(&e.to_string()))
-        }
+        Method::FlowCutter => flowcutter(graph, Budget::standalone(budget, args.steps))
+            .unwrap_or_else(|e| fail(&e.to_string())),
         Method::Portfolio => {
             let weights = vec![1; graph.num_vertices() as usize];
             let config = budget.map_or_else(PortfolioConfig::standard, |budget| {
