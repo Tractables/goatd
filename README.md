@@ -13,6 +13,8 @@
      src="https://img.shields.io/crates/v/goatd.svg" alt="crates.io"></a>
   <a href="https://docs.rs/goatd"><img
      src="https://docs.rs/goatd/badge.svg" alt="docs.rs"></a>
+  <a href="https://pypi.org/project/goatd/"><img
+     src="https://img.shields.io/pypi/v/goatd.svg" alt="PyPI"></a>
 </p>
 
 Tree decompositions of graphs, as a Rust library and command-line solver. The
