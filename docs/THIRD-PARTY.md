@@ -1,8 +1,9 @@
 # Third-party components
 
 `goatd` is Apache-2.0 (`LICENSE`). This file records the third-party components
-that ship inside the crate or are linked into a build. The required
-BSD-2-Clause and MIT notices are reproduced below.
+that ship inside the crate, the Python wheels, or the C shared and static
+libraries, or are otherwise linked into a build. The required BSD-2-Clause and
+MIT notices are reproduced below.
 
 ## Rust dependencies
 

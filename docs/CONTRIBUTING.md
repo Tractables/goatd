@@ -15,8 +15,31 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo fmt --check
 ```
 
-Build setup, including the C++ compiler used for FlowCutter, is documented in
-[building.md](building.md).
+`bindings/python/` and `bindings/c/` each declare an empty `[workspace]`
+table, so none of the above touches them. A change under either directory
+additionally needs:
+
+```sh
+cargo fmt --check --manifest-path bindings/python/Cargo.toml
+cargo clippy --manifest-path bindings/python/Cargo.toml --release --locked -- -D warnings
+
+cargo fmt --check --manifest-path bindings/c/Cargo.toml
+cargo clippy --manifest-path bindings/c/Cargo.toml --release --all-targets -- -D warnings
+```
+
+A change to `bindings/c/src/lib.rs` or `bindings/c/cbindgen.toml` also needs
+the committed header checked against cbindgen at the version
+`.github/workflows/c-bindings.yml` pins:
+
+```sh
+cargo install cbindgen --version 0.29.0 --locked
+cbindgen --config bindings/c/cbindgen.toml --crate goatd-c \
+         --output /tmp/goatd.h bindings/c
+diff -u bindings/c/include/goatd.h /tmp/goatd.h
+```
+
+Build setup, including the C++ compiler used for FlowCutter and the extra
+tools the bindings need, is documented in [building.md](building.md).
 
 ## Code guidelines
 

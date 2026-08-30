@@ -18,3 +18,17 @@ GOATD_CXX=clang++ cargo build
 
 The minimum supported Rust version is recorded as `rust-version` in
 `Cargo.toml`.
+
+## Bindings
+
+`bindings/python/` and `bindings/c/` are Rust crates in their own right, each
+with an empty `[workspace]` table so they build apart from the crate above.
+Building either needs a Rust toolchain, even when the consumer's own project
+is Python or C, plus the same C++20 compiler for FlowCutter described above.
+
+The Python extension additionally needs [maturin](https://www.maturin.rs). The
+C header is generated from `bindings/c/src/lib.rs` by
+[cbindgen](https://github.com/mozilla/cbindgen); use the version pinned in
+`.github/workflows/c-bindings.yml` (currently 0.29.0), since a different
+version can produce a header that differs from the one committed to
+`bindings/c/include/goatd.h`.
