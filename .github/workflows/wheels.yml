@@ -1,0 +1,119 @@
+name: Wheels
+
+# Builds the Python extension in bindings/python for each supported platform,
+# runs the Python tests against the built wheel, and uploads the wheels as run
+# artifacts. Nothing here publishes to a package index.
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "bindings/python/**"
+      - ".github/workflows/wheels.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  MATURIN_VERSION: 1.15.0
+
+jobs:
+  wheels:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            # A wheel built on the runner itself would need the runner's glibc
+            # to run. The manylinux image fixes the oldest glibc the extension
+            # is built against, and maturin runs auditwheel over the result.
+            container: quay.io/pypa/manylinux_2_28_x86_64
+            python: /opt/python/cp310-cp310/bin/python
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            python: python
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            python: python
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    env:
+      PYTHON: ${{ matrix.python }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      # The manylinux image carries the CPython builds and a C++20 gcc for the
+      # vendored FlowCutter, but no Rust and no maturin on PATH.
+      - name: Install Rust in the container
+        if: matrix.container != ''
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable -c rustfmt -c clippy
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "$(dirname "$PYTHON")" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-python@v6
+        if: matrix.container == ''
+        with:
+          python-version: "3.10"
+
+      # PEP 639 resolves `license-files` against the directory holding
+      # pyproject.toml and rejects paths that leave it, so the two notice files
+      # are copied in here instead of being kept in a second tracked copy. The
+      # vendored FlowCutter is BSD-2-Clause: its notice has to travel inside
+      # the wheel.
+      - name: Collect the licence and the third-party notices
+        run: cp LICENSE docs/THIRD-PARTY.md bindings/python/
+
+      - name: Install maturin
+        run: $PYTHON -m pip install --disable-pip-version-check maturin==$MATURIN_VERSION
+
+      # Once, on Linux: neither depends on the platform, and the other two
+      # runners are here to build and test the wheel.
+      - name: Check formatting
+        if: matrix.container != ''
+        working-directory: bindings/python
+        run: cargo fmt --check
+
+      - name: Lint
+        if: matrix.container != ''
+        working-directory: bindings/python
+        env:
+          PYO3_PYTHON: ${{ matrix.python }}
+        run: cargo clippy --release --locked -- -D warnings
+
+      # `--locked` builds against the committed lock file, so the wheel is
+      # built from the same dependency versions the lint saw. The extension
+      # uses the stable ABI, so this one wheel serves CPython 3.10 and later.
+      - name: Build the wheel
+        working-directory: bindings/python
+        run: maturin build --release --locked --out dist --interpreter "$PYTHON"
+
+      - name: Check what the wheel carries
+        working-directory: bindings/python
+        run: |
+          wheel=$(ls dist/*.whl)
+          echo "$wheel"
+          $PYTHON -m zipfile --list "$wheel" | tee dist/contents.txt
+          for wanted in LICENSE THIRD-PARTY.md py.typed goatd.pyi; do
+            grep -q "$wanted" dist/contents.txt || { echo "$wanted is not in the wheel"; exit 1; }
+          done
+
+      # A wheel that builds is not yet known to work. Install it and decompose
+      # a few graphs on the runner before uploading anything.
+      - name: Test the wheel
+        working-directory: bindings/python
+        run: |
+          $PYTHON -m pip install --disable-pip-version-check pytest
+          $PYTHON -m pip install --disable-pip-version-check --force-reinstall \
+            --no-index --find-links dist goatd
+          $PYTHON -m pytest tests -q
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: bindings/python/dist/*.whl

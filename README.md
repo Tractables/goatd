@@ -60,6 +60,12 @@ The public API also exposes graph and hypergraph bisection, the Rust separator
 search, the C++ FlowCutter decomposer, and decomposition projection and
 refinement. Rustdoc documents each entry point.
 
+## Python
+
+[`bindings/python`](bindings/python/README.md) wraps the same constructions and
+the PACE formats for Python. It is not on a package index; build a wheel from a
+checkout with [maturin](https://www.maturin.rs).
+
 ## Evaluation
 
 The [solver comparison](https://tractables.github.io/goatd/) evaluates the
