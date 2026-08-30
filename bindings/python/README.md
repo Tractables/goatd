@@ -18,8 +18,8 @@ graph = goatd.Graph(4, [(0, 1), (1, 2), (2, 3), (3, 0), (0, 2)])
 td = goatd.decompose(graph, order="portfolio", budget_ms=100)
 
 td.treewidth        # 2
-td.bags             # [[0, 1, 2], [0, 2, 3]]
-td.edges            # [(0, 1)] — pairs of positions in td.bags
+td.bags             # [[0, 1, 2], [0, 2, 3], [0, 3], [3]]
+td.edges            # [(0, 1), (1, 2), (2, 3)] — pairs of positions in td.bags
 td.validate(graph)  # raises goatd.Error if td does not decompose graph
 print(td.to_td())   # PACE .td text
 ```
