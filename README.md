@@ -66,6 +66,12 @@ refinement. Rustdoc documents each entry point.
 the PACE formats for Python. It is not on a package index; build a wheel from a
 checkout with [maturin](https://www.maturin.rs).
 
+## C and C++
+
+[`bindings/c/`](bindings/c/README.md) is a separate crate that exposes the
+same constructions through a C ABI, with a generated `goatd.h`, a shared and a
+static library, and an example program. The ABI is unstable before 1.0.
+
 ## Evaluation
 
 The [solver comparison](https://tractables.github.io/goatd/) evaluates the

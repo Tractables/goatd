@@ -1,0 +1,25 @@
+language = "C"
+include_guard = "GOATD_H"
+cpp_compat = true
+style = "both"
+documentation_style = "doxy"
+usize_is_size_t = true
+no_includes = true
+sys_includes = ["stdbool.h", "stddef.h", "stdint.h"]
+
+header = """
+/* goatd — Greatest Of All Tree Decompositions.
+ *
+ * Copyright the goatd authors. Licensed under the Apache License, Version 2.0.
+ *
+ * The ABI is unstable before 1.0: struct layouts, status codes and function
+ * signatures can change in any release. Build against the goatd version you
+ * ship with, and check goatd_version() at run time.
+ */"""
+
+autogen_warning = """
+/* Generated from bindings/c/src/lib.rs by cbindgen. Do not edit by hand; CI
+ * checks that this file still matches the source. */"""
+
+[parse]
+parse_deps = false

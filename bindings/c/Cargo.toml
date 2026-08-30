@@ -1,0 +1,26 @@
+[package]
+name = "goatd-c"
+version = "0.1.1"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://github.com/Tractables/goatd"
+description = "C bindings for goatd: tree decompositions of graphs."
+# Nothing here goes to crates.io; the artifacts are the shared and static
+# libraries a C or C++ program links against.
+publish = false
+
+# An empty workspace table keeps this crate out of the goatd package above it,
+# so it is built on its own.
+[workspace]
+
+[lib]
+name = "goatd_c"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+# The published crate, not a path dependency, so these bindings are built
+# against the code a consumer gets from crates.io. The requirement is exact so
+# that `goatd_version` — this package's version — names the goatd release
+# behind it; raising one raises the other.
+goatd = "=0.1.1"

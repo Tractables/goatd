@@ -1,0 +1,119 @@
+name: C bindings
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned: cbindgen's output changes between releases, and the staleness
+  # check below compares the committed header against it byte for byte.
+  CBINDGEN_VERSION: 0.29.0
+
+jobs:
+  c-bindings:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      # Builds the shared and the static library, and prints the system
+      # libraries a static link has to name — the C++ runtime the vendored
+      # FlowCutter needs among them. The example's static link uses that list
+      # rather than a guess per platform.
+      - name: Build the bindings
+        working-directory: bindings/c
+        env:
+          # The note below is read by sed, and colour escapes would hide it.
+          CARGO_TERM_COLOR: never
+        run: |
+          set -o pipefail
+          cargo rustc --release -- --print native-static-libs 2>&1 \
+            | tee "$RUNNER_TEMP/build.log"
+          libs=$(sed -n 's/^note: native-static-libs: //p' "$RUNNER_TEMP/build.log" | head -n 1)
+          test -n "$libs" || { echo "rustc printed no native-static-libs note"; exit 1; }
+          echo "NATIVE_STATIC_LIBS=$libs" >> "$GITHUB_ENV"
+
+      - name: Build and run the example (Linux, macOS)
+        if: runner.os != 'Windows'
+        run: |
+          set -eux
+          out=bindings/c/target/release
+          case "${{ runner.os }}" in
+            macOS) shared=$out/libgoatd_c.dylib ;;
+            *) shared=$out/libgoatd_c.so ;;
+          esac
+          export LD_LIBRARY_PATH="$PWD/$out:${LD_LIBRARY_PATH:-}"
+          export DYLD_LIBRARY_PATH="$PWD/$out:${DYLD_LIBRARY_PATH:-}"
+
+          cc -std=c99 -Wall -Wextra -Ibindings/c/include \
+             bindings/c/example/example.c "$shared" \
+             -Wl,-rpath,"$PWD/$out" -o example-shared
+          ./example-shared
+
+          cc -std=c99 -Wall -Wextra -Ibindings/c/include \
+             bindings/c/example/example.c "$out/libgoatd_c.a" \
+             $NATIVE_STATIC_LIBS -o example-static
+          ./example-static
+
+      # cl.exe is not on PATH until vcvars has run, and vswhere finds the
+      # installation without hard-coding the Visual Studio edition. /MD
+      # matches the dynamic CRT that Rust and the vendored C++ are built
+      # against.
+      - name: Build and run the example (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set "VSPATH=%%i"
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          set OUT=bindings\c\target\release
+
+          cl /nologo /MD /W3 /Ibindings\c\include bindings\c\example\example.c ^
+             /Fe:example-shared.exe /link %OUT%\goatd_c.dll.lib || exit /b 1
+          copy %OUT%\goatd_c.dll . || exit /b 1
+          example-shared.exe || exit /b 1
+
+          cl /nologo /MD /W3 /Ibindings\c\include bindings\c\example\example.c ^
+             /Fe:example-static.exe /link %OUT%\goatd_c.lib %NATIVE_STATIC_LIBS% || exit /b 1
+          example-static.exe || exit /b 1
+
+      - name: Check formatting
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        working-directory: bindings/c
+        run: cargo fmt --check
+
+      - name: Lint
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        working-directory: bindings/c
+        run: cargo clippy --release --all-targets -- -D warnings
+
+      # The committed header is what consumers compile against, so a change to
+      # src/lib.rs that is not regenerated has to fail here rather than ship.
+      - name: Check the committed header against cbindgen
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: |
+          cargo install cbindgen --version "$CBINDGEN_VERSION" --locked
+          cbindgen --config bindings/c/cbindgen.toml --crate goatd-c \
+                   --output "$RUNNER_TEMP/goatd.h" bindings/c
+          if ! diff -u bindings/c/include/goatd.h "$RUNNER_TEMP/goatd.h"; then
+            echo "bindings/c/include/goatd.h is out of date."
+            echo "Regenerate it with cbindgen $CBINDGEN_VERSION; the run's"
+            echo "goatd-h artifact holds the expected file."
+            exit 1
+          fi
+
+      - name: Upload the generated header
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: goatd-h
+          path: ${{ runner.temp }}/goatd.h
+          if-no-files-found: ignore
