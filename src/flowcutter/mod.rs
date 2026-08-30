@@ -62,6 +62,13 @@ enum BudgetKind {
 /// ends the search first.
 pub(crate) const FC_TIMED_STEPS: u64 = 1_000_000;
 
+// The limits of [`Budget::standalone`]. The values are quoted in its doc
+// comment; change both.
+const STANDALONE_TIMEOUT: Duration = Duration::from_millis(200);
+const STANDALONE_PATIENCE: Duration = Duration::from_millis(150);
+const STANDALONE_TIMED_ITERATIONS: u32 = 100_000;
+const STANDALONE_STEP_ITERATIONS: u32 = 900;
+
 impl Budget {
     /// Create an elapsed-time budget. `patience` stops a run that has not
     /// improved for that long. The search adapts expensive prepasses to the
@@ -83,6 +90,30 @@ impl Budget {
     pub const fn steps(steps: u64, iterations: u32) -> Self {
         Self {
             kind: BudgetKind::Steps { steps, iterations },
+        }
+    }
+
+    /// The budget of a run where FlowCutter is the whole construction, as the
+    /// `goatd` command line and the bindings give it. A step count makes a
+    /// repeatable run of 900 iterations per step; otherwise the run is timed,
+    /// with a patience of 150 ms and 100,000 iterations, on `budget` when
+    /// given and on 200 ms when not. A step count wins over a budget.
+    ///
+    /// The portfolio's FlowCutter candidate shares a budget with the other
+    /// constructions and uses its own limits.
+    pub const fn standalone(budget: Option<Duration>, steps: Option<u64>) -> Self {
+        match (steps, budget) {
+            (Some(steps), _) => Self::steps(steps, STANDALONE_STEP_ITERATIONS),
+            (None, Some(budget)) => Self::timed(
+                budget,
+                Some(STANDALONE_PATIENCE),
+                STANDALONE_TIMED_ITERATIONS,
+            ),
+            (None, None) => Self::timed(
+                STANDALONE_TIMEOUT,
+                Some(STANDALONE_PATIENCE),
+                STANDALONE_TIMED_ITERATIONS,
+            ),
         }
     }
 

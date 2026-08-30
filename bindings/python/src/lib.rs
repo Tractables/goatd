@@ -15,14 +15,6 @@ use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
 
-// The FlowCutter run limits the solver applies. They are repeated here because
-// the solver keeps them private, and a call with the same arguments should do
-// the same work as the command line.
-const FLOWCUTTER_DEFAULT_TIMEOUT: Duration = Duration::from_millis(200);
-const FLOWCUTTER_PATIENCE: Duration = Duration::from_millis(150);
-const FLOWCUTTER_TIMED_ITERATIONS: u32 = 100_000;
-const FLOWCUTTER_STEP_ITERATIONS: u32 = 900;
-
 create_exception!(
     goatd,
     Error,
@@ -326,22 +318,7 @@ fn construct(
         Method::NestedDissection => {
             eliminate(graph, Order::NestedDissection, knobs.seed, knobs.budget)
         }
-        Method::FlowCutter => {
-            let budget = match (knobs.steps, knobs.budget) {
-                (Some(steps), _) => Budget::steps(steps, FLOWCUTTER_STEP_ITERATIONS),
-                (None, Some(budget)) => Budget::timed(
-                    budget,
-                    Some(FLOWCUTTER_PATIENCE),
-                    FLOWCUTTER_TIMED_ITERATIONS,
-                ),
-                (None, None) => Budget::timed(
-                    FLOWCUTTER_DEFAULT_TIMEOUT,
-                    Some(FLOWCUTTER_PATIENCE),
-                    FLOWCUTTER_TIMED_ITERATIONS,
-                ),
-            };
-            flowcutter(graph, budget)
-        }
+        Method::FlowCutter => flowcutter(graph, Budget::standalone(knobs.budget, knobs.steps)),
         Method::Portfolio => {
             let weights = vec![1; graph.num_vertices() as usize];
             let config = knobs

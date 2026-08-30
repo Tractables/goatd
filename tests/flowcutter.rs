@@ -201,3 +201,24 @@ fn an_adaptive_timeout_still_returns_a_complete_decomposition() {
 
     decomposition.validate(&graph).unwrap();
 }
+
+#[test]
+fn a_standalone_budget_is_the_one_the_command_line_built() {
+    let clock = Duration::from_millis(40);
+    let patience = Some(Duration::from_millis(150));
+
+    assert_eq!(Budget::standalone(None, Some(7)), Budget::steps(7, 900));
+    assert_eq!(
+        Budget::standalone(Some(clock), Some(7)),
+        Budget::steps(7, 900),
+        "a step count wins over a clock"
+    );
+    assert_eq!(
+        Budget::standalone(Some(clock), None),
+        Budget::timed(clock, patience, 100_000)
+    );
+    assert_eq!(
+        Budget::standalone(None, None),
+        Budget::timed(Duration::from_millis(200), patience, 100_000)
+    );
+}

@@ -55,13 +55,6 @@ pub const GOATD_ORDER_FLOWCUTTER: u32 = 3;
 /// strongest setting; give it a `budget_ms`.
 pub const GOATD_ORDER_PORTFOLIO: u32 = 4;
 
-/// The limits the goatd command line gives FlowCutter. They are repeated here
-/// because the library takes them as arguments and the command line does not
-/// export its own.
-const FLOWCUTTER_PATIENCE: Duration = Duration::from_millis(150);
-const FLOWCUTTER_TIMED_ITERATIONS: u32 = 100_000;
-const FLOWCUTTER_STEP_ITERATIONS: u32 = 900;
-
 /// How a decomposition is constructed. Start from `goatd_options_default` and
 /// change what you need: a field the chosen order cannot act on is an error,
 /// not a silently ignored value.
@@ -466,15 +459,9 @@ fn construct(
             eliminate(graph, Order::NestedDissection, options.seed, budget)?
         }
         GOATD_ORDER_FLOWCUTTER => {
-            let limit = match budget {
-                Some(budget) => Budget::timed(
-                    budget,
-                    Some(FLOWCUTTER_PATIENCE),
-                    FLOWCUTTER_TIMED_ITERATIONS,
-                ),
-                None => Budget::steps(options.steps, FLOWCUTTER_STEP_ITERATIONS),
-            };
-            flowcutter(graph, limit)?
+            // Validation above has left exactly one of the two set.
+            let steps = (options.steps != 0).then_some(options.steps);
+            flowcutter(graph, Budget::standalone(budget, steps))?
         }
         GOATD_ORDER_PORTFOLIO => {
             let weights = vec![1; graph.num_vertices() as usize];
