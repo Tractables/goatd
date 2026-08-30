@@ -1,10 +1,23 @@
 name: C bindings
 
+# On a version tag, also packages the header, both libraries, and the licence
+# and third-party notices into a per-platform archive and attaches it to the
+# GitHub release — see release.yml, which does the same job for the CLI
+# binaries. The packaging steps below run on every trigger, including a pull
+# request, so they are proven working before a tag needs them; only the last
+# step, attaching to the release, is gated on the tag.
+
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build the archive for and attach it to
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,16 +27,54 @@ env:
 
 jobs:
   c-bindings:
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # `target` is not passed to cargo — the runner's default toolchain
+        # already builds for it — it only names the archive below.
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     defaults:
       run:
         shell: bash
     steps:
+      # A tag input checks out that tag, so a re-run rebuilds and re-attaches
+      # the archive for a release that already exists. Every other trigger
+      # leaves ref empty, which is the action's own default checkout.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || '' }}
+
+      # A pull request's ref name has a slash in it ("123/merge"), which
+      # breaks a directory name below, so "dev" stands in for anything that
+      # is not an actual release tag. IS_RELEASE gates the attach step at the
+      # end; it is computed here in bash rather than in that step's own `if`,
+      # because comparing the dispatch input against '' there is unreliable —
+      # on every trigger except workflow_dispatch, `inputs.tag` is null, and
+      # GitHub's null-vs-string casting for `!=` does not behave like a plain
+      # emptiness check.
+      - name: Determine the archive tag
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+            is_release=true
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            tag="${{ github.ref_name }}"
+            is_release=true
+          else
+            tag="dev"
+            is_release=false
+          fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "IS_RELEASE=$is_release" >> "$GITHUB_ENV"
 
       # Builds the shared and the static library, and prints the system
       # libraries a static link has to name — the C++ runtime the vendored
@@ -117,3 +168,59 @@ jobs:
           name: goatd-h
           path: ${{ runner.temp }}/goatd.h
           if-no-files-found: ignore
+
+      # LICENSE and THIRD-PARTY.md travel inside the archive: the vendored
+      # FlowCutter is BSD-2-Clause, and its notice has to accompany the two
+      # libraries it is compiled into. NATIVE-STATIC-LIBS.txt records the
+      # system libraries the static archive needs at link time, which a
+      # consumer cannot guess and which differs per platform (README.md
+      # documents the same command that produces it here).
+      - name: Package the archive (Linux, macOS)
+        if: runner.os != 'Windows'
+        run: |
+          set -eux
+          out=bindings/c/target/release
+          name="goatd-c-$TAG-${{ matrix.target }}"
+          mkdir "$name"
+          cp bindings/c/include/goatd.h LICENSE docs/THIRD-PARTY.md "$name"
+          case "${{ runner.os }}" in
+            macOS) cp "$out/libgoatd_c.dylib" "$name" ;;
+            *) cp "$out/libgoatd_c.so" "$name" ;;
+          esac
+          cp "$out/libgoatd_c.a" "$name"
+          {
+            echo "System libraries needed when linking libgoatd_c.a statically,"
+            echo "from 'cargo rustc --release -- --print native-static-libs':"
+            echo "$NATIVE_STATIC_LIBS"
+          } > "$name/NATIVE-STATIC-LIBS.txt"
+          tar czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+          echo "archive contents:"
+          tar tzf "$name.tar.gz"
+
+      - name: Package the archive (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          set -eux
+          out=bindings/c/target/release
+          name="goatd-c-$TAG-${{ matrix.target }}"
+          mkdir "$name"
+          cp bindings/c/include/goatd.h LICENSE docs/THIRD-PARTY.md "$name"
+          cp "$out/goatd_c.dll" "$out/goatd_c.dll.lib" "$out/goatd_c.lib" "$name"
+          {
+            echo "System libraries needed when linking goatd_c.lib statically,"
+            echo "from 'cargo rustc --release -- --print native-static-libs':"
+            echo "$NATIVE_STATIC_LIBS"
+          } > "$name/NATIVE-STATIC-LIBS.txt"
+          7z a "$name.zip" "$name"
+          sha256sum "$name.zip" > "$name.zip.sha256"
+          echo "archive contents:"
+          7z l "$name.zip"
+
+      # `--clobber` so re-running a job replaces its assets instead of
+      # failing on the leftovers of the previous attempt.
+      - name: Attach to the release
+        if: env.IS_RELEASE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" goatd-c-"$TAG"-${{ matrix.target }}.* --clobber

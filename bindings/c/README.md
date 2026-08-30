@@ -13,6 +13,16 @@ This is a separate crate with its own `Cargo.toml`. It builds the `goatd`
 sources beside it and carries the same version, which `goatd_version()`
 reports.
 
+## Prebuilt archives
+
+Each GitHub release attaches a `goatd-c-<tag>-<target>` archive
+(`.tar.gz` on Linux and macOS, `.zip` on Windows) for each of
+`x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, and
+`x86_64-pc-windows-msvc`. No Rust toolchain is needed to use one: it holds
+this header, the shared and static library, `LICENSE`, `THIRD-PARTY.md`, and
+`NATIVE-STATIC-LIBS.txt`, the system libraries a static link needs on that
+platform (see Linking below).
+
 ## Building
 
 ```sh
