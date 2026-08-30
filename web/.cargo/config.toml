@@ -7,9 +7,10 @@ target = "wasm32-unknown-emscripten"
 # every one of these would be an ignored linker setting.
 [target.wasm32-unknown-emscripten]
 rustflags = [
-  # The vendored FlowCutter throws, and ffi.cpp catches; without this the
-  # first throw aborts the module.
-  "-Clink-arg=-fexceptions",
+  # Exceptions are not among these. rustc links with -fwasm-exceptions of its
+  # own accord, and the vendored C++ has to be compiled to match:
+  # .github/workflows/wasm.yml passes it through CXXFLAGS.
+  #
   # A factory function instead of a script that starts itself, so the page
   # decides when to instantiate and `main` is never run.
   "-Clink-arg=-sMODULARIZE=1",

@@ -13,7 +13,7 @@ rustup target add wasm32-unknown-emscripten
 cd web
 CXX_wasm32_unknown_emscripten=em++ \
 AR_wasm32_unknown_emscripten=emar \
-CXXFLAGS_wasm32_unknown_emscripten=-fexceptions \
+CXXFLAGS_wasm32_unknown_emscripten=-fwasm-exceptions \
   cargo build --release
 mkdir -p site
 cp index.html target/wasm32-unknown-emscripten/release/goatd.{js,wasm} site/

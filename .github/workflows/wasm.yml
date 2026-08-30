@@ -43,14 +43,16 @@ jobs:
 
       # build.rs looks for a versioned g++ only when the target is Linux; for
       # this target it leaves the choice to `cc`, which these name outright.
-      # `-fexceptions` matches the link flag in web/.cargo/config.toml: the
-      # vendored FlowCutter throws and ffi.cpp catches.
+      # The vendored FlowCutter throws and ffi.cpp catches, so the C++ has to
+      # be compiled for the exception model rustc links with, which for this
+      # target is Wasm EH. Compiled for the JavaScript one instead, every
+      # translation unit that catches leaves `__resumeException` undefined.
       - name: Build
         working-directory: web
         env:
           CXX_wasm32_unknown_emscripten: em++
           AR_wasm32_unknown_emscripten: emar
-          CXXFLAGS_wasm32_unknown_emscripten: -fexceptions
+          CXXFLAGS_wasm32_unknown_emscripten: -fwasm-exceptions
         run: cargo build --release
 
       - name: Assemble the page
@@ -103,7 +105,7 @@ jobs:
         env:
           CXX_wasm32_unknown_emscripten: em++
           AR_wasm32_unknown_emscripten: emar
-          CXXFLAGS_wasm32_unknown_emscripten: -fexceptions
+          CXXFLAGS_wasm32_unknown_emscripten: -fwasm-exceptions
         run: cargo clippy --release --all-targets -- -D warnings
 
       - name: Upload the page
