@@ -1,8 +1,15 @@
 # goatd for Python
 
 Python bindings for [goatd](https://github.com/Tractables/goatd), built with
-[PyO3](https://pyo3.rs) and [maturin](https://www.maturin.rs). The package is
-not on PyPI; build a wheel from a checkout.
+[PyO3](https://pyo3.rs) and [maturin](https://www.maturin.rs).
+
+```sh
+pip install goatd
+```
+
+Wheels cover CPython 3.10 and later on Linux x86-64, macOS arm64 and Windows
+x64. Anywhere else, pip builds from the source distribution, which needs a
+Rust toolchain and a C++20 compiler.
 
 ```python
 import goatd
