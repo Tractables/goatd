@@ -61,13 +61,18 @@ jobs:
       # on every trigger except workflow_dispatch, `inputs.tag` is null, and
       # GitHub's null-vs-string casting for `!=` does not behave like a plain
       # emptiness check.
+      #
+      # The dispatch input reaches the script through the environment rather
+      # than `${{ }}`, which would paste it into the shell before bash sees it.
       - name: Determine the archive tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [ -n "${{ inputs.tag }}" ]; then
-            tag="${{ inputs.tag }}"
+          if [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
             is_release=true
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            tag="${{ github.ref_name }}"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="$GITHUB_REF_NAME"
             is_release=true
           else
             tag="dev"
