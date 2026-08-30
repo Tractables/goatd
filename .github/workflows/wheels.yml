@@ -99,7 +99,9 @@ jobs:
           wheel=$(ls dist/*.whl)
           echo "$wheel"
           $PYTHON -m zipfile --list "$wheel" | tee dist/contents.txt
-          for wanted in LICENSE THIRD-PARTY.md py.typed goatd.pyi; do
+          # maturin installs goatd.pyi as the package's __init__.pyi, beside
+          # the py.typed marker that makes a checker read it.
+          for wanted in LICENSE THIRD-PARTY.md py.typed __init__.pyi; do
             grep -q "$wanted" dist/contents.txt || { echo "$wanted is not in the wheel"; exit 1; }
           done
 
