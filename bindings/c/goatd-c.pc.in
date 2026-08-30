@@ -1,0 +1,14 @@
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: goatd-c
+Description: C API for goatd, a tree-decomposition library
+URL: https://github.com/Tractables/goatd
+Version: @VERSION@
+Libs: -L${libdir} -lgoatd_c
+# Only a static link needs these: the C++ runtime the vendored FlowCutter is
+# compiled against. On macOS it is -lc++.
+Libs.private: -lstdc++
+Cflags: -I${includedir}
