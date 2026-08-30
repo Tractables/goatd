@@ -142,6 +142,16 @@ jobs:
         working-directory: bindings/python
         run: maturin sdist --out dist
 
+      # A source distribution that does not build is worse than none, since
+      # pip falls back to it and fails there instead of at the index. Build it
+      # the way a consumer would and run the tests against the result.
+      - name: Install from the source distribution and test
+        working-directory: bindings/python
+        run: |
+          python -m pip install --disable-pip-version-check pytest
+          python -m pip install --disable-pip-version-check dist/*.tar.gz
+          python -m pytest tests -q
+
       - uses: actions/upload-artifact@v4
         with:
           name: sdist
