@@ -1,0 +1,36 @@
+[build-system]
+requires = ["maturin>=1.9,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "goatd"
+description = "Greatest Of All Tree Decompositions: tree decompositions of graphs — elimination orders, FlowCutter, multilevel bisection — with PACE .gr/.td text in and out."
+readme = "README.md"
+# CPython 3.9 went end of life in October 2025. The extension is built against
+# the stable ABI of 3.10, so one wheel per platform serves every version from
+# there on.
+requires-python = ">=3.10"
+license = "Apache-2.0"
+# PEP 639 resolves these against this directory and forbids `..`, so both are
+# copied in from the repository root before a build; see README.md. The
+# vendored FlowCutter is BSD-2-Clause, whose notice has to travel with the
+# compiled extension.
+license-files = ["LICENSE", "THIRD-PARTY.md"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+# The version comes from the crate manifest beside this file.
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/Tractables/goatd"
+Documentation = "https://docs.rs/goatd"
+
+[tool.maturin]
+# The Cargo package is `goatd-python` to keep it distinct from the library it
+# wraps; the module Python imports is `goatd`.
+module-name = "goatd"
+strip = true
