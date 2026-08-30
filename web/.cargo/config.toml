@@ -1,0 +1,24 @@
+# Cargo run from this directory builds for the browser and nothing else.
+[build]
+target = "wasm32-unknown-emscripten"
+
+# Link settings for emcc. They belong here rather than in EMCC_CFLAGS because
+# that variable also reaches the C++ compile of the vendored FlowCutter, where
+# every one of these would be an ignored linker setting.
+[target.wasm32-unknown-emscripten]
+rustflags = [
+  # The vendored FlowCutter throws, and ffi.cpp catches; without this the
+  # first throw aborts the module.
+  "-Clink-arg=-fexceptions",
+  # A factory function instead of a script that starts itself, so the page
+  # decides when to instantiate and `main` is never run.
+  "-Clink-arg=-sMODULARIZE=1",
+  "-Clink-arg=-sEXPORT_NAME=createGoatd",
+  "-Clink-arg=-sINVOKE_RUN=0",
+  "-Clink-arg=-sALLOW_MEMORY_GROWTH=1",
+  # FlowCutter and the elimination engine both recurse; the 64 KB default
+  # stack is not enough for a graph of any size.
+  "-Clink-arg=-sSTACK_SIZE=8388608",
+  "-Clink-arg=-sEXPORTED_FUNCTIONS=_main,_malloc,_free,_goatd_decompose,_goatd_string_free",
+  "-Clink-arg=-sEXPORTED_RUNTIME_METHODS=ccall,UTF8ToString",
+]

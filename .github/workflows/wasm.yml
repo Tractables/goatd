@@ -1,0 +1,115 @@
+name: Web build
+
+# Builds the crate for wasm32-unknown-emscripten and uploads the page in
+# web/ together with the module it loads. Nothing here publishes anything.
+
+on:
+  pull_request:
+    paths:
+      - "web/**"
+      - "src/**"
+      - "vendor/**"
+      - "build.rs"
+      - "Cargo.toml"
+      - ".github/workflows/wasm.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned: the SDK carries the clang and the libc++ the vendored C++20
+  # FlowCutter is compiled with, so a build that worked keeps working.
+  EMSDK_VERSION: 4.0.7
+
+jobs:
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # `activate` writes the config the compiler reads; naming it in
+      # EM_CONFIG is what carries the SDK into the later steps, alongside the
+      # directory holding emcc itself.
+      - name: Install the Emscripten SDK
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          "$RUNNER_TEMP/emsdk/emsdk" install "$EMSDK_VERSION"
+          "$RUNNER_TEMP/emsdk/emsdk" activate "$EMSDK_VERSION"
+          echo "$RUNNER_TEMP/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+          echo "EM_CONFIG=$RUNNER_TEMP/emsdk/.emscripten" >> "$GITHUB_ENV"
+
+      - name: Add the target
+        run: rustup target add wasm32-unknown-emscripten
+
+      # build.rs looks for a versioned g++ only when the target is Linux; for
+      # this target it leaves the choice to `cc`, which these name outright.
+      # `-fexceptions` matches the link flag in web/.cargo/config.toml: the
+      # vendored FlowCutter throws and ffi.cpp catches.
+      - name: Build
+        working-directory: web
+        env:
+          CXX_wasm32_unknown_emscripten: em++
+          AR_wasm32_unknown_emscripten: emar
+          CXXFLAGS_wasm32_unknown_emscripten: -fexceptions
+        run: cargo build --release
+
+      - name: Assemble the page
+        working-directory: web
+        run: |
+          set -eux
+          out=target/wasm32-unknown-emscripten/release
+          mkdir -p site
+          cp index.html "$out/goatd.js" "$out/goatd.wasm" site/
+          ls -l site
+
+      # Proves the module decomposes, not just that it linked. The graph is
+      # the 4-cycle with one chord, whose treewidth is 2.
+      - name: Decompose a graph with the built module
+        working-directory: web/site
+        run: |
+          cat > smoke.cjs <<'EOF'
+          const createGoatd = require("./goatd.js");
+          createGoatd().then((goatd) => {
+            const gr = "p tw 4 5\n1 2\n2 3\n3 4\n4 1\n1 3\n";
+            const pointer = goatd.ccall(
+              "goatd_decompose",
+              "number",
+              ["string", "number", "number", "number"],
+              [gr, 0, 0, 0],
+            );
+            const td = goatd.UTF8ToString(pointer);
+            goatd.ccall("goatd_string_free", null, ["number"], [pointer]);
+            console.log(td);
+            // "s td <bags> <largest bag> <vertices>"; width is one less than
+            // the largest bag.
+            const header = td.split("\n", 1)[0].split(" ");
+            if (header[0] !== "s" || header[1] !== "td" || Number(header[3]) - 1 !== 2) {
+              console.error("expected a decomposition of width 2");
+              process.exit(1);
+            }
+          });
+          EOF
+          node smoke.cjs
+          rm smoke.cjs
+
+      - name: Check formatting
+        if: ${{ !cancelled() }}
+        working-directory: web
+        run: cargo fmt --check
+
+      - name: Lint
+        if: ${{ !cancelled() }}
+        working-directory: web
+        env:
+          CXX_wasm32_unknown_emscripten: em++
+          AR_wasm32_unknown_emscripten: emar
+          CXXFLAGS_wasm32_unknown_emscripten: -fexceptions
+        run: cargo clippy --release --all-targets -- -D warnings
+
+      - name: Upload the page
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: goatd-web
+          path: web/site
+          if-no-files-found: ignore
