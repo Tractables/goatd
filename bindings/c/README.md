@@ -75,7 +75,7 @@ CRT, and mixing it with the static one fails at link time.
 installing:
 
 ```sh
-sed -e 's|@PREFIX@|/usr/local|' -e 's|@VERSION@|0.1.1|' \
+sed -e 's|@PREFIX@|/usr/local|' -e 's|@VERSION@|0.1.2|' \
     bindings/c/goatd-c.pc.in > /usr/local/lib/pkgconfig/goatd-c.pc
 ```
 
