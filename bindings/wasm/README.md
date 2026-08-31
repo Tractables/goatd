@@ -3,8 +3,10 @@
 A page that decomposes a PACE `.gr` graph in the tab and draws both the graph
 and the decomposition, each lighting up the other under the pointer:
 `index.html`, `styles.css`, `app.js` and `logo.png` beside the Emscripten
-build of the crate. There is no framework, no bundler and nothing
-fetched from anywhere else. It is served at
+build of the crate. A menu offers example graphs, generated in the page,
+from a 6×6 grid to a grid of 10,000 vertices, and the `.td` text can be
+copied or saved. There is no framework, no bundler and nothing fetched from
+anywhere else. It is served at
 <https://tractables.github.io/goatd/solve/> and follows `main`, so it may be
 ahead of the latest release.
 
