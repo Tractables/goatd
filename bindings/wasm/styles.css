@@ -62,12 +62,14 @@ header {
   margin-bottom: 1.5rem;
 }
 
-/* The artwork was drawn for a white ground, so it keeps one in both schemes. */
+/* The artwork was drawn for a white ground, so it keeps one in both schemes.
+   Its horns reach the corners of the square, so the disc has to be wider than
+   the artwork by a good margin or they are cut off. */
 .logo {
-  width: 6rem;
-  height: 6rem;
+  width: 7rem;
+  height: 7rem;
   flex: none;
-  padding: 0.5rem;
+  padding: 1rem;
   border: 1px solid var(--line);
   border-radius: 50%;
   background: #ffffff;
@@ -88,11 +90,9 @@ h2 {
 
 .lede {
   margin: 0;
-  max-width: 44rem;
+  max-width: 52rem;
   color: var(--muted);
 }
-
-.lede + .lede { margin-top: 0.4rem; }
 
 a { color: var(--accent); }
 
