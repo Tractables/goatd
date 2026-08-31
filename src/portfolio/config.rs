@@ -69,9 +69,11 @@ impl PortfolioConfig {
     }
 
     /// Standard candidates under a soft wall-clock budget, with sampling
-    /// effort scaled for the corresponding hard window.
+    /// effort and the trailing FlowCutter slot scaled for the corresponding
+    /// hard window.
     pub fn standard_with_budget(budget: Duration) -> Self {
-        let sampling_runs = if budget >= EXTENDED_SAMPLING_MIN_SOFT_BUDGET {
+        let extended = budget >= EXTENDED_SAMPLING_MIN_SOFT_BUDGET;
+        let sampling_runs = if extended {
             EXTENDED_SAMPLING_RUNS
         } else {
             MAX_SAMPLING_RUNS
@@ -79,7 +81,7 @@ impl PortfolioConfig {
         Self {
             soft_budget: Some(budget),
             sampling_runs,
-            flowcutter_budget: None,
+            flowcutter_budget: extended.then_some(budget),
         }
     }
 }
