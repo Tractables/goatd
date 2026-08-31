@@ -1,12 +1,11 @@
 "use strict";
 
 const numberFormat = new Intl.NumberFormat("en");
-const profileDeltas = [0, 1, 2, 4, 8];
-const omittedSolverIds = new Set(["goatd-portfolio-refined"]);
+const profileDeltas = BenchmarkPresentation.profileDeltas;
 const profileStyles = {
-  "goatd-portfolio": { color: "#2774ae", dash: "" },
+  "goatd-portfolio": { color: "#2070a8", dash: "" },
   "goatd-portfolio-refined": { color: "#005587", dash: "8 3" },
-  "flowcutter-pace17": { color: "#17232d", dash: "" },
+  "flowcutter-pace17": { color: "#6b7b8a", dash: "" },
   "htd-default": { color: "#009e73", dash: "9 4" },
   "tamaki-pace17": { color: "#d55e00", dash: "3 3" },
   "jdrasil-heuristic": { color: "#7b5aa6", dash: "12 4 3 4" },
@@ -15,31 +14,14 @@ const profileStyles = {
   "arboretum-heuristic": { color: "#8c4f64", dash: "10 3 2 3" },
 };
 const fallbackProfileColors = ["#4d4d4d", "#648fff", "#785ef0", "#dc267f", "#fe6100"];
-const aggregateMetricDefinitions = [
-  [
-    "Valid",
-    "A tree decomposition accepted by the common validator. The denominator is every selected graph.",
-  ],
-  [
-    "Exact best",
-    "The solver tied the smallest validated width observed for this graph. The reference is not a proven optimum.",
-  ],
-  [
-    "Within +1",
-    "The solver returned a validated width at most one above the best observed width for this graph.",
-  ],
-  [
-    "Within +4",
-    "The solver returned a validated width at most four above the best observed width for this graph.",
-  ],
-];
+const aggregateMetricDefinitions = BenchmarkPresentation.aggregateMetricDefinitions;
 
 const state = {
   data: null,
   query: "",
   group: "all",
   kind: "all",
-  minimumBestWidth: 30,
+  minimumBestWidth: BenchmarkPresentation.defaultMinimumBestWidth,
   sort: "instance",
   direction: "asc",
   page: 1,
@@ -95,7 +77,7 @@ function formatCountShare(count, total) {
 }
 
 function comparisonSolvers() {
-  return state.data.solvers.filter((solver) => !omittedSolverIds.has(solver.id));
+  return BenchmarkPresentation.displayedSolvers(state.data.solvers);
 }
 
 function solverIds() {

@@ -3,7 +3,12 @@
 This directory contains a static interface for comparing tree-decomposition
 solvers. Each instance is one graph. Optional source, kind and collection
 fields record where the graph came from without changing how it is compared.
-The interface has no build step or external web dependency.
+The interface has no build step or external web dependency. Its stylesheet
+takes the solver page's palette, in both colour schemes, and its type
+(`bindings/wasm/styles.css` in goatd), so the two pages read as one site;
+`logo.png` is the same logo. Published, the page sits under `comparison/` on
+goatd's `gh-pages` branch, beside the solver page at the root, and the two
+link to each other.
 
 `results.fixture.json` contains invented values for interface development. It
 must not be presented as a benchmark result.
@@ -48,6 +53,17 @@ The detailed view lays out every solver in a responsive grid under its graph;
 it does not require horizontal scrolling. Connected graphs with
 `|E| = |V| - 1`, whose exact width is one, are omitted. Graph views with no
 nontrivial component are absent from the export.
+
+Generate the public-README preview from the same solver field and default
+filters:
+
+```sh
+node export_markdown.js results.json README-table.md
+```
+
+`presentation.js` is the shared source for the displayed field, width floor
+and metric definitions. `README-table.md` is generated; do not edit its
+numbers by hand.
 
 ## Result format
 
@@ -114,9 +130,9 @@ path. The interface does not pair that graph with an incidence graph or give
 either kind special treatment.
 
 Solver IDs in `results` refer to entries in the top-level `solvers` array.
-Solver columns are not fixed; the page renders every entry and scrolls the
-matrix horizontally when needed. If a solver has no entry for a graph, the
-page shows that cell as unavailable.
+Solver columns are not fixed; the page renders every displayed entry in a
+responsive grid. If a solver has no entry for a graph, the page shows that
+cell as unavailable.
 
 `aliases` lists other source names represented by the graph. `alias_count` is
 the number of additional names and takes precedence in the display when both
