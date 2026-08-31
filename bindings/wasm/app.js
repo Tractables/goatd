@@ -308,38 +308,98 @@ function fitUnit(count, xs, ys) {
   return { xs, ys };
 }
 
-// A vertex with no edge is the same distance from everything, and either
-// layout pushes such vertices out to an arc around the rest that takes half
-// the drawing. They go in rows under the drawing instead, and the layout
-// sees only the vertices that have an edge.
-function withIsolatedBelow(count, edges, lay) {
-  const degree = new Uint32Array(count + 1);
-  for (const [u, v] of edges) {
-    degree[u]++;
-    degree[v]++;
+// A graph in several pieces is laid out a piece at a time. Laid out
+// together, the pieces would sit at one made-up distance from each other,
+// which puts the small ones on an arc that takes half the drawing or, in the
+// pivot layout, on top of each other far from the large one, which is then
+// squeezed into a corner. Here the largest piece fills the drawing, and the
+// rest, single vertices included, are packed in rows beneath it with their
+// edges drawn at the same length as its.
+function layoutByComponents(count, edges, lay) {
+  const { start, neighbours } = neighbourLists(count, edges);
+  const seen = new Uint8Array(count + 1);
+  const pieces = [];
+  for (let v = 1; v <= count; v++) {
+    if (seen[v]) continue;
+    const members = [v];
+    seen[v] = 1;
+    for (let i = 0; i < members.length; i++) {
+      const u = members[i];
+      for (let k = start[u]; k < start[u + 1]; k++) {
+        const w = neighbours[k];
+        if (!seen[w]) {
+          seen[w] = 1;
+          members.push(w);
+        }
+      }
+    }
+    pieces.push(members);
   }
-  const index = new Uint32Array(count + 1);
-  let joined = 0;
-  for (let v = 1; v <= count; v++) if (degree[v] > 0) index[v] = ++joined;
-  if (joined === count || joined === 0) return lay(count, edges);
+  if (pieces.length === 1) return lay(count, edges);
+  pieces.sort((a, b) => b.length - a.length);
 
-  const inner = lay(joined, edges.map(([u, v]) => [index[u], index[v]]));
+  // Each piece is renumbered and laid out on its own; a small piece takes the
+  // full stress layout whatever the large one gets.
+  const piece = new Uint32Array(count + 1);
+  const index = new Uint32Array(count + 1);
+  pieces.forEach((members, p) => members.forEach((v, i) => {
+    piece[v] = p;
+    index[v] = i + 1;
+  }));
+  const own = pieces.map(() => []);
+  for (const [u, v] of edges) own[piece[u]].push([index[u], index[v]]);
+  const laid = pieces.map((members, p) => {
+    if (members.length === 1) return null;
+    const inner = members.length <= MAX_DRAWN_VERTICES ? layoutGraph(members.length, own[p]) : lay(members.length, own[p]);
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let i = 1; i <= members.length; i++) {
+      minX = Math.min(minX, inner.xs[i]);
+      maxX = Math.max(maxX, inner.xs[i]);
+      minY = Math.min(minY, inner.ys[i]);
+      maxY = Math.max(maxY, inner.ys[i]);
+    }
+    const lengths = own[p].map(([u, v]) => Math.hypot(inner.xs[u] - inner.xs[v], inner.ys[u] - inner.ys[v]));
+    lengths.sort((a, b) => a - b);
+    return { ...inner, minX, minY, width: maxX - minX, height: maxY - minY, edge: lengths[lengths.length >> 1] };
+  });
+
+  // The largest piece fills the unit square; every other piece is scaled so
+  // that its edges match, never larger than the square, and the pieces go in
+  // rows beneath, an edge length apart (a tenth of the square at most, for
+  // when the largest piece is a single edge). When even the largest piece is
+  // a single vertex, the rows start with it.
   const xs = new Float64Array(count + 1);
   const ys = new Float64Array(count + 1);
-  const alone = count - joined;
-  const across = count <= LABELLED_VERTICES ? 17 : 40;
-  const step = 1 / (across - 1);
-  const perRow = Math.min(alone, across);
-  let placed = 0;
-  for (let v = 1; v <= count; v++) {
-    if (degree[v] > 0) {
-      xs[v] = inner.xs[index[v]];
-      ys[v] = inner.ys[index[v]];
-    } else {
-      xs[v] = 0.5 + (placed % perRow - (perRow - 1) / 2) * step;
-      ys[v] = 1 + 2 * step + Math.floor(placed / perRow) * step;
-      placed++;
+  const unit = laid[0] === null ? 0.05 : laid[0].edge;
+  const gap = Math.min(Math.max(unit, 0.01), 0.1);
+  const place = (p, x, y, scale) => {
+    const members = pieces[p];
+    const inner = laid[p];
+    for (let i = 0; i < members.length; i++) {
+      xs[members[i]] = x + (inner === null ? 0 : (inner.xs[i + 1] - inner.minX) * scale);
+      ys[members[i]] = y + (inner === null ? 0 : (inner.ys[i + 1] - inner.minY) * scale);
     }
+  };
+  place(0, 0, 0, 1);
+  let x = laid[0] === null ? gap : 0;
+  let y = laid[0] === null ? 0 : 1 + 2 * gap;
+  let rowHeight = 0;
+  for (let p = 1; p < pieces.length; p++) {
+    const inner = laid[p];
+    const scale = inner === null ? 0 : Math.min(1, unit / Math.max(inner.edge, 1e-9));
+    const width = inner === null ? 0 : inner.width * scale;
+    const height = inner === null ? 0 : inner.height * scale;
+    if (x > 0 && x + width > 1) {
+      x = 0;
+      y += rowHeight + gap;
+      rowHeight = 0;
+    }
+    place(p, x, y, scale);
+    x += width + gap;
+    rowHeight = Math.max(rowHeight, height);
   }
   return fitUnit(count, xs, ys);
 }
@@ -949,7 +1009,7 @@ if (typeof document !== "undefined") {
   function renderGraph(large) {
     const { count, edges } = parsedGraph;
     const rounds = large ? Math.min(300, Math.floor(LAYOUT_WORK / (count * count))) : 300;
-    const layout = withIsolatedBelow(count, edges, (n, e) =>
+    const layout = layoutByComponents(count, edges, (n, e) =>
       rounds >= MIN_LAYOUT_ROUNDS ? layoutGraph(n, e, rounds) : layoutGraphByPivots(n, e),
     );
     graphView.innerHTML = graphSvg(count, edges, layout, large);
