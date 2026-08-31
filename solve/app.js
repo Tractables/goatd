@@ -5,9 +5,13 @@
 // Wasm module. Nothing is loaded from anywhere else.
 
 // A drawing past these sizes is a grey smear, so the panel says so instead.
-const MAX_DRAWN_VERTICES = 300;
-const MAX_DRAWN_EDGES = 900;
+const MAX_DRAWN_VERTICES = 500;
+const MAX_DRAWN_EDGES = 1500;
 const MAX_DRAWN_BAGS = 200;
+// A `.td` text past this many bytes is kept for Copy and Save but not put on
+// the page, where a construction gone wrong on a large graph can return tens
+// of megabytes.
+const MAX_SHOWN_OUTPUT = 2 * 1024 * 1024;
 
 // ------------------------------------------------------------------ reading
 
@@ -482,6 +486,127 @@ function summarise(header, elapsed) {
   return `width ${header.largest - 1}, ${header.bags} bags, ${took}`;
 }
 
+// ----------------------------------------------------------------- examples
+
+// The menu of example graphs, each generated when chosen, so the page carries
+// the recipe and not the text. The first is the graph the page opens with.
+// The last three are past what the page draws; they show the solver at work.
+const EXAMPLES = [
+  ["6×6 grid", () => grid(6, 6, "a 6x6 grid; its treewidth is 6")],
+  ["Petersen graph", petersen],
+  ["random 3-tree, 40 vertices", () => kTree(3, 40, 1)],
+  ["5-dimensional hypercube", () => hypercube(5)],
+  ["20×20 grid", () => grid(20, 20, "a 20x20 grid; its treewidth is 20")],
+  ["7×7×7 grid", () => cubeGrid(7)],
+  ["random 4-tree, 2,000 vertices", () => kTree(4, 2000, 1)],
+  ["random sparse graph, 3,000 vertices", () => randomGraph(3000, 4500, 1)],
+  ["100×100 grid, 10,000 vertices", () => grid(100, 100, "a 100x100 grid; its treewidth is 100")],
+];
+
+// The `.gr` text of a graph: a comment naming it, the problem line, then an
+// edge per line with the smaller vertex first.
+function gr(comment, count, edges) {
+  const lines = [`c ${comment}`, `p tw ${count} ${edges.length}`];
+  for (const [u, v] of edges) lines.push(u < v ? `${u} ${v}` : `${v} ${u}`);
+  return lines.join("\n") + "\n";
+}
+
+// Vertices row by row, each joined to the one on its right and the one below.
+function grid(rows, columns, comment) {
+  const edges = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < columns; c++) {
+      const v = r * columns + c + 1;
+      if (c + 1 < columns) edges.push([v, v + 1]);
+      if (r + 1 < rows) edges.push([v, v + columns]);
+    }
+  }
+  return gr(comment, rows * columns, edges);
+}
+
+// An n×n×n grid: each vertex joined to the next one along each axis.
+function cubeGrid(n) {
+  const at = (x, y, z) => (x * n + y) * n + z + 1;
+  const edges = [];
+  for (let x = 0; x < n; x++) {
+    for (let y = 0; y < n; y++) {
+      for (let z = 0; z < n; z++) {
+        if (x + 1 < n) edges.push([at(x, y, z), at(x + 1, y, z)]);
+        if (y + 1 < n) edges.push([at(x, y, z), at(x, y + 1, z)]);
+        if (z + 1 < n) edges.push([at(x, y, z), at(x, y, z + 1)]);
+      }
+    }
+  }
+  return gr(`a ${n}x${n}x${n} grid, ${n * n * n} vertices`, n * n * n, edges);
+}
+
+// The d-dimensional hypercube: the vertices are the d-bit numbers, joined
+// when they differ in one bit.
+function hypercube(d) {
+  const count = 1 << d;
+  const edges = [];
+  for (let u = 0; u < count; u++) {
+    for (let b = 0; b < d; b++) {
+      const v = u ^ (1 << b);
+      if (u < v) edges.push([u + 1, v + 1]);
+    }
+  }
+  return gr(`the ${d}-dimensional hypercube, ${count} vertices`, count, edges);
+}
+
+// The outer 5-cycle, the inner pentagram, and a spoke between each pair.
+function petersen() {
+  const edges = [];
+  for (let i = 0; i < 5; i++) {
+    edges.push([i + 1, ((i + 1) % 5) + 1]);
+    edges.push([i + 6, ((i + 2) % 5) + 6]);
+    edges.push([i + 1, i + 6]);
+  }
+  return gr("the Petersen graph; its treewidth is 4", 10, edges);
+}
+
+// A random k-tree: a clique of k + 1 vertices, then each further vertex
+// joined to every vertex of a k-clique already there, chosen at random. Its
+// treewidth is exactly k, so the answer is known however large it gets.
+function kTree(k, count, seed) {
+  const random = mulberry32(seed);
+  const edges = [];
+  const cliques = [];
+  const first = Array.from({ length: k + 1 }, (_, i) => i + 1);
+  for (let i = 0; i <= k; i++) {
+    for (let j = i + 1; j <= k; j++) edges.push([first[i], first[j]]);
+    cliques.push(first.filter((_, at) => at !== i));
+  }
+  for (let v = k + 2; v <= count; v++) {
+    const clique = cliques[Math.floor(random() * cliques.length)];
+    for (const u of clique) {
+      edges.push([u, v]);
+      cliques.push([...clique.filter((w) => w !== u), v]);
+    }
+  }
+  const comment = `a random ${k}-tree on ${count} vertices; its treewidth is exactly ${k}`;
+  return gr(comment, count, edges);
+}
+
+// A random graph with the given number of edges, no two alike and none a
+// loop. A vertex may be left with no edge at all.
+function randomGraph(count, size, seed) {
+  const random = mulberry32(seed);
+  const taken = new Set();
+  const edges = [];
+  while (edges.length < size) {
+    const u = 1 + Math.floor(random() * count);
+    const v = 1 + Math.floor(random() * count);
+    if (u === v) continue;
+    const key = Math.min(u, v) * (count + 1) + Math.max(u, v);
+    if (taken.has(key)) continue;
+    taken.add(key);
+    edges.push([u, v]);
+  }
+  const comment = `a random graph on ${count} vertices with ${size} edges, seed ${seed}`;
+  return gr(comment, count, edges);
+}
+
 // --------------------------------------------------------------- the page
 
 if (typeof document !== "undefined") {
@@ -493,6 +618,8 @@ if (typeof document !== "undefined") {
   // What hovering needs of the decomposition on show: the bags, which bags
   // are joined, and which bags hold each vertex. Null while none is drawn.
   let shown = null;
+  // The `.td` text of the last run, whole, whether or not it is on the page.
+  let result = "";
 
   createGoatd()
     .then((module) => {
@@ -516,9 +643,12 @@ if (typeof document !== "undefined") {
     element("legend").hidden = true;
     shown = null;
     element("output").textContent = "";
+    result = "";
     element("result-summary").textContent = "";
     element("result-summary").classList.remove("failed");
     element("raw").open = false;
+    element("copy").disabled = true;
+    element("save").disabled = true;
     if (solver !== null) element("status").textContent = "ready";
 
     const graph = parseGr(text);
@@ -687,11 +817,50 @@ if (typeof document !== "undefined") {
   });
   graphView.addEventListener("pointerleave", clearHighlight);
 
-  // Redrawing while someone types would be a layout run per keystroke.
+  const example = element("example");
+  EXAMPLES.forEach(([name], i) => example.add(new Option(name, String(i))));
+
+  function loadExample() {
+    const chosen = EXAMPLES[Number(example.value)];
+    if (example.value === "" || chosen === undefined) return;
+    element("graph").value = chosen[1]();
+    clearTimeout(pending);
+    drawGraph();
+  }
+  example.addEventListener("change", loadExample);
+
+  // Redrawing while someone types would be a layout run per keystroke. Once
+  // edited, the text is no longer the example it started from.
   let pending = 0;
   element("graph").addEventListener("input", () => {
+    example.value = "";
     clearTimeout(pending);
     pending = setTimeout(drawGraph, 300);
+  });
+
+  // The `.td` text to the clipboard or to a file. Ctrl+A in the output would
+  // select the whole page.
+  function flash(button, text) {
+    const label = button.textContent;
+    button.textContent = text;
+    setTimeout(() => {
+      button.textContent = label;
+    }, 1500);
+  }
+  element("copy").addEventListener("click", (event) => {
+    event.preventDefault();
+    navigator.clipboard.writeText(result).then(
+      () => flash(element("copy"), "Copied"),
+      () => flash(element("copy"), "Not copied"),
+    );
+  });
+  element("save").addEventListener("click", (event) => {
+    event.preventDefault();
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([result], { type: "text/plain" }));
+    link.download = "decomposition.td";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   });
 
   // The call holds this tab for as long as the construction runs, so give the
@@ -728,11 +897,17 @@ if (typeof document !== "undefined") {
     solver.ccall("goatd_string_free", null, ["number"], [pointer]);
     const elapsed = performance.now() - started;
 
-    element("output").textContent = text;
+    result = text;
+    element("output").textContent =
+      text.length <= MAX_SHOWN_OUTPUT
+        ? text
+        : `${text.split("\n", 1)[0]}\n... ${Math.round(text.length / 1048576)} MB of text; Save writes it to a file.`;
     element("run").disabled = false;
 
     const decomposition = parseTd(text);
     const failed = decomposition.error !== undefined;
+    element("copy").disabled = failed;
+    element("save").disabled = failed;
     element("status").textContent = failed ? "failed" : "ready";
     element("result-summary").textContent = failed
       ? text.split("\n", 1)[0]
@@ -748,5 +923,12 @@ if (typeof document !== "undefined") {
     }
   }
 
-  drawGraph();
+  // A browser that brings the text back on reload keeps it; otherwise the
+  // page opens on the first example.
+  if (element("graph").value === "") {
+    example.value = "0";
+    loadExample();
+  } else {
+    drawGraph();
+  }
 }

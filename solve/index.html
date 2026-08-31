@@ -14,78 +14,29 @@
   <img class="logo" src="logo.png" alt="" width="192" height="192">
   <div>
     <h1>goatd in the browser</h1>
-    <p class="lede">Paste a PACE <code>.gr</code> graph and goatd returns a tree
-    decomposition; the solver runs in this tab and nothing is uploaded.</p>
+    <p class="lede">Paste a PACE <code>.gr</code> graph, or pick an example,
+    and goatd returns a tree decomposition; the solver runs in this tab and
+    nothing is uploaded.</p>
+    <p class="lede">The same solver is a
+    <a href="https://crates.io/crates/goatd">Rust crate</a> with a
+    command-line tool, a <a href="https://pypi.org/project/goatd/">Python
+    package</a> and a <a href="https://github.com/Tractables/goatd/releases">C
+    library</a>; the code and its documentation are
+    <a href="https://github.com/Tractables/goatd">on GitHub</a>.</p>
   </div>
 </header>
 
 <section class="card">
   <div class="io">
     <div class="graph-input">
-      <label for="graph">Graph</label>
-      <textarea id="graph" spellcheck="false">c a 6x6 grid; its treewidth is 6
-p tw 36 60
-1 2
-1 7
-2 3
-2 8
-3 4
-3 9
-4 5
-4 10
-5 6
-5 11
-6 12
-7 8
-7 13
-8 9
-8 14
-9 10
-9 15
-10 11
-10 16
-11 12
-11 17
-12 18
-13 14
-13 19
-14 15
-14 20
-15 16
-15 21
-16 17
-16 22
-17 18
-17 23
-18 24
-19 20
-19 25
-20 21
-20 26
-21 22
-21 27
-22 23
-22 28
-23 24
-23 29
-24 30
-25 26
-25 31
-26 27
-26 32
-27 28
-27 33
-28 29
-28 34
-29 30
-29 35
-30 36
-31 32
-32 33
-33 34
-34 35
-35 36
-</textarea>
+      <div class="label-row">
+        <label for="graph">Graph</label>
+        <span class="example">
+          <label for="example">Example</label>
+          <select id="example"><option value="">your own</option></select>
+        </span>
+      </div>
+      <textarea id="graph" spellcheck="false"></textarea>
     </div>
 
     <div class="controls">
@@ -137,7 +88,12 @@ p tw 36 60
   </div>
 
   <details id="raw">
-    <summary>PACE <code>.td</code> output</summary>
+    <summary>PACE <code>.td</code> output
+      <span class="tools">
+        <button id="copy" type="button" disabled>Copy</button>
+        <button id="save" type="button" disabled>Save</button>
+      </span>
+    </summary>
     <pre id="output"></pre>
   </details>
 </section>

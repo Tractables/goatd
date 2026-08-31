@@ -62,10 +62,15 @@ header {
   margin-bottom: 1.5rem;
 }
 
+/* The artwork was drawn for a white ground, so it keeps one in both schemes. */
 .logo {
-  width: 4rem;
-  height: 4rem;
+  width: 6rem;
+  height: 6rem;
   flex: none;
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: #ffffff;
 }
 
 h1 {
@@ -86,6 +91,10 @@ h2 {
   max-width: 44rem;
   color: var(--muted);
 }
+
+.lede + .lede { margin-top: 0.4rem; }
+
+a { color: var(--accent); }
 
 code {
   font: 0.9em/1 var(--mono);
@@ -117,6 +126,23 @@ label {
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+.label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.3rem;
+}
+
+.label-row label { margin: 0; }
+.example { display: flex; align-items: center; gap: 0.45rem; }
+
+.example select {
+  width: auto;
+  padding: 0.2rem 0.4rem;
+  font-size: 13px;
 }
 
 textarea, select, input {
@@ -304,6 +330,15 @@ summary {
   cursor: pointer;
   font-size: 13px;
   color: var(--muted);
+}
+
+.tools { margin-left: 0.5rem; }
+
+.tools button {
+  width: auto;
+  margin-left: 0.3rem;
+  padding: 0.1rem 0.55rem;
+  font-size: 12px;
 }
 
 pre {
