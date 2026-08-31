@@ -49,8 +49,9 @@ pub use order::Order;
 /// Deterministic min-fill and min-degree switch to cheaper stale-heap scoring
 /// at the first cutoff. Sampled orders and nested dissection have no equivalent
 /// cheap mode and continue unchanged. At twice the budget, every order stops
-/// and completes the residual as a path decomposition, so a valid result is
-/// always produced. `None` runs to completion.
+/// and puts each unfinished residual component in one bag, so a valid result
+/// is always produced without quadratic deadline output. `None` runs to
+/// completion.
 ///
 /// # Errors
 ///
