@@ -156,7 +156,7 @@ impl FillScratch {
 /// those edges. The tracker finds that second set by counting appearances in
 /// the filled neighbourhood's current adjacency rows.
 struct FillAffected {
-    hits: Vec<u8>,
+    hits: Vec<u32>,
     vertices: Vec<u32>,
     scan_buf: Vec<u32>,
 }
@@ -175,7 +175,7 @@ impl FillAffected {
         if self.hits[index] == 0 {
             self.vertices.push(vertex);
         }
-        self.hits[index] = 2;
+        self.hits[index] = u32::MAX;
     }
 
     fn clear(&mut self) {
@@ -214,18 +214,24 @@ impl FillAffected {
                     if self.hits[index] == 0 {
                         self.vertices.push(candidate);
                     }
-                    self.hits[index] = (self.hits[index] + 1).min(2);
+                    if self.hits[index] != u32::MAX {
+                        self.hits[index] += 1;
+                    }
                 }
             }
         }
         true
     }
 
-    fn pop(&mut self) -> Option<u32> {
+    /// Return an affected vertex and its number of neighbours in the filled
+    /// neighbourhood. Immediate neighbours use the sentinel `u32::MAX` and
+    /// need an exact recount. Every other returned vertex only gained edges
+    /// inside its unchanged neighbourhood.
+    fn pop(&mut self) -> Option<(u32, u32)> {
         while let Some(vertex) = self.vertices.pop() {
             let hits = std::mem::replace(&mut self.hits[vertex as usize], 0);
             if hits >= 2 {
-                return Some(vertex);
+                return Some((vertex, hits));
             }
         }
         None
