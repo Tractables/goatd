@@ -25,13 +25,11 @@ fn rescore_neighbours(
     graph: &EliminationGraph,
     nbrs: &[u32],
     buckets: &mut BucketMap,
-    lower_bound: &mut [bool],
 ) {
     for &u in nbrs {
         if graph.active[u as usize] {
             let new_fill = scratch.fill_count_of(graph, u);
             buckets.update(u, new_fill);
-            lower_bound[u as usize] = false;
         }
     }
 }
@@ -64,8 +62,6 @@ pub(crate) fn eliminate_sampled_min_fill(
     let mut scratch = FillScratch::new(n);
     let mut affected = FillAffected::new(n);
     let mut live_nbrs = Vec::new();
-    let mut lower_bound = vec![false; n];
-    let mut lower_bound_buf = Vec::new();
     let mut buckets = BucketMap::with_capacity(n);
     for v in 0..n {
         if graph.active[v] {
@@ -82,35 +78,7 @@ pub(crate) fn eliminate_sampled_min_fill(
     let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
     let mut check_counter = 0u32;
 
-    loop {
-        let Some((min_fill, tie_set)) = buckets.min_bucket() else {
-            break;
-        };
-
-        // Distance-two vertices carry a lower bound after fill edges are added
-        // inside their unchanged neighbourhood. Recount every such vertex in
-        // the current minimum bucket before sampling from it. Every other key
-        // is at least this bucket's key and at most its vertex's exact fill, so
-        // once this bucket is clean its tie set is exact.
-        lower_bound_buf.clear();
-        lower_bound_buf.extend(
-            tie_set
-                .iter()
-                .copied()
-                .filter(|&vertex| lower_bound[vertex as usize]),
-        );
-        if !lower_bound_buf.is_empty() {
-            for &vertex in &lower_bound_buf {
-                if expired(hard_deadline) {
-                    return ElimExit::DeadlineReached;
-                }
-                lower_bound[vertex as usize] = false;
-                let new_fill = scratch.fill_count_of(graph, vertex);
-                buckets.update(vertex, new_fill);
-            }
-            continue;
-        }
-
+    while let Some((min_fill, tie_set)) = buckets.min_bucket() {
         check_counter += 1;
         if check_counter >= DEADLINE_CHECK_STRIDE {
             check_counter = 0;
@@ -151,38 +119,36 @@ pub(crate) fn eliminate_sampled_min_fill(
                 graph.remove_without_fill_nbrs(v, &live_nbrs);
             } else {
                 graph.remove_without_fill_nbrs(v, &live_nbrs);
-                rescore_neighbours(
-                    &mut scratch,
-                    graph,
-                    &live_nbrs,
-                    &mut buckets,
-                    &mut lower_bound,
-                );
+                rescore_neighbours(&mut scratch, graph, &live_nbrs, &mut buckets);
             }
         } else {
-            graph.eliminate_with_nbrs(v, &live_nbrs);
-            if !affected.collect(graph, &live_nbrs, true, hard_deadline) {
+            if !affected.collect_external(graph, v, &live_nbrs, hard_deadline) {
                 return ElimExit::DeadlineReached;
             }
-            while let Some((u, common_neighbours)) = affected.pop() {
+            while let Some(u) = affected.pop_external() {
                 if expired(hard_deadline) {
-                    affected.clear();
+                    affected.clear(&live_nbrs);
                     return ElimExit::DeadlineReached;
                 }
                 if graph.active[u as usize] {
-                    if common_neighbours == u32::MAX {
-                        let new_fill = scratch.fill_count_of(graph, u);
-                        buckets.update(u, new_fill);
-                        lower_bound[u as usize] = false;
-                    } else {
-                        let k = u64::from(common_neighbours);
-                        let decrease_bound = k * (k - 1) / 2;
-                        let old_bound = buckets
-                            .key_of(u)
-                            .expect("an active vertex has a fill bucket");
-                        buckets.update(u, old_bound.saturating_sub(decrease_bound));
-                        lower_bound[u as usize] = true;
-                    }
+                    let delta = affected.fill_delta_of(&mut scratch, graph, u);
+                    let old_fill = buckets
+                        .key_of(u)
+                        .expect("an active vertex has a fill bucket");
+                    debug_assert!(delta <= old_fill);
+                    buckets.update(u, old_fill.saturating_sub(delta));
+                }
+            }
+            affected.clear(&live_nbrs);
+
+            graph.eliminate_with_nbrs(v, &live_nbrs);
+            for &u in &live_nbrs {
+                if expired(hard_deadline) {
+                    return ElimExit::DeadlineReached;
+                }
+                if graph.active[u as usize] {
+                    let new_fill = scratch.fill_count_of(graph, u);
+                    buckets.update(u, new_fill);
                 }
             }
         }
