@@ -21,8 +21,9 @@ win. With time left, the portfolio tries further sampled min-fill seeds; on a
 very large residual it uses sampled min-degree and skips the expensive fixed
 orders instead. Initial fill counts are computed only when sampled min-fill
 first runs, then reused across its seeds. The winner minimizes `(treewidth,
-total bag size)`. `sampled_min_fill_candidates` exposes the smaller variant
-used by callers that want to apply their own ranking.
+total bag size)`, then contracts bags contained in an adjacent bag.
+`sampled_min_fill_candidates` exposes the smaller variant used by callers that
+want to apply their own ranking.
 
 A soft budget, measured from before preprocessing, stops the portfolio from
 starting further candidates and samples. At the hard budget, the first
