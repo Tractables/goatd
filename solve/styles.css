@@ -50,7 +50,7 @@ body {
 }
 
 /* The page takes the whole window: the drawings want every pixel a wide
-   screen has. The text columns keep their own widths. */
+   screen has. */
 main {
   margin: 0 auto;
   padding: 1.5rem 2rem 4rem;
