@@ -143,8 +143,12 @@ fn run_portfolio(
     retention: CandidateRetention,
 ) -> Result<CandidateSet, crate::Error> {
     config::validate(config)?;
-    let deadlines =
-        crate::deadline::two_stage(crate::meter::now(), config.soft_budget, "portfolio")?;
+    let deadlines = crate::deadline::staged(
+        crate::meter::now(),
+        config.soft_budget,
+        config.hard_budget,
+        "portfolio",
+    )?;
     let soft_deadline = deadlines.soft;
     let hard_deadline = deadlines.hard;
     let mut prebuilt = engine::prebuild(graph);
