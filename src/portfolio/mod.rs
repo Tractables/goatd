@@ -75,6 +75,12 @@ fn flowcutter_candidate(
 /// Builds a run's candidate list for a seed, given the weight vector.
 type InitialOrderBuilder = for<'w> fn(u64, &'w [u32]) -> Vec<(Order<'w>, u64)>;
 
+#[derive(Clone, Copy)]
+enum CandidateRetention {
+    All,
+    BestOnly,
+}
+
 /// The five fixed candidates at the front of the standard portfolio, ordered
 /// by the cost of one elimination step.
 fn standard_orders(base_seed: u64, weights: &[u32]) -> Vec<(Order<'_>, u64)> {
@@ -109,7 +115,8 @@ fn run_portfolio(
     seed: u64,
     initial_orders: InitialOrderBuilder,
     config: PortfolioConfig,
-) -> Result<Vec<TreeDecomposition>, crate::Error> {
+    retention: CandidateRetention,
+) -> Result<CandidateSet, crate::Error> {
     config::validate(config)?;
     let deadlines =
         crate::deadline::two_stage(crate::meter::now(), config.soft_budget, "portfolio")?;
@@ -118,7 +125,10 @@ fn run_portfolio(
     let mut prebuilt = engine::prebuild(graph);
     let initial_orders = initial_orders(seed, weights);
     let large_residual = prebuilt.num_active() > MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS;
-    let mut candidates = CandidateSet::new(initial_orders.len() + 1);
+    let mut candidates = match retention {
+        CandidateRetention::All => CandidateSet::all(initial_orders.len() + 1),
+        CandidateRetention::BestOnly => CandidateSet::best_only(),
+    };
 
     // Set after any candidate reaches the hard deadline, or when it expires
     // between candidates. Later runs would stop at the same point.
@@ -224,7 +234,7 @@ fn run_portfolio(
     {
         candidates.push(decomposition);
     }
-    Ok(candidates.into_decompositions())
+    Ok(candidates)
 }
 
 /// Run one sampled min-fill order, then up to
@@ -246,7 +256,26 @@ pub fn sampled_min_fill_candidates(
     config: PortfolioConfig,
 ) -> Result<Vec<TreeDecomposition>, crate::Error> {
     validate_weights(graph, weights)?;
-    run_portfolio(graph, weights, seed, sampled_min_fill_orders, config)
+    Ok(run_portfolio(
+        graph,
+        weights,
+        seed,
+        sampled_min_fill_orders,
+        config,
+        CandidateRetention::All,
+    )?
+    .into_decompositions())
+}
+
+fn standard_candidate_set(
+    graph: &Graph,
+    weights: &[u32],
+    seed: u64,
+    config: PortfolioConfig,
+    retention: CandidateRetention,
+) -> Result<CandidateSet, crate::Error> {
+    validate_weights(graph, weights)?;
+    run_portfolio(graph, weights, seed, standard_orders, config, retention)
 }
 
 /// Run the standard portfolio and return every decomposition it produced,
@@ -264,8 +293,9 @@ pub fn candidates(
     seed: u64,
     config: PortfolioConfig,
 ) -> Result<Vec<TreeDecomposition>, crate::Error> {
-    validate_weights(graph, weights)?;
-    let mut decompositions = run_portfolio(graph, weights, seed, standard_orders, config)?;
+    let mut decompositions =
+        standard_candidate_set(graph, weights, seed, config, CandidateRetention::All)?
+            .into_decompositions();
     decompositions.sort_by_key(TreeDecomposition::quality_key);
     Ok(decompositions)
 }
@@ -282,11 +312,14 @@ pub fn decompose(
     seed: u64,
     config: PortfolioConfig,
 ) -> Result<TreeDecomposition, crate::Error> {
-    Ok(candidates(graph, weights, seed, config)?
-        .into_iter()
-        .next()
-        .expect("first candidate always produces a decomposition")
-        .compact_subsumed_bags())
+    Ok(
+        standard_candidate_set(graph, weights, seed, config, CandidateRetention::BestOnly)?
+            .into_decompositions()
+            .into_iter()
+            .next()
+            .expect("first candidate always produces a decomposition")
+            .compact_subsumed_bags(),
+    )
 }
 
 /// The standard portfolio's winner, refined by FlowCutter cuts
