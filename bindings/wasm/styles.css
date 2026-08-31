@@ -1,15 +1,26 @@
 :root {
   /* Both palettes are defined below, so the browser should not invert the
-     page when the reader asks for dark. */
+     page when the reader asks for dark. The blue and the amber are the
+     logo's. */
   color-scheme: light dark;
   --bg: #f5f5f2;
   --card: #ffffff;
   --line: #e0e0d9;
   --ink: #1d1f21;
   --muted: #6c7075;
-  --accent: #2f6b7c;
-  --accent-fill: #dcebef;
+  --accent: #2070a8;
+  --accent-fill: #dbe9f6;
+  --amber: #d99a2b;
+  --amber-fill: #fbeed0;
   --code: #f2f2ed;
+  /* One colour per branch of the tree when a bag is hovered; the mix with the
+     card colour gives the fill, so the same six serve both palettes. */
+  --side-1: #e07b39;
+  --side-2: #3f9c5a;
+  --side-3: #9b59b6;
+  --side-4: #d1495b;
+  --side-5: #2a9d8f;
+  --side-6: #8a8f1f;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
@@ -21,8 +32,10 @@
     --line: #2e333a;
     --ink: #e5e8ea;
     --muted: #9aa1a9;
-    --accent: #7cbccd;
-    --accent-fill: #21343b;
+    --accent: #6fb3e6;
+    --accent-fill: #1e3448;
+    --amber: #e8a830;
+    --amber-fill: #46381a;
     --code: #15181b;
   }
 }
@@ -42,7 +55,18 @@ main {
   padding: 2rem 1.25rem 4rem;
 }
 
-header { margin-bottom: 1.5rem; }
+header {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  margin-bottom: 1.5rem;
+}
+
+.logo {
+  width: 4rem;
+  height: 4rem;
+  flex: none;
+}
 
 h1 {
   margin: 0 0 0.35rem;
@@ -143,13 +167,9 @@ button:disabled { opacity: 0.45; cursor: default; }
 #result-summary { font-weight: 400; color: var(--muted); }
 #result-summary.failed { color: var(--ink); font-family: var(--mono); font-size: 13px; }
 
-/* The graph is square and the decomposition is usually much wider than it is
-   tall, so the two do not want equal columns. */
-.panels { display: grid; gap: 1.1rem; align-items: start; }
-
-@media (min-width: 64rem) {
-  .panels { grid-template-columns: minmax(0, 26rem) minmax(0, 1fr); }
-}
+/* The two drawings take a row each: the decomposition is usually much wider
+   than the graph and wants the whole width. */
+.panels { display: grid; gap: 1.1rem; }
 
 .panel {
   margin: 0;
@@ -157,11 +177,36 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 
 figcaption {
-  margin-bottom: 0.4rem;
+  margin-bottom: 0.25rem;
   font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.02em;
   text-transform: uppercase;
+  color: var(--muted);
+}
+
+.legend {
+  margin-left: 0.9rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.legend i {
+  display: inline-block;
+  width: 0.75em;
+  height: 0.75em;
+  margin-right: 0.4em;
+  vertical-align: -0.05em;
+  border: 1px solid var(--amber);
+  border-radius: 2px;
+  background: var(--amber-fill);
+}
+
+.hint {
+  margin: 0 0 0.5rem;
+  max-width: 60rem;
+  font-size: 13px;
   color: var(--muted);
 }
 
@@ -170,7 +215,7 @@ figcaption {
   border-radius: 6px;
   background: var(--code);
   padding: 0.5rem;
-  /* A large decomposition scrolls rather than shrinking out of legibility. */
+  /* A deep decomposition scrolls rather than shrinking out of legibility. */
   max-height: 34rem;
   overflow: auto;
 }
@@ -178,7 +223,15 @@ figcaption {
 .view .note { padding: 0.4rem 0.2rem; }
 
 svg.drawing { display: block; }
-svg.graph { width: 100%; height: auto; }
+
+/* The graph is square; it sits in the middle of its row at a size where the
+   labels read. */
+svg.graph { width: 100%; height: auto; max-height: 30rem; }
+
+/* A tree narrower than its row is centred; one a little wider is scaled to
+   fit (the script decides); one much wider keeps its size and scrolls. */
+svg.tree { margin: 0 auto; }
+svg.tree.fit { width: 100%; height: auto; }
 
 .edges line { stroke: var(--line); stroke-width: 1.2; }
 .edges line.on { stroke: var(--accent); stroke-width: 1.8; }
@@ -199,6 +252,22 @@ svg.graph { width: 100%; height: auto; }
 .vertex.on circle { fill: var(--accent-fill); stroke: var(--accent); stroke-width: 2; }
 .vertex.on text { fill: var(--accent); }
 
+.side-1 { --side: var(--side-1); }
+.side-2 { --side: var(--side-2); }
+.side-3 { --side: var(--side-3); }
+.side-4 { --side: var(--side-4); }
+.side-5 { --side: var(--side-5); }
+.side-6 { --side: var(--side-6); }
+
+.vertex.side circle {
+  fill: color-mix(in srgb, var(--side) 30%, var(--card));
+  stroke: var(--side);
+  stroke-width: 1.6;
+}
+
+.vertex.side text { fill: var(--ink); }
+.edges line.side { stroke: var(--side); stroke-width: 1.6; }
+
 .bag rect {
   fill: var(--card);
   stroke: var(--line);
@@ -212,10 +281,19 @@ svg.graph { width: 100%; height: auto; }
   pointer-events: none;
 }
 
+/* The bags of the largest size are the ones that set the width. */
+.bag.widest rect { fill: var(--amber-fill); stroke: var(--amber); }
+
+.bag.side rect {
+  fill: color-mix(in srgb, var(--side) 22%, var(--card));
+  stroke: var(--side);
+}
+
 .bag:hover rect, .bag.on rect { fill: var(--accent-fill); stroke: var(--accent); }
 .bag.on text { fill: var(--accent); }
 
 .tree-edges line { stroke: var(--muted); stroke-width: 1.2; }
+.tree-edges line.on { stroke: var(--accent); stroke-width: 2; }
 
 details { margin-top: 1.1rem; }
 

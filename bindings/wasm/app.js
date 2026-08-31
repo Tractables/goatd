@@ -288,14 +288,26 @@ const ROW_HEIGHT = 48;
 // One character of the 11px monospace the bag labels are set in.
 const CHARACTER_WIDTH = 6.7;
 
+// Each bag to the bags joined to it. A tree edge naming a bag the file does
+// not list is dropped.
+function adjacency(bags, edges) {
+  const neighbours = new Map();
+  for (const id of bags.keys()) neighbours.set(id, []);
+  for (const [a, b] of edges) {
+    if (!neighbours.has(a) || !neighbours.has(b)) continue;
+    neighbours.get(a).push(b);
+    neighbours.get(b).push(a);
+  }
+  return neighbours;
+}
+
 // Bags become rows by depth. Each subtree is given a horizontal span wide
 // enough for its children side by side, and a bag is centred over its own
 // span, which puts it over the middle of its children.
 function layoutTree(bags, edges) {
-  const neighbours = new Map();
+  const neighbours = adjacency(bags, edges);
   const nodes = new Map();
   for (const [id, vertices] of bags) {
-    neighbours.set(id, []);
     const label = vertices.join(" ");
     nodes.set(id, {
       id,
@@ -307,17 +319,13 @@ function layoutTree(bags, edges) {
       y: 0,
     });
   }
-  for (const [a, b] of edges) {
-    if (!neighbours.has(a) || !neighbours.has(b)) continue;
-    neighbours.get(a).push(b);
-    neighbours.get(b).push(a);
-  }
 
   // The largest bag roots the drawing. Anything the walk from it does not
   // reach gets its own root, so a `.td` that is not connected still draws.
   const bySize = [...nodes.keys()].sort(
     (a, b) => nodes.get(b).vertices.length - nodes.get(a).vertices.length || a - b,
   );
+  const largest = bySize.length === 0 ? 0 : nodes.get(bySize[0]).vertices.length;
   const reached = new Set();
   const roots = [];
   for (const root of bySize) {
@@ -369,6 +377,8 @@ function layoutTree(bags, edges) {
 
   return {
     nodes,
+    neighbours,
+    largest,
     width: Math.max(0, cursor - 3 * BAG_GAP),
     height: roots.length === 0 ? 0 : depth * ROW_HEIGHT + BAG_HEIGHT,
   };
@@ -432,17 +442,21 @@ function treeSvg(tree) {
     for (const id of node.children) {
       const child = tree.nodes.get(id);
       parts.push(
-        `<line x1="${x1}" y1="${y1}"`,
+        `<line data-a="${node.id}" data-b="${id}" x1="${x1}" y1="${y1}"`,
         ` x2="${round(inset + child.x + child.width / 2)}"`,
         ` y2="${round(inset + child.y)}"/>`,
       );
     }
   }
   parts.push("</g>");
+  // The bags of the largest size are the ones that set the width. When every
+  // bag is that size there is nothing to single out.
+  const singled = [...tree.nodes.values()].some((node) => node.vertices.length < tree.largest);
   for (const node of tree.nodes.values()) {
     const x = round(inset + node.x);
     const y = round(inset + node.y);
-    parts.push(`<g class="bag" data-vertices="${node.label}">`);
+    const widest = singled && node.vertices.length === tree.largest;
+    parts.push(`<g class="bag${widest ? " widest" : ""}" data-bag="${node.id}">`);
     parts.push(`<title>bag ${node.id}</title>`);
     parts.push(
       `<rect x="${x}" y="${y}" width="${round(node.width)}"`,
@@ -473,6 +487,9 @@ if (typeof document !== "undefined") {
   const treeView = element("tree-view");
   let solver = null;
   let drawnGraph = "";
+  // What hovering needs of the decomposition on show: the bags, which bags
+  // are joined, and which bags hold each vertex. Null while none is drawn.
+  let shown = null;
 
   createGoatd()
     .then((module) => {
@@ -493,6 +510,8 @@ if (typeof document !== "undefined") {
     clearHighlight();
     // Whatever is on show belongs to the graph that was there before.
     treeView.innerHTML = note("Press Decompose.");
+    element("legend").hidden = true;
+    shown = null;
     element("output").textContent = "";
     element("result-summary").textContent = "";
     element("result-summary").classList.remove("failed");
@@ -519,42 +538,122 @@ if (typeof document !== "undefined") {
   }
 
   function drawTree(decomposition) {
+    element("legend").hidden = true;
+    shown = null;
     if (decomposition.bags.size > MAX_DRAWN_BAGS) {
       treeView.innerHTML = note(
         `Not drawn: ${decomposition.bags.size} bags is past what is readable here.`,
       );
       return;
     }
-    treeView.innerHTML = treeSvg(layoutTree(decomposition.bags, decomposition.edges));
-    // The root sits over the middle of the drawing, which is off to one side
-    // of the panel when the tree is wider than it is.
+    const tree = layoutTree(decomposition.bags, decomposition.edges);
+    treeView.innerHTML = treeSvg(tree);
+    element("legend").hidden = treeView.querySelector(".bag.widest") === null;
+    fitTree();
+    const holders = new Map();
+    for (const [id, vertices] of decomposition.bags) {
+      for (const v of vertices) {
+        if (!holders.has(v)) holders.set(v, []);
+        holders.get(v).push(id);
+      }
+    }
+    shown = { bags: decomposition.bags, neighbours: tree.neighbours, holders };
+  }
+
+  // A tree a little wider than its panel is scaled down to fit, since labels
+  // at four fifths of their size still read. One much wider keeps its size
+  // and scrolls, starting with the root, which sits over the middle of the
+  // drawing, in view.
+  function fitTree() {
+    const svg = treeView.querySelector("svg.tree");
+    if (svg === null) return;
+    const style = getComputedStyle(treeView);
+    const room =
+      treeView.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const natural = Number(svg.getAttribute("width"));
+    svg.classList.toggle("fit", natural > room && natural * 0.8 <= room);
     treeView.scrollLeft = (treeView.scrollWidth - treeView.clientWidth) / 2;
   }
 
+  window.addEventListener("resize", fitTree);
+
+  // The stylesheet has this many branch colours; a bag with more neighbours
+  // reuses them.
+  const SIDES = 6;
+  const SIDE_CLASSES = Array.from({ length: SIDES }, (_, i) => `side-${i + 1}`);
+  const vertexElement = (v) => graphView.querySelector(`.vertex[data-vertex="${v}"]`);
+  const bagElement = (id) => treeView.querySelector(`.bag[data-bag="${id}"]`);
+
   function clearHighlight() {
-    for (const marked of document.querySelectorAll(".on")) marked.classList.remove("on");
+    for (const marked of document.querySelectorAll(".on, .side")) {
+      marked.classList.remove("on", "side", ...SIDE_CLASSES);
+    }
   }
 
   // Hovering a bag marks the vertices it holds, and the edges among them, in
-  // the graph beside it.
-  function highlight(bag) {
+  // the graph. Taking the bag out of the tree leaves one branch per
+  // neighbour; the bags of each branch, and the vertices they hold beyond
+  // the bag, get a colour of their own. No edge of the graph joins two
+  // branches, so an edge is coloured only when both ends share a branch.
+  function highlightBag(id) {
     clearHighlight();
-    if (bag === null) return;
-    bag.classList.add("on");
-    const held = new Set(bag.dataset.vertices.split(" "));
-    for (const vertex of held) {
-      const drawn = graphView.querySelector(`.vertex[data-vertex="${vertex}"]`);
-      if (drawn !== null) drawn.classList.add("on");
-    }
+    bagElement(id).classList.add("on");
+    const held = new Set(shown.bags.get(id).map(String));
+    for (const v of held) vertexElement(v)?.classList.add("on");
+    const sideOf = new Map();
+    shown.neighbours.get(id).forEach((branch, i) => {
+      const side = SIDE_CLASSES[i % SIDES];
+      const seen = new Set([id, branch]);
+      for (let queue = [branch], at = 0; at < queue.length; at++) {
+        const bag = queue[at];
+        bagElement(bag).classList.add("side", side);
+        for (const v of shown.bags.get(bag)) {
+          if (!held.has(String(v))) sideOf.set(String(v), side);
+        }
+        for (const next of shown.neighbours.get(bag)) {
+          if (seen.has(next)) continue;
+          seen.add(next);
+          queue.push(next);
+        }
+      }
+    });
+    for (const [v, side] of sideOf) vertexElement(v)?.classList.add("side", side);
     for (const edge of graphView.querySelectorAll(".edges line")) {
-      if (held.has(edge.dataset.u) && held.has(edge.dataset.v)) edge.classList.add("on");
+      const { u, v } = edge.dataset;
+      if (held.has(u) && held.has(v)) {
+        edge.classList.add("on");
+      } else if (sideOf.has(u) && sideOf.get(u) === sideOf.get(v)) {
+        edge.classList.add("side", sideOf.get(u));
+      }
+    }
+  }
+
+  // Hovering a vertex marks the bags that hold it, and the tree edges among
+  // them: a decomposition keeps them a connected piece of the tree.
+  function highlightVertex(v) {
+    clearHighlight();
+    vertexElement(v).classList.add("on");
+    const holding = new Set((shown.holders.get(Number(v)) ?? []).map(String));
+    for (const id of holding) bagElement(id).classList.add("on");
+    for (const edge of treeView.querySelectorAll(".tree-edges line")) {
+      if (holding.has(edge.dataset.a) && holding.has(edge.dataset.b)) edge.classList.add("on");
     }
   }
 
   treeView.addEventListener("pointerover", (event) => {
-    highlight(event.target.closest(".bag"));
+    const bag = event.target.closest(".bag");
+    if (bag === null) clearHighlight();
+    else highlightBag(Number(bag.dataset.bag));
   });
-  treeView.addEventListener("pointerleave", () => clearHighlight());
+  treeView.addEventListener("pointerleave", clearHighlight);
+
+  graphView.addEventListener("pointerover", (event) => {
+    if (shown === null) return;
+    const vertex = event.target.closest(".vertex");
+    if (vertex === null) clearHighlight();
+    else highlightVertex(vertex.dataset.vertex);
+  });
+  graphView.addEventListener("pointerleave", clearHighlight);
 
   // Redrawing while someone types would be a layout run per keystroke.
   let pending = 0;
@@ -602,6 +701,8 @@ if (typeof document !== "undefined") {
     element("raw").open = failed;
     if (failed) {
       treeView.innerHTML = note("No decomposition to draw.");
+      element("legend").hidden = true;
+      shown = null;
     } else {
       drawTree(decomposition);
     }

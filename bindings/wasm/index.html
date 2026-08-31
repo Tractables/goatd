@@ -11,9 +11,12 @@
 <main>
 
 <header>
-  <h1>goatd in the browser</h1>
-  <p class="lede">Paste a PACE <code>.gr</code> graph and goatd returns a tree
-  decomposition; the solver runs in this tab and nothing is uploaded.</p>
+  <img class="logo" src="logo.png" alt="" width="192" height="192">
+  <div>
+    <h1>goatd in the browser</h1>
+    <p class="lede">Paste a PACE <code>.gr</code> graph and goatd returns a tree
+    decomposition; the solver runs in this tab and nothing is uploaded.</p>
+  </div>
 </header>
 
 <section class="card">
@@ -116,10 +119,18 @@ p tw 36 60
   <div class="panels">
     <figure class="panel">
       <figcaption>Input graph</figcaption>
+      <p class="hint">Once there is a decomposition, hover a vertex to see the
+      bags that hold it. They form a connected piece of the tree: the running
+      intersection property.</p>
       <div id="graph-view" class="view"></div>
     </figure>
     <figure class="panel">
-      <figcaption>Decomposition</figcaption>
+      <figcaption>Decomposition
+        <span id="legend" class="legend" hidden><i></i>bags of the largest size</span>
+      </figcaption>
+      <p class="hint">Hover a bag to see it separate the graph. The vertices
+      beyond each branch of the tree at that bag get a colour of their own,
+      and no edge joins two colours.</p>
       <div id="tree-view" class="view"><p class="note">Press Decompose.</p></div>
     </figure>
   </div>

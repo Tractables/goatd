@@ -1,8 +1,9 @@
 # goatd in the browser
 
 A page that decomposes a PACE `.gr` graph in the tab and draws both the graph
-and the decomposition: `index.html`, `styles.css` and `app.js` beside the
-Emscripten build of the crate. There is no framework, no bundler and nothing
+and the decomposition, each lighting up the other under the pointer:
+`index.html`, `styles.css`, `app.js` and `logo.png` beside the Emscripten
+build of the crate. There is no framework, no bundler and nothing
 fetched from anywhere else. It is served at
 <https://tractables.github.io/goatd/solve/> and follows `main`, so it may be
 ahead of the latest release.
@@ -21,7 +22,7 @@ AR_wasm32_unknown_emscripten=emar \
 CXXFLAGS_wasm32_unknown_emscripten=-fwasm-exceptions \
   cargo build --release
 mkdir -p site
-cp index.html styles.css app.js \
+cp index.html styles.css app.js logo.png \
    target/wasm32-unknown-emscripten/release/goatd.{js,wasm} site/
 python3 -m http.server -d site
 ```
