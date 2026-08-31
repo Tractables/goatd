@@ -31,8 +31,9 @@ partial elimination bags to it. This completion is linear in the residual
 size. Later candidates can stop without completion because a valid candidate
 already exists. `PortfolioConfig::standard_with_budget`, which the CLI uses for
 a budgeted standard portfolio, keeps the 100-extra-sample cap below a
-five-second soft budget and permits up to 1,000 extra samples at or above it.
-The library remains single-threaded throughout.
+five-second soft budget. At or above that budget it permits up to 1,000 extra
+samples, then uses the remaining hard-budget interval for a trailing FlowCutter
+candidate. The library remains single-threaded throughout.
 
 ## Preprocessing
 

@@ -38,8 +38,8 @@ options:
                         (default: every vertex weighs the same)
   --budget <ms>         wall-clock budget: the elimination orders' soft
                         deadline, flowcutter's run time, the portfolio's
-                        soft deadline and sampling effort, and the
-                        refinement's deadline
+                        soft deadline, sampling effort, and trailing
+                        FlowCutter slot, and the refinement's deadline
   --steps <n>           flowcutter only: a step budget in place of a clock,
                         for a run that repeats exactly
   --refine              re-cut the decomposition along FlowCutter separators
