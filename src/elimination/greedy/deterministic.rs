@@ -137,20 +137,11 @@ pub(super) trait ElimPolicy {
         Some(self.live_score(graph, v))
     }
 
-    /// Prepare score changes that have to be measured before fill edges are
-    /// added. The returned outcome is applied after the selected vertex is
-    /// eliminated and recorded, matching `after_eliminate`'s deadline
-    /// behavior.
-    fn before_eliminate(
-        &mut self,
-        _graph: &EliminationGraph,
-        _v: u32,
-        _nbrs: &[u32],
-        _cheap_mode: bool,
-        _deadline: Option<Instant>,
-        _filled_neighbourhood: bool,
-    ) -> AfterElim {
-        AfterElim::Continue
+    /// Eliminate a vertex whose neighbourhood needs fill edges. A core that
+    /// maintains an incremental score can override this to retain those
+    /// edges for `after_eliminate`.
+    fn eliminate_with_fill(&mut self, graph: &mut EliminationGraph, v: u32, nbrs: &[u32]) {
+        graph.eliminate_with_nbrs(v, nbrs);
     }
 
     /// React to `v`'s elimination; `nbrs` were its live neighbours. The
@@ -286,15 +277,12 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
         }
 
         let simplicial = P::ZERO_SCORE_IS_SIMPLICIAL && !cheap_mode && snapshot == 0;
-        let prepared = if clique_residual || simplicial {
-            AfterElim::Continue
-        } else {
-            policy.before_eliminate(graph, v, &nbrs_buf, cheap_mode, soft_deadline, true)
-        };
         if clique_residual || simplicial {
             graph.remove_without_fill_nbrs(v, &nbrs_buf);
-        } else {
+        } else if cheap_mode {
             graph.eliminate_with_nbrs(v, &nbrs_buf);
+        } else {
+            policy.eliminate_with_fill(graph, v, &nbrs_buf);
         }
         sink.record(v, bag);
 
@@ -312,13 +300,7 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
             return ElimExit::Complete;
         }
 
-        let outcome = match prepared {
-            AfterElim::Continue => {
-                policy.after_eliminate(graph, &nbrs_buf, cheap_mode, soft_deadline, !simplicial)
-            }
-            outcome => outcome,
-        };
-        match outcome {
+        match policy.after_eliminate(graph, &nbrs_buf, cheap_mode, soft_deadline, !simplicial) {
             AfterElim::Continue => {}
             AfterElim::EnterCheapMode => {
                 debug_assert!(P::CHEAP_MODE, "core without cheap mode asked to enter it");
