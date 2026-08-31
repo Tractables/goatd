@@ -15,7 +15,10 @@ of the latest release.
 
 `.github/workflows/wasm.yml` builds it, uploads the files as the `goatd-web`
 artifact and, on `main`, commits them at the root of the `gh-pages` branch,
-beside the solver comparison under `comparison/`.
+beside the solver comparison under `comparison/`. It stamps the two references
+in `index.html` with the commit (`app.js?v=<sha>`), and the page passes the
+stamp on to the worker, the module and the graph file it fetches, so a new
+page never runs with an older file a browser still holds.
 
 To build it by hand you need the
 [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html)
