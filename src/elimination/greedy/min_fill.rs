@@ -108,6 +108,7 @@ struct MinFill<'a> {
     generation: Vec<u64>,
     score: Vec<u64>,
     affected: FillAffected,
+    fill_edges: Vec<(u32, u32)>,
     salt: &'a [u32],
 }
 
@@ -182,37 +183,8 @@ impl ElimPolicy for MinFill<'_> {
         None
     }
 
-    fn before_eliminate(
-        &mut self,
-        graph: &EliminationGraph,
-        v: u32,
-        nbrs: &[u32],
-        cheap_mode: bool,
-        deadline: Option<Instant>,
-        filled_neighbourhood: bool,
-    ) -> AfterElim {
-        if cheap_mode || !filled_neighbourhood {
-            return AfterElim::Continue;
-        }
-        if !self.affected.collect_external(graph, v, nbrs, deadline) {
-            return self.deadline_outcome(graph);
-        }
-        while let Some(vertex) = self.affected.pop_external() {
-            if expired(deadline) {
-                self.affected.clear(nbrs);
-                return self.deadline_outcome(graph);
-            }
-            if graph.active[vertex as usize] {
-                let delta = self
-                    .affected
-                    .fill_delta_of(&mut self.scratch, graph, vertex);
-                debug_assert!(delta <= self.score[vertex as usize]);
-                let score = self.score[vertex as usize].saturating_sub(delta);
-                self.push(graph, vertex, score);
-            }
-        }
-        self.affected.clear(nbrs);
-        AfterElim::Continue
+    fn eliminate_with_fill(&mut self, graph: &mut EliminationGraph, v: u32, nbrs: &[u32]) {
+        graph.eliminate_with_nbrs_record_fill(v, nbrs, &mut self.fill_edges);
     }
 
     fn after_eliminate(
@@ -221,7 +193,7 @@ impl ElimPolicy for MinFill<'_> {
         nbrs: &[u32],
         cheap_mode: bool,
         deadline: Option<Instant>,
-        _filled_neighbourhood: bool,
+        filled_neighbourhood: bool,
     ) -> AfterElim {
         if cheap_mode {
             // Fill accuracy is already abandoned: re-push each live neighbour
@@ -232,6 +204,24 @@ impl ElimPolicy for MinFill<'_> {
                 }
             }
             return AfterElim::Continue;
+        }
+
+        if filled_neighbourhood {
+            if !self
+                .affected
+                .collect_deltas(graph, nbrs, &self.fill_edges, deadline)
+            {
+                return self.deadline_outcome(graph);
+            }
+            while let Some((vertex, delta)) = self.affected.pop_delta() {
+                if expired(deadline) {
+                    self.affected.clear();
+                    return self.deadline_outcome(graph);
+                }
+                debug_assert!(delta <= self.score[vertex as usize]);
+                let score = self.score[vertex as usize].saturating_sub(delta);
+                self.push(graph, vertex, score);
+            }
         }
 
         // Checked inside this loop: a fill recount is superlinear in the
@@ -269,6 +259,7 @@ pub(crate) fn eliminate_min_fill(
         generation: vec![0; n],
         score: vec![0; n],
         affected: FillAffected::new(n),
+        fill_edges: Vec::new(),
         salt,
     };
     eliminate_greedy(&mut policy, graph, sink, stop)
