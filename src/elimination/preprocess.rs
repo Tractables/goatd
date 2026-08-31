@@ -10,9 +10,8 @@
 //!   - **almost-simplicial** (Bodlaender): a vertex `v` whose live neighbours
 //!     form a clique except for one missing edge, *and* whose degree satisfies
 //!     `deg(v) ≤ LB` for some valid lower bound `LB` on treewidth — here
-//!     `LB` includes the residual's minimum degree and the largest degree of a
-//!     simplicial elimination so far. Adds one fill edge then eliminates; bag
-//!     size = `deg(v)+1 ≤ LB+1`.
+//!     `LB = max deg over simplicial eliminations so far`. Adds one fill edge
+//!     then eliminates; bag size = `deg(v)+1 ≤ LB+1`.
 //!
 //! Reattaching the recorded bags to a decomposition of the residual produces
 //! a valid decomposition of the original graph. The widest recorded bag
@@ -35,8 +34,8 @@ pub(crate) struct Reduced {
 
 pub(crate) fn preprocess(mut graph: EliminationGraph) -> Reduced {
     let mut prefix = ElimSteps::default();
-    // Running lower bound on tw(G), maintained from residual minimum degree
-    // and simplicial/series eliminations; gates the almost-simplicial rule.
+    // Running lower bound on tw(G), maintained across simplicial/series
+    // eliminations; gates the almost-simplicial rule below.
     let mut treewidth_lower_bound = 0usize;
 
     loop {
@@ -46,9 +45,6 @@ pub(crate) fn preprocess(mut graph: EliminationGraph) -> Reduced {
         // Reaching minimum degree two also establishes that any non-empty
         // residual component is not a forest before the series rule runs.
         let mut fired = peel_low_degree(&mut graph, &mut prefix);
-        if let Some(minimum_degree) = minimum_active_degree(&graph) {
-            treewidth_lower_bound = treewidth_lower_bound.max(minimum_degree);
-        }
         fired |= eliminate_series_vertices(&mut graph, &mut prefix, &mut treewidth_lower_bound);
         fired |= eliminate_simplicial_vertices(&mut graph, &mut prefix, &mut treewidth_lower_bound);
         fired |=
@@ -60,15 +56,6 @@ pub(crate) fn preprocess(mut graph: EliminationGraph) -> Reduced {
     }
 
     Reduced { graph, prefix }
-}
-
-/// The minimum degree of the current non-empty residual is a treewidth lower
-/// bound: every graph of treewidth `k` has a vertex of degree at most `k`.
-fn minimum_active_degree(graph: &EliminationGraph) -> Option<usize> {
-    (0..graph.len())
-        .filter(|&vertex| graph.active[vertex])
-        .map(|vertex| graph.degree(vertex as u32))
-        .min()
 }
 
 /// Eliminate one vertex and record its bag before the graph changes.
