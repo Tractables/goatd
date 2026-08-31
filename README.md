@@ -15,6 +15,10 @@
      src="https://docs.rs/goatd/badge.svg" alt="docs.rs"></a>
   <a href="https://pypi.org/project/goatd/"><img
      src="https://img.shields.io/pypi/v/goatd.svg" alt="PyPI"></a>
+  <a href="https://github.com/Tractables/goatd/releases/latest"><img
+     src="https://img.shields.io/github/v/release/Tractables/goatd" alt="GitHub release"></a>
+  <a href="https://tractables.github.io/goatd/solve/"><img
+     src="https://img.shields.io/badge/run-in%20the%20browser-blue" alt="Run in the browser"></a>
 </p>
 
 Tree decompositions of graphs, as a Rust library and command-line solver. The
