@@ -5,8 +5,9 @@ and the decomposition, each lighting up the other under the pointer:
 `index.html`, `styles.css`, `app.js`, `logo.png` and one graph file,
 `mcc2025-track1-093.gr`, beside the Emscripten build of the crate. A row of
 example graphs runs from a 6×6 grid through the primal graph of a Model
-Counting Competition CNF to a grid of 10,000 vertices, and the `.td` text
-can be copied or saved. There is no framework, no bundler and nothing fetched from
+Counting Competition CNF to a grid of 10,000 vertices, the `.td` text can
+be copied or saved, and the address bar carries the example and the
+settings, so a result can be linked to. There is no framework, no bundler and nothing fetched from
 anywhere else. It is served at
 <https://tractables.github.io/goatd/solve/> and follows `main`, so it may be
 ahead of the latest release.

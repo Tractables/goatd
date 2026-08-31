@@ -799,21 +799,23 @@ function summarise(header, elapsed) {
 
 // ----------------------------------------------------------------- examples
 
-// The row of example graphs. All but one are generated when chosen, so the
-// page carries the recipe and not the text; the competition graph is a file
-// beside the page. The first is the graph the page opens with. The larger
-// ones are past what the page draws unasked; they show the solver at work.
+// The row of example graphs: each has a key, which is how the address bar
+// names it, the name on its button, and its maker. All but one are generated
+// when chosen, so the page carries the recipe and not the text; the
+// competition graph is a file beside the page. The first is the graph the
+// page opens with unless the address names another. The larger ones are
+// past what the page draws unasked; they show the solver at work.
 const EXAMPLES = [
-  ["6×6 grid", () => grid(6, 6, "a 6x6 grid; its treewidth is 6")],
-  ["Petersen graph", petersen],
-  ["random 3-tree, 40 vertices", () => kTree(3, 40, 1)],
-  ["5-dimensional hypercube", () => hypercube(5)],
-  ["20×20 grid", () => grid(20, 20, "a 20x20 grid; its treewidth is 20")],
-  ["7×7×7 grid", () => cubeGrid(7)],
-  ["Model Counting Competition CNF, 1,843 vertices", () => fetched("mcc2025-track1-093.gr")],
-  ["random 4-tree, 2,000 vertices", () => kTree(4, 2000, 1)],
-  ["random sparse graph, 3,000 vertices", () => randomGraph(3000, 4500, 1)],
-  ["100×100 grid, 10,000 vertices", () => grid(100, 100, "a 100x100 grid; its treewidth is 100")],
+  ["grid6", "6×6 grid", () => grid(6, 6, "a 6x6 grid; its treewidth is 6")],
+  ["petersen", "Petersen graph", petersen],
+  ["3-tree", "random 3-tree, 40 vertices", () => kTree(3, 40, 1)],
+  ["hypercube5", "5-dimensional hypercube", () => hypercube(5)],
+  ["grid20", "20×20 grid", () => grid(20, 20, "a 20x20 grid; its treewidth is 20")],
+  ["cube7", "7×7×7 grid", () => cubeGrid(7)],
+  ["mcc2025-093", "Model Counting Competition CNF, 1,843 vertices", () => fetched("mcc2025-track1-093.gr")],
+  ["4-tree", "random 4-tree, 2,000 vertices", () => kTree(4, 2000, 1)],
+  ["sparse3000", "random sparse graph, 3,000 vertices", () => randomGraph(3000, 4500, 1)],
+  ["grid100", "100×100 grid, 10,000 vertices", () => grid(100, 100, "a 100x100 grid; its treewidth is 100")],
 ];
 
 // A graph shipped as a file beside the page.
@@ -1222,7 +1224,7 @@ if (typeof document !== "undefined") {
   // A button per example; the one whose text is in the box is marked. (Not
   // with "on", which clearHighlight takes off everything on the page.)
   const examples = element("examples");
-  EXAMPLES.forEach(([name], i) => {
+  EXAMPLES.forEach(([, name], i) => {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.textContent = name;
@@ -1244,7 +1246,7 @@ if (typeof document !== "undefined") {
     const ticket = ++loading;
     let text;
     try {
-      text = await EXAMPLES[i][1]();
+      text = await EXAMPLES[i][2]();
     } catch (failure) {
       element("status").textContent = `the example did not load: ${failure}`;
       return;
@@ -1265,6 +1267,7 @@ if (typeof document !== "undefined") {
   let pending = 0;
   element("graph").addEventListener("input", () => {
     markExample(-1);
+    element("link").hidden = true;
     clearTimeout(pending);
     pending = setTimeout(drawGraph, 300);
   });
@@ -1294,11 +1297,49 @@ if (typeof document !== "undefined") {
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   });
 
+  // The address carries the choices, so a result can be linked to:
+  // ?graph=<example>&order=<construction>&seed=<n>&budget=<ms>. It is read
+  // once when the page opens, before the first run, and written at every
+  // run. A graph typed in is not in the address, so a run on one clears it
+  // and hides the button that copies it.
+  const orderKey = (option) => option.textContent.toLowerCase().replace(/\s+/g, "-");
+  function readAddress() {
+    const params = new URLSearchParams(location.search);
+    const order = [...element("order").options].find((option) => orderKey(option) === params.get("order"));
+    if (order !== undefined) element("order").value = order.value;
+    for (const id of ["seed", "budget"]) {
+      const value = params.get(id);
+      if (value !== null && /^\d{1,9}$/.test(value)) element(id).value = value;
+    }
+    return EXAMPLES.findIndex(([key]) => key === params.get("graph"));
+  }
+  function writeAddress() {
+    const chosen = examples.querySelector(".chosen");
+    element("link").hidden = chosen === null;
+    if (chosen === null) {
+      history.replaceState(null, "", location.pathname);
+      return;
+    }
+    const params = new URLSearchParams();
+    params.set("graph", EXAMPLES[Number(chosen.dataset.example)][0]);
+    params.set("order", orderKey(element("order").selectedOptions[0]));
+    params.set("seed", String(setting("seed")));
+    params.set("budget", String(setting("budget")));
+    history.replaceState(null, "", `${location.pathname}?${params}`);
+  }
+  element("link").addEventListener("click", () => {
+    navigator.clipboard.writeText(location.href).then(
+      () => flash(element("link"), "Copied"),
+      () => flash(element("link"), "Not copied"),
+    );
+  });
+
   // The call holds this tab for as long as the construction runs, so the
   // status is painted before it starts.
   element("run").addEventListener("click", () => {
     clearTimeout(pending);
     drawGraph();
+    writeAddress();
     element("status").textContent = "running";
     element("run").disabled = true;
     afterPaint(decompose);
@@ -1349,6 +1390,7 @@ if (typeof document !== "undefined") {
 
   // A browser that brings the text back on reload keeps it; otherwise the
   // page opens on the first example.
-  if (element("graph").value === "") loadExample(0);
+  const opening = readAddress();
+  if (element("graph").value === "") loadExample(opening === -1 ? 0 : opening);
   else drawGraph();
 }
