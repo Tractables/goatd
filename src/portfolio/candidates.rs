@@ -18,13 +18,23 @@ pub(super) enum CandidateOutcome {
 pub(super) struct CandidateSet {
     decompositions: Vec<TreeDecomposition>,
     best_width: Option<u32>,
+    retain_only_best: bool,
 }
 
 impl CandidateSet {
-    pub(super) fn new(capacity: usize) -> Self {
+    pub(super) fn all(capacity: usize) -> Self {
         Self {
             decompositions: Vec::with_capacity(capacity),
             best_width: None,
+            retain_only_best: false,
+        }
+    }
+
+    pub(super) fn best_only() -> Self {
+        Self {
+            decompositions: Vec::with_capacity(1),
+            best_width: None,
+            retain_only_best: true,
         }
     }
 
@@ -39,7 +49,16 @@ impl CandidateSet {
     pub(super) fn push(&mut self, decomposition: TreeDecomposition) {
         let width = decomposition.treewidth();
         self.best_width = Some(self.best_width.map_or(width, |best| best.min(width)));
-        self.decompositions.push(decomposition);
+        if !self.retain_only_best {
+            self.decompositions.push(decomposition);
+        } else if self
+            .decompositions
+            .first()
+            .is_none_or(|best| decomposition.quality_key() < best.quality_key())
+        {
+            self.decompositions.clear();
+            self.decompositions.push(decomposition);
+        }
     }
 
     pub(super) fn record_elimination(&mut self, run: OrderRun) -> CandidateOutcome {
