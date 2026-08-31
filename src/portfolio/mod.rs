@@ -72,6 +72,31 @@ fn flowcutter_candidate(
     }
 }
 
+#[derive(Clone, Copy)]
+enum EliminationPhase {
+    Initial,
+    ExtraSampling,
+}
+
+/// Initial candidates may use the complete two-stage window so the first one
+/// can always return a decomposition. Extra samples stop at the soft deadline;
+/// the rest of the hard window belongs to FlowCutter.
+fn elimination_stop(
+    phase: EliminationPhase,
+    soft_deadline: Option<Instant>,
+    hard_deadline: Option<Instant>,
+    width_bound: Option<u32>,
+) -> ElimStop {
+    ElimStop {
+        soft_deadline,
+        hard_deadline: match phase {
+            EliminationPhase::Initial => hard_deadline,
+            EliminationPhase::ExtraSampling => soft_deadline,
+        },
+        width_bound,
+    }
+}
+
 /// Builds a run's candidate list for a seed, given the weight vector.
 type InitialOrderBuilder = for<'w> fn(u64, &'w [u32]) -> Vec<(Order<'w>, u64)>;
 
@@ -156,11 +181,12 @@ fn run_portfolio(
             engine::RunSpec {
                 order,
                 seed: candidate_seed,
-                stop: ElimStop {
+                stop: elimination_stop(
+                    EliminationPhase::Initial,
                     soft_deadline,
                     hard_deadline,
-                    width_bound: candidates.best_width(),
-                },
+                    candidates.best_width(),
+                ),
                 complete_on_deadline,
             },
         );
@@ -180,8 +206,10 @@ fn run_portfolio(
     // ≥2 tied candidates, so different seeds explore different
     // elimination orders and can lower width on small/medium graphs where the
     // base portfolio returns in tens of ms. Falls back to sampled min-degree on
-    // large residuals, matching the main loop's skip rule. Stops at `deadline`
-    // when there is one, and at `sampling_runs` samples regardless.
+    // large residuals, matching the main loop's skip rule. A started extra
+    // sample stops at the soft deadline so it cannot consume the trailing
+    // FlowCutter and output interval. The phase also stops at `sampling_runs`
+    // samples regardless.
     let sample_order = if large_residual {
         Order::MinDegreeSampled { weights }
     } else {
@@ -189,8 +217,9 @@ fn run_portfolio(
     };
     let max_samples = config.sampling_runs;
     let mut sample_index: u64 = 0;
-    // Normally the soft deadline fires first; the hard-deadline checks also
-    // prevent another sampling run after a candidate reached the hard cutoff.
+    // Normally the soft deadline fires first; the portfolio hard-deadline
+    // check also prevents another sample after an initial candidate used the
+    // complete two-stage window.
     while sample_index < max_samples
         && !hard_deadline_tripped
         && !expired(soft_deadline)
@@ -205,11 +234,12 @@ fn run_portfolio(
             engine::RunSpec {
                 order: sample_order,
                 seed: sample_seed,
-                stop: ElimStop {
+                stop: elimination_stop(
+                    EliminationPhase::ExtraSampling,
                     soft_deadline,
                     hard_deadline,
-                    width_bound: candidates.best_width(),
-                },
+                    candidates.best_width(),
+                ),
                 complete_on_deadline: false,
             },
         );
