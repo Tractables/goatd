@@ -81,3 +81,27 @@ fn almost_simplicial_skipped_without_tw_lb() {
     let reduced = preprocess(g);
     assert_eq!(reduced.graph.num_active, 0);
 }
+
+#[test]
+fn residual_minimum_degree_unlocks_almost_simplicial_vertices() {
+    // A five-rim wheel has minimum degree 3. Every rim vertex is
+    // almost-simplicial: its centre neighbour is adjacent to both rim
+    // neighbours, which are the neighbourhood's only missing edge. No
+    // simplicial elimination runs first to establish the lower bound.
+    let edges = [
+        (0, 1),
+        (0, 2),
+        (0, 3),
+        (0, 4),
+        (0, 5),
+        (1, 2),
+        (2, 3),
+        (3, 4),
+        (4, 5),
+        (5, 1),
+    ];
+    let reduced = preprocess(EliminationGraph::from_edges(6, &edges));
+
+    assert_eq!(reduced.graph.num_active, 0);
+    assert_eq!(reduced.prefix.bags.iter().map(Vec::len).max(), Some(4));
+}
