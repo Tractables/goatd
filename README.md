@@ -47,7 +47,7 @@ goatd graph.gr > graph.td
 `goatd` reads and writes the PACE `.gr` and `.td` formats. Choose `--order
 minfill`, `mindegree`, `nested-dissection`, `flowcutter`, or `portfolio`; run
 `goatd --help` for budgets, seeds, weighted ties, and refinement. The same
-solver runs [in the browser](https://tractables.github.io/goatd/solve/).
+solver runs [in the browser](https://tractables.github.io/goatd/).
 
 ## Library
 
@@ -75,11 +75,11 @@ The same constructions are available from
 
 ## Evaluation
 
-The [solver comparison](https://tractables.github.io/goatd/) evaluates the
-shipped portfolio and seven public baselines on component graphs obtained from
-Model Counting Competition CNFs after two seconds of preprocessing. Each
-configuration receives ten seconds on one CPU, and every decomposition is
-checked by the same validator.
+The [solver comparison](https://tractables.github.io/goatd/comparison/)
+evaluates the shipped portfolio and seven public baselines on component graphs
+obtained from Model Counting Competition CNFs after two seconds of
+preprocessing. Each configuration receives ten seconds on one CPU, and every
+decomposition is checked by the same validator.
 
 The default view excludes tree components and focuses on harder cases: graphs
 where the smallest validated width found is 30 or greater. It also retains 17
