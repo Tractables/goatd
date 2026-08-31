@@ -61,6 +61,7 @@ pub(crate) fn eliminate_sampled_min_fill(
 
     let mut scratch = FillScratch::new(n);
     let mut affected = FillAffected::new(n);
+    let mut fill_edges = Vec::new();
     let mut live_nbrs = Vec::new();
     let mut buckets = BucketMap::with_capacity(n);
     for v in 0..n {
@@ -122,26 +123,21 @@ pub(crate) fn eliminate_sampled_min_fill(
                 rescore_neighbours(&mut scratch, graph, &live_nbrs, &mut buckets);
             }
         } else {
-            if !affected.collect_external(graph, v, &live_nbrs, hard_deadline) {
+            graph.eliminate_with_nbrs_record_fill(v, &live_nbrs, &mut fill_edges);
+            if !affected.collect_deltas(graph, &live_nbrs, &fill_edges, hard_deadline) {
                 return ElimExit::DeadlineReached;
             }
-            while let Some(u) = affected.pop_external() {
+            while let Some((u, delta)) = affected.pop_delta() {
                 if expired(hard_deadline) {
-                    affected.clear(&live_nbrs);
+                    affected.clear();
                     return ElimExit::DeadlineReached;
                 }
-                if graph.active[u as usize] {
-                    let delta = affected.fill_delta_of(&mut scratch, graph, u);
-                    let old_fill = buckets
-                        .key_of(u)
-                        .expect("an active vertex has a fill bucket");
-                    debug_assert!(delta <= old_fill);
-                    buckets.update(u, old_fill.saturating_sub(delta));
-                }
+                let old_fill = buckets
+                    .key_of(u)
+                    .expect("an active vertex has a fill bucket");
+                debug_assert!(delta <= old_fill);
+                buckets.update(u, old_fill.saturating_sub(delta));
             }
-            affected.clear(&live_nbrs);
-
-            graph.eliminate_with_nbrs(v, &live_nbrs);
             for &u in &live_nbrs {
                 if expired(hard_deadline) {
                     return ElimExit::DeadlineReached;

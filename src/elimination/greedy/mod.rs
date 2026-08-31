@@ -57,7 +57,6 @@ struct FillScratch {
     /// stale stamp values from the previous cycle are never misread.
     marker: Vec<u16>,
     stamp: u16,
-    subset_bits: Vec<u64>,
 }
 
 impl FillScratch {
@@ -65,7 +64,6 @@ impl FillScratch {
         FillScratch {
             marker: vec![0; n],
             stamp: 0,
-            subset_bits: Vec::new(),
         }
     }
 
@@ -148,163 +146,123 @@ impl FillScratch {
         let total_pairs = (k as u64) * (k as u64 - 1) / 2;
         total_pairs - edge_count
     }
-
-    /// Count missing edges inside `vertices`. This is the exact decrease in
-    /// an external vertex's fill score when eliminating a vertex makes this
-    /// subset of its neighbourhood a clique.
-    fn missing_edges_in(&mut self, graph: &EliminationGraph, vertices: &[u32]) -> u64 {
-        let k = vertices.len();
-        if k < 2 {
-            return 0;
-        }
-
-        if graph.bitset_words > 0 {
-            let words = graph.bitset_words;
-            self.subset_bits.resize(words, 0);
-            self.subset_bits.fill(0);
-            for &vertex in vertices {
-                let index = vertex as usize;
-                self.subset_bits[index / 64] |= 1u64 << (index % 64);
-            }
-            crate::meter::charge((k as u64).saturating_mul(words as u64));
-            let mut doubled = 0u64;
-            for &vertex in vertices {
-                let start = vertex as usize * words;
-                for word in 0..words {
-                    doubled +=
-                        (graph.bitset[start + word] & self.subset_bits[word]).count_ones() as u64;
-                }
-            }
-            let pairs = (k as u64) * (k as u64 - 1) / 2;
-            return pairs - doubled / 2;
-        }
-
-        if crate::meter::is_armed() {
-            let scan: u64 = vertices
-                .iter()
-                .map(|&vertex| graph.adj[vertex as usize].len() as u64)
-                .sum();
-            crate::meter::charge(k as u64 + scan);
-        }
-        self.bump_stamp();
-        let stamp = self.stamp;
-        for &vertex in vertices {
-            self.marker[vertex as usize] = stamp;
-        }
-        let marker = self.marker.as_ptr();
-        let mut doubled = 0u64;
-        for &vertex in vertices {
-            let row = &graph.adj[vertex as usize];
-            for &other in row {
-                // SAFETY: `other` is a vertex id from this graph, and marker
-                // has one entry per graph vertex.
-                let marked = unsafe { *marker.add(other as usize) } == stamp;
-                doubled += marked as u64;
-            }
-        }
-        let pairs = (k as u64) * (k as u64 - 1) / 2;
-        pairs - doubled / 2
-    }
 }
 
 /// Vertices whose fill key may change after eliminating one vertex.
 ///
-/// Immediate neighbours change because their neighbourhood loses the
-/// eliminated vertex. When fill edges were added, a vertex outside that
-/// neighbourhood also changes if it is adjacent to at least two endpoints of
-/// those edges. The tracker finds that second set by counting appearances in
-/// the filled neighbourhood's current adjacency rows.
+/// Immediate neighbours are re-scored separately because their neighbourhood
+/// loses the eliminated vertex. For each fill edge, this tracker finds active
+/// common neighbours outside the filled neighbourhood. Each such edge lowers
+/// their fill score by exactly one.
 struct FillAffected {
-    hits: Vec<u8>,
+    inside: Vec<bool>,
+    marker: Vec<u16>,
+    stamp: u16,
+    delta: Vec<u64>,
     vertices: Vec<u32>,
-    scan_buf: Vec<u32>,
 }
 
 impl FillAffected {
     fn new(n: usize) -> Self {
         Self {
-            hits: vec![0; n],
+            inside: vec![false; n],
+            marker: vec![0; n],
+            stamp: 0,
+            delta: vec![0; n],
             vertices: Vec::new(),
-            scan_buf: Vec::new(),
         }
     }
 
-    fn clear(&mut self, neighbourhood: &[u32]) {
+    fn clear(&mut self) {
         for &vertex in &self.vertices {
-            self.hits[vertex as usize] = 0;
+            self.delta[vertex as usize] = 0;
         }
         self.vertices.clear();
-        for &vertex in neighbourhood {
-            self.hits[vertex as usize] = 0;
+    }
+
+    #[inline]
+    fn bump_stamp(&mut self) {
+        self.stamp = self.stamp.wrapping_add(1);
+        if self.stamp == 0 {
+            self.marker.fill(0);
+            self.stamp = 1;
         }
     }
 
-    /// Collect vertices outside `neighbourhood` that see at least two of its
-    /// vertices. Returns false after clearing its scratch if `deadline`
-    /// passes during the scan.
-    fn collect_external(
+    fn increment(&mut self, vertex: u32) {
+        let index = vertex as usize;
+        if self.delta[index] == 0 {
+            self.vertices.push(vertex);
+        }
+        self.delta[index] += 1;
+    }
+
+    /// Accumulate exact fill-score decreases caused by `fill_edges`. Returns
+    /// false after clearing its scratch if `deadline` passes during the scan.
+    fn collect_deltas(
         &mut self,
         graph: &EliminationGraph,
-        eliminated: u32,
         nbrs: &[u32],
+        fill_edges: &[(u32, u32)],
         deadline: Option<Instant>,
     ) -> bool {
         debug_assert!(self.vertices.is_empty());
         for &vertex in nbrs {
-            self.hits[vertex as usize] = 3;
+            self.inside[vertex as usize] = true;
         }
 
-        if nbrs.len() >= 2 {
-            for &vertex in nbrs {
-                if crate::deadline::expired(deadline) {
-                    self.clear(nbrs);
-                    return false;
+        for &(left, right) in fill_edges {
+            if crate::deadline::expired(deadline) {
+                self.clear();
+                for &vertex in nbrs {
+                    self.inside[vertex as usize] = false;
                 }
-                self.scan_buf.clear();
-                graph.collect_live_nbrs_into(vertex, &mut self.scan_buf);
-                for &candidate in &self.scan_buf {
-                    if candidate == eliminated {
-                        continue;
+                return false;
+            }
+            if graph.bitset_words > 0 {
+                let words = graph.bitset_words;
+                crate::meter::charge(words as u64);
+                let left_start = left as usize * words;
+                let right_start = right as usize * words;
+                for word in 0..words {
+                    let mut common =
+                        graph.bitset[left_start + word] & graph.bitset[right_start + word];
+                    while common != 0 {
+                        let bit = common.trailing_zeros() as usize;
+                        let vertex = (word * 64 + bit) as u32;
+                        if !self.inside[vertex as usize] {
+                            self.increment(vertex);
+                        }
+                        common &= common - 1;
                     }
-                    let index = candidate as usize;
-                    if self.hits[index] == 3 {
-                        continue;
+                }
+            } else {
+                self.bump_stamp();
+                let stamp = self.stamp;
+                let left_row = &graph.adj[left as usize];
+                let right_row = &graph.adj[right as usize];
+                crate::meter::charge((left_row.len() + right_row.len()) as u64);
+                for &vertex in left_row {
+                    self.marker[vertex as usize] = stamp;
+                }
+                for &vertex in right_row {
+                    if self.marker[vertex as usize] == stamp && !self.inside[vertex as usize] {
+                        self.increment(vertex);
                     }
-                    if self.hits[index] == 0 {
-                        self.vertices.push(candidate);
-                    }
-                    self.hits[index] = (self.hits[index] + 1).min(2);
                 }
             }
+        }
+        for &vertex in nbrs {
+            self.inside[vertex as usize] = false;
         }
         true
     }
 
-    fn pop_external(&mut self) -> Option<u32> {
-        while let Some(vertex) = self.vertices.pop() {
-            let hits = std::mem::replace(&mut self.hits[vertex as usize], 0);
-            if hits >= 2 {
-                return Some(vertex);
-            }
-        }
-        None
-    }
-
-    /// Count the fill edges that will be added inside `vertex`'s unchanged
-    /// neighbourhood. `collect_external` leaves the eliminated vertex's
-    /// neighbourhood marked with 3 until `clear` is called.
-    fn fill_delta_of(
-        &mut self,
-        scratch: &mut FillScratch,
-        graph: &EliminationGraph,
-        vertex: u32,
-    ) -> u64 {
-        self.scan_buf.clear();
-        graph.collect_live_nbrs_into(vertex, &mut self.scan_buf);
-        let hits = &self.hits;
-        self.scan_buf
-            .retain(|&neighbour| hits[neighbour as usize] == 3);
-        scratch.missing_edges_in(graph, &self.scan_buf)
+    fn pop_delta(&mut self) -> Option<(u32, u64)> {
+        self.vertices.pop().map(|vertex| {
+            let delta = std::mem::replace(&mut self.delta[vertex as usize], 0);
+            (vertex, delta)
+        })
     }
 }
 
