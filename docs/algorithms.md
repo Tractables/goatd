@@ -29,7 +29,10 @@ starting further candidates and samples. At the hard budget, the first
 candidate puts each unfinished residual component in one bag and attaches the
 partial elimination bags to it. This completion is linear in the residual
 size. Later candidates can stop without completion because a valid candidate
-already exists. The library remains single-threaded throughout.
+already exists. `PortfolioConfig::standard_with_budget`, which the CLI uses for
+a budgeted standard portfolio, keeps the 100-extra-sample cap below a
+five-second soft budget and permits up to 1,000 extra samples at or above it.
+The library remains single-threaded throughout.
 
 ## Preprocessing
 
