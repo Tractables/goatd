@@ -488,9 +488,11 @@ function treeSvg(tree) {
 
 // "s td <bags> <largest bag> <vertices>"; the width is one less than the
 // largest bag.
+// The three figures of a result, each a number with its word beside it.
 function summarise(header, elapsed) {
-  const took = elapsed < 1 ? "under a millisecond" : `${Math.round(elapsed)} ms`;
-  return `width ${header.largest - 1}, ${header.bags} bags, ${took}`;
+  const stat = (figure, word) => `<span class="stat"><b>${figure}</b>${word}</span>`;
+  const ms = elapsed < 1 ? "&lt;1" : String(Math.round(elapsed));
+  return stat(header.largest - 1, "width") + stat(header.bags, "bags") + stat(ms, "ms");
 }
 
 // ----------------------------------------------------------------- examples
@@ -984,10 +986,10 @@ if (typeof document !== "undefined") {
     element("copy").disabled = failed;
     element("save").disabled = failed;
     element("status").textContent = failed ? "failed" : "ready";
-    element("result-summary").textContent = failed
-      ? text.split("\n", 1)[0]
-      : summarise(decomposition.header, elapsed);
-    element("result-summary").classList.toggle("failed", failed);
+    const summary = element("result-summary");
+    if (failed) summary.textContent = text.split("\n", 1)[0];
+    else summary.innerHTML = summarise(decomposition.header, elapsed);
+    summary.classList.toggle("failed", failed);
     element("raw").open = failed;
     if (failed) {
       treeView.innerHTML = note("No decomposition to draw.");
