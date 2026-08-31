@@ -82,7 +82,14 @@ fn every_order_writes_a_valid_decomposition_of_the_grid() {
         &["--order", "mindegree", "--ties", "sample"],
         &["--order", "nested-dissection"],
         &["--order", "flowcutter", "--steps", "2000"],
-        &["--order", "portfolio", "--budget", "500"],
+        &[
+            "--order",
+            "portfolio",
+            "--budget",
+            "500",
+            "--hard-budget",
+            "750",
+        ],
         &["--order", "minfill", "--refine"],
     ];
     for (i, order) in orders.iter().enumerate() {
@@ -206,6 +213,25 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
         (
             &["--order", "flowcutter", "--steps", "10", "--budget", "10"],
             &["--steps", "--budget"],
+        ),
+        (
+            &["--hard-budget", "10"],
+            &["--hard-budget", "minfill", "portfolio"],
+        ),
+        (
+            &["--order", "portfolio", "--hard-budget", "10"],
+            &["--hard-budget", "--budget"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--budget",
+                "20",
+                "--hard-budget",
+                "10",
+            ],
+            &["--hard-budget", "--budget", "at least"],
         ),
         (&["--ties", "salt"], &["--ties"]),
         (&["--budget", "0"], &["--budget", "positive"]),

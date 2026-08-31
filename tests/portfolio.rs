@@ -59,6 +59,10 @@ fn portfolio_configuration_rejects_invalid_durations() {
         PortfolioConfig::standard().with_flowcutter(Duration::from_millis(49)),
         PortfolioConfig::standard().with_flowcutter(Duration::MAX),
         PortfolioConfig::standard().with_soft_budget(Duration::MAX),
+        PortfolioConfig::standard().with_hard_budget(Duration::from_secs(1)),
+        PortfolioConfig::standard()
+            .with_soft_budget(Duration::from_secs(2))
+            .with_hard_budget(Duration::from_secs(1)),
     ];
 
     for config in invalid {
