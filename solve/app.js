@@ -566,19 +566,27 @@ if (typeof document !== "undefined") {
   // A tree a little wider than its panel is scaled down to fit, since labels
   // at four fifths of their size still read. One much wider keeps its size
   // and scrolls, starting with the root, which sits over the middle of the
-  // drawing, in view.
+  // drawing, in view. The room is the panel's box less border and padding,
+  // which a scrollbar coming or going does not move, so the decision does
+  // not feed back on itself.
   function fitTree() {
     const svg = treeView.querySelector("svg.tree");
     if (svg === null) return;
     const style = getComputedStyle(treeView);
     const room =
-      treeView.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      treeView.getBoundingClientRect().width -
+      parseFloat(style.borderLeftWidth) -
+      parseFloat(style.borderRightWidth) -
+      parseFloat(style.paddingLeft) -
+      parseFloat(style.paddingRight);
     const natural = Number(svg.getAttribute("width"));
     svg.classList.toggle("fit", natural > room && natural * 0.8 <= room);
     treeView.scrollLeft = (treeView.scrollWidth - treeView.clientWidth) / 2;
   }
 
-  window.addEventListener("resize", fitTree);
+  // The panel's width follows the window, the zoom level and the layout;
+  // the fit is decided again whenever it changes.
+  new ResizeObserver(fitTree).observe(treeView);
 
   // The stylesheet has this many branch colours; a bag with more neighbours
   // reuses them.
