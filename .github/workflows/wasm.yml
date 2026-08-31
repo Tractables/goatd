@@ -71,7 +71,7 @@ jobs:
           set -eux
           out=target/wasm32-unknown-emscripten/release
           mkdir -p site
-          cp index.html styles.css app.js logo.png "$out/goatd.js" "$out/goatd.wasm" site/
+          cp index.html styles.css app.js logo.png mcc2025-track1-093.gr "$out/goatd.js" "$out/goatd.wasm" site/
           ls -l site
 
       # Proves the module decomposes, not just that it linked. The graph is

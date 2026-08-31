@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>goatd in the browser</title>
+<title>goatd: Greatest Of All Tree Decompositions</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
 <header>
   <img class="logo" src="logo.png" alt="" width="192" height="192">
   <div>
-    <h1>goatd in the browser</h1>
+    <h1>goatd: Greatest Of All Tree Decompositions</h1>
     <p class="lede">Paste a PACE <code>.gr</code> graph, or pick an example,
     and goatd returns a tree decomposition; the solver runs in this tab and
     nothing is uploaded. The same solver is a
@@ -77,6 +77,13 @@
     <figure class="panel">
       <figcaption>Decomposition
         <span id="legend" class="legend" hidden><i></i>bags of the largest size</span>
+        <span id="zoom" class="zoom" hidden>
+          <button type="button" data-zoom="out" title="Zoom out">−</button>
+          <b id="zoom-level">100%</b>
+          <button type="button" data-zoom="in" title="Zoom in">+</button>
+          <button type="button" data-zoom="fit">Fit</button>
+          <button type="button" data-zoom="one">1:1</button>
+        </span>
       </figcaption>
       <p class="hint">Hover a bag to see it separate the graph. The vertices
       beyond each branch of the tree at that bag get a colour of their own,
