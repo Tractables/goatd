@@ -60,6 +60,7 @@ pub(crate) fn eliminate_sampled_min_fill(
     }
 
     let mut scratch = FillScratch::new(n);
+    let mut affected = FillAffected::new(n);
     let mut live_nbrs = Vec::new();
     let mut buckets = BucketMap::with_capacity(n);
     for v in 0..n {
@@ -122,7 +123,19 @@ pub(crate) fn eliminate_sampled_min_fill(
             }
         } else {
             graph.eliminate_with_nbrs(v, &live_nbrs);
-            rescore_neighbours(&mut scratch, graph, &live_nbrs, &mut buckets);
+            if !affected.collect(graph, &live_nbrs, true, hard_deadline) {
+                return ElimExit::DeadlineReached;
+            }
+            while let Some(u) = affected.pop() {
+                if expired(hard_deadline) {
+                    affected.clear();
+                    return ElimExit::DeadlineReached;
+                }
+                if graph.active[u as usize] {
+                    let new_fill = scratch.fill_count_of(graph, u);
+                    buckets.update(u, new_fill);
+                }
+            }
         }
         let bag_len = bag.len();
         sink.record(v, bag);

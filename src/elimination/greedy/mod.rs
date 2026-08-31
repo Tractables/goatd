@@ -5,6 +5,7 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
+use std::time::Instant;
 
 use super::execution::{DEADLINE_CHECK_STRIDE, ElimExit, ElimSink, ElimStop, exceeds_width_bound};
 use super::graph::EliminationGraph;
@@ -147,6 +148,90 @@ impl FillScratch {
     }
 }
 
+/// Vertices whose fill key may change after eliminating one vertex.
+///
+/// Immediate neighbours change because their neighbourhood loses the
+/// eliminated vertex. When fill edges were added, a vertex outside that
+/// neighbourhood also changes if it is adjacent to at least two endpoints of
+/// those edges. The tracker finds that second set by counting appearances in
+/// the filled neighbourhood's current adjacency rows.
+struct FillAffected {
+    hits: Vec<u8>,
+    vertices: Vec<u32>,
+    scan_buf: Vec<u32>,
+}
+
+impl FillAffected {
+    fn new(n: usize) -> Self {
+        Self {
+            hits: vec![0; n],
+            vertices: Vec::new(),
+            scan_buf: Vec::new(),
+        }
+    }
+
+    fn mark_immediate(&mut self, vertex: u32) {
+        let index = vertex as usize;
+        if self.hits[index] == 0 {
+            self.vertices.push(vertex);
+        }
+        self.hits[index] = 2;
+    }
+
+    fn clear(&mut self) {
+        for &vertex in &self.vertices {
+            self.hits[vertex as usize] = 0;
+        }
+        self.vertices.clear();
+    }
+
+    /// Collect the changed-key superset. Returns false after clearing its
+    /// scratch if `deadline` passes during the scan.
+    fn collect(
+        &mut self,
+        graph: &EliminationGraph,
+        nbrs: &[u32],
+        filled_neighbourhood: bool,
+        deadline: Option<Instant>,
+    ) -> bool {
+        debug_assert!(self.vertices.is_empty());
+        for &vertex in nbrs {
+            if graph.active[vertex as usize] {
+                self.mark_immediate(vertex);
+            }
+        }
+
+        if filled_neighbourhood && nbrs.len() >= 2 {
+            for &vertex in nbrs {
+                if crate::deadline::expired(deadline) {
+                    self.clear();
+                    return false;
+                }
+                self.scan_buf.clear();
+                graph.collect_live_nbrs_into(vertex, &mut self.scan_buf);
+                for &candidate in &self.scan_buf {
+                    let index = candidate as usize;
+                    if self.hits[index] == 0 {
+                        self.vertices.push(candidate);
+                    }
+                    self.hits[index] = (self.hits[index] + 1).min(2);
+                }
+            }
+        }
+        true
+    }
+
+    fn pop(&mut self) -> Option<u32> {
+        while let Some(vertex) = self.vertices.pop() {
+            let hits = std::mem::replace(&mut self.hits[vertex as usize], 0);
+            if hits >= 2 {
+                return Some(vertex);
+            }
+        }
+        None
+    }
+}
+
 /// Snapshot `v`'s live neighbours into `nbrs_buf` and build the bag its
 /// elimination emits: `v` first, then those neighbours.
 fn take_bag(graph: &EliminationGraph, v: u32, nbrs_buf: &mut Vec<u32>) -> Vec<u32> {
@@ -156,27 +241,6 @@ fn take_bag(graph: &EliminationGraph, v: u32, nbrs_buf: &mut Vec<u32>) -> Vec<u3
     bag.push(v);
     bag.extend_from_slice(nbrs_buf);
     bag
-}
-
-/// Drain a heap in order, eliminating each popped vertex via
-/// `remove_without_fill_nbrs`. Safe only when the caller has verified the
-/// active residual is a clique (every remaining pop is simplicial).
-fn drain_clique_tail<E: Ord + ElimEntry>(
-    graph: &mut EliminationGraph,
-    sink: &mut ElimSink<'_>,
-    heap: &mut BinaryHeap<E>,
-    nbrs_buf: &mut Vec<u32>,
-) {
-    while let Some(entry) = heap.pop() {
-        let v = entry.vertex();
-        let vi = v as usize;
-        if !graph.active[vi] {
-            continue;
-        }
-        let bag = take_bag(graph, v, nbrs_buf);
-        graph.remove_without_fill_nbrs(v, nbrs_buf);
-        sink.record(v, bag);
-    }
 }
 
 /// What every elimination heap entry can be asked, whatever its ordering key:
