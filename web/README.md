@@ -1,10 +1,14 @@
 # goatd in the browser
 
 A page that decomposes a PACE `.gr` graph in the tab: `index.html` beside the
-Emscripten build of the crate. There is no framework and no bundler.
+Emscripten build of the crate. There is no framework and no bundler. It is
+served at <https://tractables.github.io/goatd/solve/> and follows `main`, so
+it may be ahead of the latest release.
 
-`.github/workflows/wasm.yml` builds it and uploads the three files as the
-`goatd-web` artifact. To build it by hand you need the
+`.github/workflows/wasm.yml` builds it, uploads the three files as the
+`goatd-web` artifact and, on `main`, commits them under `solve/` on the
+`gh-pages` branch, whose root is the solver comparison. To build it by hand
+you need the
 [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html)
 on PATH and the Rust target:
 

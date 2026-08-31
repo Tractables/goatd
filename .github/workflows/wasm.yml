@@ -1,9 +1,19 @@
 name: Web build
 
 # Builds the crate for wasm32-unknown-emscripten and uploads the page in
-# web/ together with the module it loads. Nothing here publishes anything.
+# web/ together with the module it loads. On main it also publishes the
+# page to GitHub Pages; a pull request only builds.
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "src/**"
+      - "vendor/**"
+      - "build.rs"
+      - "Cargo.toml"
+      - ".github/workflows/wasm.yml"
   pull_request:
     paths:
       - "web/**"
@@ -115,3 +125,42 @@ jobs:
           name: goatd-web
           path: web/site
           if-no-files-found: ignore
+
+  # GitHub Pages serves the gh-pages branch, whose root is the solver
+  # comparison. This job replaces only solve/ there, so the page is at
+  # https://tractables.github.io/goatd/solve/ and tracks main.
+  deploy:
+    needs: wasm
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: gh-pages
+          path: gh-pages
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: goatd-web
+          path: site
+
+      - name: Publish the page under solve/
+        working-directory: gh-pages
+        run: |
+          set -eux
+          rm -rf solve
+          cp -r ../site solve
+          git add -A solve
+          if git diff --cached --quiet; then
+            echo "solve/ is unchanged"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Publish the solver page from $GITHUB_SHA"
+          git push
