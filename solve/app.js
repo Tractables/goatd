@@ -1,0 +1,611 @@
+"use strict";
+
+// The page in one file: readers for the two PACE formats, a layout for the
+// graph, a layout for the decomposition, SVG for both, and the calls into the
+// Wasm module. Nothing is loaded from anywhere else.
+
+// A drawing past these sizes is a grey smear, so the panel says so instead.
+const MAX_DRAWN_VERTICES = 300;
+const MAX_DRAWN_EDGES = 900;
+const MAX_DRAWN_BAGS = 200;
+
+// ------------------------------------------------------------------ reading
+
+function isPositiveInteger(value) {
+  return Number.isInteger(value) && value >= 1;
+}
+
+// A PACE `.gr` graph: `c` comment lines, a `p tw <vertices> <edges>` line, and
+// one edge per line as a pair of 1-based vertex numbers.
+function parseGr(text) {
+  const edges = [];
+  const seen = new Set();
+  let count = 0;
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line === "" || line.startsWith("c")) continue;
+    const fields = line.split(/\s+/);
+    if (fields[0] === "p") {
+      const declared = Number(fields[2]);
+      if (!Number.isInteger(declared) || declared < 0) {
+        return { error: `line ${i + 1} has no vertex count` };
+      }
+      count = Math.max(count, declared);
+      continue;
+    }
+    const u = Number(fields[0]);
+    const v = Number(fields[1]);
+    if (fields.length !== 2 || !isPositiveInteger(u) || !isPositiveInteger(v)) {
+      return { error: `line ${i + 1} is not a comment, a p line or an edge` };
+    }
+    count = Math.max(count, u, v);
+    // A self-loop or a repeat draws nothing new.
+    const key = u < v ? `${u}:${v}` : `${v}:${u}`;
+    if (u !== v && !seen.has(key)) {
+      seen.add(key);
+      edges.push([u, v]);
+    }
+  }
+  return { count, edges };
+}
+
+// A PACE `.td`: `s td <bags> <largest bag> <vertices>`, then `b <i> <v>...` per
+// bag, then one tree edge per line as a pair of bag numbers.
+function parseTd(text) {
+  const bags = new Map();
+  const edges = [];
+  let header = null;
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line === "" || line.startsWith("c")) continue;
+    const fields = line.split(/\s+/);
+    if (fields[0] === "s") {
+      header = {
+        bags: Number(fields[2]),
+        largest: Number(fields[3]),
+        vertices: Number(fields[4]),
+      };
+      continue;
+    }
+    if (fields[0] === "b") {
+      const id = Number(fields[1]);
+      const vertices = fields.slice(2).map(Number);
+      if (!isPositiveInteger(id) || !vertices.every(isPositiveInteger)) {
+        return { error: `line ${i + 1} is not a bag` };
+      }
+      bags.set(id, vertices);
+      continue;
+    }
+    const a = Number(fields[0]);
+    const b = Number(fields[1]);
+    if (fields.length !== 2 || !isPositiveInteger(a) || !isPositiveInteger(b)) {
+      return { error: `line ${i + 1} is not a bag or a tree edge` };
+    }
+    edges.push([a, b]);
+  }
+  if (header === null) return { error: "there is no s line" };
+  return { header, bags, edges };
+}
+
+// ------------------------------------------------------------ graph layout
+
+// A small deterministic generator, so the same graph text always draws the
+// same picture.
+function mulberry32(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// The number of edges apart every pair of vertices is, by breadth-first search
+// from each of them in turn, as one row of `count` numbers per vertex. Two
+// vertices in different components are given a distance somewhat past the
+// longest path in the graph, which separates the components without letting
+// them drift arbitrarily far apart.
+function graphDistances(count, edges) {
+  const degree = new Int32Array(count + 2);
+  for (const [u, v] of edges) {
+    degree[u]++;
+    degree[v]++;
+  }
+  const start = new Int32Array(count + 2);
+  let total = 0;
+  for (let v = 1; v <= count; v++) {
+    start[v] = total;
+    total += degree[v];
+  }
+  start[count + 1] = total;
+  const next = start.slice();
+  const neighbours = new Int32Array(total);
+  for (const [u, v] of edges) {
+    neighbours[next[u]++] = v;
+    neighbours[next[v]++] = u;
+  }
+
+  const distance = new Float64Array(count * count);
+  const queue = new Int32Array(count);
+  let longest = 1;
+  for (let source = 1; source <= count; source++) {
+    const row = (source - 1) * count;
+    distance.fill(-1, row, row + count);
+    distance[row + source - 1] = 0;
+    queue[0] = source;
+    for (let head = 0, tail = 1; head < tail; head++) {
+      const at = queue[head];
+      for (let i = start[at]; i < start[at + 1]; i++) {
+        const to = neighbours[i];
+        if (distance[row + to - 1] >= 0) continue;
+        distance[row + to - 1] = distance[row + at - 1] + 1;
+        longest = Math.max(longest, distance[row + to - 1]);
+        queue[tail++] = to;
+      }
+    }
+  }
+  for (let i = 0; i < distance.length; i++) {
+    if (distance[i] < 0) distance[i] = longest * 1.5;
+  }
+  return distance;
+}
+
+// Stress majorization: move each vertex to the place that best agrees with
+// where all the others would like it to be, given the number of edges between
+// them, weighting a pair by 1/distance^2 so short distances matter most. Every
+// round lowers the disagreement, and a few hundred rounds settle it.
+//
+// Vertices start on a circle, jittered so that a symmetric graph does not sit
+// in a perfectly balanced position that the update cannot leave. The jitter
+// comes from a fixed seed, so the same graph always draws the same way.
+//
+// Both the distances and the rounds are quadratic in the vertex count, which
+// is what MAX_DRAWN_VERTICES keeps in hand.
+function layoutGraph(count, edges, rounds = 300) {
+  const xs = new Float64Array(count + 1);
+  const ys = new Float64Array(count + 1);
+  if (count === 0) return { xs, ys };
+
+  const random = mulberry32(0x9e3779b9);
+  for (let v = 1; v <= count; v++) {
+    const angle = (2 * Math.PI * (v - 1)) / count;
+    xs[v] = Math.cos(angle) + 0.05 * (random() - 0.5);
+    ys[v] = Math.sin(angle) + 0.05 * (random() - 0.5);
+  }
+  if (count === 1) {
+    xs[1] = 0.5;
+    ys[1] = 0.5;
+    return { xs, ys };
+  }
+
+  const distance = graphDistances(count, edges);
+  const weight = new Float64Array(count * count);
+  const rowWeight = new Float64Array(count + 1);
+  for (let i = 1; i <= count; i++) {
+    const row = (i - 1) * count;
+    let sum = 0;
+    for (let j = 1; j <= count; j++) {
+      if (i === j) continue;
+      const target = distance[row + j - 1];
+      weight[row + j - 1] = 1 / (target * target);
+      sum += weight[row + j - 1];
+    }
+    rowWeight[i] = sum;
+  }
+
+  const nextX = new Float64Array(count + 1);
+  const nextY = new Float64Array(count + 1);
+  for (let round = 0; round < rounds; round++) {
+    for (let i = 1; i <= count; i++) {
+      const row = (i - 1) * count;
+      const x = xs[i];
+      const y = ys[i];
+      let sumX = 0;
+      let sumY = 0;
+      for (let j = 1; j <= count; j++) {
+        if (i === j) continue;
+        const ex = x - xs[j];
+        const ey = y - ys[j];
+        let length = Math.sqrt(ex * ex + ey * ey);
+        if (length < 1e-9) length = 1e-9;
+        const pull = distance[row + j - 1] / length;
+        sumX += weight[row + j - 1] * (xs[j] + ex * pull);
+        sumY += weight[row + j - 1] * (ys[j] + ey * pull);
+      }
+      nextX[i] = sumX / rowWeight[i];
+      nextY[i] = sumY / rowWeight[i];
+    }
+    xs.set(nextX);
+    ys.set(nextY);
+  }
+
+  // Stress majorization fixes the shape but not which way up it is, and it
+  // usually lands askew. Turning it so that its bounding box is as small as it
+  // can be squares up a grid and lays a long graph flat.
+  let turn = 0;
+  let smallest = Infinity;
+  for (let degrees = 0; degrees < 90; degrees++) {
+    const angle = (degrees * Math.PI) / 180;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    let lowX = Infinity;
+    let highX = -Infinity;
+    let lowY = Infinity;
+    let highY = -Infinity;
+    for (let v = 1; v <= count; v++) {
+      const x = xs[v] * cos - ys[v] * sin;
+      const y = xs[v] * sin + ys[v] * cos;
+      lowX = Math.min(lowX, x);
+      highX = Math.max(highX, x);
+      lowY = Math.min(lowY, y);
+      highY = Math.max(highY, y);
+    }
+    const area = (highX - lowX) * (highY - lowY);
+    if (area < smallest - 1e-12) {
+      smallest = area;
+      turn = angle;
+    }
+  }
+  const cos = Math.cos(turn);
+  const sin = Math.sin(turn);
+  for (let v = 1; v <= count; v++) {
+    const x = xs[v] * cos - ys[v] * sin;
+    ys[v] = xs[v] * sin + ys[v] * cos;
+    xs[v] = x;
+  }
+
+  // Fit the drawing to the unit square, scaling both axes by the same factor
+  // so it is not stretched, and centre what is left over.
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (let v = 1; v <= count; v++) {
+    minX = Math.min(minX, xs[v]);
+    maxX = Math.max(maxX, xs[v]);
+    minY = Math.min(minY, ys[v]);
+    maxY = Math.max(maxY, ys[v]);
+  }
+  const extent = Math.max(maxX - minX, maxY - minY, 1e-9);
+  const shiftX = (extent - (maxX - minX)) / 2;
+  const shiftY = (extent - (maxY - minY)) / 2;
+  for (let v = 1; v <= count; v++) {
+    xs[v] = (xs[v] - minX + shiftX) / extent;
+    ys[v] = (ys[v] - minY + shiftY) / extent;
+  }
+  return { xs, ys };
+}
+
+// ------------------------------------------------------------- tree layout
+
+const BAG_HEIGHT = 24;
+const BAG_PADDING = 9;
+const BAG_GAP = 14;
+const ROW_HEIGHT = 48;
+// One character of the 11px monospace the bag labels are set in.
+const CHARACTER_WIDTH = 6.7;
+
+// Bags become rows by depth. Each subtree is given a horizontal span wide
+// enough for its children side by side, and a bag is centred over its own
+// span, which puts it over the middle of its children.
+function layoutTree(bags, edges) {
+  const neighbours = new Map();
+  const nodes = new Map();
+  for (const [id, vertices] of bags) {
+    neighbours.set(id, []);
+    const label = vertices.join(" ");
+    nodes.set(id, {
+      id,
+      vertices,
+      label,
+      width: Math.max(30, label.length * CHARACTER_WIDTH + 2 * BAG_PADDING),
+      children: [],
+      x: 0,
+      y: 0,
+    });
+  }
+  for (const [a, b] of edges) {
+    if (!neighbours.has(a) || !neighbours.has(b)) continue;
+    neighbours.get(a).push(b);
+    neighbours.get(b).push(a);
+  }
+
+  // The largest bag roots the drawing. Anything the walk from it does not
+  // reach gets its own root, so a `.td` that is not connected still draws.
+  const bySize = [...nodes.keys()].sort(
+    (a, b) => nodes.get(b).vertices.length - nodes.get(a).vertices.length || a - b,
+  );
+  const reached = new Set();
+  const roots = [];
+  for (const root of bySize) {
+    if (reached.has(root)) continue;
+    roots.push(root);
+    reached.add(root);
+    // Breadth-first, so every bag hangs off the neighbour nearest the root.
+    for (let queue = [root], at = 0; at < queue.length; at++) {
+      for (const next of neighbours.get(queue[at])) {
+        if (reached.has(next)) continue;
+        reached.add(next);
+        nodes.get(queue[at]).children.push(next);
+        queue.push(next);
+      }
+    }
+  }
+
+  const spans = new Map();
+  const measure = (id) => {
+    const node = nodes.get(id);
+    let children = 0;
+    for (const child of node.children) children += measure(child) + BAG_GAP;
+    const span = Math.max(node.width, Math.max(0, children - BAG_GAP));
+    spans.set(id, span);
+    return span;
+  };
+
+  let depth = 0;
+  const place = (id, left, row) => {
+    const node = nodes.get(id);
+    node.y = row * ROW_HEIGHT;
+    node.x = left + (spans.get(id) - node.width) / 2;
+    depth = Math.max(depth, row);
+    let children = 0;
+    for (const child of node.children) children += spans.get(child) + BAG_GAP;
+    let cursor = left + (spans.get(id) - Math.max(0, children - BAG_GAP)) / 2;
+    for (const child of node.children) {
+      place(child, cursor, row + 1);
+      cursor += spans.get(child) + BAG_GAP;
+    }
+  };
+
+  let cursor = 0;
+  for (const root of roots) {
+    measure(root);
+    place(root, cursor, 0);
+    cursor += spans.get(root) + 3 * BAG_GAP;
+  }
+
+  return {
+    nodes,
+    width: Math.max(0, cursor - 3 * BAG_GAP),
+    height: roots.length === 0 ? 0 : depth * ROW_HEIGHT + BAG_HEIGHT,
+  };
+}
+
+// ------------------------------------------------------------------ drawing
+
+// Two decimals is finer than a pixel at these sizes and keeps the markup short.
+function round(value) {
+  return Math.round(value * 100) / 100;
+}
+
+function graphSvg(count, edges, layout) {
+  // The viewBox is about the width the panel gives the drawing, so the labels
+  // come out near the size the stylesheet asks for.
+  const size = 420;
+  const labelled = count <= 90;
+  const radius = labelled ? 8 : 4;
+  const inset = radius + 6;
+  const scale = size - 2 * inset;
+  const at = (values, v) => round(inset + values[v] * scale);
+
+  const parts = [
+    `<svg class="drawing graph" viewBox="0 0 ${size} ${size}"`,
+    ` role="img" aria-label="the input graph"><g class="edges">`,
+  ];
+  for (const [u, v] of edges) {
+    parts.push(
+      `<line data-u="${u}" data-v="${v}"`,
+      ` x1="${at(layout.xs, u)}" y1="${at(layout.ys, u)}"`,
+      ` x2="${at(layout.xs, v)}" y2="${at(layout.ys, v)}"/>`,
+    );
+  }
+  parts.push("</g>");
+  for (let v = 1; v <= count; v++) {
+    const x = at(layout.xs, v);
+    const y = at(layout.ys, v);
+    parts.push(`<g class="vertex" data-vertex="${v}">`);
+    parts.push(`<title>vertex ${v}</title>`);
+    parts.push(`<circle cx="${x}" cy="${y}" r="${radius}"/>`);
+    if (labelled) parts.push(`<text x="${x}" y="${y}" dy=".33em">${v}</text>`);
+    parts.push("</g>");
+  }
+  parts.push("</svg>");
+  return parts.join("");
+}
+
+function treeSvg(tree) {
+  const inset = 10;
+  const width = round(tree.width + 2 * inset);
+  const height = round(tree.height + 2 * inset);
+
+  const parts = [
+    `<svg class="drawing tree" width="${width}" height="${height}"`,
+    ` viewBox="0 0 ${width} ${height}"`,
+    ` role="img" aria-label="the tree decomposition"><g class="tree-edges">`,
+  ];
+  for (const node of tree.nodes.values()) {
+    const x1 = round(inset + node.x + node.width / 2);
+    const y1 = round(inset + node.y + BAG_HEIGHT);
+    for (const id of node.children) {
+      const child = tree.nodes.get(id);
+      parts.push(
+        `<line x1="${x1}" y1="${y1}"`,
+        ` x2="${round(inset + child.x + child.width / 2)}"`,
+        ` y2="${round(inset + child.y)}"/>`,
+      );
+    }
+  }
+  parts.push("</g>");
+  for (const node of tree.nodes.values()) {
+    const x = round(inset + node.x);
+    const y = round(inset + node.y);
+    parts.push(`<g class="bag" data-vertices="${node.label}">`);
+    parts.push(`<title>bag ${node.id}</title>`);
+    parts.push(
+      `<rect x="${x}" y="${y}" width="${round(node.width)}"`,
+      ` height="${BAG_HEIGHT}" rx="5"/>`,
+    );
+    parts.push(
+      `<text x="${round(inset + node.x + node.width / 2)}"`,
+      ` y="${round(y + BAG_HEIGHT / 2)}" dy=".33em">${node.label}</text>`,
+    );
+    parts.push("</g>");
+  }
+  parts.push("</svg>");
+  return parts.join("");
+}
+
+// "s td <bags> <largest bag> <vertices>"; the width is one less than the
+// largest bag.
+function summarise(header, elapsed) {
+  const took = elapsed < 1 ? "under a millisecond" : `${Math.round(elapsed)} ms`;
+  return `width ${header.largest - 1}, ${header.bags} bags, ${took}`;
+}
+
+// --------------------------------------------------------------- the page
+
+if (typeof document !== "undefined") {
+  const element = (id) => document.getElementById(id);
+  const graphView = element("graph-view");
+  const treeView = element("tree-view");
+  let solver = null;
+  let drawnGraph = "";
+
+  createGoatd()
+    .then((module) => {
+      solver = module;
+      element("run").disabled = false;
+      element("status").textContent = "ready";
+    })
+    .catch((failure) => {
+      element("status").textContent = `the solver did not load: ${failure}`;
+    });
+
+  const note = (text) => `<p class="note">${text}</p>`;
+
+  function drawGraph() {
+    const text = element("graph").value;
+    if (text === drawnGraph) return;
+    drawnGraph = text;
+    clearHighlight();
+    // Whatever is on show belongs to the graph that was there before.
+    treeView.innerHTML = note("Press Decompose.");
+    element("output").textContent = "";
+    element("result-summary").textContent = "";
+    element("result-summary").classList.remove("failed");
+    element("raw").open = false;
+    if (solver !== null) element("status").textContent = "ready";
+
+    const graph = parseGr(text);
+    if (graph.error !== undefined) {
+      graphView.innerHTML = note(`Not drawn: ${graph.error}.`);
+      return;
+    }
+    if (graph.count === 0) {
+      graphView.innerHTML = note("Nothing to draw yet.");
+      return;
+    }
+    if (graph.count > MAX_DRAWN_VERTICES || graph.edges.length > MAX_DRAWN_EDGES) {
+      graphView.innerHTML = note(
+        `Not drawn: ${graph.count} vertices and ${graph.edges.length} edges is` +
+          " past what is readable here.",
+      );
+      return;
+    }
+    graphView.innerHTML = graphSvg(graph.count, graph.edges, layoutGraph(graph.count, graph.edges));
+  }
+
+  function drawTree(decomposition) {
+    if (decomposition.bags.size > MAX_DRAWN_BAGS) {
+      treeView.innerHTML = note(
+        `Not drawn: ${decomposition.bags.size} bags is past what is readable here.`,
+      );
+      return;
+    }
+    treeView.innerHTML = treeSvg(layoutTree(decomposition.bags, decomposition.edges));
+    // The root sits over the middle of the drawing, which is off to one side
+    // of the panel when the tree is wider than it is.
+    treeView.scrollLeft = (treeView.scrollWidth - treeView.clientWidth) / 2;
+  }
+
+  function clearHighlight() {
+    for (const marked of document.querySelectorAll(".on")) marked.classList.remove("on");
+  }
+
+  // Hovering a bag marks the vertices it holds, and the edges among them, in
+  // the graph beside it.
+  function highlight(bag) {
+    clearHighlight();
+    if (bag === null) return;
+    bag.classList.add("on");
+    const held = new Set(bag.dataset.vertices.split(" "));
+    for (const vertex of held) {
+      const drawn = graphView.querySelector(`.vertex[data-vertex="${vertex}"]`);
+      if (drawn !== null) drawn.classList.add("on");
+    }
+    for (const edge of graphView.querySelectorAll(".edges line")) {
+      if (held.has(edge.dataset.u) && held.has(edge.dataset.v)) edge.classList.add("on");
+    }
+  }
+
+  treeView.addEventListener("pointerover", (event) => {
+    highlight(event.target.closest(".bag"));
+  });
+  treeView.addEventListener("pointerleave", () => clearHighlight());
+
+  // Redrawing while someone types would be a layout run per keystroke.
+  let pending = 0;
+  element("graph").addEventListener("input", () => {
+    clearTimeout(pending);
+    pending = setTimeout(drawGraph, 300);
+  });
+
+  // The call holds this tab for as long as the construction runs, so give the
+  // browser a frame to paint the status in before it starts.
+  element("run").addEventListener("click", () => {
+    clearTimeout(pending);
+    drawGraph();
+    element("status").textContent = "running";
+    element("run").disabled = true;
+    requestAnimationFrame(() => setTimeout(decompose, 0));
+  });
+
+  // The other side of the call takes unsigned numbers, where a blank or
+  // negative field would arrive as something enormous.
+  const setting = (id) => Math.max(0, Math.trunc(Number(element(id).value)) || 0);
+
+  function decompose() {
+    const started = performance.now();
+    const pointer = solver.ccall(
+      "goatd_decompose",
+      "number",
+      ["string", "number", "number", "number"],
+      [element("graph").value, setting("order"), setting("seed"), setting("budget")],
+    );
+    const text = solver.UTF8ToString(pointer);
+    solver.ccall("goatd_string_free", null, ["number"], [pointer]);
+    const elapsed = performance.now() - started;
+
+    element("output").textContent = text;
+    element("run").disabled = false;
+
+    const decomposition = parseTd(text);
+    const failed = decomposition.error !== undefined;
+    element("status").textContent = failed ? "failed" : "ready";
+    element("result-summary").textContent = failed
+      ? text.split("\n", 1)[0]
+      : summarise(decomposition.header, elapsed);
+    element("result-summary").classList.toggle("failed", failed);
+    element("raw").open = failed;
+    if (failed) {
+      treeView.innerHTML = note("No decomposition to draw.");
+    } else {
+      drawTree(decomposition);
+    }
+  }
+
+  drawGraph();
+}
