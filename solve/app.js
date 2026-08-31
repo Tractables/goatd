@@ -970,7 +970,7 @@ if (typeof document !== "undefined") {
     element("raw").open = false;
     element("copy").disabled = true;
     element("save").disabled = true;
-    if (solver !== null) element("status").textContent = "ready";
+    if (ready && !running) element("status").textContent = "ready";
 
     parsedGraph = null;
     vertexElements = new Map();
