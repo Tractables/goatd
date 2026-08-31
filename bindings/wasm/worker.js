@@ -4,12 +4,13 @@
 // construction runs, and a run can be stopped: the page ends this worker and
 // starts another. One message in per run, {graph, order, seed, budget}; out,
 // {ready: true} once the module is up, then {td, elapsed} per run, or {error}
-// when the call throws.
-importScripts("goatd.js");
+// when the call throws. The page passes its version stamp in this worker's
+// address (see app.js); the module and its wasm file take the same stamp.
+importScripts("goatd.js" + location.search);
 
 let solver = null;
 
-createGoatd().then((module) => {
+createGoatd({ locateFile: (file) => file + location.search }).then((module) => {
   solver = module;
   postMessage({ ready: true });
 });

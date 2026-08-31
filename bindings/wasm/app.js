@@ -818,9 +818,18 @@ const EXAMPLES = [
   ["grid100", "100×100 grid, 10,000 vertices", () => grid(100, 100, "a 100x100 grid; its treewidth is 100")],
 ];
 
+// The host keeps the page's files in caches for a while, so the workflow
+// stamps the references in index.html with the commit (app.js?v=<sha>), and
+// the stamp goes on to every file the page loads: a new page never runs with
+// an older file a browser still holds. Opened by hand there is no stamp and
+// the names are plain.
+const stamp = typeof document === "undefined" || document.currentScript === null
+  ? ""
+  : new URL(document.currentScript.src).search;
+
 // A graph shipped as a file beside the page.
 function fetched(file) {
-  return fetch(file).then((response) => {
+  return fetch(file + stamp).then((response) => {
     if (!response.ok) throw new Error(`${response.status} for ${file}`);
     return response.text();
   });
@@ -1336,7 +1345,7 @@ if (typeof document !== "undefined") {
     ready = false;
     element("run").disabled = true;
     element("status").textContent = "loading the solver";
-    worker = new Worker("worker.js");
+    worker = new Worker("worker.js" + stamp);
     worker.onmessage = (event) => {
       if (event.data.ready === true) {
         ready = true;
