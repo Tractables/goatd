@@ -121,21 +121,39 @@ label {
   color: var(--muted);
 }
 
-.label-row {
+/* The examples are the way in for most readers, so they come first and look
+   like something to press. */
+.examples {
   display: flex;
-  justify-content: space-between;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 1rem;
-  margin-bottom: 0.3rem;
+  gap: 0.5rem 0.7rem;
+  margin-bottom: 1rem;
 }
 
-.label-row label { margin: 0; }
-.example { display: flex; align-items: center; gap: 0.45rem; }
+.examples .lead { font-size: 14px; font-weight: 500; }
+#examples { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 
-.example select {
+#examples button {
   width: auto;
-  padding: 0.2rem 0.4rem;
+  padding: 0.3rem 0.75rem;
+  border-color: transparent;
+  border-radius: 999px;
+  background: var(--accent-fill);
+  color: var(--accent);
   font-size: 13px;
+}
+
+#examples button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--card);
+  color: var(--accent);
+}
+
+#examples button.on, #examples button.on:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--card);
 }
 
 textarea, select, input {
@@ -246,6 +264,7 @@ svg.drawing { display: block; }
 /* The graph is square; it sits in the middle of its row at a size where the
    labels read. */
 svg.graph { width: 100%; height: auto; max-height: 30rem; }
+svg.graph.large { width: auto; max-height: none; }
 
 /* A tree narrower than its row is centred; one a little wider is scaled to
    fit (the script decides); one much wider keeps its size and scrolls. */
@@ -327,7 +346,7 @@ summary {
 
 .tools { margin-left: 0.5rem; }
 
-.tools button {
+.tools button, .note button {
   width: auto;
   margin-left: 0.3rem;
   padding: 0.1rem 0.55rem;
