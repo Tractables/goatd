@@ -84,7 +84,6 @@ h2 {
 
 .lede {
   margin: 0;
-  max-width: 52rem;
   color: var(--muted);
 }
 
@@ -274,7 +273,6 @@ figcaption {
 
 .hint {
   margin: 0 0 0.5rem;
-  max-width: 60rem;
   font-size: 13px;
   color: var(--muted);
 }
