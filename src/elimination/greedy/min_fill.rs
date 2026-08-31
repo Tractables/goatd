@@ -106,6 +106,8 @@ struct MinFill<'a> {
     heap: BinaryHeap<HeapEntry>,
     scratch: FillScratch,
     generation: Vec<u64>,
+    score: Vec<u64>,
+    lower_bound: Vec<bool>,
     affected: FillAffected,
     salt: &'a [u32],
 }
@@ -133,6 +135,8 @@ impl ElimPolicy for MinFill<'_> {
     }
 
     fn push(&mut self, graph: &EliminationGraph, v: u32, score: u64) {
+        self.score[v as usize] = score;
+        self.lower_bound[v as usize] = false;
         let generation = self.generation[v as usize].wrapping_add(1);
         self.generation[v as usize] = generation;
         self.heap.push(HeapEntry::new(
@@ -177,8 +181,12 @@ impl ElimPolicy for MinFill<'_> {
         outcome
     }
 
-    fn rescore_on_pop(&mut self, _graph: &EliminationGraph, _v: u32) -> Option<u64> {
-        None
+    fn rescore_on_pop(&mut self, graph: &EliminationGraph, v: u32) -> Option<u64> {
+        if std::mem::replace(&mut self.lower_bound[v as usize], false) {
+            Some(self.live_score(graph, v))
+        } else {
+            None
+        }
     }
 
     fn after_eliminate(
@@ -209,13 +217,27 @@ impl ElimPolicy for MinFill<'_> {
 
         // Checked inside this loop: a fill recount is superlinear in the
         // neighbourhood, so one update can otherwise overrun the deadline.
-        while let Some(vertex) = self.affected.pop() {
+        while let Some((vertex, common_neighbours)) = self.affected.pop() {
             if expired(deadline) {
                 return self.deadline_outcome(graph);
             }
             if graph.active[vertex as usize] {
-                let live = self.scratch.fill_count_of(graph, vertex);
-                self.push(graph, vertex, live);
+                if common_neighbours == u32::MAX {
+                    let live = self.scratch.fill_count_of(graph, vertex);
+                    self.push(graph, vertex, live);
+                } else {
+                    // This vertex's neighbourhood did not change; fill edges
+                    // were only added among its neighbours shared with the
+                    // eliminated vertex. At most one edge was added per pair,
+                    // so subtracting every such pair gives a safe lower bound.
+                    // Pay for an exact recount only if that bound reaches the
+                    // heap front.
+                    let k = u64::from(common_neighbours);
+                    let decrease_bound = k * (k - 1) / 2;
+                    let bound = self.score[vertex as usize].saturating_sub(decrease_bound);
+                    self.push(graph, vertex, bound);
+                    self.lower_bound[vertex as usize] = true;
+                }
             }
         }
         AfterElim::Continue
@@ -240,6 +262,8 @@ pub(crate) fn eliminate_min_fill(
         heap: BinaryHeap::with_capacity(n),
         scratch: FillScratch::new(n),
         generation: vec![0; n],
+        score: vec![0; n],
+        lower_bound: vec![false; n],
         affected: FillAffected::new(n),
         salt,
     };
