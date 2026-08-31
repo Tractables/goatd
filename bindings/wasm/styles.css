@@ -201,8 +201,39 @@ button:disabled { opacity: 0.45; cursor: default; }
   color: var(--muted);
 }
 
-#result-summary { font-weight: 400; color: var(--muted); }
-#result-summary.failed { color: var(--ink); font-family: var(--mono); font-size: 13px; }
+/* The figures of a result are the point of the page, so they are large. */
+#result-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 2rem;
+  margin: 0 0 1rem;
+}
+
+#result-summary:empty { display: none; }
+
+.stat {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.stat b {
+  font-size: 1.8rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+
+#result-summary.failed {
+  display: block;
+  color: var(--ink);
+  font: 13px/1.45 var(--mono);
+}
 
 /* The two drawings take a row each: the decomposition is usually much wider
    than the graph and wants the whole width. */
