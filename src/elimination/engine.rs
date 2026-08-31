@@ -3,8 +3,8 @@
 use std::collections::VecDeque;
 
 use super::Order;
-use super::build_td::build_td_from_steps;
-use super::execution::{self, ElimExit, ElimSteps, complete_residual_as_path};
+use super::build_td::build_td_from_ranked_bags;
+use super::execution::{self, ElimExit, ElimSteps};
 use super::graph::EliminationGraph;
 use super::greedy::{
     self, eliminate_min_degree, eliminate_min_fill, eliminate_sampled_min_degree,
@@ -163,7 +163,7 @@ pub(super) fn find_connected_components(graph: &EliminationGraph) -> Vec<Vec<u32
 /// `OrderRun` back — the whole-residual caller runs `finalize` on the raw
 /// output, the per-component caller first translates component-local indices
 /// back to originals and concatenates into the global flat list that
-/// `build_td_from_steps` consumes.
+/// `build_td_from_ranked_bags` consumes.
 ///
 /// `initial_fill` is the caller's cached per-vertex fill count for this exact
 /// graph; the min-fill sampling cores are the only ones that read it. A
@@ -173,7 +173,7 @@ fn run_elimination_raw(
     salt: &[u32],
     initial_fill: Option<&[u64]>,
     spec: RunSpec<'_>,
-) -> (ElimSteps, ElimExit) {
+) -> (ElimSteps, ElimExit, Vec<u32>) {
     let mut steps = reduced.prefix;
     let mut g = reduced.graph;
 
@@ -206,13 +206,17 @@ fn run_elimination_raw(
         }
     };
 
-    complete_residual_at_deadline(spec.complete_on_deadline, exit, &g, &mut steps);
-    (steps, exit)
+    let residual = if spec.complete_on_deadline && exit == ElimExit::DeadlineReached {
+        execution::active_vertices(&g)
+    } else {
+        Vec::new()
+    };
+    (steps, exit, residual)
 }
 
 /// Solve the preprocessed residual one connected component at a time, then
 /// stitch all bags (prefix + per-component) into a single flat list and run
-/// `build_td_from_steps`. Components are vertex-disjoint (guaranteed by
+/// `build_td_from_ranked_bags`. Components are vertex-disjoint (guaranteed by
 /// connectivity), so each vertex is eliminated exactly once and `global_rank`
 /// is written without conflicts.
 ///
@@ -282,7 +286,7 @@ fn run_order_per_component(
             ..spec
         };
 
-        let (comp_steps, comp_exit) = run_elimination_raw(
+        let (comp_steps, comp_exit, comp_residual) = run_elimination_raw(
             sub_reduced,
             &sub_salt,
             sub_initial_fill.as_deref(),
@@ -299,14 +303,17 @@ fn run_order_per_component(
         }
 
         if comp_exit == ElimExit::DeadlineReached {
-            // The current component was completed inside `run_elimination_raw`.
-            // Complete every untouched component directly instead of starting
+            append_residual_bag(
+                comp_residual
+                    .into_iter()
+                    .map(|vertex| comp[vertex as usize]),
+                &mut all_bags,
+                &mut global_rank,
+            );
+            // Put every untouched component in one bag instead of starting
             // another heuristic after the hard deadline.
             for remaining in &components[(comp_idx + 1)..] {
-                for (vertex, bag) in execution::path_completion(remaining) {
-                    global_rank[vertex as usize] = all_bags.len() as u32;
-                    all_bags.push(bag);
-                }
+                append_residual_bag(remaining.iter().copied(), &mut all_bags, &mut global_rank);
             }
             return finish(all_bags, global_rank, comp_exit, true);
         }
@@ -343,33 +350,38 @@ pub(super) fn run_order_on_reduced(
         );
     }
 
-    let (steps, exit) = run_elimination_raw(reduced, &salt, initial_fill, spec);
-    finalize(steps, n, exit, spec.complete_on_deadline)
+    let (steps, exit, residual) = run_elimination_raw(reduced, &salt, initial_fill, spec);
+    finalize(steps, n, exit, spec.complete_on_deadline, residual)
 }
 
-/// If the caller needs a guaranteed-valid TD and the elimination bailed on the
-/// hard deadline, append a path-decomposition chain over the residual.
-/// This preserves whatever progress the elim heuristic made (so width ≤
-/// max(partial_width, remaining_active − 1)) rather than forcing width =
-/// n-1.
-/// The main portfolio loop only completes at the deadline while no candidate has
-/// produced a TD yet, so at most one deadline completion runs per portfolio.
-fn complete_residual_at_deadline(
-    complete_on_deadline: bool,
-    exit: ElimExit,
-    graph: &EliminationGraph,
-    steps: &mut ElimSteps,
+fn append_residual_bag(
+    vertices: impl IntoIterator<Item = u32>,
+    bags: &mut Vec<Vec<u32>>,
+    rank: &mut [u32],
 ) {
-    if complete_on_deadline && exit == ElimExit::DeadlineReached {
-        complete_residual_as_path(graph, &mut steps.sink());
+    let vertices: Vec<u32> = vertices.into_iter().collect();
+    if vertices.is_empty() {
+        return;
     }
+    let bag_index = bags.len() as u32;
+    for &vertex in &vertices {
+        rank[vertex as usize] = bag_index;
+    }
+    bags.push(vertices);
 }
 
-fn finalize(steps: ElimSteps, n: usize, exit: ElimExit, complete_on_deadline: bool) -> OrderRun {
+fn finalize(
+    mut steps: ElimSteps,
+    n: usize,
+    exit: ElimExit,
+    complete_on_deadline: bool,
+    residual: Vec<u32>,
+) -> OrderRun {
     let mut rank = vec![u32::MAX; n];
     for (v, r) in steps.rank_pairs {
         rank[v as usize] = r as u32;
     }
+    append_residual_bag(residual, &mut steps.bags, &mut rank);
     finish(steps.bags, rank, exit, complete_on_deadline)
 }
 
@@ -380,9 +392,9 @@ fn finish(
     complete_on_deadline: bool,
 ) -> OrderRun {
     match exit {
-        ElimExit::Complete => OrderRun::Completed(build_td_from_steps(bags, &rank)),
+        ElimExit::Complete => OrderRun::Completed(build_td_from_ranked_bags(bags, &rank)),
         ElimExit::DeadlineReached if complete_on_deadline => {
-            OrderRun::CompletedAtDeadline(build_td_from_steps(bags, &rank))
+            OrderRun::CompletedAtDeadline(build_td_from_ranked_bags(bags, &rank))
         }
         ElimExit::DeadlineReached => OrderRun::DeadlineAborted,
         ElimExit::WidthLimitExceeded => OrderRun::WidthAborted,
