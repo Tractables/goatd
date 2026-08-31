@@ -24,11 +24,37 @@ pub(crate) fn two_stage(
     budget: Option<Duration>,
     operation: &str,
 ) -> Result<TwoStage, Error> {
-    let soft = budget
+    staged(start, budget, None, operation)
+}
+
+/// Build soft and hard cutoffs, using twice the soft budget when no separate
+/// hard budget is given.
+pub(crate) fn staged(
+    start: Instant,
+    soft_budget: Option<Duration>,
+    hard_budget: Option<Duration>,
+    operation: &str,
+) -> Result<TwoStage, Error> {
+    let effective_hard = match (soft_budget, hard_budget) {
+        (None, None) => None,
+        (None, Some(_)) => {
+            return Err(Error::InvalidInput(format!(
+                "{operation} hard budget needs a soft budget"
+            )));
+        }
+        (Some(soft), Some(hard)) if hard < soft => {
+            return Err(Error::InvalidInput(format!(
+                "{operation} hard budget must be at least its soft budget"
+            )));
+        }
+        (Some(_), Some(hard)) => Some(hard),
+        (Some(soft), None) => Some(soft.saturating_mul(2)),
+    };
+    let soft = soft_budget
         .map(|duration| checked(start, duration, operation))
         .transpose()?;
-    let hard = budget
-        .map(|duration| checked(start, duration.saturating_mul(2), operation))
+    let hard = effective_hard
+        .map(|duration| checked(start, duration, operation))
         .transpose()?;
     Ok(TwoStage { soft, hard })
 }

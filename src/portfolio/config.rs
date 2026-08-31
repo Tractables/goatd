@@ -24,6 +24,7 @@ pub(super) const MIN_FLOWCUTTER_CANDIDATE_MS: u64 = 50;
 #[must_use]
 pub struct PortfolioConfig {
     pub(super) soft_budget: Option<Duration>,
+    pub(super) hard_budget: Option<Duration>,
     pub(super) sampling_runs: u64,
     pub(super) flowcutter_budget: Option<Duration>,
 }
@@ -34,6 +35,7 @@ impl PortfolioConfig {
     pub fn sampled_min_fill() -> Self {
         Self {
             soft_budget: Some(Duration::from_millis(SAMPLED_MIN_FILL_TIMEOUT_MS)),
+            hard_budget: None,
             sampling_runs: MAX_SAMPLING_RUNS,
             flowcutter_budget: None,
         }
@@ -54,6 +56,15 @@ impl PortfolioConfig {
         self
     }
 
+    /// Set the hard portfolio budget independently of the soft budget.
+    ///
+    /// Without this override, the hard budget is twice the soft budget. The
+    /// hard budget must be at least the soft budget.
+    pub fn with_hard_budget(mut self, budget: Duration) -> Self {
+        self.hard_budget = Some(budget);
+        self
+    }
+
     /// Set the maximum number of extra sampled elimination orders.
     pub fn with_sampling_runs(mut self, runs: u64) -> Self {
         self.sampling_runs = runs;
@@ -65,6 +76,7 @@ impl PortfolioConfig {
     pub fn standard() -> Self {
         Self {
             soft_budget: None,
+            hard_budget: None,
             sampling_runs: MAX_SAMPLING_RUNS,
             flowcutter_budget: None,
         }
@@ -82,6 +94,7 @@ impl PortfolioConfig {
         };
         Self {
             soft_budget: Some(budget),
+            hard_budget: None,
             sampling_runs,
             flowcutter_budget: extended.then_some(budget),
         }
