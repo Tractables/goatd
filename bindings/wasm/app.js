@@ -936,7 +936,6 @@ if (typeof document !== "undefined") {
   const element = (id) => document.getElementById(id);
   const graphView = element("graph-view");
   const treeView = element("tree-view");
-  let solver = null;
   let drawnGraph = "";
   // What hovering needs of the decomposition on show: the bags, which bags
   // are joined, and which bags hold each vertex. Null while none is drawn.
@@ -947,18 +946,6 @@ if (typeof document !== "undefined") {
   // is null when there is nothing to draw.
   let parsedGraph = null;
   let parsedTree = null;
-
-  createGoatd()
-    .then((module) => {
-      solver = module;
-      element("run").disabled = false;
-      element("status").textContent = "ready";
-      // The page opens on an example; show what it gives without a click.
-      if (examples.querySelector(".chosen") !== null && shown === null) element("run").click();
-    })
-    .catch((failure) => {
-      element("status").textContent = `the solver did not load: ${failure}`;
-    });
 
   // A note in a panel, with a button to draw what was held back when there
   // is something to draw.
@@ -1255,7 +1242,7 @@ if (typeof document !== "undefined") {
     element("graph").value = text;
     clearTimeout(pending);
     drawGraph();
-    if (!element("run").disabled) element("run").click();
+    requestRun();
   }
   examples.addEventListener("click", (event) => {
     const chip = event.target.closest("button");
@@ -1334,39 +1321,107 @@ if (typeof document !== "undefined") {
     );
   });
 
-  // The call holds this tab for as long as the construction runs, so the
-  // status is painted before it starts.
-  element("run").addEventListener("click", () => {
-    clearTimeout(pending);
-    drawGraph();
-    writeAddress();
-    element("status").textContent = "running";
+  // The solver runs in a worker, so the page stays live during a run, the
+  // status can count the seconds, and a run can be stopped: Cancel ends the
+  // worker and starts another, which takes a moment to load the module. A
+  // run asked for before the worker is ready, or while another runs, starts
+  // once the worker is.
+  let worker = null;
+  let ready = false;
+  let running = false;
+  let runWhenReady = false;
+  let ticking = 0;
+
+  function startSolver() {
+    ready = false;
     element("run").disabled = true;
-    afterPaint(decompose);
-  });
+    element("status").textContent = "loading the solver";
+    worker = new Worker("worker.js");
+    worker.onmessage = (event) => {
+      if (event.data.ready === true) {
+        ready = true;
+        element("run").disabled = false;
+        element("status").textContent = "ready";
+        if (runWhenReady) {
+          runWhenReady = false;
+          run();
+        }
+      } else if (event.data.error !== undefined) {
+        settle();
+        element("status").textContent = `the solver failed: ${event.data.error}`;
+      } else {
+        finish(event.data.td, event.data.elapsed);
+      }
+    };
+    worker.onerror = (event) => {
+      element("status").textContent = `the solver did not load: ${event.message}`;
+    };
+  }
+
+  function requestRun() {
+    if (running) {
+      stop();
+      runWhenReady = true;
+    } else if (ready) {
+      run();
+    } else {
+      runWhenReady = true;
+    }
+  }
+
+  function stop() {
+    worker.terminate();
+    settle();
+    startSolver();
+  }
+
+  function settle() {
+    running = false;
+    clearInterval(ticking);
+    document.body.classList.remove("busy");
+    element("cancel").hidden = true;
+    element("run").hidden = false;
+  }
 
   // The other side of the call takes unsigned numbers, where a blank or
   // negative field would arrive as something enormous.
   const setting = (id) => Math.max(0, Math.trunc(Number(element(id).value)) || 0);
 
-  function decompose() {
+  function run() {
+    clearTimeout(pending);
+    drawGraph();
+    writeAddress();
+    running = true;
     const started = performance.now();
-    const pointer = solver.ccall(
-      "goatd_decompose",
-      "number",
-      ["string", "number", "number", "number"],
-      [element("graph").value, setting("order"), setting("seed"), setting("budget")],
-    );
-    const text = solver.UTF8ToString(pointer);
-    solver.ccall("goatd_string_free", null, ["number"], [pointer]);
-    const elapsed = performance.now() - started;
+    element("status").textContent = "running";
+    ticking = setInterval(() => {
+      element("status").textContent = `running, ${Math.round((performance.now() - started) / 1000)} s`;
+    }, 1000);
+    element("run").hidden = true;
+    element("cancel").hidden = false;
+    document.body.classList.add("busy");
+    worker.postMessage({
+      graph: element("graph").value,
+      order: setting("order"),
+      seed: setting("seed"),
+      budget: setting("budget"),
+    });
+  }
 
+  element("run").addEventListener("click", requestRun);
+  element("cancel").addEventListener("click", () => {
+    if (!running) return;
+    stop();
+    element("status").textContent = "stopped; loading the solver";
+  });
+
+  function finish(text, elapsed) {
+    settle();
     result = text;
     element("output").textContent =
       text.length <= MAX_SHOWN_OUTPUT
         ? text
         : `${text.split("\n", 1)[0]}\n... ${Math.round(text.length / 1048576)} MB of text; Save writes it to a file.`;
-    element("run").disabled = false;
 
     const decomposition = parseTd(text);
     const failed = decomposition.error !== undefined;
@@ -1390,6 +1445,7 @@ if (typeof document !== "undefined") {
 
   // A browser that brings the text back on reload keeps it; otherwise the
   // page opens on the first example.
+  startSolver();
   const opening = readAddress();
   if (element("graph").value === "") loadExample(opening === -1 ? 0 : opening);
   else drawGraph();

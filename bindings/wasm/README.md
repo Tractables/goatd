@@ -2,8 +2,10 @@
 
 A page that decomposes a PACE `.gr` graph in the tab and draws both the graph
 and the decomposition, each lighting up the other under the pointer:
-`index.html`, `styles.css`, `app.js`, `logo.png` and one graph file,
-`mcc2025-track1-093.gr`, beside the Emscripten build of the crate. A row of
+`index.html`, `styles.css`, `app.js`, `worker.js`, `logo.png` and one graph
+file, `mcc2025-track1-093.gr`, beside the Emscripten build of the crate.
+The solver runs in a worker, so the page stays live during a run and a
+run can be cancelled. A row of
 example graphs runs from a 6×6 grid through the primal graph of a Model
 Counting Competition CNF to a grid of 10,000 vertices, the `.td` text can
 be copied or saved, and the address bar carries the example and the
@@ -26,7 +28,7 @@ AR_wasm32_unknown_emscripten=emar \
 CXXFLAGS_wasm32_unknown_emscripten=-fwasm-exceptions \
   cargo build --release
 mkdir -p site
-cp index.html styles.css app.js logo.png mcc2025-track1-093.gr \
+cp index.html styles.css app.js worker.js logo.png mcc2025-track1-093.gr \
    target/wasm32-unknown-emscripten/release/goatd.{js,wasm} site/
 python3 -m http.server -d site
 ```
