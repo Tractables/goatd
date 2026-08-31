@@ -10,6 +10,9 @@ use std::time::{Duration, Instant};
 mod candidates;
 mod config;
 
+#[cfg(test)]
+mod tests;
+
 use crate::deadline::expired;
 use crate::decomposition;
 use crate::elimination::Order;
@@ -133,10 +136,10 @@ fn run_portfolio(
         if i > 0 && large_residual && !is_min_degree_variant(order) {
             continue;
         }
-        // Complete the residual as a path only while no candidate has
-        // produced a usable decomposition yet. Once one has, completing a later
-        // candidate's residual would be wasted work: its wide decomposition
-        // would lose on width and total bag size to the existing winner.
+        // Complete the residual only while no candidate has produced a usable
+        // decomposition yet. Once one has, completing a later candidate's
+        // residual would be wasted work: its wide decomposition would lose on
+        // width and total bag size to the existing winner.
         let complete_on_deadline = candidates.is_empty();
         let run = engine::run_order_prebuilt(
             &mut prebuilt,

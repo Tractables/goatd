@@ -38,7 +38,8 @@ options:
                         (default: every vertex weighs the same)
   --budget <ms>         wall-clock budget: the elimination orders' soft
                         deadline, flowcutter's run time, the portfolio's
-                        soft deadline, and the refinement's deadline
+                        soft deadline and sampling effort, and the
+                        refinement's deadline
   --steps <n>           flowcutter only: a step budget in place of a clock,
                         for a run that repeats exactly
   --refine              re-cut the decomposition along FlowCutter separators
@@ -290,9 +291,10 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             .unwrap_or_else(|e| fail(&e.to_string())),
         Method::Portfolio => {
             let weights = vec![1; graph.num_vertices() as usize];
-            let config = budget.map_or_else(PortfolioConfig::standard, |budget| {
-                PortfolioConfig::standard().with_soft_budget(budget)
-            });
+            let config = budget.map_or_else(
+                PortfolioConfig::standard,
+                PortfolioConfig::standard_with_budget,
+            );
             portfolio(graph, &weights, seed, config)
                 .unwrap_or_else(|error| fail(&error.to_string()))
         }
