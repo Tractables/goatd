@@ -1,0 +1,431 @@
+:root {
+  /* Both palettes are defined below, so the browser should not invert the
+     page when the reader asks for dark. The blue and the amber are the
+     logo's. */
+  color-scheme: light dark;
+  --bg: #f5f5f2;
+  --card: #ffffff;
+  --line: #e0e0d9;
+  --ink: #1d1f21;
+  --muted: #6c7075;
+  --accent: #2070a8;
+  --accent-fill: #dbe9f6;
+  --amber: #d99a2b;
+  --amber-fill: #fbeed0;
+  --code: #f2f2ed;
+  /* One colour per branch of the tree when a bag is hovered; the mix with the
+     card colour gives the fill, so the same six serve both palettes. */
+  --side-1: #e07b39;
+  --side-2: #3f9c5a;
+  --side-3: #9b59b6;
+  --side-4: #d1495b;
+  --side-5: #2a9d8f;
+  --side-6: #8a8f1f;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181b;
+    --card: #1d2024;
+    --line: #2e333a;
+    --ink: #e5e8ea;
+    --muted: #9aa1a9;
+    --accent: #6fb3e6;
+    --accent-fill: #1e3448;
+    --amber: #e8a830;
+    --amber-fill: #46381a;
+    --code: #15181b;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.55 var(--sans);
+}
+
+/* The page takes the whole window: the drawings want every pixel a wide
+   screen has. */
+main {
+  margin: 0 auto;
+  padding: 1.5rem 2rem 4rem;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  margin-bottom: 1.5rem;
+}
+
+.logo {
+  width: 6rem;
+  height: 6rem;
+  flex: none;
+}
+
+h1 {
+  margin: 0 0 0.35rem;
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  margin: 0 0 1rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.lede {
+  margin: 0;
+  color: var(--muted);
+}
+
+a { color: var(--accent); }
+
+code {
+  font: 0.9em/1 var(--mono);
+  background: var(--code);
+  border-radius: 3px;
+  padding: 0.1em 0.3em;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1.1rem;
+  margin-bottom: 1.25rem;
+}
+
+/* Input beside the controls once there is room for both. */
+.io { display: grid; gap: 1.1rem; }
+
+@media (min-width: 56rem) {
+  .io { grid-template-columns: minmax(0, 1fr) 13rem; }
+}
+
+label {
+  display: block;
+  margin-bottom: 0.3rem;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* The examples are the way in for most readers, so they come first and look
+   like something to press. */
+.examples {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.7rem;
+  margin-bottom: 1rem;
+}
+
+.examples .lead { font-size: 14px; font-weight: 500; }
+#examples { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+
+#examples button {
+  width: auto;
+  padding: 0.3rem 0.75rem;
+  border-color: transparent;
+  border-radius: 999px;
+  background: var(--accent-fill);
+  color: var(--accent);
+  font-size: 13px;
+}
+
+#examples button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--card);
+  color: var(--accent);
+}
+
+#examples button.chosen, #examples button.chosen:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--card);
+}
+
+textarea, select, input {
+  width: 100%;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0.45rem 0.55rem;
+  font: 15px/1.4 var(--sans);
+}
+
+textarea {
+  height: 17rem;
+  resize: vertical;
+  font: 13px/1.45 var(--mono);
+  background: var(--code);
+}
+
+textarea:focus, select:focus, input:focus, button:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.controls { display: grid; gap: 0.75rem; align-content: start; }
+.field { margin: 0; }
+
+button {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--accent);
+  color: var(--card);
+  font: 500 15px/1.4 var(--sans);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) { background: var(--card); color: var(--accent); }
+
+/* Cancel takes Decompose's place while a run is on, and the pointer says
+   the page is busy everywhere but on it. */
+#cancel { background: var(--card); color: var(--accent); }
+#cancel:hover { background: var(--accent); color: var(--card); }
+body.busy, body.busy :not(#cancel) { cursor: progress; }
+button:disabled { opacity: 0.45; cursor: default; }
+
+#status, .note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* The figures of a result are the point of the page, so they are large. */
+#result-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 2rem;
+  margin: 0 0 1rem;
+}
+
+#result-summary:empty { display: none; }
+
+.stat {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.stat b {
+  font-size: 1.8rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+
+#result-summary.failed {
+  display: block;
+  color: var(--ink);
+  font: 13px/1.45 var(--mono);
+}
+
+/* The two drawings take a row each: the decomposition is usually much wider
+   than the graph and wants the whole width. */
+.panels { display: grid; gap: 1.1rem; }
+
+.panel {
+  margin: 0;
+  min-width: 0;
+}
+
+figcaption {
+  margin-bottom: 0.25rem;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.legend {
+  margin-left: 0.9rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.legend i {
+  display: inline-block;
+  width: 0.75em;
+  height: 0.75em;
+  margin-right: 0.4em;
+  vertical-align: -0.05em;
+  border: 1px solid var(--amber);
+  border-radius: 2px;
+  background: var(--amber-fill);
+}
+
+.hint {
+  margin: 0 0 0.5rem;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.view {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--code);
+  padding: 0.5rem;
+  /* A deep decomposition scrolls rather than shrinking out of legibility. */
+  max-height: 75vh;
+  overflow: auto;
+}
+
+.view .note { padding: 0.4rem 0.2rem; }
+
+svg.drawing { display: block; }
+
+/* The graph is square; it sits in the middle of its row at a size where the
+   labels read. */
+svg.graph { width: 100%; height: auto; max-height: 70vh; }
+svg.graph.large { width: auto; max-height: none; margin: 0 auto; }
+
+/* A tree narrower than its row is centred; the script sets its size from
+   the zoom, and a wider one scrolls. */
+svg.tree { margin: 0 auto; }
+
+.zoom {
+  margin-left: 0.9rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.zoom b {
+  display: inline-block;
+  min-width: 3em;
+  text-align: center;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.zoom button {
+  width: auto;
+  min-width: 1.8em;
+  padding: 0 0.45rem;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.edge .ink { stroke: var(--line); stroke-width: 1.2; }
+.edge.on .ink { stroke: var(--accent); stroke-width: 1.8; }
+
+/* The transparent twin that catches the pointer for the line beneath it. */
+.edge .hit { stroke: transparent; stroke-width: 12; pointer-events: stroke; }
+
+.vertex circle {
+  fill: var(--card);
+  stroke: var(--muted);
+  stroke-width: 1.2;
+}
+
+.vertex text {
+  fill: var(--muted);
+  font: 9px/1 var(--mono);
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.vertex.on circle { fill: var(--accent-fill); stroke: var(--accent); stroke-width: 2; }
+.vertex.on text { fill: var(--accent); }
+
+.side-1 { --side: var(--side-1); }
+.side-2 { --side: var(--side-2); }
+.side-3 { --side: var(--side-3); }
+.side-4 { --side: var(--side-4); }
+.side-5 { --side: var(--side-5); }
+.side-6 { --side: var(--side-6); }
+
+.vertex.side circle {
+  fill: color-mix(in srgb, var(--side) 30%, var(--card));
+  stroke: var(--side);
+  stroke-width: 1.6;
+}
+
+.vertex.side text { fill: var(--ink); }
+.edge.side .ink { stroke: var(--side); stroke-width: 1.6; }
+
+.bag rect {
+  fill: var(--card);
+  stroke: var(--line);
+  stroke-width: 1.2;
+}
+
+.bag text {
+  fill: var(--ink);
+  font: 11px/1 var(--mono);
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+/* The bags of the largest size are the ones that set the width. */
+.bag.widest rect { fill: var(--amber-fill); stroke: var(--amber); }
+
+.bag.side rect {
+  fill: color-mix(in srgb, var(--side) 22%, var(--card));
+  stroke: var(--side);
+}
+
+.bag:hover rect, .bag.on rect { fill: var(--accent-fill); stroke: var(--accent); }
+.bag.on text { fill: var(--accent); }
+
+.tree-edges line { stroke: var(--muted); stroke-width: 1.2; }
+.tree-edges line.on { stroke: var(--accent); stroke-width: 2; }
+
+details { margin-top: 1.1rem; }
+
+summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.tools { margin-left: 0.5rem; }
+
+/* The heading of the result and, once there is a result from an example,
+   the button that copies the address that reproduces it. */
+.result-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.tools button, .note button, #link {
+  width: auto;
+  margin-left: 0.3rem;
+  padding: 0.1rem 0.55rem;
+  font-size: 12px;
+}
+
+pre {
+  margin: 0.6rem 0 0;
+  max-height: 22rem;
+  overflow: auto;
+  background: var(--code);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.7rem;
+  font: 13px/1.45 var(--mono);
+}

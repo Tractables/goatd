@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>goatd: Greatest Of All Tree Decompositions</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<main>
+
+<header>
+  <img class="logo" src="logo.png" alt="" width="192" height="192">
+  <div>
+    <h1>goatd: Greatest Of All Tree Decompositions</h1>
+    <p class="lede">Paste a PACE <code>.gr</code> graph, or pick an example,
+    and goatd returns a tree decomposition; the solver runs in this tab and
+    nothing is uploaded. The same solver is a
+    <a href="https://crates.io/crates/goatd">Rust crate</a> with a
+    command-line tool, a <a href="https://pypi.org/project/goatd/">Python
+    package</a> and a <a href="https://github.com/Tractables/goatd/releases">C
+    library</a>; the code and its documentation are
+    <a href="https://github.com/Tractables/goatd">on GitHub</a>.</p>
+  </div>
+</header>
+
+<section class="card">
+  <div class="examples">
+    <span class="lead">Try an example</span>
+    <div id="examples"></div>
+  </div>
+  <div class="io">
+    <div class="graph-input">
+      <label for="graph">Graph</label>
+      <textarea id="graph" spellcheck="false"></textarea>
+    </div>
+
+    <div class="controls">
+      <div class="field">
+        <label for="order">Construction</label>
+        <select id="order">
+          <option value="0">min-fill</option>
+          <option value="1">min-degree</option>
+          <option value="2">nested dissection</option>
+          <option value="3">FlowCutter</option>
+          <option value="4" selected>portfolio</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="budget">Budget (ms)</label>
+        <input id="budget" type="number" min="0" value="1000">
+      </div>
+      <div class="field">
+        <label for="seed">Seed</label>
+        <input id="seed" type="number" min="0" value="0">
+      </div>
+      <button id="run" disabled>Decompose</button>
+      <button id="cancel" type="button" hidden>Cancel</button>
+      <p id="status">loading the solver</p>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="result-head">
+    <h2>Result</h2>
+    <button id="link" type="button" hidden>Copy link</button>
+  </div>
+  <p id="result-summary"></p>
+
+  <div class="panels">
+    <figure class="panel">
+      <figcaption>Input graph</figcaption>
+      <p class="hint">Once there is a decomposition, hover a vertex to see the
+      bags that hold it: they form a connected piece of the tree, the running
+      intersection property. Hover an edge to see the bags that hold both its
+      ends; every edge has at least one.</p>
+      <div id="graph-view" class="view"></div>
+    </figure>
+    <figure class="panel">
+      <figcaption>Decomposition
+        <span id="legend" class="legend" hidden><i></i>bags of the largest size</span>
+        <span id="zoom" class="zoom" hidden>
+          <button type="button" data-zoom="out" title="Zoom out">−</button>
+          <b id="zoom-level">100%</b>
+          <button type="button" data-zoom="in" title="Zoom in">+</button>
+          <button type="button" data-zoom="fit">Fit</button>
+          <button type="button" data-zoom="one">1:1</button>
+        </span>
+      </figcaption>
+      <p class="hint">Hover a bag to see it separate the graph. The vertices
+      beyond each branch of the tree at that bag get a colour of their own,
+      and no edge joins two colours.</p>
+      <div id="tree-view" class="view"><p class="note">Press Decompose.</p></div>
+    </figure>
+  </div>
+
+  <details id="raw">
+    <summary>PACE <code>.td</code> output
+      <span class="tools">
+        <button id="copy" type="button" disabled>Copy</button>
+        <button id="save" type="button" disabled>Save</button>
+      </span>
+    </summary>
+    <pre id="output"></pre>
+  </details>
+</section>
+
+</main>
+
+<script src="app.js"></script>
+
+</body>
+</html>
