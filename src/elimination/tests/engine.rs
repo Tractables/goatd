@@ -22,6 +22,42 @@ fn complete_bipartite(side: u32) -> crate::Graph {
     crate::Graph::new(2 * side, edges)
 }
 
+fn disjoint_complete_bipartite(side: u32) -> crate::Graph {
+    let component_size = 2 * side;
+    let mut edges = Vec::new();
+    for offset in [0, component_size] {
+        for left in offset..(offset + side) {
+            for right in (offset + side)..(offset + component_size) {
+                edges.push((left, right));
+            }
+        }
+    }
+    crate::Graph::new(2 * component_size, edges)
+}
+
+fn complete_at_immediate_deadline(graph: &crate::Graph) -> crate::TreeDecomposition {
+    let mut prebuilt = prebuild(graph);
+    let epoch = std::time::Instant::now();
+    let _meter = crate::meter::arm(epoch);
+    let run = run_order_prebuilt(
+        &mut prebuilt,
+        RunSpec {
+            order: Order::MinDegree,
+            seed: 0,
+            stop: ElimStop {
+                soft_deadline: None,
+                hard_deadline: Some(epoch),
+                width_bound: None,
+            },
+            complete_on_deadline: true,
+        },
+    );
+    let OrderRun::CompletedAtDeadline(decomposition) = run else {
+        panic!("deadline completion must return its completed decomposition");
+    };
+    decomposition
+}
+
 /// Run a single `(order, seed)` pair from raw edges. Builds the graph and
 /// runs preprocessing.
 pub(super) fn run_order(
@@ -94,4 +130,23 @@ fn partial_eliminations_are_never_returned_as_decompositions() {
         },
     );
     assert!(matches!(width_limited, OrderRun::WidthAborted));
+}
+
+#[test]
+fn deadline_completion_does_not_emit_one_bag_per_residual_vertex() {
+    let graph = complete_bipartite(40);
+    let decomposition = complete_at_immediate_deadline(&graph);
+
+    decomposition.validate(&graph).unwrap();
+    assert!(decomposition.bags().len() < graph.num_vertices() as usize);
+}
+
+#[test]
+fn deadline_completion_keeps_unfinished_components_in_separate_bags() {
+    let graph = disjoint_complete_bipartite(40);
+    let decomposition = complete_at_immediate_deadline(&graph);
+
+    decomposition.validate(&graph).unwrap();
+    assert!(decomposition.bags().len() < graph.num_vertices() as usize);
+    assert_eq!(decomposition.bags().last().unwrap().vertices().len(), 80);
 }
