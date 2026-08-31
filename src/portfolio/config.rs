@@ -7,6 +7,10 @@ use crate::Error;
 /// costs construction time without improving the decomposition.
 pub(super) const MAX_SAMPLING_RUNS: u64 = 100;
 
+/// Larger budgeted runs keep exploring after the short-run sample cap.
+const EXTENDED_SAMPLING_RUNS: u64 = 1_000;
+const EXTENDED_SAMPLING_MIN_SOFT_BUDGET: Duration = Duration::from_secs(5);
+
 /// Default soft deadline for the sampled-min-fill portfolio. The hard deadline
 /// inside the elimination core is twice this.
 const SAMPLED_MIN_FILL_TIMEOUT_MS: u64 = 1000;
@@ -60,6 +64,21 @@ impl PortfolioConfig {
         Self {
             soft_budget: None,
             sampling_runs: MAX_SAMPLING_RUNS,
+            flowcutter_budget: None,
+        }
+    }
+
+    /// Standard candidates under a soft wall-clock budget, with sampling
+    /// effort scaled for the corresponding hard window.
+    pub fn standard_with_budget(budget: Duration) -> Self {
+        let sampling_runs = if budget >= EXTENDED_SAMPLING_MIN_SOFT_BUDGET {
+            EXTENDED_SAMPLING_RUNS
+        } else {
+            MAX_SAMPLING_RUNS
+        };
+        Self {
+            soft_budget: Some(budget),
+            sampling_runs,
             flowcutter_budget: None,
         }
     }
