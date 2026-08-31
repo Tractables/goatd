@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>goatd in the browser</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<main>
+
+<header>
+  <h1>goatd in the browser</h1>
+  <p class="lede">Paste a PACE <code>.gr</code> graph and goatd returns a tree
+  decomposition; the solver runs in this tab and nothing is uploaded.</p>
+</header>
+
+<section class="card">
+  <div class="io">
+    <div class="graph-input">
+      <label for="graph">Graph</label>
+      <textarea id="graph" spellcheck="false">c a 6x6 grid; its treewidth is 6
+p tw 36 60
+1 2
+1 7
+2 3
+2 8
+3 4
+3 9
+4 5
+4 10
+5 6
+5 11
+6 12
+7 8
+7 13
+8 9
+8 14
+9 10
+9 15
+10 11
+10 16
+11 12
+11 17
+12 18
+13 14
+13 19
+14 15
+14 20
+15 16
+15 21
+16 17
+16 22
+17 18
+17 23
+18 24
+19 20
+19 25
+20 21
+20 26
+21 22
+21 27
+22 23
+22 28
+23 24
+23 29
+24 30
+25 26
+25 31
+26 27
+26 32
+27 28
+27 33
+28 29
+28 34
+29 30
+29 35
+30 36
+31 32
+32 33
+33 34
+34 35
+35 36
+</textarea>
+    </div>
+
+    <div class="controls">
+      <div class="field">
+        <label for="order">Construction</label>
+        <select id="order">
+          <option value="0">min-fill</option>
+          <option value="1">min-degree</option>
+          <option value="2">nested dissection</option>
+          <option value="3">FlowCutter</option>
+          <option value="4" selected>portfolio</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="budget">Budget (ms)</label>
+        <input id="budget" type="number" min="0" value="1000">
+      </div>
+      <div class="field">
+        <label for="seed">Seed</label>
+        <input id="seed" type="number" min="0" value="0">
+      </div>
+      <button id="run" disabled>Decompose</button>
+      <p id="status">loading the solver</p>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Result <span id="result-summary"></span></h2>
+
+  <div class="panels">
+    <figure class="panel">
+      <figcaption>Input graph</figcaption>
+      <div id="graph-view" class="view"></div>
+    </figure>
+    <figure class="panel">
+      <figcaption>Decomposition</figcaption>
+      <div id="tree-view" class="view"><p class="note">Press Decompose.</p></div>
+    </figure>
+  </div>
+
+  <details id="raw">
+    <summary>PACE <code>.td</code> output</summary>
+    <pre id="output"></pre>
+  </details>
+</section>
+
+</main>
+
+<script src="goatd.js"></script>
+<script src="app.js"></script>
+
+</body>
+</html>

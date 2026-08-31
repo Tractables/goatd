@@ -1,0 +1,237 @@
+:root {
+  /* Both palettes are defined below, so the browser should not invert the
+     page when the reader asks for dark. */
+  color-scheme: light dark;
+  --bg: #f5f5f2;
+  --card: #ffffff;
+  --line: #e0e0d9;
+  --ink: #1d1f21;
+  --muted: #6c7075;
+  --accent: #2f6b7c;
+  --accent-fill: #dcebef;
+  --code: #f2f2ed;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181b;
+    --card: #1d2024;
+    --line: #2e333a;
+    --ink: #e5e8ea;
+    --muted: #9aa1a9;
+    --accent: #7cbccd;
+    --accent-fill: #21343b;
+    --code: #15181b;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.55 var(--sans);
+}
+
+main {
+  max-width: 76rem;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 4rem;
+}
+
+header { margin-bottom: 1.5rem; }
+
+h1 {
+  margin: 0 0 0.35rem;
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  margin: 0 0 1rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.lede {
+  margin: 0;
+  max-width: 44rem;
+  color: var(--muted);
+}
+
+code {
+  font: 0.9em/1 var(--mono);
+  background: var(--code);
+  border-radius: 3px;
+  padding: 0.1em 0.3em;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1.1rem;
+  margin-bottom: 1.25rem;
+}
+
+/* Input beside the controls once there is room for both. */
+.io { display: grid; gap: 1.1rem; }
+
+@media (min-width: 56rem) {
+  .io { grid-template-columns: minmax(0, 1fr) 13rem; }
+}
+
+label {
+  display: block;
+  margin-bottom: 0.3rem;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+textarea, select, input {
+  width: 100%;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0.45rem 0.55rem;
+  font: 15px/1.4 var(--sans);
+}
+
+textarea {
+  height: 17rem;
+  resize: vertical;
+  font: 13px/1.45 var(--mono);
+  background: var(--code);
+}
+
+textarea:focus, select:focus, input:focus, button:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.controls { display: grid; gap: 0.75rem; align-content: start; }
+.field { margin: 0; }
+
+button {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--accent);
+  color: var(--card);
+  font: 500 15px/1.4 var(--sans);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) { background: var(--card); color: var(--accent); }
+button:disabled { opacity: 0.45; cursor: default; }
+
+#status, .note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+#result-summary { font-weight: 400; color: var(--muted); }
+#result-summary.failed { color: var(--ink); font-family: var(--mono); font-size: 13px; }
+
+/* The graph is square and the decomposition is usually much wider than it is
+   tall, so the two do not want equal columns. */
+.panels { display: grid; gap: 1.1rem; align-items: start; }
+
+@media (min-width: 64rem) {
+  .panels { grid-template-columns: minmax(0, 26rem) minmax(0, 1fr); }
+}
+
+.panel {
+  margin: 0;
+  min-width: 0;
+}
+
+figcaption {
+  margin-bottom: 0.4rem;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.view {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--code);
+  padding: 0.5rem;
+  /* A large decomposition scrolls rather than shrinking out of legibility. */
+  max-height: 34rem;
+  overflow: auto;
+}
+
+.view .note { padding: 0.4rem 0.2rem; }
+
+svg.drawing { display: block; }
+svg.graph { width: 100%; height: auto; }
+
+.edges line { stroke: var(--line); stroke-width: 1.2; }
+.edges line.on { stroke: var(--accent); stroke-width: 1.8; }
+
+.vertex circle {
+  fill: var(--card);
+  stroke: var(--muted);
+  stroke-width: 1.2;
+}
+
+.vertex text {
+  fill: var(--muted);
+  font: 9px/1 var(--mono);
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.vertex.on circle { fill: var(--accent-fill); stroke: var(--accent); stroke-width: 2; }
+.vertex.on text { fill: var(--accent); }
+
+.bag rect {
+  fill: var(--card);
+  stroke: var(--line);
+  stroke-width: 1.2;
+}
+
+.bag text {
+  fill: var(--ink);
+  font: 11px/1 var(--mono);
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.bag:hover rect, .bag.on rect { fill: var(--accent-fill); stroke: var(--accent); }
+.bag.on text { fill: var(--accent); }
+
+.tree-edges line { stroke: var(--muted); stroke-width: 1.2; }
+
+details { margin-top: 1.1rem; }
+
+summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+pre {
+  margin: 0.6rem 0 0;
+  max-height: 22rem;
+  overflow: auto;
+  background: var(--code);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.7rem;
+  font: 13px/1.45 var(--mono);
+}

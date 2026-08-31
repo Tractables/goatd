@@ -1,8 +1,8 @@
 [package]
-name = "goatd-web"
-# Nothing publishes this crate and no release names it, so the number here is
-# not goatd's version and `.github/scripts/check-versions.sh` does not read it.
-version = "0.0.0"
+name = "goatd-wasm"
+# The crate carries the shared version like the other bindings;
+# `.github/scripts/check-versions.sh` checks that it matches the core.
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -16,10 +16,13 @@ publish = false
 
 # Emscripten links a program, not a library: a cdylib for this target is a
 # side module, which the page cannot load on its own. The binary's `main` does
-# nothing and never runs; the page calls the exported functions.
+# nothing and never runs; the page calls the exported functions. The output
+# files are named after this binary, so the page loads goatd.js.
 [[bin]]
 name = "goatd"
 path = "src/main.rs"
 
 [dependencies]
-goatd = { path = ".." }
+# The checkout this crate sits in, not the crates.io release, so a change to
+# the core is built through the page before it is published.
+goatd = { path = "../.." }

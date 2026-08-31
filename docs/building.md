@@ -21,10 +21,11 @@ The minimum supported Rust version is recorded as `rust-version` in
 
 ## Bindings
 
-`bindings/python/` and `bindings/c/` are Rust crates in their own right, each
-with an empty `[workspace]` table so they build apart from the crate above.
-Building either needs a Rust toolchain, even when the consumer's own project
-is Python or C, plus the same C++20 compiler for FlowCutter described above.
+`bindings/python/`, `bindings/c/` and `bindings/wasm/` are Rust crates in
+their own right, each with an empty `[workspace]` table so they build apart
+from the crate above. Building any of them needs a Rust toolchain, even when
+the consumer's own project is Python, C or a web page, plus the same C++20
+compiler for FlowCutter described above.
 
 The Python extension additionally needs [maturin](https://www.maturin.rs). The
 C header is generated from `bindings/c/src/lib.rs` by
@@ -32,3 +33,9 @@ C header is generated from `bindings/c/src/lib.rs` by
 `.github/workflows/c-bindings.yml` (currently 0.29.0), since a different
 version can produce a header that differs from the one committed to
 `bindings/c/include/goatd.h`.
+
+The browser build needs the
+[Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html)
+on PATH and the `wasm32-unknown-emscripten` target. rustc links that target
+with Wasm exceptions, so the vendored C++ has to be compiled with
+`-fwasm-exceptions` to match; `bindings/wasm/README.md` has the commands.

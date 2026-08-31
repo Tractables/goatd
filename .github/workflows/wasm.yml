@@ -1,14 +1,14 @@
 name: Web build
 
 # Builds the crate for wasm32-unknown-emscripten and uploads the page in
-# web/ together with the module it loads. On main it also publishes the
-# page to GitHub Pages; a pull request only builds.
+# bindings/wasm/ together with the module it loads. On main it also publishes
+# the page to GitHub Pages; a pull request only builds.
 
 on:
   push:
     branches: [main]
     paths:
-      - "web/**"
+      - "bindings/wasm/**"
       - "src/**"
       - "vendor/**"
       - "build.rs"
@@ -16,7 +16,7 @@ on:
       - ".github/workflows/wasm.yml"
   pull_request:
     paths:
-      - "web/**"
+      - "bindings/wasm/**"
       - "src/**"
       - "vendor/**"
       - "build.rs"
@@ -58,7 +58,7 @@ jobs:
       # target is Wasm EH. Compiled for the JavaScript one instead, every
       # translation unit that catches leaves `__resumeException` undefined.
       - name: Build
-        working-directory: web
+        working-directory: bindings/wasm
         env:
           CXX_wasm32_unknown_emscripten: em++
           AR_wasm32_unknown_emscripten: emar
@@ -66,18 +66,18 @@ jobs:
         run: cargo build --release
 
       - name: Assemble the page
-        working-directory: web
+        working-directory: bindings/wasm
         run: |
           set -eux
           out=target/wasm32-unknown-emscripten/release
           mkdir -p site
-          cp index.html "$out/goatd.js" "$out/goatd.wasm" site/
+          cp index.html styles.css app.js "$out/goatd.js" "$out/goatd.wasm" site/
           ls -l site
 
       # Proves the module decomposes, not just that it linked. The graph is
       # the 4-cycle with one chord, whose treewidth is 2.
       - name: Decompose a graph with the built module
-        working-directory: web/site
+        working-directory: bindings/wasm/site
         run: |
           cat > smoke.cjs <<'EOF'
           const createGoatd = require("./goatd.js");
@@ -106,12 +106,12 @@ jobs:
 
       - name: Check formatting
         if: ${{ !cancelled() }}
-        working-directory: web
+        working-directory: bindings/wasm
         run: cargo fmt --check
 
       - name: Lint
         if: ${{ !cancelled() }}
-        working-directory: web
+        working-directory: bindings/wasm
         env:
           CXX_wasm32_unknown_emscripten: em++
           AR_wasm32_unknown_emscripten: emar
@@ -123,7 +123,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: goatd-web
-          path: web/site
+          path: bindings/wasm/site
           if-no-files-found: ignore
 
   # GitHub Pages serves the gh-pages branch, whose root is the solver
