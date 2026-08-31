@@ -271,7 +271,7 @@ pub fn candidates(
 }
 
 /// Return the standard portfolio's best candidate by width, then total bag
-/// size.
+/// size. Bags contained in an adjacent bag are contracted before return.
 ///
 /// # Errors
 ///
@@ -285,7 +285,8 @@ pub fn decompose(
     Ok(candidates(graph, weights, seed, config)?
         .into_iter()
         .next()
-        .expect("first candidate always produces a decomposition"))
+        .expect("first candidate always produces a decomposition")
+        .compact_subsumed_bags())
 }
 
 /// The standard portfolio's winner, refined by FlowCutter cuts
