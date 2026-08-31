@@ -695,13 +695,21 @@ if (typeof document !== "undefined") {
   });
 
   // The call holds this tab for as long as the construction runs, so give the
-  // browser a frame to paint the status in before it starts.
+  // browser a frame to paint the status in before it starts. A tab in the
+  // background paints no frame, so a timer starts the run there instead.
   element("run").addEventListener("click", () => {
     clearTimeout(pending);
     drawGraph();
     element("status").textContent = "running";
     element("run").disabled = true;
-    requestAnimationFrame(() => setTimeout(decompose, 0));
+    let started = false;
+    const start = () => {
+      if (started) return;
+      started = true;
+      decompose();
+    };
+    requestAnimationFrame(() => setTimeout(start, 0));
+    setTimeout(start, 250);
   });
 
   // The other side of the call takes unsigned numbers, where a blank or
