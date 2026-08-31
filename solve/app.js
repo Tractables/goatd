@@ -8,6 +8,10 @@
 const MAX_DRAWN_VERTICES = 500;
 const MAX_DRAWN_EDGES = 1500;
 const MAX_DRAWN_BAGS = 200;
+// Each panel offers to draw past those anyway. The graph layout is quadratic
+// in the vertices, in time and in memory, so past this many the offer is not
+// made: the tab would be gone for minutes.
+const MAX_LAID_OUT_VERTICES = 3000;
 // A `.td` text past this many bytes is kept for Copy and Save but not put on
 // the page, where a construction gone wrong on a large graph can return tens
 // of megabytes.
@@ -395,10 +399,12 @@ function round(value) {
   return Math.round(value * 100) / 100;
 }
 
-function graphSvg(count, edges, layout) {
+function graphSvg(count, edges, layout, large = false) {
   // The viewBox is about the width the panel gives the drawing, so the labels
-  // come out near the size the stylesheet asks for.
-  const size = 420;
+  // come out near the size the stylesheet asks for. A large drawing, one past
+  // the cap and asked for anyway, takes its natural size instead, about
+  // twenty pixels a vertex, and scrolls.
+  const size = large ? Math.round(Math.sqrt(count) * 21) : 420;
   const labelled = count <= 90;
   const radius = labelled ? 8 : 4;
   const inset = radius + 6;
@@ -406,7 +412,8 @@ function graphSvg(count, edges, layout) {
   const at = (values, v) => round(inset + values[v] * scale);
 
   const parts = [
-    `<svg class="drawing graph" viewBox="0 0 ${size} ${size}"`,
+    `<svg class="drawing graph${large ? " large" : ""}" viewBox="0 0 ${size} ${size}"`,
+    large ? ` width="${size}" height="${size}"` : "",
     ` role="img" aria-label="the input graph"><g class="edges">`,
   ];
   for (const [u, v] of edges) {
@@ -620,18 +627,27 @@ if (typeof document !== "undefined") {
   let shown = null;
   // The `.td` text of the last run, whole, whether or not it is on the page.
   let result = "";
+  // The graph in the box and the decomposition of the last run, read; either
+  // is null when there is nothing to draw.
+  let parsedGraph = null;
+  let parsedTree = null;
 
   createGoatd()
     .then((module) => {
       solver = module;
       element("run").disabled = false;
       element("status").textContent = "ready";
+      // The page opens on an example; show what it gives without a click.
+      if (examples.querySelector(".on") !== null && shown === null) element("run").click();
     })
     .catch((failure) => {
       element("status").textContent = `the solver did not load: ${failure}`;
     });
 
-  const note = (text) => `<p class="note">${text}</p>`;
+  // A note in a panel, with a button to draw what was held back when there
+  // is something to draw.
+  const note = (text, anyway = false) =>
+    `<p class="note">${text}${anyway ? ' <button type="button" class="anyway">Draw it anyway</button>' : ""}</p>`;
 
   function drawGraph() {
     const text = element("graph").value;
@@ -642,6 +658,7 @@ if (typeof document !== "undefined") {
     treeView.innerHTML = note("Press Decompose.");
     element("legend").hidden = true;
     shown = null;
+    parsedTree = null;
     element("output").textContent = "";
     result = "";
     element("result-summary").textContent = "";
@@ -651,6 +668,8 @@ if (typeof document !== "undefined") {
     element("save").disabled = true;
     if (solver !== null) element("status").textContent = "ready";
 
+    parsedGraph = null;
+    vertexElements = new Map();
     const graph = parseGr(text);
     if (graph.error !== undefined) {
       graphView.innerHTML = note(`Not drawn: ${graph.error}.`);
@@ -660,38 +679,81 @@ if (typeof document !== "undefined") {
       graphView.innerHTML = note("Nothing to draw yet.");
       return;
     }
+    parsedGraph = graph;
     if (graph.count > MAX_DRAWN_VERTICES || graph.edges.length > MAX_DRAWN_EDGES) {
+      const offered = graph.count <= MAX_LAID_OUT_VERTICES;
       graphView.innerHTML = note(
         `Not drawn: ${graph.count} vertices and ${graph.edges.length} edges is` +
-          " past what is readable here.",
+          " past what is readable here." +
+          (offered ? " The layout takes a while at this size." : ""),
+        offered,
       );
       return;
     }
-    graphView.innerHTML = graphSvg(graph.count, graph.edges, layoutGraph(graph.count, graph.edges));
+    renderGraph(false);
   }
 
-  function drawTree(decomposition) {
+  function renderGraph(large) {
+    const { count, edges } = parsedGraph;
+    graphView.innerHTML = graphSvg(count, edges, layoutGraph(count, edges), large);
+    vertexElements = new Map();
+    for (const vertex of graphView.querySelectorAll(".vertex")) {
+      vertexElements.set(vertex.dataset.vertex, vertex);
+    }
+  }
+
+  function drawTree() {
     element("legend").hidden = true;
     shown = null;
-    if (decomposition.bags.size > MAX_DRAWN_BAGS) {
+    if (parsedTree.bags.size > MAX_DRAWN_BAGS) {
       treeView.innerHTML = note(
-        `Not drawn: ${decomposition.bags.size} bags is past what is readable here.`,
+        `Not drawn: ${parsedTree.bags.size} bags is past what is readable here.`,
+        true,
       );
       return;
     }
-    const tree = layoutTree(decomposition.bags, decomposition.edges);
+    renderTree();
+  }
+
+  function renderTree() {
+    const tree = layoutTree(parsedTree.bags, parsedTree.edges);
     treeView.innerHTML = treeSvg(tree);
     element("legend").hidden = treeView.querySelector(".bag.widest") === null;
     fitTree();
     const holders = new Map();
-    for (const [id, vertices] of decomposition.bags) {
+    for (const [id, vertices] of parsedTree.bags) {
       for (const v of vertices) {
         if (!holders.has(v)) holders.set(v, []);
         holders.get(v).push(id);
       }
     }
-    shown = { bags: decomposition.bags, neighbours: tree.neighbours, holders };
+    const bagElements = new Map();
+    for (const bag of treeView.querySelectorAll(".bag")) bagElements.set(bag.dataset.bag, bag);
+    shown = { bags: parsedTree.bags, neighbours: tree.neighbours, holders, bagElements };
   }
+
+  // Runs `work` after the browser has had a frame to paint what was just put
+  // on the page, since the work holds the tab. A tab in the background paints
+  // no frame, so a timer starts it there instead; whichever comes first, once.
+  function afterPaint(work) {
+    let started = false;
+    const start = () => {
+      if (started) return;
+      started = true;
+      work();
+    };
+    requestAnimationFrame(() => setTimeout(start, 0));
+    setTimeout(start, 250);
+  }
+
+  graphView.addEventListener("click", (event) => {
+    if (event.target.closest(".anyway") === null) return;
+    graphView.innerHTML = note("Laying out…");
+    afterPaint(() => renderGraph(true));
+  });
+  treeView.addEventListener("click", (event) => {
+    if (event.target.closest(".anyway") !== null) renderTree();
+  });
 
   // A tree a little wider than its panel is scaled down to fit, since labels
   // at four fifths of their size still read. One much wider keeps its size
@@ -722,8 +784,11 @@ if (typeof document !== "undefined") {
   // reuses them.
   const SIDES = 6;
   const SIDE_CLASSES = Array.from({ length: SIDES }, (_, i) => `side-${i + 1}`);
-  const vertexElement = (v) => graphView.querySelector(`.vertex[data-vertex="${v}"]`);
-  const bagElement = (id) => treeView.querySelector(`.bag[data-bag="${id}"]`);
+  // Elements by vertex and by bag, mapped once per drawing: a lookup in the
+  // DOM per bag would make a hover quadratic in the size of the tree.
+  let vertexElements = new Map();
+  const vertexElement = (v) => vertexElements.get(String(v));
+  const bagElement = (id) => shown.bagElements.get(String(id));
 
   function clearHighlight() {
     for (const marked of document.querySelectorAll(".on, .side")) {
@@ -817,23 +882,40 @@ if (typeof document !== "undefined") {
   });
   graphView.addEventListener("pointerleave", clearHighlight);
 
-  const example = element("example");
-  EXAMPLES.forEach(([name], i) => example.add(new Option(name, String(i))));
+  // A button per example; the one whose text is in the box is marked.
+  const examples = element("examples");
+  EXAMPLES.forEach(([name], i) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.textContent = name;
+    chip.dataset.example = i;
+    examples.append(chip);
+  });
+  const markExample = (i) => {
+    for (const chip of examples.children) {
+      chip.classList.toggle("on", chip.dataset.example === String(i));
+    }
+  };
 
-  function loadExample() {
-    const chosen = EXAMPLES[Number(example.value)];
-    if (example.value === "" || chosen === undefined) return;
-    element("graph").value = chosen[1]();
+  // Choosing an example runs it, once the solver is there: the point of the
+  // buttons is to see what comes out.
+  function loadExample(i) {
+    element("graph").value = EXAMPLES[i][1]();
+    markExample(i);
     clearTimeout(pending);
     drawGraph();
+    if (!element("run").disabled) element("run").click();
   }
-  example.addEventListener("change", loadExample);
+  examples.addEventListener("click", (event) => {
+    const chip = event.target.closest("button");
+    if (chip !== null) loadExample(Number(chip.dataset.example));
+  });
 
   // Redrawing while someone types would be a layout run per keystroke. Once
   // edited, the text is no longer the example it started from.
   let pending = 0;
   element("graph").addEventListener("input", () => {
-    example.value = "";
+    markExample(-1);
     clearTimeout(pending);
     pending = setTimeout(drawGraph, 300);
   });
@@ -863,22 +945,14 @@ if (typeof document !== "undefined") {
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   });
 
-  // The call holds this tab for as long as the construction runs, so give the
-  // browser a frame to paint the status in before it starts. A tab in the
-  // background paints no frame, so a timer starts the run there instead.
+  // The call holds this tab for as long as the construction runs, so the
+  // status is painted before it starts.
   element("run").addEventListener("click", () => {
     clearTimeout(pending);
     drawGraph();
     element("status").textContent = "running";
     element("run").disabled = true;
-    let started = false;
-    const start = () => {
-      if (started) return;
-      started = true;
-      decompose();
-    };
-    requestAnimationFrame(() => setTimeout(start, 0));
-    setTimeout(start, 250);
+    afterPaint(decompose);
   });
 
   // The other side of the call takes unsigned numbers, where a blank or
@@ -906,6 +980,7 @@ if (typeof document !== "undefined") {
 
     const decomposition = parseTd(text);
     const failed = decomposition.error !== undefined;
+    parsedTree = failed ? null : decomposition;
     element("copy").disabled = failed;
     element("save").disabled = failed;
     element("status").textContent = failed ? "failed" : "ready";
@@ -919,16 +994,12 @@ if (typeof document !== "undefined") {
       element("legend").hidden = true;
       shown = null;
     } else {
-      drawTree(decomposition);
+      drawTree();
     }
   }
 
   // A browser that brings the text back on reload keeps it; otherwise the
   // page opens on the first example.
-  if (element("graph").value === "") {
-    example.value = "0";
-    loadExample();
-  } else {
-    drawGraph();
-  }
+  if (element("graph").value === "") loadExample(0);
+  else drawGraph();
 }
