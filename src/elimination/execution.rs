@@ -94,21 +94,9 @@ impl<'a> ElimSink<'a> {
     }
 }
 
-/// Complete the active residual with the path order returned by
-/// [`path_completion`].
-pub(super) fn complete_residual_as_path(graph: &EliminationGraph, sink: &mut ElimSink<'_>) {
-    let remaining: Vec<u32> = (0..graph.len() as u32)
+/// Return the active vertices in their original index order.
+pub(super) fn active_vertices(graph: &EliminationGraph) -> Vec<u32> {
+    (0..graph.len() as u32)
         .filter(|&v| graph.active[v as usize])
-        .collect();
-    for (vertex, bag) in path_completion(&remaining) {
-        sink.record(vertex, bag);
-    }
-}
-
-/// Elimination records for completing `vertices` in their given order.
-pub(super) fn path_completion(vertices: &[u32]) -> impl Iterator<Item = (u32, Vec<u32>)> + '_ {
-    vertices
-        .iter()
-        .enumerate()
-        .map(|(index, &vertex)| (vertex, vertices[index..].to_vec()))
+        .collect()
 }
