@@ -35,9 +35,10 @@ a budgeted standard portfolio, keeps the 100-extra-sample cap below a
 4.75-second soft budget. At or above that budget it permits up to 1,000 extra
 samples. An extra sample that reaches the soft deadline stops there; the
 remaining hard-budget interval is reserved for a trailing FlowCutter
-candidate. A 4.75-second soft budget has a 9.5-second hard deadline, leaving
-time to write the result under a ten-second process limit. The library remains
-single-threaded throughout.
+candidate. By default, a 4.75-second soft budget has a 9.5-second hard
+deadline. Callers that need more time to write the result can set an earlier
+hard budget independently without changing the soft schedule. The library
+remains single-threaded throughout.
 
 ## Preprocessing
 

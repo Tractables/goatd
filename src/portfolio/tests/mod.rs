@@ -44,6 +44,18 @@ fn a_ten_second_outer_window_with_output_headroom_raises_the_sampling_cap() {
 }
 
 #[test]
+fn an_explicit_hard_budget_does_not_change_the_soft_schedule() {
+    let soft = Duration::from_millis(4_750);
+    let hard = Duration::from_millis(9_000);
+    let config = PortfolioConfig::standard_with_budget(soft).with_hard_budget(hard);
+
+    assert_eq!(config.soft_budget, Some(soft));
+    assert_eq!(config.hard_budget, Some(hard));
+    assert_eq!(config.sampling_runs, 1_000);
+    assert_eq!(config.flowcutter_budget, Some(soft));
+}
+
+#[test]
 fn an_extra_sample_stops_at_the_soft_deadline() {
     let soft_deadline = Instant::now() + Duration::from_secs(1);
     let hard_deadline = soft_deadline + Duration::from_secs(1);
