@@ -4,14 +4,18 @@
 // graph, a layout for the decomposition, SVG for both, and the calls into the
 // Wasm module. Nothing is loaded from anywhere else.
 
-// A drawing past these sizes is a grey smear, so the panel says so instead.
+// A drawing past these sizes is a grey smear, so the panel says so instead
+// and offers to draw it anyway.
 const MAX_DRAWN_VERTICES = 500;
 const MAX_DRAWN_EDGES = 1500;
 const MAX_DRAWN_BAGS = 200;
-// Each panel offers to draw past those anyway. The graph layout is quadratic
-// in the vertices, in time and in memory, so past this many the offer is not
-// made: the tab would be gone for minutes.
-const MAX_LAID_OUT_VERTICES = 3000;
+// Up to this many vertices, each is drawn larger with its number on it.
+const LABELLED_VERTICES = 90;
+// A graph drawn anyway gets this many vertex-pair updates of the stress
+// layout, about three seconds' worth; when that buys fewer rounds than the
+// minimum, the pivot layout draws it instead.
+const LAYOUT_WORK = 4e8;
+const MIN_LAYOUT_ROUNDS = 80;
 // A `.td` text past this many bytes is kept for Copy and Save but not put on
 // the page, where a construction gone wrong on a large graph can return tens
 // of megabytes.
@@ -111,12 +115,9 @@ function mulberry32(seed) {
   };
 }
 
-// The number of edges apart every pair of vertices is, by breadth-first search
-// from each of them in turn, as one row of `count` numbers per vertex. Two
-// vertices in different components are given a distance somewhat past the
-// longest path in the graph, which separates the components without letting
-// them drift arbitrarily far apart.
-function graphDistances(count, edges) {
+// The neighbours of every vertex in two flat arrays: those of `v` are
+// `neighbours[start[v]]` up to `neighbours[start[v + 1]]`.
+function neighbourLists(count, edges) {
   const degree = new Int32Array(count + 2);
   for (const [u, v] of edges) {
     degree[u]++;
@@ -135,7 +136,16 @@ function graphDistances(count, edges) {
     neighbours[next[u]++] = v;
     neighbours[next[v]++] = u;
   }
+  return { start, neighbours };
+}
 
+// The number of edges apart every pair of vertices is, by breadth-first search
+// from each of them in turn, as one row of `count` numbers per vertex. Two
+// vertices in different components are given a distance somewhat past the
+// longest path in the graph, which separates the components without letting
+// them drift arbitrarily far apart.
+function graphDistances(count, edges) {
+  const { start, neighbours } = neighbourLists(count, edges);
   const distance = new Float64Array(count * count);
   const queue = new Int32Array(count);
   let longest = 1;
@@ -170,8 +180,10 @@ function graphDistances(count, edges) {
 // in a perfectly balanced position that the update cannot leave. The jitter
 // comes from a fixed seed, so the same graph always draws the same way.
 //
-// Both the distances and the rounds are quadratic in the vertex count, which
-// is what MAX_DRAWN_VERTICES keeps in hand.
+// Both the distances and the rounds are quadratic in the vertex count. Up to
+// MAX_DRAWN_VERTICES the layout runs its full rounds; past it, when the
+// drawing is asked for anyway, it gets LAYOUT_WORK pair updates in all, and
+// when that buys fewer than MIN_LAYOUT_ROUNDS rounds, layoutGraphByPivots.
 function layoutGraph(count, edges, rounds = 300) {
   const xs = new Float64Array(count + 1);
   const ys = new Float64Array(count + 1);
@@ -230,9 +242,14 @@ function layoutGraph(count, edges, rounds = 300) {
     ys.set(nextY);
   }
 
-  // Stress majorization fixes the shape but not which way up it is, and it
-  // usually lands askew. Turning it so that its bounding box is as small as it
-  // can be squares up a grid and lays a long graph flat.
+  return squareUp(count, xs, ys);
+}
+
+// Neither layout fixes which way up the drawing is, and both usually land
+// askew. Turning the drawing so that its bounding box is as small as it can
+// be squares up a grid and lays a long graph flat; it is then fitted to the
+// unit square, both axes scaled alike, and centred.
+function squareUp(count, xs, ys) {
   let turn = 0;
   let smallest = Infinity;
   for (let degrees = 0; degrees < 90; degrees++) {
@@ -265,8 +282,12 @@ function layoutGraph(count, edges, rounds = 300) {
     xs[v] = x;
   }
 
-  // Fit the drawing to the unit square, scaling both axes by the same factor
-  // so it is not stretched, and centre what is left over.
+  return fitUnit(count, xs, ys);
+}
+
+// Fit a drawing to the unit square, scaling both axes by the same factor so
+// it is not stretched, and centre what is left over.
+function fitUnit(count, xs, ys) {
   let minX = Infinity;
   let maxX = -Infinity;
   let minY = Infinity;
@@ -285,6 +306,227 @@ function layoutGraph(count, edges, rounds = 300) {
     ys[v] = (ys[v] - minY + shiftY) / extent;
   }
   return { xs, ys };
+}
+
+// A vertex with no edge is the same distance from everything, and either
+// layout pushes such vertices out to an arc around the rest that takes half
+// the drawing. They go in rows under the drawing instead, and the layout
+// sees only the vertices that have an edge.
+function withIsolatedBelow(count, edges, lay) {
+  const degree = new Uint32Array(count + 1);
+  for (const [u, v] of edges) {
+    degree[u]++;
+    degree[v]++;
+  }
+  const index = new Uint32Array(count + 1);
+  let joined = 0;
+  for (let v = 1; v <= count; v++) if (degree[v] > 0) index[v] = ++joined;
+  if (joined === count || joined === 0) return lay(count, edges);
+
+  const inner = lay(joined, edges.map(([u, v]) => [index[u], index[v]]));
+  const xs = new Float64Array(count + 1);
+  const ys = new Float64Array(count + 1);
+  const alone = count - joined;
+  const across = count <= LABELLED_VERTICES ? 17 : 40;
+  const step = 1 / (across - 1);
+  const perRow = Math.min(alone, across);
+  let placed = 0;
+  for (let v = 1; v <= count; v++) {
+    if (degree[v] > 0) {
+      xs[v] = inner.xs[index[v]];
+      ys[v] = inner.ys[index[v]];
+    } else {
+      xs[v] = 0.5 + (placed % perRow - (perRow - 1) / 2) * step;
+      ys[v] = 1 + 2 * step + Math.floor(placed / perRow) * step;
+      placed++;
+    }
+  }
+  return fitUnit(count, xs, ys);
+}
+
+// Pivot MDS, for a graph too large for the stress layout: breadth-first
+// search from a few dozen pivots spread through the graph, each the vertex
+// farthest from the pivots before it, then the two leading directions of the
+// squared distances to them, which is classical scaling restricted to the
+// pivots. A grid comes out as a grid. A graph with less shape comes out
+// with vertices that have the same distances to every pivot on top of each
+// other; when that has happened to more than a few, some rounds of stress
+// majorization follow in which each vertex answers only to its neighbours
+// and to the pivots, which pulls them apart (and would only roughen a grid,
+// so a grid gets none). The cost is a search per pivot and a few passes over
+// the vertices, so ten thousand vertices take well under a second.
+function layoutGraphByPivots(count, edges, pivots = 60, rounds = 50) {
+  const xs = new Float64Array(count + 1);
+  const ys = new Float64Array(count + 1);
+  if (count === 0) return { xs, ys };
+  if (count === 1) {
+    xs[1] = 0.5;
+    ys[1] = 0.5;
+    return { xs, ys };
+  }
+  const { start, neighbours } = neighbourLists(count, edges);
+  const k = Math.min(pivots, count);
+  // Row per vertex, column per pivot.
+  const distance = new Float64Array(count * k).fill(-1);
+  const nearest = new Float64Array(count + 1).fill(Infinity);
+  const queue = new Int32Array(count);
+  const pivotAt = new Int32Array(k);
+  let longest = 1;
+  let pivot = 1;
+  for (let p = 0; p < k; p++) {
+    pivotAt[p] = pivot;
+    distance[(pivot - 1) * k + p] = 0;
+    queue[0] = pivot;
+    for (let head = 0, tail = 1; head < tail; head++) {
+      const at = queue[head];
+      const d = distance[(at - 1) * k + p] + 1;
+      for (let i = start[at]; i < start[at + 1]; i++) {
+        const to = neighbours[i];
+        if (distance[(to - 1) * k + p] >= 0) continue;
+        distance[(to - 1) * k + p] = d;
+        longest = Math.max(longest, d);
+        queue[tail++] = to;
+      }
+    }
+    // The next pivot is the vertex farthest from all pivots so far; a vertex
+    // no pivot has reached, in another component, comes first.
+    let farthest = 0;
+    for (let v = 1; v <= count; v++) {
+      const d = distance[(v - 1) * k + p];
+      if (d >= 0) nearest[v] = Math.min(nearest[v], d);
+      if (farthest === 0 || nearest[v] > nearest[farthest]) farthest = v;
+    }
+    pivot = farthest;
+  }
+  for (let i = 0; i < distance.length; i++) {
+    if (distance[i] < 0) distance[i] = longest * 1.5;
+  }
+  const raw = distance.slice();
+
+  // Double-centre the squared distances, in place.
+  const rowMean = new Float64Array(count + 1);
+  const columnMean = new Float64Array(k);
+  let mean = 0;
+  for (let v = 1; v <= count; v++) {
+    const row = (v - 1) * k;
+    let sum = 0;
+    for (let p = 0; p < k; p++) {
+      const square = distance[row + p] * distance[row + p];
+      distance[row + p] = square;
+      sum += square;
+      columnMean[p] += square;
+    }
+    rowMean[v] = sum / k;
+    mean += sum;
+  }
+  mean /= count * k;
+  for (let p = 0; p < k; p++) columnMean[p] /= count;
+  for (let v = 1; v <= count; v++) {
+    const row = (v - 1) * k;
+    for (let p = 0; p < k; p++) {
+      distance[row + p] = -0.5 * (distance[row + p] - rowMean[v] - columnMean[p] + mean);
+    }
+  }
+
+  // The k-by-k product of the centred matrix with itself, then its two
+  // leading eigenvectors by power iteration, the second kept orthogonal to
+  // the first.
+  const product = new Float64Array(k * k);
+  for (let v = 1; v <= count; v++) {
+    const row = (v - 1) * k;
+    for (let a = 0; a < k; a++) {
+      const left = distance[row + a];
+      if (left === 0) continue;
+      for (let b = a; b < k; b++) product[a * k + b] += left * distance[row + b];
+    }
+  }
+  for (let a = 0; a < k; a++) {
+    for (let b = a + 1; b < k; b++) product[b * k + a] = product[a * k + b];
+  }
+  const random = mulberry32(0x2545f491);
+  const eigenvector = (avoid) => {
+    let vector = Float64Array.from({ length: k }, () => random() - 0.5);
+    const next = new Float64Array(k);
+    for (let round = 0; round < 300; round++) {
+      if (avoid !== null) {
+        let dot = 0;
+        for (let i = 0; i < k; i++) dot += vector[i] * avoid[i];
+        for (let i = 0; i < k; i++) vector[i] -= dot * avoid[i];
+      }
+      let norm = 0;
+      for (let a = 0; a < k; a++) {
+        let sum = 0;
+        for (let b = 0; b < k; b++) sum += product[a * k + b] * vector[b];
+        next[a] = sum;
+        norm += sum * sum;
+      }
+      norm = Math.sqrt(norm) || 1;
+      for (let i = 0; i < k; i++) vector[i] = next[i] / norm;
+    }
+    return vector;
+  };
+  const first = eigenvector(null);
+  const second = eigenvector(first);
+  for (let v = 1; v <= count; v++) {
+    const row = (v - 1) * k;
+    let x = 0;
+    let y = 0;
+    for (let p = 0; p < k; p++) {
+      x += distance[row + p] * first[p];
+      y += distance[row + p] * second[p];
+    }
+    xs[v] = x;
+    ys[v] = y;
+  }
+
+  // The coordinates are in edge lengths. The rounds are needed when more
+  // than one vertex in twenty shares a spot, to a quarter of an edge.
+  const spots = new Set();
+  for (let v = 1; v <= count; v++) spots.add(`${Math.round(xs[v] * 4)},${Math.round(ys[v] * 4)}`);
+  if (spots.size >= 0.95 * count) return squareUp(count, xs, ys);
+
+  // The stress rounds, over neighbours (one edge apart) and pivots (their
+  // searched distance apart), from a start jittered by a fixed seed so that
+  // vertices on one spot can come apart.
+  for (let v = 1; v <= count; v++) {
+    xs[v] += 0.1 * (random() - 0.5);
+    ys[v] += 0.1 * (random() - 0.5);
+  }
+  const nextX = new Float64Array(count + 1);
+  const nextY = new Float64Array(count + 1);
+  const pull = (i, j, target, weight, sums) => {
+    const ex = xs[i] - xs[j];
+    const ey = ys[i] - ys[j];
+    let length = Math.sqrt(ex * ex + ey * ey);
+    if (length < 1e-9) length = 1e-9;
+    const stretch = target / length;
+    sums[0] += weight * (xs[j] + ex * stretch);
+    sums[1] += weight * (ys[j] + ey * stretch);
+    sums[2] += weight;
+  };
+  const sums = [0, 0, 0];
+  for (let round = 0; round < rounds; round++) {
+    for (let i = 1; i <= count; i++) {
+      sums[0] = sums[1] = sums[2] = 0;
+      for (let n = start[i]; n < start[i + 1]; n++) pull(i, neighbours[n], 1, 1, sums);
+      const row = (i - 1) * k;
+      for (let p = 0; p < k; p++) {
+        const target = raw[row + p];
+        if (target === 0) continue;
+        pull(i, pivotAt[p], target, 1 / (target * target), sums);
+      }
+      if (sums[2] === 0) {
+        nextX[i] = xs[i];
+        nextY[i] = ys[i];
+      } else {
+        nextX[i] = sums[0] / sums[2];
+        nextY[i] = sums[1] / sums[2];
+      }
+    }
+    xs.set(nextX);
+    ys.set(nextY);
+  }
+  return squareUp(count, xs, ys);
 }
 
 // ------------------------------------------------------------- tree layout
@@ -405,7 +647,7 @@ function graphSvg(count, edges, layout, large = false) {
   // the cap and asked for anyway, takes its natural size instead, about
   // twenty pixels a vertex, and scrolls.
   const size = large ? Math.round(Math.sqrt(count) * 21) : 420;
-  const labelled = count <= 90;
+  const labelled = count <= LABELLED_VERTICES;
   const radius = labelled ? 8 : 4;
   const inset = radius + 6;
   const scale = size - 2 * inset;
@@ -497,9 +739,10 @@ function summarise(header, elapsed) {
 
 // ----------------------------------------------------------------- examples
 
-// The menu of example graphs, each generated when chosen, so the page carries
-// the recipe and not the text. The first is the graph the page opens with.
-// The last three are past what the page draws; they show the solver at work.
+// The row of example graphs. All but one are generated when chosen, so the
+// page carries the recipe and not the text; the competition graph is a file
+// beside the page. The first is the graph the page opens with. The larger
+// ones are past what the page draws unasked; they show the solver at work.
 const EXAMPLES = [
   ["6×6 grid", () => grid(6, 6, "a 6x6 grid; its treewidth is 6")],
   ["Petersen graph", petersen],
@@ -507,10 +750,19 @@ const EXAMPLES = [
   ["5-dimensional hypercube", () => hypercube(5)],
   ["20×20 grid", () => grid(20, 20, "a 20x20 grid; its treewidth is 20")],
   ["7×7×7 grid", () => cubeGrid(7)],
+  ["Model Counting Competition CNF, 1,843 vertices", () => fetched("mcc2025-track1-093.gr")],
   ["random 4-tree, 2,000 vertices", () => kTree(4, 2000, 1)],
   ["random sparse graph, 3,000 vertices", () => randomGraph(3000, 4500, 1)],
   ["100×100 grid, 10,000 vertices", () => grid(100, 100, "a 100x100 grid; its treewidth is 100")],
 ];
+
+// A graph shipped as a file beside the page.
+function fetched(file) {
+  return fetch(file).then((response) => {
+    if (!response.ok) throw new Error(`${response.status} for ${file}`);
+    return response.text();
+  });
+}
 
 // The `.gr` text of a graph: a comment naming it, the problem line, then an
 // edge per line with the smaller vertex first.
@@ -640,7 +892,7 @@ if (typeof document !== "undefined") {
       element("run").disabled = false;
       element("status").textContent = "ready";
       // The page opens on an example; show what it gives without a click.
-      if (examples.querySelector(".on") !== null && shown === null) element("run").click();
+      if (examples.querySelector(".chosen") !== null && shown === null) element("run").click();
     })
     .catch((failure) => {
       element("status").textContent = `the solver did not load: ${failure}`;
@@ -659,6 +911,7 @@ if (typeof document !== "undefined") {
     // Whatever is on show belongs to the graph that was there before.
     treeView.innerHTML = note("Press Decompose.");
     element("legend").hidden = true;
+    element("zoom").hidden = true;
     shown = null;
     parsedTree = null;
     element("output").textContent = "";
@@ -683,12 +936,10 @@ if (typeof document !== "undefined") {
     }
     parsedGraph = graph;
     if (graph.count > MAX_DRAWN_VERTICES || graph.edges.length > MAX_DRAWN_EDGES) {
-      const offered = graph.count <= MAX_LAID_OUT_VERTICES;
       graphView.innerHTML = note(
         `Not drawn: ${graph.count} vertices and ${graph.edges.length} edges is` +
-          " past what is readable here." +
-          (offered ? " The layout takes a while at this size." : ""),
-        offered,
+          " past what is readable here.",
+        true,
       );
       return;
     }
@@ -697,7 +948,11 @@ if (typeof document !== "undefined") {
 
   function renderGraph(large) {
     const { count, edges } = parsedGraph;
-    graphView.innerHTML = graphSvg(count, edges, layoutGraph(count, edges), large);
+    const rounds = large ? Math.min(300, Math.floor(LAYOUT_WORK / (count * count))) : 300;
+    const layout = withIsolatedBelow(count, edges, (n, e) =>
+      rounds >= MIN_LAYOUT_ROUNDS ? layoutGraph(n, e, rounds) : layoutGraphByPivots(n, e),
+    );
+    graphView.innerHTML = graphSvg(count, edges, layout, large);
     vertexElements = new Map();
     for (const vertex of graphView.querySelectorAll(".vertex")) {
       vertexElements.set(vertex.dataset.vertex, vertex);
@@ -706,6 +961,7 @@ if (typeof document !== "undefined") {
 
   function drawTree() {
     element("legend").hidden = true;
+    element("zoom").hidden = true;
     shown = null;
     if (parsedTree.bags.size > MAX_DRAWN_BAGS) {
       treeView.innerHTML = note(
@@ -721,7 +977,9 @@ if (typeof document !== "undefined") {
     const tree = layoutTree(parsedTree.bags, parsedTree.edges);
     treeView.innerHTML = treeSvg(tree);
     element("legend").hidden = treeView.querySelector(".bag.widest") === null;
-    fitTree();
+    element("zoom").hidden = false;
+    zoom = "auto";
+    applyZoom();
     const holders = new Map();
     for (const [id, vertices] of parsedTree.bags) {
       for (const v of vertices) {
@@ -757,13 +1015,14 @@ if (typeof document !== "undefined") {
     if (event.target.closest(".anyway") !== null) renderTree();
   });
 
-  // A tree a little wider than its panel is scaled down to fit, since labels
-  // at four fifths of their size still read. One much wider keeps its size
-  // and scrolls, starting with the root, which sits over the middle of the
-  // drawing, in view. The room is the panel's box less border and padding,
-  // which a scrollbar coming or going does not move, so the decision does
-  // not feed back on itself.
-  function fitTree() {
+  // The tree's zoom: a factor, "fit" for whatever fills the panel's width,
+  // or "auto", which fits when that leaves the labels at least half their
+  // size and otherwise draws at full size to scroll. The room is the panel's
+  // box less border and padding, which a scrollbar coming or going does not
+  // move, so the decision does not feed back on itself. The scroll starts
+  // with the root, which sits over the middle of the drawing, in view.
+  let zoom = "auto";
+  function applyZoom() {
     const svg = treeView.querySelector("svg.tree");
     if (svg === null) return;
     const style = getComputedStyle(treeView);
@@ -774,13 +1033,29 @@ if (typeof document !== "undefined") {
       parseFloat(style.paddingLeft) -
       parseFloat(style.paddingRight);
     const natural = Number(svg.getAttribute("width"));
-    svg.classList.toggle("fit", natural > room && natural * 0.8 <= room);
+    const fit = Math.min(1, room / natural);
+    const factor = zoom === "fit" ? fit : zoom === "auto" ? (fit >= 0.5 ? fit : 1) : zoom;
+    svg.style.width = `${natural * factor}px`;
+    svg.style.height = `${Number(svg.getAttribute("height")) * factor}px`;
+    element("zoom-level").textContent = `${Math.round(factor * 100)}%`;
     treeView.scrollLeft = (treeView.scrollWidth - treeView.clientWidth) / 2;
   }
+  element("zoom").addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    const svg = treeView.querySelector("svg.tree");
+    if (button === null || svg === null) return;
+    const current = parseFloat(svg.style.width) / Number(svg.getAttribute("width"));
+    const asked = button.dataset.zoom;
+    if (asked === "fit") zoom = "fit";
+    else if (asked === "one") zoom = 1;
+    else if (asked === "in") zoom = Math.min(4, current * 1.25);
+    else zoom = Math.max(0.02, current / 1.25);
+    applyZoom();
+  });
 
-  // The panel's width follows the window, the zoom level and the layout;
-  // the fit is decided again whenever it changes.
-  new ResizeObserver(fitTree).observe(treeView);
+  // The panel's width follows the window and the layout; a fit is decided
+  // again whenever it changes.
+  new ResizeObserver(applyZoom).observe(treeView);
 
   // The stylesheet has this many branch colours; a bag with more neighbours
   // reuses them.
@@ -884,7 +1159,8 @@ if (typeof document !== "undefined") {
   });
   graphView.addEventListener("pointerleave", clearHighlight);
 
-  // A button per example; the one whose text is in the box is marked.
+  // A button per example; the one whose text is in the box is marked. (Not
+  // with "on", which clearHighlight takes off everything on the page.)
   const examples = element("examples");
   EXAMPLES.forEach(([name], i) => {
     const chip = document.createElement("button");
@@ -895,15 +1171,26 @@ if (typeof document !== "undefined") {
   });
   const markExample = (i) => {
     for (const chip of examples.children) {
-      chip.classList.toggle("on", chip.dataset.example === String(i));
+      chip.classList.toggle("chosen", chip.dataset.example === String(i));
     }
   };
 
   // Choosing an example runs it, once the solver is there: the point of the
-  // buttons is to see what comes out.
-  function loadExample(i) {
-    element("graph").value = EXAMPLES[i][1]();
+  // buttons is to see what comes out. An example may come from a file next
+  // to the page rather than a recipe, so the text may take a moment.
+  let loading = 0;
+  async function loadExample(i) {
     markExample(i);
+    const ticket = ++loading;
+    let text;
+    try {
+      text = await EXAMPLES[i][1]();
+    } catch (failure) {
+      element("status").textContent = `the example did not load: ${failure}`;
+      return;
+    }
+    if (ticket !== loading) return;
+    element("graph").value = text;
     clearTimeout(pending);
     drawGraph();
     if (!element("run").disabled) element("run").click();

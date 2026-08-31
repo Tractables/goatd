@@ -49,10 +49,11 @@ body {
   font: 15px/1.55 var(--sans);
 }
 
+/* The page takes the whole window: the drawings want every pixel a wide
+   screen has. The text columns keep their own widths. */
 main {
-  max-width: 76rem;
   margin: 0 auto;
-  padding: 2rem 1.25rem 4rem;
+  padding: 1.5rem 2rem 4rem;
 }
 
 header {
@@ -150,7 +151,7 @@ label {
   color: var(--accent);
 }
 
-#examples button.on, #examples button.on:hover:not(:disabled) {
+#examples button.chosen, #examples button.chosen:hover:not(:disabled) {
   border-color: var(--accent);
   background: var(--accent);
   color: var(--card);
@@ -284,7 +285,7 @@ figcaption {
   background: var(--code);
   padding: 0.5rem;
   /* A deep decomposition scrolls rather than shrinking out of legibility. */
-  max-height: 34rem;
+  max-height: 75vh;
   overflow: auto;
 }
 
@@ -294,13 +295,35 @@ svg.drawing { display: block; }
 
 /* The graph is square; it sits in the middle of its row at a size where the
    labels read. */
-svg.graph { width: 100%; height: auto; max-height: 30rem; }
+svg.graph { width: 100%; height: auto; max-height: 70vh; }
 svg.graph.large { width: auto; max-height: none; }
 
-/* A tree narrower than its row is centred; one a little wider is scaled to
-   fit (the script decides); one much wider keeps its size and scrolls. */
+/* A tree narrower than its row is centred; the script sets its size from
+   the zoom, and a wider one scrolls. */
 svg.tree { margin: 0 auto; }
-svg.tree.fit { width: 100%; height: auto; }
+
+.zoom {
+  margin-left: 0.9rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.zoom b {
+  display: inline-block;
+  min-width: 3em;
+  text-align: center;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.zoom button {
+  width: auto;
+  min-width: 1.8em;
+  padding: 0 0.45rem;
+  font-size: 12px;
+  line-height: 1.5;
+}
 
 .edge .ink { stroke: var(--line); stroke-width: 1.2; }
 .edge.on .ink { stroke: var(--accent); stroke-width: 1.8; }
