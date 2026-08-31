@@ -799,21 +799,23 @@ function summarise(header, elapsed) {
 
 // ----------------------------------------------------------------- examples
 
-// The row of example graphs. All but one are generated when chosen, so the
-// page carries the recipe and not the text; the competition graph is a file
-// beside the page. The first is the graph the page opens with. The larger
-// ones are past what the page draws unasked; they show the solver at work.
+// The row of example graphs: each has a key, which is how the address bar
+// names it, the name on its button, and its maker. All but one are generated
+// when chosen, so the page carries the recipe and not the text; the
+// competition graph is a file beside the page. The first is the graph the
+// page opens with unless the address names another. The larger ones are
+// past what the page draws unasked; they show the solver at work.
 const EXAMPLES = [
-  ["6×6 grid", () => grid(6, 6, "a 6x6 grid; its treewidth is 6")],
-  ["Petersen graph", petersen],
-  ["random 3-tree, 40 vertices", () => kTree(3, 40, 1)],
-  ["5-dimensional hypercube", () => hypercube(5)],
-  ["20×20 grid", () => grid(20, 20, "a 20x20 grid; its treewidth is 20")],
-  ["7×7×7 grid", () => cubeGrid(7)],
-  ["Model Counting Competition CNF, 1,843 vertices", () => fetched("mcc2025-track1-093.gr")],
-  ["random 4-tree, 2,000 vertices", () => kTree(4, 2000, 1)],
-  ["random sparse graph, 3,000 vertices", () => randomGraph(3000, 4500, 1)],
-  ["100×100 grid, 10,000 vertices", () => grid(100, 100, "a 100x100 grid; its treewidth is 100")],
+  ["grid6", "6×6 grid", () => grid(6, 6, "a 6x6 grid; its treewidth is 6")],
+  ["petersen", "Petersen graph", petersen],
+  ["3-tree", "random 3-tree, 40 vertices", () => kTree(3, 40, 1)],
+  ["hypercube5", "5-dimensional hypercube", () => hypercube(5)],
+  ["grid20", "20×20 grid", () => grid(20, 20, "a 20x20 grid; its treewidth is 20")],
+  ["cube7", "7×7×7 grid", () => cubeGrid(7)],
+  ["mcc2025-093", "Model Counting Competition CNF, 1,843 vertices", () => fetched("mcc2025-track1-093.gr")],
+  ["4-tree", "random 4-tree, 2,000 vertices", () => kTree(4, 2000, 1)],
+  ["sparse3000", "random sparse graph, 3,000 vertices", () => randomGraph(3000, 4500, 1)],
+  ["grid100", "100×100 grid, 10,000 vertices", () => grid(100, 100, "a 100x100 grid; its treewidth is 100")],
 ];
 
 // A graph shipped as a file beside the page.
@@ -934,7 +936,6 @@ if (typeof document !== "undefined") {
   const element = (id) => document.getElementById(id);
   const graphView = element("graph-view");
   const treeView = element("tree-view");
-  let solver = null;
   let drawnGraph = "";
   // What hovering needs of the decomposition on show: the bags, which bags
   // are joined, and which bags hold each vertex. Null while none is drawn.
@@ -945,18 +946,6 @@ if (typeof document !== "undefined") {
   // is null when there is nothing to draw.
   let parsedGraph = null;
   let parsedTree = null;
-
-  createGoatd()
-    .then((module) => {
-      solver = module;
-      element("run").disabled = false;
-      element("status").textContent = "ready";
-      // The page opens on an example; show what it gives without a click.
-      if (examples.querySelector(".chosen") !== null && shown === null) element("run").click();
-    })
-    .catch((failure) => {
-      element("status").textContent = `the solver did not load: ${failure}`;
-    });
 
   // A note in a panel, with a button to draw what was held back when there
   // is something to draw.
@@ -1222,7 +1211,7 @@ if (typeof document !== "undefined") {
   // A button per example; the one whose text is in the box is marked. (Not
   // with "on", which clearHighlight takes off everything on the page.)
   const examples = element("examples");
-  EXAMPLES.forEach(([name], i) => {
+  EXAMPLES.forEach(([, name], i) => {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.textContent = name;
@@ -1244,7 +1233,7 @@ if (typeof document !== "undefined") {
     const ticket = ++loading;
     let text;
     try {
-      text = await EXAMPLES[i][1]();
+      text = await EXAMPLES[i][2]();
     } catch (failure) {
       element("status").textContent = `the example did not load: ${failure}`;
       return;
@@ -1253,7 +1242,7 @@ if (typeof document !== "undefined") {
     element("graph").value = text;
     clearTimeout(pending);
     drawGraph();
-    if (!element("run").disabled) element("run").click();
+    requestRun();
   }
   examples.addEventListener("click", (event) => {
     const chip = event.target.closest("button");
@@ -1265,6 +1254,7 @@ if (typeof document !== "undefined") {
   let pending = 0;
   element("graph").addEventListener("input", () => {
     markExample(-1);
+    element("link").hidden = true;
     clearTimeout(pending);
     pending = setTimeout(drawGraph, 300);
   });
@@ -1294,38 +1284,144 @@ if (typeof document !== "undefined") {
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   });
 
-  // The call holds this tab for as long as the construction runs, so the
-  // status is painted before it starts.
-  element("run").addEventListener("click", () => {
-    clearTimeout(pending);
-    drawGraph();
-    element("status").textContent = "running";
-    element("run").disabled = true;
-    afterPaint(decompose);
+  // The address carries the choices, so a result can be linked to:
+  // ?graph=<example>&order=<construction>&seed=<n>&budget=<ms>. It is read
+  // once when the page opens, before the first run, and written at every
+  // run. A graph typed in is not in the address, so a run on one clears it
+  // and hides the button that copies it.
+  const orderKey = (option) => option.textContent.toLowerCase().replace(/\s+/g, "-");
+  function readAddress() {
+    const params = new URLSearchParams(location.search);
+    const order = [...element("order").options].find((option) => orderKey(option) === params.get("order"));
+    if (order !== undefined) element("order").value = order.value;
+    for (const id of ["seed", "budget"]) {
+      const value = params.get(id);
+      if (value !== null && /^\d{1,9}$/.test(value)) element(id).value = value;
+    }
+    return EXAMPLES.findIndex(([key]) => key === params.get("graph"));
+  }
+  function writeAddress() {
+    const chosen = examples.querySelector(".chosen");
+    element("link").hidden = chosen === null;
+    if (chosen === null) {
+      history.replaceState(null, "", location.pathname);
+      return;
+    }
+    const params = new URLSearchParams();
+    params.set("graph", EXAMPLES[Number(chosen.dataset.example)][0]);
+    params.set("order", orderKey(element("order").selectedOptions[0]));
+    params.set("seed", String(setting("seed")));
+    params.set("budget", String(setting("budget")));
+    history.replaceState(null, "", `${location.pathname}?${params}`);
+  }
+  element("link").addEventListener("click", () => {
+    navigator.clipboard.writeText(location.href).then(
+      () => flash(element("link"), "Copied"),
+      () => flash(element("link"), "Not copied"),
+    );
   });
+
+  // The solver runs in a worker, so the page stays live during a run, the
+  // status can count the seconds, and a run can be stopped: Cancel ends the
+  // worker and starts another, which takes a moment to load the module. A
+  // run asked for before the worker is ready, or while another runs, starts
+  // once the worker is.
+  let worker = null;
+  let ready = false;
+  let running = false;
+  let runWhenReady = false;
+  let ticking = 0;
+
+  function startSolver() {
+    ready = false;
+    element("run").disabled = true;
+    element("status").textContent = "loading the solver";
+    worker = new Worker("worker.js");
+    worker.onmessage = (event) => {
+      if (event.data.ready === true) {
+        ready = true;
+        element("run").disabled = false;
+        element("status").textContent = "ready";
+        if (runWhenReady) {
+          runWhenReady = false;
+          run();
+        }
+      } else if (event.data.error !== undefined) {
+        settle();
+        element("status").textContent = `the solver failed: ${event.data.error}`;
+      } else {
+        finish(event.data.td, event.data.elapsed);
+      }
+    };
+    worker.onerror = (event) => {
+      element("status").textContent = `the solver did not load: ${event.message}`;
+    };
+  }
+
+  function requestRun() {
+    if (running) {
+      stop();
+      runWhenReady = true;
+    } else if (ready) {
+      run();
+    } else {
+      runWhenReady = true;
+    }
+  }
+
+  function stop() {
+    worker.terminate();
+    settle();
+    startSolver();
+  }
+
+  function settle() {
+    running = false;
+    clearInterval(ticking);
+    document.body.classList.remove("busy");
+    element("cancel").hidden = true;
+    element("run").hidden = false;
+  }
 
   // The other side of the call takes unsigned numbers, where a blank or
   // negative field would arrive as something enormous.
   const setting = (id) => Math.max(0, Math.trunc(Number(element(id).value)) || 0);
 
-  function decompose() {
+  function run() {
+    clearTimeout(pending);
+    drawGraph();
+    writeAddress();
+    running = true;
     const started = performance.now();
-    const pointer = solver.ccall(
-      "goatd_decompose",
-      "number",
-      ["string", "number", "number", "number"],
-      [element("graph").value, setting("order"), setting("seed"), setting("budget")],
-    );
-    const text = solver.UTF8ToString(pointer);
-    solver.ccall("goatd_string_free", null, ["number"], [pointer]);
-    const elapsed = performance.now() - started;
+    element("status").textContent = "running";
+    ticking = setInterval(() => {
+      element("status").textContent = `running, ${Math.round((performance.now() - started) / 1000)} s`;
+    }, 1000);
+    element("run").hidden = true;
+    element("cancel").hidden = false;
+    document.body.classList.add("busy");
+    worker.postMessage({
+      graph: element("graph").value,
+      order: setting("order"),
+      seed: setting("seed"),
+      budget: setting("budget"),
+    });
+  }
 
+  element("run").addEventListener("click", requestRun);
+  element("cancel").addEventListener("click", () => {
+    if (!running) return;
+    stop();
+    element("status").textContent = "stopped; loading the solver";
+  });
+
+  function finish(text, elapsed) {
+    settle();
     result = text;
     element("output").textContent =
       text.length <= MAX_SHOWN_OUTPUT
         ? text
         : `${text.split("\n", 1)[0]}\n... ${Math.round(text.length / 1048576)} MB of text; Save writes it to a file.`;
-    element("run").disabled = false;
 
     const decomposition = parseTd(text);
     const failed = decomposition.error !== undefined;
@@ -1349,6 +1445,8 @@ if (typeof document !== "undefined") {
 
   // A browser that brings the text back on reload keeps it; otherwise the
   // page opens on the first example.
-  if (element("graph").value === "") loadExample(0);
+  startSolver();
+  const opening = readAddress();
+  if (element("graph").value === "") loadExample(opening === -1 ? 0 : opening);
   else drawGraph();
 }

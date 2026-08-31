@@ -56,13 +56,17 @@
         <input id="seed" type="number" min="0" value="0">
       </div>
       <button id="run" disabled>Decompose</button>
+      <button id="cancel" type="button" hidden>Cancel</button>
       <p id="status">loading the solver</p>
     </div>
   </div>
 </section>
 
 <section class="card">
-  <h2>Result</h2>
+  <div class="result-head">
+    <h2>Result</h2>
+    <button id="link" type="button" hidden>Copy link</button>
+  </div>
   <p id="result-summary"></p>
 
   <div class="panels">
@@ -105,7 +109,6 @@
 
 </main>
 
-<script src="goatd.js"></script>
 <script src="app.js"></script>
 
 </body>

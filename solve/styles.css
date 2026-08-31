@@ -193,6 +193,12 @@ button {
 }
 
 button:hover:not(:disabled) { background: var(--card); color: var(--accent); }
+
+/* Cancel takes Decompose's place while a run is on, and the pointer says
+   the page is busy everywhere but on it. */
+#cancel { background: var(--card); color: var(--accent); }
+#cancel:hover { background: var(--accent); color: var(--card); }
+body.busy, body.busy :not(#cancel) { cursor: progress; }
 button:disabled { opacity: 0.45; cursor: default; }
 
 #status, .note {
@@ -398,7 +404,15 @@ summary {
 
 .tools { margin-left: 0.5rem; }
 
-.tools button, .note button {
+/* The heading of the result and, once there is a result from an example,
+   the button that copies the address that reproduces it. */
+.result-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.tools button, .note button, #link {
   width: auto;
   margin-left: 0.3rem;
   padding: 0.1rem 0.55rem;
