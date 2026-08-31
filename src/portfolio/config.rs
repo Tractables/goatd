@@ -9,7 +9,9 @@ pub(super) const MAX_SAMPLING_RUNS: u64 = 100;
 
 /// Larger budgeted runs keep exploring after the short-run sample cap.
 const EXTENDED_SAMPLING_RUNS: u64 = 1_000;
-const EXTENDED_SAMPLING_MIN_SOFT_BUDGET: Duration = Duration::from_secs(5);
+// A 4.75 s soft budget reaches the two-stage hard deadline at 9.5 s, leaving
+// output headroom under a ten-second process limit.
+const EXTENDED_SAMPLING_MIN_SOFT_BUDGET: Duration = Duration::from_millis(4_750);
 
 /// Default soft deadline for the sampled-min-fill portfolio. The hard deadline
 /// inside the elimination core is twice this.
