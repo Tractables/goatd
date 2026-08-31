@@ -1,255 +1,115 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="light">
-    <meta name="description" content="Aggregate and instance-level results for tree-decomposition solvers.">
-    <title>Tree-decomposition solver comparison</title>
-    <link rel="stylesheet" href="styles.css">
-    <script src="statistics.js" defer></script>
-    <script src="app.js" defer></script>
-  </head>
-  <body>
-    <a class="skip-link" href="#results">Skip to results</a>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>goatd: Greatest Of All Tree Decompositions</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
 
-    <header class="report-header">
-      <div class="title-block">
-        <p class="report-label">Benchmark report</p>
-        <h1>Tree-decomposition solver comparison</h1>
-        <p class="lede">
-          Validated decompositions of primal and incidence graphs derived from
-          preprocessed model-counting formulas. Every solver receives the same
-          ten-second wall-clock limit.
-        </p>
-      </div>
+<main>
 
-      <dl class="run-record" aria-label="Run metadata">
-        <div>
-          <dt>Dataset</dt>
-          <dd id="dataset-title">Loading…</dd>
-        </div>
-        <div>
-          <dt>Budget</dt>
-          <dd id="run-budget">—</dd>
-        </div>
-        <div>
-          <dt>Graph views</dt>
-          <dd id="instance-count">—</dd>
-        </div>
-        <div>
-          <dt>Generated</dt>
-          <dd id="generated-at">—</dd>
-        </div>
-      </dl>
-    </header>
+<header>
+  <img class="logo" src="logo.png" alt="" width="192" height="192">
+  <div>
+    <h1>goatd: Greatest Of All Tree Decompositions</h1>
+    <p class="lede">Paste a PACE <code>.gr</code> graph, or pick an example,
+    and goatd returns a tree decomposition; the solver runs in this tab and
+    nothing is uploaded. The same solver is a
+    <a href="https://crates.io/crates/goatd">Rust crate</a> with a
+    command-line tool, a <a href="https://pypi.org/project/goatd/">Python
+    package</a> and a <a href="https://github.com/Tractables/goatd/releases">C
+    library</a>; the code and its documentation are
+    <a href="https://github.com/Tractables/goatd">on GitHub</a>.</p>
+  </div>
+</header>
 
-    <div id="fixture-notice" class="fixture-notice" role="status" hidden>
-      <strong>Synthetic data.</strong>
-      These values test the interface and are not benchmark measurements.
+<section class="card">
+  <div class="examples">
+    <span class="lead">Try an example</span>
+    <div id="examples"></div>
+  </div>
+  <div class="io">
+    <div class="graph-input">
+      <label for="graph">Graph</label>
+      <textarea id="graph" spellcheck="false"></textarea>
     </div>
 
-    <main id="results">
-      <section class="scope" aria-labelledby="scope-heading">
-        <div class="section-heading compact">
-          <div>
-            <h2 id="scope-heading">Analysis scope</h2>
-            <p>Tree components are omitted. Filters apply to the comparison and graph records.</p>
-          </div>
-          <p id="visible-count" class="visible-count" aria-live="polite"></p>
-        </div>
+    <div class="controls">
+      <div class="field">
+        <label for="order">Construction</label>
+        <select id="order">
+          <option value="0">min-fill</option>
+          <option value="1">min-degree</option>
+          <option value="2">nested dissection</option>
+          <option value="3">FlowCutter</option>
+          <option value="4" selected>portfolio</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="budget">Budget (ms)</label>
+        <input id="budget" type="number" min="0" value="1000">
+      </div>
+      <div class="field">
+        <label for="seed">Seed</label>
+        <input id="seed" type="number" min="0" value="0">
+      </div>
+      <button id="run" disabled>Decompose</button>
+      <button id="cancel" type="button" hidden>Cancel</button>
+      <p id="status">loading the solver</p>
+    </div>
+  </div>
+</section>
 
-        <div class="scope-grid">
-          <label class="search-control">
-            <span>Search</span>
-            <input id="search" type="search" placeholder="Instance, source, or collection" autocomplete="off">
-          </label>
+<section class="card">
+  <div class="result-head">
+    <h2>Result</h2>
+    <button id="link" type="button" hidden>Copy link</button>
+  </div>
+  <p id="result-summary"></p>
 
-          <label>
-            <span>Collection</span>
-            <select id="group-filter">
-              <option value="all">All collections</option>
-            </select>
-          </label>
+  <div class="panels">
+    <figure class="panel">
+      <figcaption>Input graph</figcaption>
+      <p class="hint">Once there is a decomposition, hover a vertex to see the
+      bags that hold it: they form a connected piece of the tree, the running
+      intersection property. Hover an edge to see the bags that hold both its
+      ends; every edge has at least one.</p>
+      <div id="graph-view" class="view"></div>
+    </figure>
+    <figure class="panel">
+      <figcaption>Decomposition
+        <span id="legend" class="legend" hidden><i></i>bags of the largest size</span>
+        <span id="zoom" class="zoom" hidden>
+          <button type="button" data-zoom="out" title="Zoom out">−</button>
+          <b id="zoom-level">100%</b>
+          <button type="button" data-zoom="in" title="Zoom in">+</button>
+          <button type="button" data-zoom="fit">Fit</button>
+          <button type="button" data-zoom="one">1:1</button>
+        </span>
+      </figcaption>
+      <p class="hint">Hover a bag to see it separate the graph. The vertices
+      beyond each branch of the tree at that bag get a colour of their own,
+      and no edge joins two colours.</p>
+      <div id="tree-view" class="view"><p class="note">Press Decompose.</p></div>
+    </figure>
+  </div>
 
-          <label>
-            <span>Graph kind</span>
-            <select id="kind-filter">
-              <option value="all">All kinds</option>
-            </select>
-          </label>
+  <details id="raw">
+    <summary>PACE <code>.td</code> output
+      <span class="tools">
+        <button id="copy" type="button" disabled>Copy</button>
+        <button id="save" type="button" disabled>Save</button>
+      </span>
+    </summary>
+    <pre id="output"></pre>
+  </details>
+</section>
 
-          <label>
-            <span
-              class="metric-help"
-              tabindex="0"
-              aria-label="Minimum best-observed width: Keep graphs whose narrowest validated result from a displayed solver is at least this width. Graphs with no validated result are retained."
-              data-tooltip="Keep graphs whose narrowest validated result is at least this width. Graphs with no validated result are retained."
-            >Minimum best-observed width</span>
-            <select id="minimum-width-filter">
-              <option value="0">No minimum</option>
-              <option value="10">10</option>
-              <option value="20">20</option>
-              <option value="30" selected>30</option>
-              <option value="50">50</option>
-              <option value="100">100</option>
-            </select>
-          </label>
-        </div>
-      </section>
+</main>
 
-      <section class="aggregate-section" aria-labelledby="aggregate-heading">
-        <div class="section-heading">
-          <div>
-            <h2 id="aggregate-heading">Quality coverage at 10 seconds</h2>
-            <p id="aggregate-scope">How often each solver returns a decomposition close to the best width observed.</p>
-          </div>
-          <div class="aggregate-quality-key" aria-label="Relative quality color scale">
-            <span>stronger</span>
-            <i aria-hidden="true"></i>
-            <span>weaker</span>
-          </div>
-        </div>
+<script src="app.js"></script>
 
-        <p id="methodology-note" class="methodology-note"></p>
-
-        <div id="aggregate-list" class="aggregate-list" aria-label="Aggregate solver statistics"></div>
-
-        <div class="profile-block">
-          <div class="subsection-heading">
-            <h3>Quality–coverage curve</h3>
-            <p>
-              Number of selected graphs with a validated width no more than Δ
-              above the best observed for that graph.
-            </p>
-          </div>
-          <figure class="profile-figure" tabindex="0" aria-label="Scrollable width quality profile chart">
-            <svg id="width-profile-chart" viewBox="0 0 940 360" role="img" aria-labelledby="profile-chart-title profile-chart-description">
-              <title id="profile-chart-title">Width quality profile</title>
-              <desc id="profile-chart-description">Solver coverage at reported width excess thresholds.</desc>
-            </svg>
-            <figcaption>
-              Higher is better. A missing or invalid result does not satisfy
-              any threshold. Hover or focus a point for its exact value.
-            </figcaption>
-            <div id="width-profile-legend" class="profile-legend" aria-label="Solver line styles"></div>
-          </figure>
-        </div>
-      </section>
-
-      <section class="matrix-section" aria-labelledby="matrix-heading">
-        <div class="section-heading matrix-heading-row">
-          <div>
-            <h2 id="matrix-heading">Instance results</h2>
-            <p>All selected graphs, with every displayed solver visible without horizontal scrolling.</p>
-          </div>
-          <div class="quality-key" aria-label="Width quality color scale">
-            <span>best observed</span>
-            <i class="quality-gradient" aria-hidden="true"></i>
-            <span>widest valid result</span>
-          </div>
-        </div>
-
-        <div class="table-controls" aria-label="Detailed-result table controls">
-          <label>
-            <span>Sort rows by</span>
-            <select id="sort-by">
-              <option value="instance">Instance</option>
-              <option value="width">Best width</option>
-              <option value="vertices">Vertex count</option>
-              <option value="edges">Edge count</option>
-            </select>
-          </label>
-
-          <label>
-            <span>Rows per page</span>
-            <select id="page-size">
-              <option value="25">25</option>
-              <option value="50" selected>50</option>
-              <option value="100">100</option>
-              <option value="250">250</option>
-            </select>
-          </label>
-
-          <button id="sort-direction" class="direction-button" type="button" aria-label="Sort ascending">
-            <span aria-hidden="true">↑</span> Ascending
-          </button>
-        </div>
-
-        <div id="result-list" class="result-list" aria-live="polite"></div>
-        <div class="matrix-footer">
-          <nav class="pagination" aria-label="Result pages">
-            <button id="previous-page" type="button">Previous</button>
-            <span id="page-status" aria-live="polite">Page —</span>
-            <button id="next-page" type="button">Next</button>
-          </nav>
-        </div>
-      </section>
-
-      <section class="definitions" aria-labelledby="definitions-heading">
-        <div class="section-heading">
-          <div>
-            <h2 id="definitions-heading">Methods and definitions</h2>
-          </div>
-        </div>
-        <dl>
-          <div>
-            <dt>Valid</dt>
-            <dd>A decomposition accepted by the common validator. Coverage is valid results divided by selected graphs.</dd>
-          </div>
-          <div>
-            <dt>Best observed</dt>
-            <dd>The minimum width among validated results from the solvers displayed here. It is an empirical reference, not a proven optimum.</dd>
-          </div>
-          <div>
-            <dt>Deadline</dt>
-            <dd>The runner stops search at the stated budget. Solvers with an internal deadline receive an earlier warning so they can finish and write a decomposition before that cutoff.</dd>
-          </div>
-          <div>
-            <dt>Quality coverage</dt>
-            <dd>The number of selected graphs on which a solver returns a validated width within Δ of the best observed width. Missing results count against coverage.</dd>
-          </div>
-          <div>
-            <dt>Component graph</dt>
-            <dd>One connected graph passed independently to every solver. This is the default aggregate unit.</dd>
-          </div>
-          <div>
-            <dt>Tree component</dt>
-            <dd>A connected component with |E| = |V| − 1, hence exact width one. These components are omitted by default.</dd>
-          </div>
-          <div>
-            <dt>Width</dt>
-            <dd>The largest bag size minus one.</dd>
-          </div>
-          <div>
-            <dt>Total bag size</dt>
-            <dd>The sum of bag sizes, counting a vertex once for each bag containing it.</dd>
-          </div>
-          <div>
-            <dt>Bag count</dt>
-            <dd>The number of bags in the decomposition.</dd>
-          </div>
-          <div>
-            <dt>Elapsed</dt>
-            <dd>Search time before normal exit or the fixed budget signal.</dd>
-          </div>
-        </dl>
-        <p class="ranking-note">
-          The default minimum width of 30 keeps the headline comparison focused
-          on graphs where small absolute width differences are less informative.
-          Set it to “No minimum” to inspect the complete non-tree dataset.
-        </p>
-      </section>
-
-      <div id="load-error" class="load-error" role="alert" hidden></div>
-    </main>
-
-    <footer>
-      <p>Result schema and metric fields are documented in <a href="README.md">view/README.md</a>.</p>
-    </footer>
-
-    <noscript>
-      <p class="load-error">JavaScript is required to load and summarize the result file.</p>
-    </noscript>
-  </body>
+</body>
 </html>
