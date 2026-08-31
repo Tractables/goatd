@@ -20,6 +20,20 @@ fn eliminate_fills_clique_and_deactivates() {
 }
 
 #[test]
+fn eliminating_records_each_new_fill_edge_once() {
+    for n in [4, 200] {
+        let mut graph = EliminationGraph::from_edges(n, &[(0, 1), (0, 2), (0, 3), (1, 2)]);
+        let neighbours = graph.live_neighbours(0);
+        let mut fill_edges = Vec::new();
+
+        graph.eliminate_with_nbrs_record_fill(0, &neighbours, &mut fill_edges);
+        fill_edges.sort_unstable();
+
+        assert_eq!(fill_edges, [(1, 3), (2, 3)]);
+    }
+}
+
+#[test]
 fn simplicial_detection() {
     let g = EliminationGraph::from_edges(3, &[(0, 1), (0, 2), (1, 2)]);
     assert!(g.is_simplicial(0));
