@@ -25,10 +25,11 @@ total bag size)`. `sampled_min_fill_candidates` exposes the smaller variant
 used by callers that want to apply their own ranking.
 
 A soft budget, measured from before preprocessing, stops the portfolio from
-starting further candidates and samples. A hard budget completes the first
-candidate with a valid path decomposition of the remaining graph; later
-candidates can stop without completion because a valid candidate already
-exists. The library remains single-threaded throughout.
+starting further candidates and samples. At the hard budget, the first
+candidate puts each unfinished residual component in one bag and attaches the
+partial elimination bags to it. This completion is linear in the residual
+size. Later candidates can stop without completion because a valid candidate
+already exists. The library remains single-threaded throughout.
 
 ## Preprocessing
 
