@@ -154,6 +154,9 @@ jobs:
         working-directory: gh-pages
         run: |
           set -eux
+          # The root is the page's alone once the comparison sits under
+          # comparison/; until it does, replacing the root would remove it.
+          test -d comparison
           find . -maxdepth 1 -type f -delete
           cp -r ../site/. .
           touch .nojekyll
