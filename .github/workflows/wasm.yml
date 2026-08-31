@@ -126,9 +126,10 @@ jobs:
           path: bindings/wasm/site
           if-no-files-found: ignore
 
-  # GitHub Pages serves the gh-pages branch, whose root is the solver
-  # comparison. This job replaces only solve/ there, so the page is at
-  # https://tractables.github.io/goatd/solve/ and tracks main.
+  # GitHub Pages serves the gh-pages branch. This job replaces the files at
+  # its root, so the page is at https://tractables.github.io/goatd/ and
+  # tracks main. The solver comparison lives under comparison/ on that
+  # branch, and solve/ forwards the page's old address; both are left alone.
   deploy:
     needs: wasm
     if: github.event_name != 'pull_request'
@@ -149,15 +150,16 @@ jobs:
           name: goatd-web
           path: site
 
-      - name: Publish the page under solve/
+      - name: Publish the page at the root
         working-directory: gh-pages
         run: |
           set -eux
-          rm -rf solve
-          cp -r ../site solve
-          git add -A solve
+          find . -maxdepth 1 -type f -delete
+          cp -r ../site/. .
+          touch .nojekyll
+          git add -A
           if git diff --cached --quiet; then
-            echo "solve/ is unchanged"
+            echo "the page is unchanged"
             exit 0
           fi
           git config user.name "github-actions[bot]"
