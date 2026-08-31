@@ -233,8 +233,11 @@ svg.graph { width: 100%; height: auto; max-height: 30rem; }
 svg.tree { margin: 0 auto; }
 svg.tree.fit { width: 100%; height: auto; }
 
-.edges line { stroke: var(--line); stroke-width: 1.2; }
-.edges line.on { stroke: var(--accent); stroke-width: 1.8; }
+.edge .ink { stroke: var(--line); stroke-width: 1.2; }
+.edge.on .ink { stroke: var(--accent); stroke-width: 1.8; }
+
+/* The transparent twin that catches the pointer for the line beneath it. */
+.edge .hit { stroke: transparent; stroke-width: 12; pointer-events: stroke; }
 
 .vertex circle {
   fill: var(--card);
@@ -266,7 +269,7 @@ svg.tree.fit { width: 100%; height: auto; }
 }
 
 .vertex.side text { fill: var(--ink); }
-.edges line.side { stroke: var(--side); stroke-width: 1.6; }
+.edge.side .ink { stroke: var(--side); stroke-width: 1.6; }
 
 .bag rect {
   fill: var(--card);
