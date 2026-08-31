@@ -406,11 +406,14 @@ function graphSvg(count, edges, layout) {
     ` role="img" aria-label="the input graph"><g class="edges">`,
   ];
   for (const [u, v] of edges) {
-    parts.push(
-      `<line data-u="${u}" data-v="${v}"`,
-      ` x1="${at(layout.xs, u)}" y1="${at(layout.ys, u)}"`,
-      ` x2="${at(layout.xs, v)}" y2="${at(layout.ys, v)}"/>`,
-    );
+    const ends =
+      ` x1="${at(layout.xs, u)}" y1="${at(layout.ys, u)}"` +
+      ` x2="${at(layout.xs, v)}" y2="${at(layout.ys, v)}"`;
+    // The drawn line has a wide transparent twin, so the edge can be hovered
+    // without aiming at a hair line.
+    parts.push(`<g class="edge" data-u="${u}" data-v="${v}">`);
+    parts.push(`<title>edge ${u} ${v}</title>`);
+    parts.push(`<line class="ink"${ends}/><line class="hit"${ends}/></g>`);
   }
   parts.push("</g>");
   for (let v = 1; v <= count; v++) {
@@ -618,7 +621,7 @@ if (typeof document !== "undefined") {
       }
     });
     for (const [v, side] of sideOf) vertexElement(v)?.classList.add("side", side);
-    for (const edge of graphView.querySelectorAll(".edges line")) {
+    for (const edge of graphView.querySelectorAll(".edge")) {
       const { u, v } = edge.dataset;
       if (held.has(u) && held.has(v)) {
         edge.classList.add("on");
@@ -628,16 +631,35 @@ if (typeof document !== "undefined") {
     }
   }
 
-  // Hovering a vertex marks the bags that hold it, and the tree edges among
-  // them: a decomposition keeps them a connected piece of the tree.
+  const holdersOf = (v) => shown.holders.get(Number(v)) ?? [];
+
+  // Marks some bags and the tree edges among them.
+  function markBags(ids) {
+    const marked = new Set(ids.map(String));
+    for (const id of marked) bagElement(id).classList.add("on");
+    for (const edge of treeView.querySelectorAll(".tree-edges line")) {
+      if (marked.has(edge.dataset.a) && marked.has(edge.dataset.b)) edge.classList.add("on");
+    }
+  }
+
+  // Hovering a vertex marks the bags that hold it: a decomposition keeps them
+  // a connected piece of the tree.
   function highlightVertex(v) {
     clearHighlight();
     vertexElement(v).classList.add("on");
-    const holding = new Set((shown.holders.get(Number(v)) ?? []).map(String));
-    for (const id of holding) bagElement(id).classList.add("on");
-    for (const edge of treeView.querySelectorAll(".tree-edges line")) {
-      if (holding.has(edge.dataset.a) && holding.has(edge.dataset.b)) edge.classList.add("on");
-    }
+    markBags(holdersOf(v));
+  }
+
+  // Hovering an edge marks the bags that hold both its ends: a decomposition
+  // gives every edge at least one.
+  function highlightEdge(edge) {
+    clearHighlight();
+    edge.classList.add("on");
+    const { u, v } = edge.dataset;
+    vertexElement(u).classList.add("on");
+    vertexElement(v).classList.add("on");
+    const ofV = new Set(holdersOf(v));
+    markBags(holdersOf(u).filter((id) => ofV.has(id)));
   }
 
   treeView.addEventListener("pointerover", (event) => {
@@ -650,8 +672,10 @@ if (typeof document !== "undefined") {
   graphView.addEventListener("pointerover", (event) => {
     if (shown === null) return;
     const vertex = event.target.closest(".vertex");
-    if (vertex === null) clearHighlight();
-    else highlightVertex(vertex.dataset.vertex);
+    const edge = event.target.closest(".edge");
+    if (vertex !== null) highlightVertex(vertex.dataset.vertex);
+    else if (edge !== null) highlightEdge(edge);
+    else clearHighlight();
   });
   graphView.addEventListener("pointerleave", clearHighlight);
 
