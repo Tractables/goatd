@@ -93,6 +93,17 @@ fn a_td_file_parses_its_bags_and_tree_edges() {
 }
 
 #[test]
+fn a_td_can_be_written_directly_to_an_io_writer() {
+    let expected = "s td 2 2 3\nb 1 1 2\nb 2 2 3\n1 2\n";
+    let td = TreeDecomposition::from_td(expected).expect("a well-formed .td");
+    let mut written = Vec::new();
+
+    td.write_td(&mut written).expect("write the decomposition");
+
+    assert_eq!(written, expected.as_bytes());
+}
+
+#[test]
 fn td_comments_are_ignored() {
     let td_str = "c comment line\ns td 1 2 2\nb 1 1 2\n";
     let td = TreeDecomposition::from_td(td_str).expect("Should parse with comments");

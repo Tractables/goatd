@@ -4,7 +4,7 @@
 //! Usage and every option are in [`USAGE`]. Order-specific flags are rejected
 //! when used with another construction.
 
-use std::io::{Read, Write};
+use std::io::{BufWriter, Read, Write};
 use std::process::exit;
 use std::time::{Duration, Instant};
 
@@ -342,14 +342,20 @@ fn main() {
             .unwrap_or_else(|error| fail(&error.to_string()));
     }
 
-    let text = td.to_td();
     let written = match &args.out {
-        Some(path) => std::fs::write(path, text).map_err(|e| format!("cannot write {path}: {e}")),
-        None => std::io::stdout()
-            .write_all(text.as_bytes())
+        Some(path) => std::fs::File::create(path)
+            .and_then(|file| write_decomposition(&td, file))
+            .map_err(|e| format!("cannot write {path}: {e}")),
+        None => write_decomposition(&td, std::io::stdout().lock())
             .map_err(|e| format!("cannot write to stdout: {e}")),
     };
     if let Err(e) = written {
         fail(&e);
     }
+}
+
+fn write_decomposition(td: &TreeDecomposition, writer: impl Write) -> std::io::Result<()> {
+    let mut writer = BufWriter::new(writer);
+    td.write_td(&mut writer)?;
+    writer.flush()
 }
