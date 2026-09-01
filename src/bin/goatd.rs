@@ -285,7 +285,19 @@ fn read_weights(path: &str, num_vertices: u32) -> Vec<u32> {
     weights
 }
 
-fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
+fn portfolio_config(args: &Args, process_elapsed: Duration) -> PortfolioConfig {
+    let Some(soft_budget) = args.budget else {
+        return PortfolioConfig::standard();
+    };
+    let hard_budget = args
+        .hard_budget
+        .unwrap_or_else(|| soft_budget.saturating_mul(2));
+    PortfolioConfig::standard_with_budget(soft_budget)
+        .with_soft_budget(soft_budget.saturating_sub(process_elapsed))
+        .with_hard_budget(hard_budget.saturating_sub(process_elapsed))
+}
+
+fn construct(args: &Args, graph: &Graph, process_elapsed: Duration) -> TreeDecomposition {
     let seed = args.seed.unwrap_or(0);
     let budget = args.budget;
     match args.order {
@@ -312,15 +324,13 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             .unwrap_or_else(|e| fail(&e.to_string())),
         Method::Portfolio => {
             let weights = vec![1; graph.num_vertices() as usize];
-            let mut config = budget.map_or_else(
-                PortfolioConfig::standard,
-                PortfolioConfig::standard_with_budget,
-            );
-            if let Some(hard_budget) = args.hard_budget {
-                config = config.with_hard_budget(hard_budget);
-            }
-            portfolio(graph, &weights, seed, config)
-                .unwrap_or_else(|error| fail(&error.to_string()))
+            portfolio(
+                graph,
+                &weights,
+                seed,
+                portfolio_config(args, process_elapsed),
+            )
+            .unwrap_or_else(|error| fail(&error.to_string()))
         }
     }
 }
@@ -333,7 +343,7 @@ fn main() {
     let graph = Graph::from_gr(&read_input(&args.input))
         .unwrap_or_else(|e| fail(&format!("{}: {e}", args.input)));
 
-    let mut td = construct(&args, &graph);
+    let mut td = construct(&args, &graph, start.elapsed());
     if args.refine {
         let remaining = args
             .budget
@@ -359,3 +369,7 @@ fn write_decomposition(td: &TreeDecomposition, writer: impl Write) -> std::io::R
     td.write_td(&mut writer)?;
     writer.flush()
 }
+
+#[cfg(test)]
+#[path = "goatd/tests/mod.rs"]
+mod tests;
