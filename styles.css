@@ -178,6 +178,29 @@ textarea:focus, select:focus, input:focus, button:focus-visible, summary:focus-v
   outline-offset: 1px;
 }
 
+/* The file button shares the label's line with the name of the open file. */
+.graph-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  margin-bottom: 0.3rem;
+}
+
+.graph-head label { margin-bottom: 0; }
+
+#file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A file held over the page will go into the text box. */
+body.dropping textarea {
+  outline: 2px dashed var(--accent);
+  outline-offset: 1px;
+}
+
 .controls { display: grid; gap: 0.75rem; align-content: start; }
 .field { margin: 0; }
 
@@ -412,7 +435,7 @@ summary {
   gap: 0.6rem;
 }
 
-.tools button, .note button, #link {
+.tools button, .note button, #link, #open {
   width: auto;
   margin-left: 0.3rem;
   padding: 0.1rem 0.55rem;

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>goatd: Greatest Of All Tree Decompositions</title>
-<link rel="stylesheet" href="styles.css?v=f04daab0">
+<link rel="stylesheet" href="styles.css?v=db222728">
 </head>
 <body>
 
@@ -14,9 +14,9 @@
   <img class="logo" src="logo.png" alt="" width="192" height="192">
   <div>
     <h1>goatd: Greatest Of All Tree Decompositions</h1>
-    <p class="lede">Paste a PACE <code>.gr</code> graph, or pick an example,
-    and goatd returns a tree decomposition; the solver runs in this tab and
-    nothing is uploaded. The same solver is a
+    <p class="lede">Paste a PACE <code>.gr</code> graph, open or drop a
+    file, or pick an example, and goatd returns a tree decomposition; the
+    solver runs in this tab and nothing is uploaded. The same solver is a
     <a href="https://crates.io/crates/goatd">Rust crate</a> with a
     command-line tool, a <a href="https://pypi.org/project/goatd/">Python
     package</a> and a <a href="https://github.com/Tractables/goatd/releases">C
@@ -34,7 +34,12 @@
   </div>
   <div class="io">
     <div class="graph-input">
-      <label for="graph">Graph</label>
+      <div class="graph-head">
+        <label for="graph">Graph</label>
+        <button id="open" type="button">Open a file</button>
+        <input id="file" type="file" accept=".gr,text/plain" hidden>
+        <span id="file-name" class="note" hidden></span>
+      </div>
       <textarea id="graph" spellcheck="false"></textarea>
     </div>
 
@@ -111,7 +116,7 @@
 
 </main>
 
-<script src="app.js?v=f04daab0"></script>
+<script src="app.js?v=db222728"></script>
 
 </body>
 </html>
