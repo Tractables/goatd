@@ -25,9 +25,18 @@ enum FillPriority {
 }
 
 #[derive(Clone, Copy)]
-enum FillUpdates {
-    Exact,
+enum FillStrategy {
+    Exact(FillPriority),
     AdjacentOnly,
+}
+
+impl FillStrategy {
+    fn priority(self) -> FillPriority {
+        match self {
+            Self::Exact(priority) => priority,
+            Self::AdjacentOnly => FillPriority::Fill,
+        }
+    }
 }
 
 impl FillPriority {
@@ -96,8 +105,7 @@ pub(crate) fn eliminate_sampled_min_fill(
         sink,
         stop,
         initial_fill,
-        FillPriority::Fill,
-        FillUpdates::Exact,
+        FillStrategy::Exact(FillPriority::Fill),
     )
 }
 
@@ -119,8 +127,7 @@ pub(crate) fn eliminate_sampled_adjacent_fill(
         sink,
         stop,
         initial_fill,
-        FillPriority::Fill,
-        FillUpdates::AdjacentOnly,
+        FillStrategy::AdjacentOnly,
     )
 }
 
@@ -141,8 +148,7 @@ pub(crate) fn eliminate_sampled_degree_plus_fill(
         sink,
         stop,
         initial_fill,
-        FillPriority::DegreePlusFill,
-        FillUpdates::Exact,
+        FillStrategy::Exact(FillPriority::DegreePlusFill),
     )
 }
 
@@ -163,8 +169,7 @@ pub(crate) fn eliminate_sampled_sparsest_subgraph(
         sink,
         stop,
         initial_fill,
-        FillPriority::SparsestSubgraph,
-        FillUpdates::Exact,
+        FillStrategy::Exact(FillPriority::SparsestSubgraph),
     )
 }
 
@@ -175,8 +180,7 @@ fn eliminate_sampled_fill_based(
     mut sink: ElimSink<'_>,
     stop: ElimStop,
     initial_fill: Option<&[u64]>,
-    priority: FillPriority,
-    fill_updates: FillUpdates,
+    strategy: FillStrategy,
 ) -> ElimExit {
     // No cheap mode here to degrade into, so the soft deadline is not this
     // core's to read.
@@ -188,13 +192,14 @@ fn eliminate_sampled_fill_based(
     let n = graph.len();
     assert_eq!(weights.len(), n);
     let uniform_mass = uniform_sampling_mass(weights);
+    let priority = strategy.priority();
 
     if graph.should_promote_bitset() {
         graph.promote_bitset();
     }
 
     let mut scratch = FillScratch::new(n);
-    let mut affected = matches!(fill_updates, FillUpdates::Exact).then(|| FillAffected::new(n));
+    let mut affected = matches!(strategy, FillStrategy::Exact(_)).then(|| FillAffected::new(n));
     let mut fill_edges = Vec::new();
     let mut live_nbrs = Vec::new();
     // Plain min-fill already stores the current fill as the bucket key. Only
@@ -295,8 +300,8 @@ fn eliminate_sampled_fill_based(
                 debug_assert!(completed);
             }
         } else {
-            match fill_updates {
-                FillUpdates::Exact => {
+            match strategy {
+                FillStrategy::Exact(_) => {
                     graph.eliminate_with_nbrs_record_fill(v, &live_nbrs, &mut fill_edges);
                     let affected = affected
                         .as_mut()
@@ -328,7 +333,7 @@ fn eliminate_sampled_fill_based(
                         );
                     }
                 }
-                FillUpdates::AdjacentOnly => {
+                FillStrategy::AdjacentOnly => {
                     graph.eliminate_with_nbrs(v, &live_nbrs);
                 }
             }
