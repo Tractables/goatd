@@ -28,6 +28,8 @@ pub use config::PortfolioConfig;
 /// Exit early if FlowCutter hasn't improved treewidth for this long. Caps
 /// per-graph overhead where FlowCutter converges fast.
 const FLOWCUTTER_CANDIDATE_PATIENCE: Duration = Duration::from_secs(1);
+/// Keep enough of the hard window to select and write the completed winner.
+const FLOWCUTTER_RETURN_RESERVE: Duration = Duration::from_millis(250);
 const FLOWCUTTER_CANDIDATE_ITERATIONS: u32 = 50;
 const SAMPLE_SEED_OFFSET: u64 = 100;
 const SAMPLE_SEED_STRIDE: u64 = 7919;
@@ -81,7 +83,9 @@ fn flowcutter_timeout(
     configured_budget: Duration,
     remaining_hard_budget: Option<Duration>,
 ) -> Option<Duration> {
-    let available = remaining_hard_budget.unwrap_or(configured_budget);
+    let available = remaining_hard_budget
+        .map(|remaining| remaining.saturating_sub(FLOWCUTTER_RETURN_RESERVE))
+        .unwrap_or(configured_budget);
     let timeout = available.min(configured_budget);
     // Skip windows too small to seed useful FlowCutter iterations; FFI overhead
     // alone eats tens of ms on small graphs.
