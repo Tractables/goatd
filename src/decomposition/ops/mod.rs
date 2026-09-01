@@ -292,17 +292,68 @@ fn bag_is_subset(left: &TdBag, right: &TdBag, left_sorted: bool, right_sorted: b
     true
 }
 
+pub(crate) struct SubsumedBagCompaction {
+    representative: Vec<usize>,
+    total_bag_size: usize,
+}
+
+impl SubsumedBagCompaction {
+    pub(crate) fn total_bag_size(&self) -> usize {
+        self.total_bag_size
+    }
+
+    pub(crate) fn apply(self, decomposition: TreeDecomposition) -> TreeDecomposition {
+        let bag_count = decomposition.bags.len();
+        debug_assert_eq!(self.representative.len(), bag_count);
+        if self
+            .representative
+            .iter()
+            .enumerate()
+            .all(|(bag, &representative)| bag == representative)
+        {
+            return decomposition;
+        }
+
+        let mut old_to_new = vec![usize::MAX; bag_count];
+        let mut bags = Vec::new();
+        for (old, bag) in decomposition.bags.into_iter().enumerate() {
+            if self.representative[old] == old {
+                old_to_new[old] = bags.len();
+                bags.push(bag);
+            }
+        }
+
+        let mut adj = vec![Vec::new(); bags.len()];
+        for (left, neighbours) in decomposition.adj.iter().enumerate() {
+            for &right in neighbours {
+                if right <= left {
+                    continue;
+                }
+                let left = old_to_new[self.representative[left]];
+                let right = old_to_new[self.representative[right]];
+                if left != right {
+                    adj[left].push(right);
+                    adj[right].push(left);
+                }
+            }
+        }
+        for neighbours in &mut adj {
+            neighbours.sort_unstable();
+            neighbours.dedup();
+        }
+
+        TreeDecomposition::from_parts(decomposition.num_vertices, bags, adj)
+    }
+}
+
 impl TreeDecomposition {
-    /// Contract every bag contained in an adjacent bag.
-    ///
-    /// Contracting such an edge preserves the running intersection property:
-    /// every vertex in the removed bag remains in the retained endpoint, and
-    /// the removed bag's other neighbours are reattached there. Width cannot
-    /// increase, while each contraction lowers total bag size.
-    pub(crate) fn compact_subsumed_bags(self) -> Self {
+    pub(crate) fn subsumed_bag_compaction(&self) -> SubsumedBagCompaction {
         let bag_count = self.bags.len();
         if bag_count < 2 {
-            return self;
+            return SubsumedBagCompaction {
+                representative: (0..bag_count).collect(),
+                total_bag_size: self.total_bag_size(),
+            };
         }
 
         // Each bag chooses at most one adjacent superset. Strict containment
@@ -359,36 +410,18 @@ impl TreeDecomposition {
                 bag = next;
             }
         }
+        let total_bag_size = self
+            .bags
+            .iter()
+            .enumerate()
+            .filter(|(bag, _)| representative[*bag] == *bag)
+            .map(|(_, bag)| bag.vertices.len())
+            .sum();
 
-        let mut old_to_new = vec![usize::MAX; bag_count];
-        let mut bags = Vec::new();
-        for (old, bag) in self.bags.into_iter().enumerate() {
-            if representative[old] == old {
-                old_to_new[old] = bags.len();
-                bags.push(bag);
-            }
+        SubsumedBagCompaction {
+            representative,
+            total_bag_size,
         }
-
-        let mut adj = vec![Vec::new(); bags.len()];
-        for (left, neighbours) in self.adj.iter().enumerate() {
-            for &right in neighbours {
-                if right <= left {
-                    continue;
-                }
-                let left = old_to_new[representative[left]];
-                let right = old_to_new[representative[right]];
-                if left != right {
-                    adj[left].push(right);
-                    adj[right].push(left);
-                }
-            }
-        }
-        for neighbours in &mut adj {
-            neighbours.sort_unstable();
-            neighbours.dedup();
-        }
-
-        TreeDecomposition::from_parts(self.num_vertices, bags, adj)
     }
 
     /// Root this decomposition's bag forest and walk it breadth-first.
