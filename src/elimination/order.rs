@@ -21,6 +21,12 @@ pub enum Order<'a> {
         /// Per-vertex weights, one entry per input graph vertex.
         weights: &'a [u32],
     },
+    /// Fill with weighted sampling and score updates limited to neighbours of
+    /// the last eliminated vertex.
+    AdjacentFillSampled {
+        /// Per-vertex weights, one entry per input graph vertex.
+        weights: &'a [u32],
+    },
     /// Min-degree with weighted sampling from the full minimum-degree tie set.
     MinDegreeSampled {
         /// Per-vertex weights, one entry per input graph vertex.
@@ -45,6 +51,7 @@ impl<'a> Order<'a> {
     pub(super) fn tie_weights(self) -> Option<&'a [u32]> {
         match self {
             Order::MinFillSampled { weights }
+            | Order::AdjacentFillSampled { weights }
             | Order::MinDegreeSampled { weights }
             | Order::DegreePlusFillSampled { weights }
             | Order::SparsestSubgraphSampled { weights } => Some(weights),
@@ -59,6 +66,7 @@ impl<'a> Order<'a> {
             Order::MinDegree => Order::MinDegree,
             Order::NestedDissection => Order::NestedDissection,
             Order::MinFillSampled { .. } => Order::MinFillSampled { weights },
+            Order::AdjacentFillSampled { .. } => Order::AdjacentFillSampled { weights },
             Order::MinDegreeSampled { .. } => Order::MinDegreeSampled { weights },
             Order::DegreePlusFillSampled { .. } => Order::DegreePlusFillSampled { weights },
             Order::SparsestSubgraphSampled { .. } => Order::SparsestSubgraphSampled { weights },
@@ -70,6 +78,7 @@ impl<'a> Order<'a> {
         matches!(
             self,
             Order::MinFillSampled { .. }
+                | Order::AdjacentFillSampled { .. }
                 | Order::DegreePlusFillSampled { .. }
                 | Order::SparsestSubgraphSampled { .. }
         )
