@@ -82,24 +82,27 @@ preprocessing. Each configuration receives ten seconds on one CPU, and every
 decomposition is checked by the same validator.
 
 The default view excludes tree components. It also excludes a graph when the
-pinned NetworkX min-degree run returned a validated decomposition of width
-below 30. If that run did not return a validated decomposition, the graph
-remains. This keeps the selected graphs fixed when new solver results are
-added. “Exact best” means a tie with the smallest validated width found, not a
-proven optimum.
+pinned NetworkX min-degree run returned a counted decomposition of width below
+30. If that run did not return a counted decomposition, the graph remains.
+This keeps the selected graphs fixed when new solver results are added.
 
-<!-- Generated table; 9,395 selected graphs. -->
+A counted result passes validation, contains more than one bag, and has width
+below the graph's one-bag width `|V| - 1`. A result that does not improve that
+bound is counted like a timeout. “Exact best” means a tie with the smallest
+counted width found, not a proven optimum.
 
-| Solver | Valid | Exact best | Within +1 | Within +4 |
+<!-- Generated table; 9,413 selected graphs. -->
+
+| Solver | Nontrivial | Exact best | Within +1 | Within +4 |
 | --- | ---: | ---: | ---: | ---: |
-| goatd portfolio | 9,193 (97.8%) | **5,063 (53.9%)** | **7,144 (76.0%)** | **8,884 (94.6%)** |
-| Jdrasil heuristic | 9,112 (97.0%) | 4,429 (47.1%) | 6,426 (68.4%) | 8,462 (90.1%) |
-| Tamaki PACE 2017 | 9,145 (97.3%) | 2,161 (23.0%) | 3,141 (33.4%) | 5,326 (56.7%) |
-| FlowCutter PACE 2017 | **9,317 (99.2%)** | 1,291 (13.7%) | 2,011 (21.4%) | 5,635 (60.0%) |
-| HTD | 9,156 (97.5%) | 427 (4.5%) | 791 (8.4%) | 3,627 (38.6%) |
-| NetworkX min-degree | 9,016 (96.0%) | 157 (1.7%) | 173 (1.8%) | 380 (4.0%) |
-| NetworkX min-fill | 8,296 (88.3%) | 154 (1.6%) | 462 (4.9%) | 3,205 (34.1%) |
-| Arboretum heuristic | 5,581 (59.4%) | 106 (1.1%) | 351 (3.7%) | 1,893 (20.1%) |
+| goatd portfolio | **9,176 (97.5%)** | **5,046 (53.6%)** | **7,127 (75.7%)** | **8,867 (94.2%)** |
+| Jdrasil heuristic | 9,095 (96.6%) | 4,412 (46.9%) | 6,409 (68.1%) | 8,445 (89.7%) |
+| Tamaki PACE 2017 | 8,240 (87.5%) | 2,068 (22.0%) | 3,048 (32.4%) | 5,233 (55.6%) |
+| FlowCutter PACE 2017 | 9,115 (96.8%) | 1,160 (12.3%) | 1,877 (19.9%) | 5,499 (58.4%) |
+| HTD | 9,139 (97.1%) | 410 (4.4%) | 774 (8.2%) | 3,610 (38.4%) |
+| NetworkX min-degree | 8,999 (95.6%) | 140 (1.5%) | 156 (1.7%) | 363 (3.9%) |
+| NetworkX min-fill | 8,279 (88.0%) | 137 (1.5%) | 445 (4.7%) | 3,188 (33.9%) |
+| Arboretum heuristic | 5,549 (59.0%) | 89 (0.9%) | 334 (3.5%) | 1,876 (19.9%) |
 
 ## Building and contributing
 
