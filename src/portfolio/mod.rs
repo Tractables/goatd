@@ -77,20 +77,29 @@ fn extra_sample<'a>(
     ))
 }
 
+fn flowcutter_timeout(
+    configured_budget: Duration,
+    remaining_hard_budget: Option<Duration>,
+) -> Option<Duration> {
+    let available = remaining_hard_budget.unwrap_or(configured_budget);
+    let timeout = available.min(configured_budget);
+    // Skip windows too small to seed useful FlowCutter iterations; FFI overhead
+    // alone eats tens of ms on small graphs.
+    if timeout < Duration::from_millis(MIN_FLOWCUTTER_CANDIDATE_MS) {
+        return None;
+    }
+    Some(timeout)
+}
+
 fn flowcutter_candidate(
     graph: &Graph,
     configured_budget: Duration,
     hard_deadline: Option<Instant>,
 ) -> Result<Option<TreeDecomposition>, Error> {
-    let timeout = hard_deadline
-        .map(crate::deadline::remaining)
-        .unwrap_or(configured_budget)
-        .min(configured_budget);
-    // Skip windows too small to seed useful FlowCutter iterations; FFI overhead
-    // alone eats tens of ms on small graphs.
-    if timeout < Duration::from_millis(MIN_FLOWCUTTER_CANDIDATE_MS) {
+    let remaining_hard_budget = hard_deadline.map(crate::deadline::remaining);
+    let Some(timeout) = flowcutter_timeout(configured_budget, remaining_hard_budget) else {
         return Ok(None);
-    }
+    };
     match flowcutter_decompose(
         graph,
         Budget::timed(

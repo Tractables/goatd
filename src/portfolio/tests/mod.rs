@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use super::PortfolioConfig;
 use super::candidates::CandidateSet;
-use super::{EliminationPhase, elimination_stop, extra_sample, sample_seed};
+use super::{EliminationPhase, elimination_stop, extra_sample, flowcutter_timeout, sample_seed};
 use crate::elimination::Order;
 use crate::{Graph, TreeDecomposition};
 
@@ -78,6 +78,21 @@ fn an_explicit_hard_budget_does_not_change_the_soft_schedule() {
     assert_eq!(config.sampling_runs, 1_000);
     assert_eq!(config.diverse_sampling_runs, 2);
     assert_eq!(config.flowcutter_budget, Some(soft));
+}
+
+#[test]
+fn flowcutter_keeps_part_of_a_hard_window_for_returning_the_winner() {
+    let configured = Duration::from_millis(4_750);
+
+    assert_eq!(
+        flowcutter_timeout(configured, Some(Duration::from_secs(2))),
+        Some(Duration::from_millis(1_750))
+    );
+    assert_eq!(flowcutter_timeout(configured, None), Some(configured));
+    assert_eq!(
+        flowcutter_timeout(configured, Some(Duration::from_millis(299))),
+        None
+    );
 }
 
 #[test]
