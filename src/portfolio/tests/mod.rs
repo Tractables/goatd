@@ -24,6 +24,27 @@ fn best_only_candidate_storage_discards_losing_decompositions() {
 }
 
 #[test]
+fn best_only_candidate_storage_compares_compacted_bag_size() {
+    let graph = Graph::new(3, []);
+    let smaller_before_compaction =
+        TreeDecomposition::new(&graph, [vec![0, 1], vec![1, 2]], [(0, 1)]).unwrap();
+    let smaller_after_compaction = TreeDecomposition::new(
+        &graph,
+        [vec![0, 1], vec![0], vec![0], vec![2]],
+        [(0, 1), (1, 2)],
+    )
+    .unwrap();
+    let mut candidates = CandidateSet::best_only();
+
+    candidates.push(smaller_before_compaction);
+    candidates.push(smaller_after_compaction);
+
+    let retained = candidates.into_decompositions();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].quality_key(), (1, 3));
+}
+
+#[test]
 fn a_short_standard_budget_keeps_the_fast_sampling_cap() {
     let budget = Duration::from_millis(4_749);
     let config = PortfolioConfig::standard_with_budget(budget);

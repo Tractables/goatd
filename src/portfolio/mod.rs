@@ -351,8 +351,7 @@ pub fn decompose(
             .into_decompositions()
             .into_iter()
             .next()
-            .expect("first candidate always produces a decomposition")
-            .compact_subsumed_bags(),
+            .expect("first candidate always produces a decomposition"),
     )
 }
 
