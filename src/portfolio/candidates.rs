@@ -51,13 +51,23 @@ impl CandidateSet {
         self.best_width = Some(self.best_width.map_or(width, |best| best.min(width)));
         if !self.retain_only_best {
             self.decompositions.push(decomposition);
-        } else if self
-            .decompositions
-            .first()
-            .is_none_or(|best| decomposition.quality_key() < best.quality_key())
-        {
-            self.decompositions.clear();
-            self.decompositions.push(decomposition);
+        } else {
+            if self
+                .decompositions
+                .first()
+                .is_some_and(|best| width > best.treewidth())
+            {
+                return;
+            }
+            let decomposition = decomposition.compact_subsumed_bags();
+            if self
+                .decompositions
+                .first()
+                .is_none_or(|best| decomposition.quality_key() < best.quality_key())
+            {
+                self.decompositions.clear();
+                self.decompositions.push(decomposition);
+            }
         }
     }
 
