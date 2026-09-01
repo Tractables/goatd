@@ -27,7 +27,7 @@ pub use config::PortfolioConfig;
 
 /// Exit early if FlowCutter hasn't improved treewidth for this long. Caps
 /// per-graph overhead where FlowCutter converges fast.
-const FLOWCUTTER_CANDIDATE_PATIENCE: Duration = Duration::from_millis(500);
+const FLOWCUTTER_CANDIDATE_PATIENCE: Duration = Duration::from_secs(1);
 const FLOWCUTTER_CANDIDATE_ITERATIONS: u32 = 50;
 const SAMPLE_SEED_OFFSET: u64 = 100;
 const SAMPLE_SEED_STRIDE: u64 = 7919;
