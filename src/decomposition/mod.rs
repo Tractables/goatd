@@ -10,5 +10,6 @@ mod ops;
 mod refine;
 
 pub use model::{TdBag, TreeDecomposition};
+pub(crate) use ops::SubsumedBagCompaction;
 pub use ops::{Projection, RootedForest};
 pub use refine::refine_with_flowcutter;
