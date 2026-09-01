@@ -8,24 +8,26 @@
 
 use crate::{TdBag, TreeDecomposition};
 
-/// Build a `TreeDecomposition` from a per-step elimination record.
+/// Build a `TreeDecomposition` from elimination bags and their vertex ranks.
 ///
-/// `steps[s]` is the eliminated vertex followed by the live neighbours that
-/// were in its bag. `rank[v]` is the step at which vertex `v` was eliminated.
-pub(super) fn build_td_from_steps(steps: Vec<Vec<u32>>, rank: &[u32]) -> TreeDecomposition {
-    let n_bags = steps.len();
-    debug_assert_eq!(n_bags, rank.len());
+/// An ordinary elimination bag has one vertex whose rank is the bag index and
+/// zero or more later-ranked neighbours. A deadline completion may instead
+/// put every vertex of an unfinished residual component in one bag and assign
+/// all of them that bag's rank.
+pub(super) fn build_td_from_ranked_bags(
+    ranked_bags: Vec<Vec<u32>>,
+    rank: &[u32],
+) -> TreeDecomposition {
+    let n_bags = ranked_bags.len();
+    debug_assert!(n_bags <= rank.len());
     debug_assert!(rank.iter().all(|&step| step < n_bags as u32));
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n_bags];
     let n_bags_u32 = n_bags as u32;
-    for (step, vertices) in steps.iter().enumerate() {
-        if vertices.len() <= 1 {
-            continue;
-        }
+    for (step, vertices) in ranked_bags.iter().enumerate() {
         let mut best = u32::MAX;
-        for &u in &vertices[1..] {
+        for &u in vertices {
             let r = rank[u as usize];
-            if r < best {
+            if r > step as u32 && r < best {
                 best = r;
             }
         }
@@ -34,7 +36,7 @@ pub(super) fn build_td_from_steps(steps: Vec<Vec<u32>>, rank: &[u32]) -> TreeDec
             adj[best as usize].push(step);
         }
     }
-    let bags = steps.into_iter().map(TdBag::new).collect();
+    let bags = ranked_bags.into_iter().map(TdBag::new).collect();
 
     TreeDecomposition::from_parts(rank.len() as u32, bags, adj)
 }

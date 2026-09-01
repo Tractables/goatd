@@ -3,9 +3,9 @@
 //!
 //! One instantiation of the greedy skeleton in `greedy`, and the portfolio's
 //! main order. Fill is costly enough to be maintained rather than recomputed
-//! per pop: a seeding scan measures every active vertex, each elimination
-//! re-scores its live neighbours, and a dirty flag lets an untouched entry pop
-//! without a recount.
+//! per pop: a seeding scan measures every active vertex, then each elimination
+//! re-scores every vertex whose neighbourhood or neighbour-pair edges changed.
+//! Heap generations discard the older entries those updates replace.
 //!
 //! Past the soft deadline the run continues in cheap mode — neighbours are
 //! re-pushed with fill 0, so the rest of the elimination pops in degree order.
@@ -23,17 +23,31 @@ use crate::deadline::expired;
 /// against a live recomputed fill without destructuring the `Reverse` tuple.
 #[derive(Eq, PartialEq)]
 pub(super) struct HeapEntry {
-    pub key: (Reverse<u64>, Reverse<usize>, Reverse<u32>, Reverse<u32>),
+    pub key: (
+        Reverse<u64>,
+        Reverse<usize>,
+        Reverse<u32>,
+        Reverse<u32>,
+        u64,
+    ),
     pub vertex: u32,
     pub fill: u64,
+    pub generation: u64,
 }
 
 impl HeapEntry {
-    pub(super) fn new(fill: u64, degree: usize, salt: u32, v: u32) -> Self {
+    pub(super) fn new(fill: u64, degree: usize, salt: u32, v: u32, generation: u64) -> Self {
         HeapEntry {
-            key: (Reverse(fill), Reverse(degree), Reverse(salt), Reverse(v)),
+            key: (
+                Reverse(fill),
+                Reverse(degree),
+                Reverse(salt),
+                Reverse(v),
+                generation,
+            ),
             vertex: v,
             fill,
+            generation,
         }
     }
 }
@@ -91,13 +105,21 @@ fn scan_fill(
 struct MinFill<'a> {
     heap: BinaryHeap<HeapEntry>,
     scratch: FillScratch,
-    /// `dirty[v]` — a neighbour of `v` was eliminated since `v`'s entry was
-    /// pushed, so that entry's fill snapshot may no longer hold. Clear means
-    /// the snapshot is still exact and the pop can skip a recompute; a vertex
-    /// with `k` neighbour-eliminations before its own pop is refreshed once
-    /// per heap bounce instead of `k` times.
-    dirty: Vec<bool>,
+    generation: Vec<u64>,
+    score: Vec<u64>,
+    affected: FillAffected,
+    fill_edges: Vec<(u32, u32)>,
     salt: &'a [u32],
+}
+
+impl MinFill<'_> {
+    fn deadline_outcome(&mut self, graph: &EliminationGraph) -> AfterElim {
+        if graph.num_active > CHEAP_MODE_MAX_ACTIVE {
+            AfterElim::Bail
+        } else {
+            AfterElim::EnterCheapMode
+        }
+    }
 }
 
 impl ElimPolicy for MinFill<'_> {
@@ -112,12 +134,20 @@ impl ElimPolicy for MinFill<'_> {
     }
 
     fn push(&mut self, graph: &EliminationGraph, v: u32, score: u64) {
+        self.score[v as usize] = score;
+        let generation = self.generation[v as usize].wrapping_add(1);
+        self.generation[v as usize] = generation;
         self.heap.push(HeapEntry::new(
             score,
             graph.degree(v),
             self.salt[v as usize],
             v,
+            generation,
         ));
+    }
+
+    fn entry_is_current(&self, entry: &HeapEntry) -> bool {
+        self.generation[entry.vertex as usize] == entry.generation
     }
 
     fn live_score(&mut self, graph: &EliminationGraph, v: u32) -> u64 {
@@ -149,9 +179,12 @@ impl ElimPolicy for MinFill<'_> {
         outcome
     }
 
-    fn rescore_on_pop(&mut self, graph: &EliminationGraph, v: u32) -> Option<u64> {
-        std::mem::replace(&mut self.dirty[v as usize], false)
-            .then(|| self.scratch.fill_count_of(graph, v))
+    fn rescore_on_pop(&mut self, _graph: &EliminationGraph, _v: u32) -> Option<u64> {
+        None
+    }
+
+    fn eliminate_with_fill(&mut self, graph: &mut EliminationGraph, v: u32, nbrs: &[u32]) {
+        graph.eliminate_with_nbrs_record_fill(v, nbrs, &mut self.fill_edges);
     }
 
     fn after_eliminate(
@@ -160,41 +193,47 @@ impl ElimPolicy for MinFill<'_> {
         nbrs: &[u32],
         cheap_mode: bool,
         deadline: Option<Instant>,
+        filled_neighbourhood: bool,
     ) -> AfterElim {
         if cheap_mode {
             // Fill accuracy is already abandoned: re-push each live neighbour
             // with a zero fill so the rest of the run pops in min-degree order.
             for &u in nbrs {
                 if graph.active[u as usize] {
-                    self.heap
-                        .push(HeapEntry::new(0, graph.degree(u), self.salt[u as usize], u));
+                    self.push(graph, u, 0);
                 }
             }
             return AfterElim::Continue;
         }
-        // Eagerly re-score each affected neighbour and push a fresh entry.
-        // Without this the heap picks by *stale* fill counts and can commit
-        // to a vertex whose true fill is far above some unpopped candidate.
-        // The dirty flag still guards the pop, because the neighbour's older
-        // entry may surface before the new one.
-        //
-        // Checked inside this loop, not only between pops: each re-score is
-        // superlinear in the neighbourhood, so on a dense graph one loop can
-        // run for seconds on its own.
-        for &u in nbrs {
-            let ui = u as usize;
-            if !graph.active[ui] {
-                continue;
+
+        if filled_neighbourhood {
+            if !self
+                .affected
+                .collect_deltas(graph, nbrs, &self.fill_edges, deadline)
+            {
+                return self.deadline_outcome(graph);
             }
-            if expired(deadline) {
-                if graph.num_active > CHEAP_MODE_MAX_ACTIVE {
-                    return AfterElim::Bail;
+            while let Some((vertex, delta)) = self.affected.pop_delta() {
+                if expired(deadline) {
+                    self.affected.clear();
+                    return self.deadline_outcome(graph);
                 }
-                return AfterElim::EnterCheapMode;
+                debug_assert!(delta <= self.score[vertex as usize]);
+                let score = self.score[vertex as usize].saturating_sub(delta);
+                self.push(graph, vertex, score);
             }
-            let live = self.scratch.fill_count_of(graph, u);
-            self.push(graph, u, live);
-            self.dirty[ui] = true;
+        }
+
+        // Checked inside this loop: a fill recount is superlinear in the
+        // neighbourhood, so one update can otherwise overrun the deadline.
+        for &vertex in nbrs {
+            if expired(deadline) {
+                return self.deadline_outcome(graph);
+            }
+            if graph.active[vertex as usize] {
+                let live = self.scratch.fill_count_of(graph, vertex);
+                self.push(graph, vertex, live);
+            }
         }
         AfterElim::Continue
     }
@@ -217,7 +256,10 @@ pub(crate) fn eliminate_min_fill(
     let mut policy = MinFill {
         heap: BinaryHeap::with_capacity(n),
         scratch: FillScratch::new(n),
-        dirty: vec![false; n],
+        generation: vec![0; n],
+        score: vec![0; n],
+        affected: FillAffected::new(n),
+        fill_edges: Vec::new(),
         salt,
     };
     eliminate_greedy(&mut policy, graph, sink, stop)

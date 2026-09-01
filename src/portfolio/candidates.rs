@@ -1,4 +1,5 @@
 use crate::TreeDecomposition;
+use crate::decomposition::SubsumedBagCompaction;
 use crate::elimination::engine::OrderRun;
 
 /// What one portfolio candidate's elimination left behind.
@@ -18,13 +19,29 @@ pub(super) enum CandidateOutcome {
 pub(super) struct CandidateSet {
     decompositions: Vec<TreeDecomposition>,
     best_width: Option<u32>,
+    best_quality_key: Option<(u32, usize)>,
+    best_compaction: Option<SubsumedBagCompaction>,
+    retain_only_best: bool,
 }
 
 impl CandidateSet {
-    pub(super) fn new(capacity: usize) -> Self {
+    pub(super) fn all(capacity: usize) -> Self {
         Self {
             decompositions: Vec::with_capacity(capacity),
             best_width: None,
+            best_quality_key: None,
+            best_compaction: None,
+            retain_only_best: false,
+        }
+    }
+
+    pub(super) fn best_only() -> Self {
+        Self {
+            decompositions: Vec::with_capacity(1),
+            best_width: None,
+            best_quality_key: None,
+            best_compaction: None,
+            retain_only_best: true,
         }
     }
 
@@ -39,7 +56,21 @@ impl CandidateSet {
     pub(super) fn push(&mut self, decomposition: TreeDecomposition) {
         let width = decomposition.treewidth();
         self.best_width = Some(self.best_width.map_or(width, |best| best.min(width)));
-        self.decompositions.push(decomposition);
+        if !self.retain_only_best {
+            self.decompositions.push(decomposition);
+        } else {
+            if self.best_quality_key.is_some_and(|best| width > best.0) {
+                return;
+            }
+            let compaction = decomposition.subsumed_bag_compaction();
+            let quality_key = (width, compaction.total_bag_size());
+            if self.best_quality_key.is_none_or(|best| quality_key < best) {
+                self.decompositions.clear();
+                self.decompositions.push(decomposition);
+                self.best_quality_key = Some(quality_key);
+                self.best_compaction = Some(compaction);
+            }
+        }
     }
 
     pub(super) fn record_elimination(&mut self, run: OrderRun) -> CandidateOutcome {
@@ -57,7 +88,17 @@ impl CandidateSet {
         }
     }
 
-    pub(super) fn into_decompositions(self) -> Vec<TreeDecomposition> {
+    pub(super) fn into_decompositions(mut self) -> Vec<TreeDecomposition> {
+        if self.retain_only_best {
+            let Some(decomposition) = self.decompositions.pop() else {
+                return Vec::new();
+            };
+            let compaction = self
+                .best_compaction
+                .take()
+                .expect("a retained candidate has a compaction plan");
+            return vec![compaction.apply(decomposition)];
+        }
         self.decompositions
     }
 }

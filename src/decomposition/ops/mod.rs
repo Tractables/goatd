@@ -259,7 +259,171 @@ fn project(td: &TreeDecomposition, keep: &[u32]) -> Result<Projection, Error> {
     })
 }
 
+fn bag_is_subset(left: &TdBag, right: &TdBag, left_sorted: bool, right_sorted: bool) -> bool {
+    if left.vertices.len() > right.vertices.len() {
+        return false;
+    }
+    if !left_sorted {
+        return left.vertices.iter().all(|vertex| {
+            if right_sorted {
+                right.vertices.binary_search(vertex).is_ok()
+            } else {
+                right.vertices.contains(vertex)
+            }
+        });
+    }
+    if !right_sorted {
+        return left
+            .vertices
+            .iter()
+            .all(|vertex| right.vertices.contains(vertex));
+    }
+
+    let mut right_index = 0;
+    for vertex in &left.vertices {
+        while right_index < right.vertices.len() && right.vertices[right_index] < *vertex {
+            right_index += 1;
+        }
+        if right.vertices.get(right_index) != Some(vertex) {
+            return false;
+        }
+        right_index += 1;
+    }
+    true
+}
+
+pub(crate) struct SubsumedBagCompaction {
+    representative: Vec<usize>,
+    total_bag_size: usize,
+}
+
+impl SubsumedBagCompaction {
+    pub(crate) fn total_bag_size(&self) -> usize {
+        self.total_bag_size
+    }
+
+    pub(crate) fn apply(self, decomposition: TreeDecomposition) -> TreeDecomposition {
+        let bag_count = decomposition.bags.len();
+        debug_assert_eq!(self.representative.len(), bag_count);
+        if self
+            .representative
+            .iter()
+            .enumerate()
+            .all(|(bag, &representative)| bag == representative)
+        {
+            return decomposition;
+        }
+
+        let mut old_to_new = vec![usize::MAX; bag_count];
+        let mut bags = Vec::new();
+        for (old, bag) in decomposition.bags.into_iter().enumerate() {
+            if self.representative[old] == old {
+                old_to_new[old] = bags.len();
+                bags.push(bag);
+            }
+        }
+
+        let mut adj = vec![Vec::new(); bags.len()];
+        for (left, neighbours) in decomposition.adj.iter().enumerate() {
+            for &right in neighbours {
+                if right <= left {
+                    continue;
+                }
+                let left = old_to_new[self.representative[left]];
+                let right = old_to_new[self.representative[right]];
+                if left != right {
+                    adj[left].push(right);
+                    adj[right].push(left);
+                }
+            }
+        }
+        for neighbours in &mut adj {
+            neighbours.sort_unstable();
+            neighbours.dedup();
+        }
+
+        TreeDecomposition::from_parts(decomposition.num_vertices, bags, adj)
+    }
+}
+
 impl TreeDecomposition {
+    pub(crate) fn subsumed_bag_compaction(&self) -> SubsumedBagCompaction {
+        let bag_count = self.bags.len();
+        if bag_count < 2 {
+            return SubsumedBagCompaction {
+                representative: (0..bag_count).collect(),
+                total_bag_size: self.total_bag_size(),
+            };
+        }
+
+        // Each bag chooses at most one adjacent superset. Strict containment
+        // points toward a larger bag; equal bags point toward the lower index,
+        // so these links cannot cycle.
+        let mut target: Vec<Option<usize>> = vec![None; bag_count];
+        let bag_is_sorted: Vec<bool> = self
+            .bags
+            .iter()
+            .map(|bag| bag.vertices.windows(2).all(|pair| pair[0] < pair[1]))
+            .collect();
+        for bag in 0..bag_count {
+            for &neighbour in &self.adj[bag] {
+                let bag_size = self.bags[bag].vertices.len();
+                let neighbour_size = self.bags[neighbour].vertices.len();
+                if bag_size > neighbour_size
+                    || (bag_size == neighbour_size && neighbour > bag)
+                    || !bag_is_subset(
+                        &self.bags[bag],
+                        &self.bags[neighbour],
+                        bag_is_sorted[bag],
+                        bag_is_sorted[neighbour],
+                    )
+                {
+                    continue;
+                }
+                let replace = target[bag].is_none_or(|current| {
+                    let current_size = self.bags[current].vertices.len();
+                    neighbour_size > current_size
+                        || (neighbour_size == current_size && neighbour < current)
+                });
+                if replace {
+                    target[bag] = Some(neighbour);
+                }
+            }
+        }
+
+        let mut representative = vec![usize::MAX; bag_count];
+        for start in 0..bag_count {
+            let mut root = start;
+            while let Some(next) = target[root] {
+                root = if representative[next] == usize::MAX {
+                    next
+                } else {
+                    representative[next]
+                };
+            }
+            let mut bag = start;
+            while representative[bag] == usize::MAX {
+                representative[bag] = root;
+                let Some(next) = target[bag] else {
+                    break;
+                };
+                bag = next;
+            }
+        }
+        let total_bag_size = self
+            .bags
+            .iter()
+            .enumerate()
+            .filter(|(bag, _)| representative[*bag] == *bag)
+            .map(|(_, bag)| bag.vertices.len())
+            .sum();
+
+        SubsumedBagCompaction {
+            representative,
+            total_bag_size,
+        }
+    }
+
     /// Root this decomposition's bag forest and walk it breadth-first.
     ///
     /// Each entry in `roots` that has not already been reached opens a new

@@ -10,6 +10,9 @@ use std::time::{Duration, Instant};
 mod candidates;
 mod config;
 
+#[cfg(test)]
+mod tests;
+
 use crate::deadline::expired;
 use crate::decomposition;
 use crate::elimination::Order;
@@ -69,8 +72,39 @@ fn flowcutter_candidate(
     }
 }
 
+#[derive(Clone, Copy)]
+enum EliminationPhase {
+    Initial,
+    ExtraSampling,
+}
+
+/// Initial candidates may use the complete two-stage window so the first one
+/// can always return a decomposition. Extra samples stop at the soft deadline;
+/// the rest of the hard window belongs to FlowCutter.
+fn elimination_stop(
+    phase: EliminationPhase,
+    soft_deadline: Option<Instant>,
+    hard_deadline: Option<Instant>,
+    width_bound: Option<u32>,
+) -> ElimStop {
+    ElimStop {
+        soft_deadline,
+        hard_deadline: match phase {
+            EliminationPhase::Initial => hard_deadline,
+            EliminationPhase::ExtraSampling => soft_deadline,
+        },
+        width_bound,
+    }
+}
+
 /// Builds a run's candidate list for a seed, given the weight vector.
 type InitialOrderBuilder = for<'w> fn(u64, &'w [u32]) -> Vec<(Order<'w>, u64)>;
+
+#[derive(Clone, Copy)]
+enum CandidateRetention {
+    All,
+    BestOnly,
+}
 
 /// The five fixed candidates at the front of the standard portfolio, ordered
 /// by the cost of one elimination step.
@@ -106,16 +140,24 @@ fn run_portfolio(
     seed: u64,
     initial_orders: InitialOrderBuilder,
     config: PortfolioConfig,
-) -> Result<Vec<TreeDecomposition>, crate::Error> {
+    retention: CandidateRetention,
+) -> Result<CandidateSet, crate::Error> {
     config::validate(config)?;
-    let deadlines =
-        crate::deadline::two_stage(crate::meter::now(), config.soft_budget, "portfolio")?;
+    let deadlines = crate::deadline::staged(
+        crate::meter::now(),
+        config.soft_budget,
+        config.hard_budget,
+        "portfolio",
+    )?;
     let soft_deadline = deadlines.soft;
     let hard_deadline = deadlines.hard;
     let mut prebuilt = engine::prebuild(graph);
     let initial_orders = initial_orders(seed, weights);
     let large_residual = prebuilt.num_active() > MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS;
-    let mut candidates = CandidateSet::new(initial_orders.len() + 1);
+    let mut candidates = match retention {
+        CandidateRetention::All => CandidateSet::all(initial_orders.len() + 1),
+        CandidateRetention::BestOnly => CandidateSet::best_only(),
+    };
 
     // Set after any candidate reaches the hard deadline, or when it expires
     // between candidates. Later runs would stop at the same point.
@@ -133,21 +175,22 @@ fn run_portfolio(
         if i > 0 && large_residual && !is_min_degree_variant(order) {
             continue;
         }
-        // Complete the residual as a path only while no candidate has
-        // produced a usable decomposition yet. Once one has, completing a later
-        // candidate's residual would be wasted work: its wide decomposition
-        // would lose on width and total bag size to the existing winner.
+        // Complete the residual only while no candidate has produced a usable
+        // decomposition yet. Once one has, completing a later candidate's
+        // residual would be wasted work: its wide decomposition would lose on
+        // width and total bag size to the existing winner.
         let complete_on_deadline = candidates.is_empty();
         let run = engine::run_order_prebuilt(
             &mut prebuilt,
             engine::RunSpec {
                 order,
                 seed: candidate_seed,
-                stop: ElimStop {
+                stop: elimination_stop(
+                    EliminationPhase::Initial,
                     soft_deadline,
                     hard_deadline,
-                    width_bound: candidates.best_width(),
-                },
+                    candidates.best_width(),
+                ),
                 complete_on_deadline,
             },
         );
@@ -167,8 +210,10 @@ fn run_portfolio(
     // ≥2 tied candidates, so different seeds explore different
     // elimination orders and can lower width on small/medium graphs where the
     // base portfolio returns in tens of ms. Falls back to sampled min-degree on
-    // large residuals, matching the main loop's skip rule. Stops at `deadline`
-    // when there is one, and at `sampling_runs` samples regardless.
+    // large residuals, matching the main loop's skip rule. A started extra
+    // sample stops at the soft deadline so it cannot consume the trailing
+    // FlowCutter and output interval. The phase also stops at `sampling_runs`
+    // samples regardless.
     let sample_order = if large_residual {
         Order::MinDegreeSampled { weights }
     } else {
@@ -176,8 +221,9 @@ fn run_portfolio(
     };
     let max_samples = config.sampling_runs;
     let mut sample_index: u64 = 0;
-    // Normally the soft deadline fires first; the hard-deadline checks also
-    // prevent another sampling run after a candidate reached the hard cutoff.
+    // Normally the soft deadline fires first; the portfolio hard-deadline
+    // check also prevents another sample after an initial candidate used the
+    // complete two-stage window.
     while sample_index < max_samples
         && !hard_deadline_tripped
         && !expired(soft_deadline)
@@ -192,11 +238,12 @@ fn run_portfolio(
             engine::RunSpec {
                 order: sample_order,
                 seed: sample_seed,
-                stop: ElimStop {
+                stop: elimination_stop(
+                    EliminationPhase::ExtraSampling,
                     soft_deadline,
                     hard_deadline,
-                    width_bound: candidates.best_width(),
-                },
+                    candidates.best_width(),
+                ),
                 complete_on_deadline: false,
             },
         );
@@ -221,7 +268,7 @@ fn run_portfolio(
     {
         candidates.push(decomposition);
     }
-    Ok(candidates.into_decompositions())
+    Ok(candidates)
 }
 
 /// Run one sampled min-fill order, then up to
@@ -243,7 +290,26 @@ pub fn sampled_min_fill_candidates(
     config: PortfolioConfig,
 ) -> Result<Vec<TreeDecomposition>, crate::Error> {
     validate_weights(graph, weights)?;
-    run_portfolio(graph, weights, seed, sampled_min_fill_orders, config)
+    Ok(run_portfolio(
+        graph,
+        weights,
+        seed,
+        sampled_min_fill_orders,
+        config,
+        CandidateRetention::All,
+    )?
+    .into_decompositions())
+}
+
+fn standard_candidate_set(
+    graph: &Graph,
+    weights: &[u32],
+    seed: u64,
+    config: PortfolioConfig,
+    retention: CandidateRetention,
+) -> Result<CandidateSet, crate::Error> {
+    validate_weights(graph, weights)?;
+    run_portfolio(graph, weights, seed, standard_orders, config, retention)
 }
 
 /// Run the standard portfolio and return every decomposition it produced,
@@ -261,14 +327,15 @@ pub fn candidates(
     seed: u64,
     config: PortfolioConfig,
 ) -> Result<Vec<TreeDecomposition>, crate::Error> {
-    validate_weights(graph, weights)?;
-    let mut decompositions = run_portfolio(graph, weights, seed, standard_orders, config)?;
+    let mut decompositions =
+        standard_candidate_set(graph, weights, seed, config, CandidateRetention::All)?
+            .into_decompositions();
     decompositions.sort_by_key(TreeDecomposition::quality_key);
     Ok(decompositions)
 }
 
 /// Return the standard portfolio's best candidate by width, then total bag
-/// size.
+/// size. Bags contained in an adjacent bag are contracted before return.
 ///
 /// # Errors
 ///
@@ -279,10 +346,13 @@ pub fn decompose(
     seed: u64,
     config: PortfolioConfig,
 ) -> Result<TreeDecomposition, crate::Error> {
-    Ok(candidates(graph, weights, seed, config)?
-        .into_iter()
-        .next()
-        .expect("first candidate always produces a decomposition"))
+    Ok(
+        standard_candidate_set(graph, weights, seed, config, CandidateRetention::BestOnly)?
+            .into_decompositions()
+            .into_iter()
+            .next()
+            .expect("first candidate always produces a decomposition"),
+    )
 }
 
 /// The standard portfolio's winner, refined by FlowCutter cuts

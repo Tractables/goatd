@@ -16,6 +16,58 @@ fn rooted_forest_walks_each_component_in_breadth_first_order() {
 }
 
 #[test]
+fn compact_subsumed_bags_keeps_incomparable_branches() {
+    let graph = Graph::new(3, [(0, 1), (0, 2)]);
+    let td = make_td_for(
+        3,
+        vec![vec![0], vec![0, 1], vec![0, 2]],
+        vec![(0, 1), (0, 2)],
+    );
+
+    let compacted = td.subsumed_bag_compaction().apply(td);
+
+    assert_eq!(compacted.bags.len(), 2);
+    assert_eq!(compacted.total_bag_size(), 4);
+    assert_eq!(compacted.adj, vec![vec![1], vec![0]]);
+    compacted
+        .validate(&graph)
+        .expect("contracting a subsumed branch bag preserves validity");
+}
+
+#[test]
+fn compact_subsumed_bags_contracts_equal_bags_once() {
+    let graph = Graph::new(2, [(0, 1)]);
+    let td = make_td_for(2, vec![vec![0, 1], vec![0, 1]], vec![(0, 1)]);
+
+    let compacted = td.subsumed_bag_compaction().apply(td);
+
+    assert_eq!(compacted.bags.len(), 1);
+    assert_eq!(compacted.total_bag_size(), 2);
+    compacted
+        .validate(&graph)
+        .expect("contracting duplicate bags preserves validity");
+}
+
+#[test]
+fn a_subsumed_bag_plan_reports_and_applies_the_compacted_size() {
+    let graph = Graph::new(3, [(0, 1), (0, 2)]);
+    let td = make_td_for(
+        3,
+        vec![vec![0], vec![0, 1], vec![0, 2]],
+        vec![(0, 1), (0, 2)],
+    );
+
+    let plan = td.subsumed_bag_compaction();
+    assert_eq!(plan.total_bag_size(), 4);
+    let compacted = plan.apply(td);
+
+    assert_eq!(compacted.total_bag_size(), 4);
+    compacted
+        .validate(&graph)
+        .expect("applying a subsumed-bag plan preserves validity");
+}
+
+#[test]
 fn glue_at_separator_preserves_rip_and_covers_all_vertices() {
     // Side A: two bags covering {0, 1, 2, 3}; S = {2, 3}.
     let td_a = make_td_for(6, vec![vec![0, 1, 2], vec![1, 2, 3]], vec![(0, 1)]);

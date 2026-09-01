@@ -7,6 +7,12 @@ use crate::Error;
 /// costs construction time without improving the decomposition.
 pub(super) const MAX_SAMPLING_RUNS: u64 = 100;
 
+/// Larger budgeted runs keep exploring after the short-run sample cap.
+const EXTENDED_SAMPLING_RUNS: u64 = 1_000;
+// A 4.75 s soft budget reaches the two-stage hard deadline at 9.5 s, leaving
+// output headroom under a ten-second process limit.
+const EXTENDED_SAMPLING_MIN_SOFT_BUDGET: Duration = Duration::from_millis(4_750);
+
 /// Default soft deadline for the sampled-min-fill portfolio. The hard deadline
 /// inside the elimination core is twice this.
 const SAMPLED_MIN_FILL_TIMEOUT_MS: u64 = 1000;
@@ -18,6 +24,7 @@ pub(super) const MIN_FLOWCUTTER_CANDIDATE_MS: u64 = 50;
 #[must_use]
 pub struct PortfolioConfig {
     pub(super) soft_budget: Option<Duration>,
+    pub(super) hard_budget: Option<Duration>,
     pub(super) sampling_runs: u64,
     pub(super) flowcutter_budget: Option<Duration>,
 }
@@ -28,6 +35,7 @@ impl PortfolioConfig {
     pub fn sampled_min_fill() -> Self {
         Self {
             soft_budget: Some(Duration::from_millis(SAMPLED_MIN_FILL_TIMEOUT_MS)),
+            hard_budget: None,
             sampling_runs: MAX_SAMPLING_RUNS,
             flowcutter_budget: None,
         }
@@ -48,6 +56,15 @@ impl PortfolioConfig {
         self
     }
 
+    /// Set the hard portfolio budget independently of the soft budget.
+    ///
+    /// Without this override, the hard budget is twice the soft budget. The
+    /// hard budget must be at least the soft budget.
+    pub fn with_hard_budget(mut self, budget: Duration) -> Self {
+        self.hard_budget = Some(budget);
+        self
+    }
+
     /// Set the maximum number of extra sampled elimination orders.
     pub fn with_sampling_runs(mut self, runs: u64) -> Self {
         self.sampling_runs = runs;
@@ -59,8 +76,27 @@ impl PortfolioConfig {
     pub fn standard() -> Self {
         Self {
             soft_budget: None,
+            hard_budget: None,
             sampling_runs: MAX_SAMPLING_RUNS,
             flowcutter_budget: None,
+        }
+    }
+
+    /// Standard candidates under a soft wall-clock budget, with sampling
+    /// effort and the trailing FlowCutter slot scaled for the corresponding
+    /// hard window.
+    pub fn standard_with_budget(budget: Duration) -> Self {
+        let extended = budget >= EXTENDED_SAMPLING_MIN_SOFT_BUDGET;
+        let sampling_runs = if extended {
+            EXTENDED_SAMPLING_RUNS
+        } else {
+            MAX_SAMPLING_RUNS
+        };
+        Self {
+            soft_budget: Some(budget),
+            hard_budget: None,
+            sampling_runs,
+            flowcutter_budget: extended.then_some(budget),
         }
     }
 }

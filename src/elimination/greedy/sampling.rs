@@ -24,7 +24,7 @@ fn rescore_neighbours(
     scratch: &mut FillScratch,
     graph: &EliminationGraph,
     nbrs: &[u32],
-    buckets: &mut BucketMap,
+    buckets: &mut BucketMap<'_>,
 ) {
     for &u in nbrs {
         if graph.active[u as usize] {
@@ -54,14 +54,17 @@ pub(crate) fn eliminate_sampled_min_fill(
     } = stop;
     let n = graph.len();
     assert_eq!(weights.len(), n);
+    let uniform_mass = uniform_sampling_mass(weights);
 
     if graph.should_promote_bitset() {
         graph.promote_bitset();
     }
 
     let mut scratch = FillScratch::new(n);
+    let mut affected = FillAffected::new(n);
+    let mut fill_edges = Vec::new();
     let mut live_nbrs = Vec::new();
-    let mut buckets = BucketMap::with_capacity(n);
+    let mut buckets = BucketMap::with_weights(weights);
     for v in 0..n {
         if graph.active[v] {
             let f = match initial_fill {
@@ -77,7 +80,7 @@ pub(crate) fn eliminate_sampled_min_fill(
     let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
     let mut check_counter = 0u32;
 
-    while let Some((min_fill, tie_set)) = buckets.min_bucket() {
+    while let Some((min_fill, tie_set, total_mass)) = buckets.min_bucket() {
         check_counter += 1;
         if check_counter >= DEADLINE_CHECK_STRIDE {
             check_counter = 0;
@@ -89,7 +92,7 @@ pub(crate) fn eliminate_sampled_min_fill(
             }
         }
 
-        let v = sample_tie_set(tie_set, weights, &mut rng);
+        let v = sample_tie_set(tie_set, weights, &mut rng, uniform_mass, total_mass);
 
         buckets.remove_vertex(v);
 
@@ -121,8 +124,30 @@ pub(crate) fn eliminate_sampled_min_fill(
                 rescore_neighbours(&mut scratch, graph, &live_nbrs, &mut buckets);
             }
         } else {
-            graph.eliminate_with_nbrs(v, &live_nbrs);
-            rescore_neighbours(&mut scratch, graph, &live_nbrs, &mut buckets);
+            graph.eliminate_with_nbrs_record_fill(v, &live_nbrs, &mut fill_edges);
+            if !affected.collect_deltas(graph, &live_nbrs, &fill_edges, hard_deadline) {
+                return ElimExit::DeadlineReached;
+            }
+            while let Some((u, delta)) = affected.pop_delta() {
+                if expired(hard_deadline) {
+                    affected.clear();
+                    return ElimExit::DeadlineReached;
+                }
+                let old_fill = buckets
+                    .key_of(u)
+                    .expect("an active vertex has a fill bucket");
+                debug_assert!(delta <= old_fill);
+                buckets.update(u, old_fill.saturating_sub(delta));
+            }
+            for &u in &live_nbrs {
+                if expired(hard_deadline) {
+                    return ElimExit::DeadlineReached;
+                }
+                if graph.active[u as usize] {
+                    let new_fill = scratch.fill_count_of(graph, u);
+                    buckets.update(u, new_fill);
+                }
+            }
         }
         let bag_len = bag.len();
         sink.record(v, bag);
@@ -152,8 +177,9 @@ pub(crate) fn eliminate_sampled_min_degree(
     } = stop;
     let n = graph.len();
     assert_eq!(weights.len(), n);
+    let uniform_mass = uniform_sampling_mass(weights);
 
-    let mut buckets = BucketMap::with_capacity(n);
+    let mut buckets = BucketMap::with_weights(weights);
     for v in 0..n {
         if graph.active[v] {
             buckets.insert(v as u32, graph.degree(v as u32) as u64);
@@ -169,7 +195,7 @@ pub(crate) fn eliminate_sampled_min_degree(
     // Lazy degree tracking — defer bucket update to sample time.
     let mut degree_stale: Vec<bool> = vec![false; n];
 
-    while let Some((min_deg, tie_set)) = buckets.min_bucket() {
+    while let Some((min_deg, tie_set, total_mass)) = buckets.min_bucket() {
         check_counter += 1;
         if check_counter >= DEADLINE_CHECK_STRIDE {
             check_counter = 0;
@@ -178,7 +204,7 @@ pub(crate) fn eliminate_sampled_min_degree(
             }
         }
 
-        let v = sample_tie_set(tie_set, weights, &mut rng);
+        let v = sample_tie_set(tie_set, weights, &mut rng, uniform_mass, total_mass);
         let vi = v as usize;
 
         if degree_stale[vi] {

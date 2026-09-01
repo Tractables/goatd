@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use super::{
     CHEAP_MODE_MAX_ACTIVE, DEADLINE_CHECK_STRIDE, ElimEntry, ElimExit, ElimSink, ElimStop,
-    EliminationGraph, drain_clique_tail, exceeds_width_bound, take_bag,
+    EliminationGraph, exceeds_width_bound, take_bag,
 };
 use crate::deadline::expired;
 
@@ -118,8 +118,15 @@ pub(super) trait ElimPolicy {
     }
 
     /// Next candidate: its vertex and the score snapshot its entry recorded.
-    fn pop(&mut self) -> Option<(u32, u64)> {
-        self.heap().pop().map(|e| (e.vertex(), e.snapshot()))
+    fn pop(&mut self) -> Option<Self::Entry> {
+        self.heap().pop()
+    }
+
+    /// Whether an entry is the latest one pushed for its vertex. Cores that
+    /// eagerly replace changed scores use this to discard every older heap
+    /// entry, including one whose stale score happens to equal the new score.
+    fn entry_is_current(&self, _entry: &Self::Entry) -> bool {
+        true
     }
 
     /// `v`'s live score, if its popped snapshot has to be re-checked at all.
@@ -128,6 +135,13 @@ pub(super) trait ElimPolicy {
     /// were disturbed and returns `None` for the rest.
     fn rescore_on_pop(&mut self, graph: &EliminationGraph, v: u32) -> Option<u64> {
         Some(self.live_score(graph, v))
+    }
+
+    /// Eliminate a vertex whose neighbourhood needs fill edges. A core that
+    /// maintains an incremental score can override this to retain those
+    /// edges for `after_eliminate`.
+    fn eliminate_with_fill(&mut self, graph: &mut EliminationGraph, v: u32, nbrs: &[u32]) {
+        graph.eliminate_with_nbrs(v, nbrs);
     }
 
     /// React to `v`'s elimination; `nbrs` were its live neighbours. The
@@ -139,8 +153,28 @@ pub(super) trait ElimPolicy {
         _nbrs: &[u32],
         _cheap_mode: bool,
         _deadline: Option<Instant>,
+        _filled_neighbourhood: bool,
     ) -> AfterElim {
         AfterElim::Continue
+    }
+}
+
+/// Drain a clique residual in the policy's heap order. Old entries from an
+/// eagerly maintained heap are skipped before they can choose a vertex.
+fn drain_clique_tail<P: ElimPolicy>(
+    graph: &mut EliminationGraph,
+    sink: &mut ElimSink<'_>,
+    policy: &mut P,
+    nbrs_buf: &mut Vec<u32>,
+) {
+    while let Some(entry) = policy.pop() {
+        let v = entry.vertex();
+        if !graph.active[v as usize] || !policy.entry_is_current(&entry) {
+            continue;
+        }
+        let bag = take_bag(graph, v, nbrs_buf);
+        graph.remove_without_fill_nbrs(v, nbrs_buf);
+        sink.record(v, bag);
     }
 }
 
@@ -182,10 +216,15 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
     // skip all scoring work on the giant-clique endgame.
     let mut clique_residual = false;
 
-    while let Some((v, snapshot)) = policy.pop() {
+    while let Some(entry) = policy.pop() {
+        let v = entry.vertex();
         if !graph.active[v as usize] {
             continue; // lazy deletion: v was already eliminated
         }
+        if !policy.entry_is_current(&entry) {
+            continue;
+        }
+        let snapshot = entry.snapshot();
 
         if cheap_mode {
             // Score maintenance is off, so the only thing left to respect is
@@ -240,8 +279,10 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
         let simplicial = P::ZERO_SCORE_IS_SIMPLICIAL && !cheap_mode && snapshot == 0;
         if clique_residual || simplicial {
             graph.remove_without_fill_nbrs(v, &nbrs_buf);
-        } else {
+        } else if cheap_mode {
             graph.eliminate_with_nbrs(v, &nbrs_buf);
+        } else {
+            policy.eliminate_with_fill(graph, v, &nbrs_buf);
         }
         sink.record(v, bag);
 
@@ -255,11 +296,11 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
             if exceeds_width_bound(graph.num_active, width_bound) {
                 return ElimExit::WidthLimitExceeded;
             }
-            drain_clique_tail(graph, &mut sink, policy.heap(), &mut nbrs_buf);
+            drain_clique_tail(graph, &mut sink, policy, &mut nbrs_buf);
             return ElimExit::Complete;
         }
 
-        match policy.after_eliminate(graph, &nbrs_buf, cheap_mode, soft_deadline) {
+        match policy.after_eliminate(graph, &nbrs_buf, cheap_mode, soft_deadline, !simplicial) {
             AfterElim::Continue => {}
             AfterElim::EnterCheapMode => {
                 debug_assert!(P::CHEAP_MODE, "core without cheap mode asked to enter it");

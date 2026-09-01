@@ -5,6 +5,7 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
+use std::time::Instant;
 
 use super::execution::{DEADLINE_CHECK_STRIDE, ElimExit, ElimSink, ElimStop, exceeds_width_bound};
 use super::graph::EliminationGraph;
@@ -147,6 +148,124 @@ impl FillScratch {
     }
 }
 
+/// Vertices whose fill key may change after eliminating one vertex.
+///
+/// Immediate neighbours are re-scored separately because their neighbourhood
+/// loses the eliminated vertex. For each fill edge, this tracker finds active
+/// common neighbours outside the filled neighbourhood. Each such edge lowers
+/// their fill score by exactly one.
+struct FillAffected {
+    inside: Vec<bool>,
+    marker: Vec<u16>,
+    stamp: u16,
+    delta: Vec<u64>,
+    vertices: Vec<u32>,
+}
+
+impl FillAffected {
+    fn new(n: usize) -> Self {
+        Self {
+            inside: vec![false; n],
+            marker: vec![0; n],
+            stamp: 0,
+            delta: vec![0; n],
+            vertices: Vec::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        for &vertex in &self.vertices {
+            self.delta[vertex as usize] = 0;
+        }
+        self.vertices.clear();
+    }
+
+    #[inline]
+    fn bump_stamp(&mut self) {
+        self.stamp = self.stamp.wrapping_add(1);
+        if self.stamp == 0 {
+            self.marker.fill(0);
+            self.stamp = 1;
+        }
+    }
+
+    fn increment(&mut self, vertex: u32) {
+        let index = vertex as usize;
+        if self.delta[index] == 0 {
+            self.vertices.push(vertex);
+        }
+        self.delta[index] += 1;
+    }
+
+    /// Accumulate exact fill-score decreases caused by `fill_edges`. Returns
+    /// false after clearing its scratch if `deadline` passes during the scan.
+    fn collect_deltas(
+        &mut self,
+        graph: &EliminationGraph,
+        nbrs: &[u32],
+        fill_edges: &[(u32, u32)],
+        deadline: Option<Instant>,
+    ) -> bool {
+        debug_assert!(self.vertices.is_empty());
+        for &vertex in nbrs {
+            self.inside[vertex as usize] = true;
+        }
+
+        for &(left, right) in fill_edges {
+            if crate::deadline::expired(deadline) {
+                self.clear();
+                for &vertex in nbrs {
+                    self.inside[vertex as usize] = false;
+                }
+                return false;
+            }
+            if graph.bitset_words > 0 {
+                let words = graph.bitset_words;
+                crate::meter::charge(words as u64);
+                let left_start = left as usize * words;
+                let right_start = right as usize * words;
+                for word in 0..words {
+                    let mut common =
+                        graph.bitset[left_start + word] & graph.bitset[right_start + word];
+                    while common != 0 {
+                        let bit = common.trailing_zeros() as usize;
+                        let vertex = (word * 64 + bit) as u32;
+                        if !self.inside[vertex as usize] {
+                            self.increment(vertex);
+                        }
+                        common &= common - 1;
+                    }
+                }
+            } else {
+                self.bump_stamp();
+                let stamp = self.stamp;
+                let left_row = &graph.adj[left as usize];
+                let right_row = &graph.adj[right as usize];
+                crate::meter::charge((left_row.len() + right_row.len()) as u64);
+                for &vertex in left_row {
+                    self.marker[vertex as usize] = stamp;
+                }
+                for &vertex in right_row {
+                    if self.marker[vertex as usize] == stamp && !self.inside[vertex as usize] {
+                        self.increment(vertex);
+                    }
+                }
+            }
+        }
+        for &vertex in nbrs {
+            self.inside[vertex as usize] = false;
+        }
+        true
+    }
+
+    fn pop_delta(&mut self) -> Option<(u32, u64)> {
+        self.vertices.pop().map(|vertex| {
+            let delta = std::mem::replace(&mut self.delta[vertex as usize], 0);
+            (vertex, delta)
+        })
+    }
+}
+
 /// Snapshot `v`'s live neighbours into `nbrs_buf` and build the bag its
 /// elimination emits: `v` first, then those neighbours.
 fn take_bag(graph: &EliminationGraph, v: u32, nbrs_buf: &mut Vec<u32>) -> Vec<u32> {
@@ -156,27 +275,6 @@ fn take_bag(graph: &EliminationGraph, v: u32, nbrs_buf: &mut Vec<u32>) -> Vec<u3
     bag.push(v);
     bag.extend_from_slice(nbrs_buf);
     bag
-}
-
-/// Drain a heap in order, eliminating each popped vertex via
-/// `remove_without_fill_nbrs`. Safe only when the caller has verified the
-/// active residual is a clique (every remaining pop is simplicial).
-fn drain_clique_tail<E: Ord + ElimEntry>(
-    graph: &mut EliminationGraph,
-    sink: &mut ElimSink<'_>,
-    heap: &mut BinaryHeap<E>,
-    nbrs_buf: &mut Vec<u32>,
-) {
-    while let Some(entry) = heap.pop() {
-        let v = entry.vertex();
-        let vi = v as usize;
-        if !graph.active[vi] {
-            continue;
-        }
-        let bag = take_bag(graph, v, nbrs_buf);
-        graph.remove_without_fill_nbrs(v, nbrs_buf);
-        sink.record(v, bag);
-    }
 }
 
 /// What every elimination heap entry can be asked, whatever its ordering key:
@@ -193,37 +291,50 @@ trait ElimEntry {
 /// secondary key), so a caller can sample from it directly — mirrors htd's
 /// `PriorityQueue::topCollection`.
 #[derive(Clone)]
-pub(super) struct BucketMap {
-    buckets: BTreeMap<u64, Vec<u32>>,
-    position: Vec<Option<(u64, usize)>>,
+struct Bucket {
+    vertices: Vec<u32>,
+    sampling_mass: u64,
 }
 
-impl BucketMap {
-    fn with_capacity(n: usize) -> Self {
+#[derive(Clone)]
+pub(super) struct BucketMap<'a> {
+    buckets: BTreeMap<u64, Bucket>,
+    position: Vec<Option<(u64, usize)>>,
+    weights: &'a [u32],
+}
+
+impl<'a> BucketMap<'a> {
+    fn with_weights(weights: &'a [u32]) -> Self {
         BucketMap {
             buckets: BTreeMap::new(),
-            position: vec![None; n],
+            position: vec![None; weights.len()],
+            weights,
         }
     }
 
     fn insert(&mut self, v: u32, key: u64) {
-        let bucket = self.buckets.entry(key).or_default();
-        let idx = bucket.len();
-        bucket.push(v);
+        let bucket = self.buckets.entry(key).or_insert_with(|| Bucket {
+            vertices: Vec::new(),
+            sampling_mass: 0,
+        });
+        let idx = bucket.vertices.len();
+        bucket.vertices.push(v);
+        bucket.sampling_mass += sampling_mass(self.weights[v as usize]);
         self.position[v as usize] = Some((key, idx));
     }
 
     fn remove_vertex(&mut self, v: u32) {
         if let Some((key, idx)) = self.position[v as usize].take() {
             let bucket = self.buckets.get_mut(&key).expect("bucket missing");
-            let last_idx = bucket.len() - 1;
+            bucket.sampling_mass -= sampling_mass(self.weights[v as usize]);
+            let last_idx = bucket.vertices.len() - 1;
             if idx != last_idx {
-                let moved = bucket[last_idx];
-                bucket[idx] = moved;
+                let moved = bucket.vertices[last_idx];
+                bucket.vertices[idx] = moved;
                 self.position[moved as usize] = Some((key, idx));
             }
-            bucket.pop();
-            if bucket.is_empty() {
+            bucket.vertices.pop();
+            if bucket.vertices.is_empty() {
                 self.buckets.remove(&key);
             }
         }
@@ -239,11 +350,11 @@ impl BucketMap {
         self.insert(v, new_key);
     }
 
-    fn min_bucket(&self) -> Option<(u64, &[u32])> {
+    fn min_bucket(&self) -> Option<(u64, &[u32], u64)> {
         self.buckets
             .iter()
             .next()
-            .map(|(key, vertices)| (*key, vertices.as_slice()))
+            .map(|(key, bucket)| (*key, bucket.vertices.as_slice(), bucket.sampling_mass))
     }
 
     fn key_of(&self, v: u32) -> Option<u64> {
@@ -274,22 +385,46 @@ fn sampling_mass(earlier_first_weight: u32) -> u64 {
     u64::from(u32::MAX - earlier_first_weight) + 1
 }
 
+/// The common mass when every public weight is equal. Detect it once per
+/// elimination order so uniform tie sets do not need repeated weight scans.
+fn uniform_sampling_mass(weights: &[u32]) -> Option<u64> {
+    let (&first, rest) = weights.split_first()?;
+    let mut scanned = 1u64;
+    for &weight in rest {
+        scanned += 1;
+        if weight != first {
+            crate::meter::charge(scanned);
+            return None;
+        }
+    }
+    crate::meter::charge(scanned);
+    Some(sampling_mass(first))
+}
+
 /// Pick one vertex from `tie_set`, giving smaller weights more mass.
 /// A one-vertex tie set draws nothing at all, so the RNG stream depends only
 /// on the ties the elimination actually had to break.
-fn sample_tie_set(tie_set: &[u32], weights: &[u32], rng: &mut Xorshift64) -> u32 {
+fn sample_tie_set(
+    tie_set: &[u32],
+    weights: &[u32],
+    rng: &mut Xorshift64,
+    uniform_mass: Option<u64>,
+    total_mass: u64,
+) -> u32 {
     debug_assert!(!tie_set.is_empty());
     if tie_set.len() == 1 {
         return tie_set[0];
     }
-    let mut total: u64 = 0;
-    for &v in tie_set {
-        total += sampling_mass(weights[v as usize]);
-    }
-    // Compose two u32 draws into one u64 so the draw covers `total` up to 2^64.
+    // Compose two u32 draws into one u64 so the draw covers `total_mass` up to
+    // 2^64.
     let hi = rng.next_u32() as u64;
     let lo = rng.next_u32() as u64;
-    let r = ((hi << 32) | lo) % total;
+    let r = ((hi << 32) | lo) % total_mass;
+    if let Some(mass) = uniform_mass {
+        let pick = (r / mass) as usize;
+        crate::meter::charge(1);
+        return tie_set[pick];
+    }
     let mut acc: u64 = 0;
     // The chosen index is tracked rather than returned from inside the loop, so
     // that the scan below can be charged on the way out. The initial value is
@@ -304,13 +439,9 @@ fn sample_tie_set(tie_set: &[u32], weights: &[u32], rng: &mut Xorshift64) -> u32
             break;
         }
     }
-    // The dominant cost of weighted min-degree and min-fill sampling. Some
-    // residuals put thousands of same-degree vertices in one bucket, so the two
-    // passes over `tie_set` above outweigh the graph mutation that follows them
-    // by more than an order of magnitude: measured on one such residual, 316 M
-    // tie-set touches over an elimination run against 12 M units of charged
-    // graph work. A touch here costs what a charged graph touch costs, so the
-    // scan goes on the meter at face value and needs no weight of its own.
-    crate::meter::charge(tie_set.len() as u64 + pick as u64 + 1);
+    // Bucket membership updates maintain the total mass. The remaining prefix
+    // walk is the dominant cost for nonuniform weights, so charge its touches
+    // at the same rate as graph touches.
+    crate::meter::charge(pick as u64 + 1);
     tie_set[pick]
 }

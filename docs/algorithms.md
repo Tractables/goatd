@@ -20,15 +20,25 @@ runs receive the best width already found and stop when a bag is too wide to
 win. With time left, the portfolio tries further sampled min-fill seeds; on a
 very large residual it uses sampled min-degree and skips the expensive fixed
 orders instead. Initial fill counts are computed only when sampled min-fill
-first runs, then reused across its seeds. The winner minimizes `(treewidth,
-total bag size)`. `sampled_min_fill_candidates` exposes the smaller variant
-used by callers that want to apply their own ranking.
+first runs, then reused across its seeds. The best-only path contracts bags
+contained in an adjacent bag in each candidate that can still win, then
+minimizes `(treewidth, total bag size)`. `sampled_min_fill_candidates` exposes
+the smaller variant used by callers that want to apply their own ranking.
 
 A soft budget, measured from before preprocessing, stops the portfolio from
-starting further candidates and samples. A hard budget completes the first
-candidate with a valid path decomposition of the remaining graph; later
-candidates can stop without completion because a valid candidate already
-exists. The library remains single-threaded throughout.
+starting further candidates and samples. At the hard budget, the first
+candidate puts each unfinished residual component in one bag and attaches the
+partial elimination bags to it. This completion is linear in the residual
+size. Later candidates can stop without completion because a valid candidate
+already exists. `PortfolioConfig::standard_with_budget`, which the CLI uses for
+a budgeted standard portfolio, keeps the 100-extra-sample cap below a
+4.75-second soft budget. At or above that budget it permits up to 1,000 extra
+samples. An extra sample that reaches the soft deadline stops there; the
+remaining hard-budget interval is reserved for a trailing FlowCutter
+candidate. By default, a 4.75-second soft budget has a 9.5-second hard
+deadline. Callers that need more time to write the result can set an earlier
+hard budget independently without changing the soft schedule. The library
+remains single-threaded throughout.
 
 ## Preprocessing
 

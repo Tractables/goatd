@@ -4,7 +4,7 @@
 //! Usage and every option are in [`USAGE`]. Order-specific flags are rejected
 //! when used with another construction.
 
-use std::io::{Read, Write};
+use std::io::{BufWriter, Read, Write};
 use std::process::exit;
 use std::time::{Duration, Instant};
 
@@ -38,7 +38,10 @@ options:
                         (default: every vertex weighs the same)
   --budget <ms>         wall-clock budget: the elimination orders' soft
                         deadline, flowcutter's run time, the portfolio's
-                        soft deadline, and the refinement's deadline
+                        soft deadline, sampling effort, and trailing
+                        FlowCutter slot, and the refinement's deadline
+  --hard-budget <ms>    portfolio only: hard wall-clock cutoff; defaults to
+                        twice --budget
   --steps <n>           flowcutter only: a step budget in place of a clock,
                         for a run that repeats exactly
   --refine              re-cut the decomposition along FlowCutter separators
@@ -89,6 +92,7 @@ struct Args {
     sample: bool,
     weights: Option<String>,
     budget: Option<Duration>,
+    hard_budget: Option<Duration>,
     steps: Option<u64>,
     refine: bool,
 }
@@ -111,6 +115,7 @@ fn parse_args(argv: &[String]) -> Args {
     let mut sample = false;
     let mut weights = None;
     let mut budget = None;
+    let mut hard_budget = None;
     let mut steps = None;
     let mut refine = false;
 
@@ -157,6 +162,13 @@ fn parse_args(argv: &[String]) -> Args {
                     usage_error("--budget wants a positive millisecond count");
                 }
                 budget = Some(Duration::from_millis(milliseconds));
+            }
+            "--hard-budget" => {
+                let milliseconds = number(&mut i, arg);
+                if milliseconds == 0 {
+                    usage_error("--hard-budget wants a positive millisecond count");
+                }
+                hard_budget = Some(Duration::from_millis(milliseconds));
             }
             "--steps" => {
                 let n = number(&mut i, arg);
@@ -215,6 +227,15 @@ fn parse_args(argv: &[String]) -> Args {
             usage_error("--steps and --budget both bound flowcutter; give one");
         }
     }
+    if let Some(hard) = hard_budget {
+        needs("--hard-budget", order == Method::Portfolio, "portfolio");
+        let Some(soft) = budget else {
+            usage_error("--hard-budget requires --budget");
+        };
+        if hard < soft {
+            usage_error("--hard-budget must be at least --budget");
+        }
+    }
 
     Args {
         input,
@@ -224,6 +245,7 @@ fn parse_args(argv: &[String]) -> Args {
         sample,
         weights,
         budget,
+        hard_budget,
         steps,
         refine,
     }
@@ -290,9 +312,13 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             .unwrap_or_else(|e| fail(&e.to_string())),
         Method::Portfolio => {
             let weights = vec![1; graph.num_vertices() as usize];
-            let config = budget.map_or_else(PortfolioConfig::standard, |budget| {
-                PortfolioConfig::standard().with_soft_budget(budget)
-            });
+            let mut config = budget.map_or_else(
+                PortfolioConfig::standard,
+                PortfolioConfig::standard_with_budget,
+            );
+            if let Some(hard_budget) = args.hard_budget {
+                config = config.with_hard_budget(hard_budget);
+            }
             portfolio(graph, &weights, seed, config)
                 .unwrap_or_else(|error| fail(&error.to_string()))
         }
@@ -316,14 +342,20 @@ fn main() {
             .unwrap_or_else(|error| fail(&error.to_string()));
     }
 
-    let text = td.to_td();
     let written = match &args.out {
-        Some(path) => std::fs::write(path, text).map_err(|e| format!("cannot write {path}: {e}")),
-        None => std::io::stdout()
-            .write_all(text.as_bytes())
+        Some(path) => std::fs::File::create(path)
+            .and_then(|file| write_decomposition(&td, file))
+            .map_err(|e| format!("cannot write {path}: {e}")),
+        None => write_decomposition(&td, std::io::stdout().lock())
             .map_err(|e| format!("cannot write to stdout: {e}")),
     };
     if let Err(e) = written {
         fail(&e);
     }
+}
+
+fn write_decomposition(td: &TreeDecomposition, writer: impl Write) -> std::io::Result<()> {
+    let mut writer = BufWriter::new(writer);
+    td.write_td(&mut writer)?;
+    writer.flush()
 }
