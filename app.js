@@ -1248,7 +1248,6 @@ if (typeof document !== "undefined") {
       return;
     }
     if (ticket !== loading) return;
-    showFile(null);
     element("graph").value = text;
     clearTimeout(pending);
     drawGraph();
@@ -1260,77 +1259,13 @@ if (typeof document !== "undefined") {
   });
 
   // Redrawing while someone types would be a layout run per keystroke. Once
-  // edited, the text is no longer the example or the file it started from.
+  // edited, the text is no longer the example it started from.
   let pending = 0;
   element("graph").addEventListener("input", () => {
     markExample(-1);
-    showFile(null);
     element("link").hidden = true;
     clearTimeout(pending);
     pending = setTimeout(drawGraph, 300);
-  });
-
-  // A file from the picker, or dropped anywhere on the page, goes in as the
-  // text and runs like an example. Its name stays beside the label until the
-  // text is edited; the address bar cannot carry a file, so there is no link.
-  const fileName = element("file-name");
-  function showFile(name) {
-    fileName.textContent = name === null ? "" : name;
-    fileName.hidden = name === null;
-  }
-  async function loadFile(file) {
-    if (file === undefined) return;
-    const ticket = ++loading;
-    let text;
-    try {
-      text = await file.text();
-    } catch (failure) {
-      element("status").textContent = `the file did not load: ${failure}`;
-      return;
-    }
-    if (ticket !== loading) return;
-    markExample(-1);
-    showFile(file.name);
-    element("link").hidden = true;
-    element("graph").value = text;
-    clearTimeout(pending);
-    drawGraph();
-    requestRun();
-  }
-  const fileInput = element("file");
-  element("open").addEventListener("click", () => fileInput.click());
-  fileInput.addEventListener("change", () => {
-    loadFile(fileInput.files[0]);
-    // So that choosing the same file again counts as a change.
-    fileInput.value = "";
-  });
-
-  // The whole page takes a drop. Dragging over child elements fires leave
-  // and enter in pairs, so a count tells when the file has left the page.
-  let dragging = 0;
-  const hasFiles = (event) => event.dataTransfer !== null && Array.from(event.dataTransfer.types).includes("Files");
-  document.addEventListener("dragenter", (event) => {
-    if (!hasFiles(event)) return;
-    event.preventDefault();
-    dragging += 1;
-    document.body.classList.add("dropping");
-  });
-  document.addEventListener("dragover", (event) => {
-    if (!hasFiles(event)) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
-  });
-  document.addEventListener("dragleave", (event) => {
-    if (!hasFiles(event)) return;
-    dragging -= 1;
-    if (dragging === 0) document.body.classList.remove("dropping");
-  });
-  document.addEventListener("drop", (event) => {
-    if (!hasFiles(event)) return;
-    event.preventDefault();
-    dragging = 0;
-    document.body.classList.remove("dropping");
-    loadFile(event.dataTransfer.files[0]);
   });
 
   // The `.td` text to the clipboard or to a file. Ctrl+A in the output would
