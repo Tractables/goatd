@@ -56,7 +56,7 @@
         <div class="section-heading compact">
           <div>
             <h2 id="scope-heading">Analysis scope</h2>
-            <p>Tree components are omitted. Filters apply to the comparison and graph records.</p>
+            <p>Tree components are omitted. The width filter uses the pinned NetworkX min-degree result.</p>
           </div>
           <p id="visible-count" class="visible-count" aria-live="polite"></p>
         </div>
@@ -85,9 +85,9 @@
             <span
               class="metric-help"
               tabindex="0"
-              aria-label="Minimum best-observed width: Keep graphs whose narrowest validated result from a displayed solver is at least this width. Graphs with no validated result are retained."
-              data-tooltip="Keep graphs whose narrowest validated result is at least this width. Graphs with no validated result are retained."
-            >Minimum best-observed width</span>
+              aria-label="Minimum NetworkX min-degree width: Exclude a graph only when the pinned deterministic min-degree run returned a validated width below this value. Graphs without a validated min-degree result are retained."
+              data-tooltip="Use the pinned deterministic min-degree result. Missing or invalid results are retained."
+            >Minimum min-degree width</span>
             <select id="minimum-width-filter">
               <option value="0">No minimum</option>
               <option value="10">10</option>

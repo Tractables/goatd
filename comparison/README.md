@@ -29,9 +29,12 @@ explicitly when developing the view:
 ```
 
 Filters update both the aggregate comparison and the detailed results. Tree
-components are omitted. The default minimum best-observed width is 30; the
-control can remove or change that floor. Sorting applies only to the detailed
-records, which are paged so a large corpus does not create every row at once.
+components are omitted. By default, a graph is excluded only when the pinned
+NetworkX min-degree run returned a validated width below 30. A missing,
+invalid or timed-out min-degree result is retained. The control can remove or
+change that floor. Adding a solver to the comparison therefore does not change
+the selected graph population. Sorting applies only to the detailed records,
+which are paged so a large corpus does not create every row at once.
 
 ## Aggregate statistics
 
@@ -61,9 +64,9 @@ filters:
 node export_markdown.js results.json README-table.md
 ```
 
-`presentation.js` is the shared source for the displayed field, width floor
-and metric definitions. `README-table.md` is generated; do not edit its
-numbers by hand.
+`presentation.js` is the shared source for the displayed field, the pinned
+min-degree filter and metric definitions. `README-table.md` is generated; do
+not edit its numbers by hand.
 
 ## Result format
 

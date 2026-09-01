@@ -21,7 +21,7 @@ const state = {
   query: "",
   group: "all",
   kind: "all",
-  minimumBestWidth: BenchmarkPresentation.defaultMinimumBestWidth,
+  minimumMinDegreeWidth: BenchmarkPresentation.defaultMinimumMinDegreeWidth,
   sort: "instance",
   direction: "asc",
   page: 1,
@@ -235,7 +235,7 @@ function bindControls() {
   });
 
   document.querySelector("#minimum-width-filter").addEventListener("change", (event) => {
-    state.minimumBestWidth = Number(event.target.value);
+    state.minimumMinDegreeWidth = Number(event.target.value);
     state.page = 1;
     render();
   });
@@ -307,10 +307,10 @@ function visibleInstances(collection = state.data.instances) {
     const queryMatches = !state.query || searchable.includes(state.query);
     const groupMatches = state.group === "all" || instance.group === state.group;
     const kindMatches = state.kind === "all" || instance.kind === state.kind;
-    const observedWidth = bestWidth(instance);
-    const widthMatches = state.minimumBestWidth === 0
-      || !Number.isFinite(observedWidth)
-      || observedWidth >= state.minimumBestWidth;
+    const widthMatches = BenchmarkPresentation.meetsMinimumMinDegreeWidth(
+      instance,
+      state.minimumMinDegreeWidth,
+    );
     return queryMatches
       && groupMatches
       && kindMatches
@@ -656,9 +656,9 @@ function renderWidthProfileChart(instances) {
 
 function renderAggregate(instances) {
   const treeComponents = state.data.instances.filter(BenchmarkStatistics.isTreeComponent).length;
-  const widthSelection = state.minimumBestWidth === 0
+  const widthSelection = state.minimumMinDegreeWidth === 0
     ? "No minimum width is applied."
-    : `The active filter keeps graphs whose best observed width is at least ${state.minimumBestWidth}; graphs with no validated result remain.`;
+    : `The active filter excludes graphs only when NetworkX min-degree returned a validated width below ${state.minimumMinDegreeWidth}; graphs without a validated min-degree result remain.`;
   document.querySelector("#methodology-note").textContent =
     `Method: each observation is one component graph after preprocessing. ${formatInteger(treeComponents)} tree components are excluded. ${widthSelection} “Best observed” is the smallest validated width among the displayed configurations, not a proven optimum; a missing or invalid result meets no quality threshold.`;
   document.querySelector("#aggregate-scope").textContent = instances.length === 0
@@ -850,7 +850,7 @@ async function load() {
     validateData(data);
     state.data = data;
     if (data.dataset.synthetic) {
-      state.minimumBestWidth = 0;
+      state.minimumMinDegreeWidth = 0;
       document.querySelector("#minimum-width-filter").value = "0";
     }
     renderMetadata();

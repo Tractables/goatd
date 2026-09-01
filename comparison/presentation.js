@@ -3,7 +3,8 @@
 const BenchmarkPresentation = (() => {
   const profileDeltas = Object.freeze([0, 1, 2, 4, 8]);
   const omittedSolverIds = Object.freeze(["goatd-portfolio-refined"]);
-  const defaultMinimumBestWidth = 30;
+  const widthFloorSolverId = "networkx-min-degree";
+  const defaultMinimumMinDegreeWidth = 30;
   const aggregateMetricDefinitions = Object.freeze([
     Object.freeze([
       "Valid",
@@ -28,21 +29,35 @@ const BenchmarkPresentation = (() => {
     return solvers.filter((solver) => !omitted.has(solver.id));
   }
 
-  function defaultInstances(instances, solverIds, statistics) {
+  function minDegreeWidth(instance) {
+    const result = instance.results?.[widthFloorSolverId];
+    return result?.status === "ok" && Number.isFinite(result.width)
+      ? result.width
+      : null;
+  }
+
+  function meetsMinimumMinDegreeWidth(instance, minimumWidth) {
+    const width = minDegreeWidth(instance);
+    return minimumWidth === 0 || !Number.isFinite(width) || width >= minimumWidth;
+  }
+
+  function defaultInstances(instances, _solverIds, statistics) {
     return instances.filter((instance) => {
-      const observedWidth = statistics.bestObserved(instance, solverIds, "width");
       return !statistics.isTreeComponent(instance)
-        && (!Number.isFinite(observedWidth) || observedWidth >= defaultMinimumBestWidth);
+        && meetsMinimumMinDegreeWidth(instance, defaultMinimumMinDegreeWidth);
     });
   }
 
   return Object.freeze({
     aggregateMetricDefinitions,
     defaultInstances,
-    defaultMinimumBestWidth,
+    defaultMinimumMinDegreeWidth,
     displayedSolvers,
+    meetsMinimumMinDegreeWidth,
+    minDegreeWidth,
     omittedSolverIds,
     profileDeltas,
+    widthFloorSolverId,
   });
 })();
 
