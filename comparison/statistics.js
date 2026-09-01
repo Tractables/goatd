@@ -13,14 +13,23 @@ const BenchmarkStatistics = (() => {
     return instance?.results?.[solverId] || { status: "unavailable" };
   }
 
-  function validResults(instance, solverIds) {
+  function isCountedResult(instance, result) {
+    return result?.status === "ok"
+      && Number.isInteger(result.bag_count)
+      && result.bag_count > 1
+      && Number.isInteger(instance?.vertices)
+      && Number.isFinite(result.width)
+      && result.width < instance.vertices - 1;
+  }
+
+  function countedResults(instance, solverIds) {
     return solverIds
       .map((solverId) => resultFor(instance, solverId))
-      .filter((result) => result.status === "ok");
+      .filter((result) => isCountedResult(instance, result));
   }
 
   function bestObserved(instance, solverIds, metric) {
-    const values = validResults(instance, solverIds)
+    const values = countedResults(instance, solverIds)
       .map((result) => result[metric])
       .filter(Number.isFinite);
     return values.length > 0 ? Math.min(...values) : null;
@@ -28,8 +37,8 @@ const BenchmarkStatistics = (() => {
 
   function widthQuality(instance, solverIds, solverId) {
     const result = resultFor(instance, solverId);
-    if (result.status !== "ok" || !Number.isFinite(result.width)) return null;
-    const widths = validResults(instance, solverIds)
+    if (!isCountedResult(instance, result)) return null;
+    const widths = countedResults(instance, solverIds)
       .map((entry) => entry.width)
       .filter(Number.isFinite);
     if (widths.length === 0) return null;
@@ -68,7 +77,7 @@ const BenchmarkStatistics = (() => {
 
     instances.forEach((instance) => {
       const result = resultFor(instance, solverId);
-      if (result.status !== "ok") return;
+      if (!isCountedResult(instance, result)) return;
       valid.push(result);
       if (result.budget_reached) atBudget += 1;
 
@@ -117,8 +126,7 @@ const BenchmarkStatistics = (() => {
     return instances.reduce((count, instance) => {
       const result = resultFor(instance, solverId);
       const best = bestObserved(instance, solverIds, "width");
-      return result.status === "ok"
-        && Number.isFinite(result.width)
+      return isCountedResult(instance, result)
         && Number.isFinite(best)
         && result.width - best <= maximumDelta
         ? count + 1
@@ -133,8 +141,9 @@ const BenchmarkStatistics = (() => {
     percentageExcess,
     resultFor,
     share,
+    isCountedResult,
     isTreeComponent,
-    validResults,
+    countedResults,
     widthQuality,
     widthProfileCount,
     widthProfileShare,

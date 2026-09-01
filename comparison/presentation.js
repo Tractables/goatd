@@ -7,20 +7,20 @@ const BenchmarkPresentation = (() => {
   const defaultMinimumMinDegreeWidth = 30;
   const aggregateMetricDefinitions = Object.freeze([
     Object.freeze([
-      "Valid",
-      "A tree decomposition accepted by the common validator. The denominator is every selected graph.",
+      "Nontrivial",
+      "A tree decomposition accepted by the common validator that improves on the graph's one-bag width. The denominator is every selected graph.",
     ]),
     Object.freeze([
       "Exact best",
-      "The solver tied the smallest validated width observed for this graph. The reference is not a proven optimum.",
+      "The solver tied the smallest counted width observed for this graph. The reference is not a proven optimum.",
     ]),
     Object.freeze([
       "Within +1",
-      "The solver returned a validated width at most one above the best observed width for this graph.",
+      "The solver returned a counted width at most one above the best observed width for this graph.",
     ]),
     Object.freeze([
       "Within +4",
-      "The solver returned a validated width at most four above the best observed width for this graph.",
+      "The solver returned a counted width at most four above the best observed width for this graph.",
     ]),
   ]);
 
@@ -29,22 +29,22 @@ const BenchmarkPresentation = (() => {
     return solvers.filter((solver) => !omitted.has(solver.id));
   }
 
-  function minDegreeWidth(instance) {
+  function minDegreeWidth(instance, statistics) {
     const result = instance.results?.[widthFloorSolverId];
-    return result?.status === "ok" && Number.isFinite(result.width)
+    return statistics.isCountedResult(instance, result)
       ? result.width
       : null;
   }
 
-  function meetsMinimumMinDegreeWidth(instance, minimumWidth) {
-    const width = minDegreeWidth(instance);
+  function meetsMinimumMinDegreeWidth(instance, minimumWidth, statistics) {
+    const width = minDegreeWidth(instance, statistics);
     return minimumWidth === 0 || !Number.isFinite(width) || width >= minimumWidth;
   }
 
   function defaultInstances(instances, _solverIds, statistics) {
     return instances.filter((instance) => {
       return !statistics.isTreeComponent(instance)
-        && meetsMinimumMinDegreeWidth(instance, defaultMinimumMinDegreeWidth);
+        && meetsMinimumMinDegreeWidth(instance, defaultMinimumMinDegreeWidth, statistics);
     });
   }
 
