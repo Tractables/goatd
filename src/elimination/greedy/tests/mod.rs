@@ -18,9 +18,16 @@ fn uniform_sampling_repeats_the_generic_weighted_choices() {
     let mut generic = fast;
 
     for len in 2..=vertices.len() {
+        let total_mass = uniform_mass * len as u64;
         assert_eq!(
-            super::sample_tie_set(&vertices[..len], &weights, &mut fast, Some(uniform_mass),),
-            super::sample_tie_set(&vertices[..len], &weights, &mut generic, None),
+            super::sample_tie_set(
+                &vertices[..len],
+                &weights,
+                &mut fast,
+                Some(uniform_mass),
+                total_mass,
+            ),
+            super::sample_tie_set(&vertices[..len], &weights, &mut generic, None, total_mass,),
             "tie-set length {len}",
         );
     }
@@ -29,4 +36,29 @@ fn uniform_sampling_repeats_the_generic_weighted_choices() {
 #[test]
 fn unequal_sampling_weights_do_not_enable_the_uniform_path() {
     assert_eq!(super::uniform_sampling_mass(&[1, 1, 2, 1]), None);
+}
+
+#[test]
+fn priority_buckets_track_their_weighted_sampling_mass() {
+    let weights = [0, u32::MAX, 17, 42];
+    let mut buckets = super::BucketMap::with_weights(&weights);
+    buckets.insert(0, 3);
+    buckets.insert(1, 3);
+    buckets.insert(2, 3);
+
+    let (_, vertices, total_mass) = buckets.min_bucket().unwrap();
+    assert_eq!(vertices, &[0, 1, 2]);
+    assert_eq!(
+        total_mass,
+        super::sampling_mass(weights[0])
+            + super::sampling_mass(weights[1])
+            + super::sampling_mass(weights[2])
+    );
+
+    buckets.update(1, 7);
+    buckets.remove_vertex(0);
+    let (key, vertices, total_mass) = buckets.min_bucket().unwrap();
+    assert_eq!(key, 3);
+    assert_eq!(vertices, &[2]);
+    assert_eq!(total_mass, super::sampling_mass(weights[2]));
 }
