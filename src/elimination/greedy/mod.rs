@@ -318,10 +318,27 @@ struct Bucket {
     sampling_mass: u64,
 }
 
+#[derive(Clone, Copy)]
+struct BucketPosition {
+    key: u64,
+    index: usize,
+}
+
+impl BucketPosition {
+    const VACANT: Self = Self {
+        key: 0,
+        index: usize::MAX,
+    };
+
+    fn is_vacant(self) -> bool {
+        self.index == usize::MAX
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct BucketMap<'a> {
     buckets: BTreeMap<u64, Bucket>,
-    position: Vec<Option<(u64, usize)>>,
+    position: Vec<BucketPosition>,
     weights: &'a [u32],
 }
 
@@ -329,7 +346,7 @@ impl<'a> BucketMap<'a> {
     fn with_weights(weights: &'a [u32]) -> Self {
         BucketMap {
             buckets: BTreeMap::new(),
-            position: vec![None; weights.len()],
+            position: vec![BucketPosition::VACANT; weights.len()],
             weights,
         }
     }
@@ -342,31 +359,37 @@ impl<'a> BucketMap<'a> {
         let idx = bucket.vertices.len();
         bucket.vertices.push(v);
         bucket.sampling_mass += sampling_mass(self.weights[v as usize]);
-        self.position[v as usize] = Some((key, idx));
+        debug_assert!(self.position[v as usize].is_vacant());
+        self.position[v as usize] = BucketPosition { key, index: idx };
     }
 
     fn remove_vertex(&mut self, v: u32) {
-        if let Some((key, idx)) = self.position[v as usize].take() {
-            let bucket = self.buckets.get_mut(&key).expect("bucket missing");
+        let position = std::mem::replace(&mut self.position[v as usize], BucketPosition::VACANT);
+        if !position.is_vacant() {
+            let bucket = self.buckets.get_mut(&position.key).expect("bucket missing");
             bucket.sampling_mass -= sampling_mass(self.weights[v as usize]);
             let last_idx = bucket.vertices.len() - 1;
-            if idx != last_idx {
+            if position.index != last_idx {
                 let moved = bucket.vertices[last_idx];
-                bucket.vertices[idx] = moved;
-                self.position[moved as usize] = Some((key, idx));
+                bucket.vertices[position.index] = moved;
+                self.position[moved as usize] = BucketPosition {
+                    key: position.key,
+                    index: position.index,
+                };
             }
             bucket.vertices.pop();
             if bucket.vertices.is_empty() {
-                self.buckets.remove(&key);
+                self.buckets.remove(&position.key);
             }
         }
     }
 
     fn update(&mut self, v: u32, new_key: u64) {
-        if let Some((cur_key, _)) = self.position[v as usize] {
-            if cur_key == new_key {
-                return;
-            }
+        let position = self.position[v as usize];
+        if !position.is_vacant() && position.key == new_key {
+            return;
+        }
+        if !position.is_vacant() {
             self.remove_vertex(v);
         }
         self.insert(v, new_key);
@@ -380,7 +403,8 @@ impl<'a> BucketMap<'a> {
     }
 
     fn key_of(&self, v: u32) -> Option<u64> {
-        self.position[v as usize].map(|(key, _)| key)
+        let position = self.position[v as usize];
+        (!position.is_vacant()).then_some(position.key)
     }
 }
 

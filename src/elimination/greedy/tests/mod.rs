@@ -64,6 +64,25 @@ fn priority_buckets_track_their_weighted_sampling_mass() {
 }
 
 #[test]
+fn vacant_bucket_positions_do_not_reserve_a_priority_key() {
+    let weights = [1];
+    let mut buckets = super::BucketMap::with_weights(&weights);
+
+    buckets.remove_vertex(0);
+    buckets.insert(0, u64::MAX);
+    assert_eq!(buckets.key_of(0), Some(u64::MAX));
+    buckets.remove_vertex(0);
+    assert_eq!(buckets.key_of(0), None);
+}
+
+#[test]
+fn bucket_positions_use_less_space_than_the_optional_tuple() {
+    assert!(
+        std::mem::size_of::<super::BucketPosition>() < std::mem::size_of::<Option<(u64, usize)>>()
+    );
+}
+
+#[test]
 fn affected_membership_uses_one_word_per_vertex_block() {
     let affected = super::FillAffected::new(130);
     assert_eq!(affected.inside.len(), 3);
