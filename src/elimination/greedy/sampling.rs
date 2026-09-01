@@ -16,6 +16,30 @@ use super::*;
 use crate::deadline::expired;
 use crate::rng::{SEED_OFFSET, Xorshift64};
 
+#[derive(Clone, Copy)]
+enum FillPriority {
+    Fill,
+    DegreePlusFill,
+    SparsestSubgraph,
+}
+
+impl FillPriority {
+    fn key(self, fill: u64, degree: u64, vertex_count: u64) -> u64 {
+        match self {
+            Self::Fill => fill,
+            Self::DegreePlusFill => fill.saturating_add(degree),
+            Self::SparsestSubgraph => {
+                debug_assert!(degree <= vertex_count);
+                fill + vertex_count - degree
+            }
+        }
+    }
+
+    fn tracks_fill_separately(self) -> bool {
+        !matches!(self, Self::Fill)
+    }
+}
+
 /// Re-measure every still-active neighbour's fill and move it to the matching
 /// bucket. This is the eager half of `eliminate_sampled_min_fill`'s bucket
 /// maintenance — the sampler cannot tolerate a stale key, since a stale bucket
@@ -25,11 +49,19 @@ fn rescore_neighbours(
     graph: &EliminationGraph,
     nbrs: &[u32],
     buckets: &mut BucketMap<'_>,
+    fills: &mut Option<Vec<u64>>,
+    priority: FillPriority,
 ) {
     for &u in nbrs {
         if graph.active[u as usize] {
             let new_fill = scratch.fill_count_of(graph, u);
-            buckets.update(u, new_fill);
+            if let Some(fills) = fills {
+                fills[u as usize] = new_fill;
+            }
+            buckets.update(
+                u,
+                priority.key(new_fill, graph.degree(u) as u64, graph.len() as u64),
+            );
         }
     }
 }
@@ -41,9 +73,71 @@ pub(crate) fn eliminate_sampled_min_fill(
     graph: &mut EliminationGraph,
     weights: &[u32],
     seed: u64,
+    sink: ElimSink<'_>,
+    stop: ElimStop,
+    initial_fill: Option<&[u64]>,
+) -> ElimExit {
+    eliminate_sampled_fill_based(
+        graph,
+        weights,
+        seed,
+        sink,
+        stop,
+        initial_fill,
+        FillPriority::Fill,
+    )
+}
+
+/// Degree-plus-fill elimination with weighted sampling from the complete
+/// minimum-score tie set.
+pub(crate) fn eliminate_sampled_degree_plus_fill(
+    graph: &mut EliminationGraph,
+    weights: &[u32],
+    seed: u64,
+    sink: ElimSink<'_>,
+    stop: ElimStop,
+    initial_fill: Option<&[u64]>,
+) -> ElimExit {
+    eliminate_sampled_fill_based(
+        graph,
+        weights,
+        seed,
+        sink,
+        stop,
+        initial_fill,
+        FillPriority::DegreePlusFill,
+    )
+}
+
+/// Fill-minus-degree elimination with weighted sampling from the complete
+/// minimum-score tie set.
+pub(crate) fn eliminate_sampled_sparsest_subgraph(
+    graph: &mut EliminationGraph,
+    weights: &[u32],
+    seed: u64,
+    sink: ElimSink<'_>,
+    stop: ElimStop,
+    initial_fill: Option<&[u64]>,
+) -> ElimExit {
+    eliminate_sampled_fill_based(
+        graph,
+        weights,
+        seed,
+        sink,
+        stop,
+        initial_fill,
+        FillPriority::SparsestSubgraph,
+    )
+}
+
+fn eliminate_sampled_fill_based(
+    graph: &mut EliminationGraph,
+    weights: &[u32],
+    seed: u64,
     mut sink: ElimSink<'_>,
     stop: ElimStop,
     initial_fill: Option<&[u64]>,
+    priority: FillPriority,
 ) -> ElimExit {
     // No cheap mode here to degrade into, so the soft deadline is not this
     // core's to read.
@@ -64,6 +158,9 @@ pub(crate) fn eliminate_sampled_min_fill(
     let mut affected = FillAffected::new(n);
     let mut fill_edges = Vec::new();
     let mut live_nbrs = Vec::new();
+    // Plain min-fill already stores the current fill as the bucket key. Only
+    // composite scores need a second array to recover the fill component.
+    let mut fills = priority.tracks_fill_separately().then(|| vec![0; n]);
     let mut buckets = BucketMap::with_weights(weights);
     for v in 0..n {
         if graph.active[v] {
@@ -71,7 +168,13 @@ pub(crate) fn eliminate_sampled_min_fill(
                 Some(f) => f[v],
                 None => scratch.fill_count_of(graph, v as u32),
             };
-            buckets.insert(v as u32, f);
+            if let Some(fills) = &mut fills {
+                fills[v] = f;
+            }
+            buckets.insert(
+                v as u32,
+                priority.key(f, graph.degree(v as u32) as u64, n as u64),
+            );
         }
     }
 
@@ -80,7 +183,7 @@ pub(crate) fn eliminate_sampled_min_fill(
     let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
     let mut check_counter = 0u32;
 
-    while let Some((min_fill, tie_set, total_mass)) = buckets.min_bucket() {
+    while let Some((minimum_priority, tie_set, total_mass)) = buckets.min_bucket() {
         check_counter += 1;
         if check_counter >= DEADLINE_CHECK_STRIDE {
             check_counter = 0;
@@ -93,6 +196,9 @@ pub(crate) fn eliminate_sampled_min_fill(
         }
 
         let v = sample_tie_set(tie_set, weights, &mut rng, uniform_mass, total_mass);
+        let min_fill = fills
+            .as_ref()
+            .map_or(minimum_priority, |fills| fills[v as usize]);
 
         buckets.remove_vertex(v);
 
@@ -114,14 +220,38 @@ pub(crate) fn eliminate_sampled_min_fill(
                             (graph.bitset[ub + j] & !graph.bitset[vb + j]).count_ones() as u64;
                     }
                     o_count = o_count.saturating_sub(1); // exclude v's own bit
-                    if let Some(old_key) = buckets.key_of(u) {
-                        buckets.update(u, old_key.saturating_sub(o_count));
+                    if let Some(fills) = &mut fills {
+                        fills[ui] = fills[ui].saturating_sub(o_count);
+                    } else {
+                        let old_fill = buckets
+                            .key_of(u)
+                            .expect("an active vertex has a fill bucket");
+                        buckets.update(u, old_fill.saturating_sub(o_count));
                     }
                 }
                 graph.remove_without_fill_nbrs(v, &live_nbrs);
+                if let Some(fills) = &fills {
+                    for &u in &live_nbrs {
+                        buckets.update(
+                            u,
+                            priority.key(
+                                fills[u as usize],
+                                graph.degree(u) as u64,
+                                graph.len() as u64,
+                            ),
+                        );
+                    }
+                }
             } else {
                 graph.remove_without_fill_nbrs(v, &live_nbrs);
-                rescore_neighbours(&mut scratch, graph, &live_nbrs, &mut buckets);
+                rescore_neighbours(
+                    &mut scratch,
+                    graph,
+                    &live_nbrs,
+                    &mut buckets,
+                    &mut fills,
+                    priority,
+                );
             }
         } else {
             graph.eliminate_with_nbrs_record_fill(v, &live_nbrs, &mut fill_edges);
@@ -133,11 +263,23 @@ pub(crate) fn eliminate_sampled_min_fill(
                     affected.clear();
                     return ElimExit::DeadlineReached;
                 }
-                let old_fill = buckets
-                    .key_of(u)
-                    .expect("an active vertex has a fill bucket");
+                let old_fill = fills.as_ref().map_or_else(
+                    || {
+                        buckets
+                            .key_of(u)
+                            .expect("an active vertex has a fill bucket")
+                    },
+                    |fills| fills[u as usize],
+                );
                 debug_assert!(delta <= old_fill);
-                buckets.update(u, old_fill.saturating_sub(delta));
+                let new_fill = old_fill.saturating_sub(delta);
+                if let Some(fills) = &mut fills {
+                    fills[u as usize] = new_fill;
+                }
+                buckets.update(
+                    u,
+                    priority.key(new_fill, graph.degree(u) as u64, graph.len() as u64),
+                );
             }
             for &u in &live_nbrs {
                 if expired(hard_deadline) {
@@ -145,7 +287,13 @@ pub(crate) fn eliminate_sampled_min_fill(
                 }
                 if graph.active[u as usize] {
                     let new_fill = scratch.fill_count_of(graph, u);
-                    buckets.update(u, new_fill);
+                    if let Some(fills) = &mut fills {
+                        fills[u as usize] = new_fill;
+                    }
+                    buckets.update(
+                        u,
+                        priority.key(new_fill, graph.degree(u) as u64, graph.len() as u64),
+                    );
                 }
             }
         }
