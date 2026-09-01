@@ -108,6 +108,8 @@ fn every_elimination_config_decomposes_every_graph_through_five_vertices() {
                 Order::NestedDissection,
                 Order::MinFillSampled { weights: &weights },
                 Order::MinDegreeSampled { weights: &weights },
+                Order::DegreePlusFillSampled { weights: &weights },
+                Order::SparsestSubgraphSampled { weights: &weights },
             ];
 
             for order in orders {
@@ -172,7 +174,7 @@ fn every_elimination_config_decomposes_the_tiny_graph_family() {
 
     for &(shape, num_vertices, edges, treewidth) in shapes {
         let weights = vec![1u32; num_vertices as usize];
-        let orders: [(&str, Order<'_>); 5] = [
+        let orders: [(&str, Order<'_>); 7] = [
             ("min-fill", Order::MinFill),
             ("min-degree", Order::MinDegree),
             ("nested dissection", Order::NestedDissection),
@@ -183,6 +185,14 @@ fn every_elimination_config_decomposes_the_tiny_graph_family() {
             (
                 "sampled min-degree",
                 Order::MinDegreeSampled { weights: &weights },
+            ),
+            (
+                "sampled degree-plus-fill",
+                Order::DegreePlusFillSampled { weights: &weights },
+            ),
+            (
+                "sampled sparsest subgraph",
+                Order::SparsestSubgraphSampled { weights: &weights },
             ),
         ];
         for (order_name, order) in orders {

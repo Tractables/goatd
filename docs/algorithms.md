@@ -76,10 +76,11 @@ use a stamped marker array. Min-degree uses the same elimination and bag
 construction path with a cheaper degree key.
 
 The deterministic forms use a seeded per-vertex salt after the primary keys.
-The sampled forms instead draw from the complete minimum-key tie set. A caller
-may supply one weight per vertex; uniform weights give uniform sampling. This
-keeps the usual min-fill or min-degree criterion while allowing the portfolio
-to explore materially different orders.
+The sampled forms instead draw from the complete minimum-key tie set. Besides
+fill and degree, sampled orders can minimize degree plus fill or fill minus
+degree. A caller may supply one weight per vertex; uniform weights give uniform
+sampling. Each score remains exact while the orders explore different
+elimination paths.
 
 These choices extend the standard greedy heuristics with shared reductions,
 incremental scoring, explicit weighted ties, incumbent-width pruning, and
