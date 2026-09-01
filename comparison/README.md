@@ -29,25 +29,33 @@ explicitly when developing the view:
 ```
 
 Filters update both the aggregate comparison and the detailed results. Tree
-components are omitted. The default minimum best-observed width is 30; the
-control can remove or change that floor. Sorting applies only to the detailed
+components are omitted. By default, a graph is excluded only when the pinned
+NetworkX min-degree run returned a counted width below 30. A missing, invalid,
+timed-out or no-reduction min-degree result is retained. The control can remove
+or change that floor. Adding a solver to the comparison therefore does not
+change the selected graph population. Sorting applies only to the detailed
 records, which are paged so a large corpus does not create every row at once.
+
+For benchmark accounting, a result must pass validation, contain more than one
+bag, and have width below the graph's one-bag width `|V| - 1`. A result that
+does not improve that bound is counted like a timeout. The raw result remains
+available in the detailed view.
 
 ## Aggregate statistics
 
 The summary reports, for every displayed solver:
 
-- validated decompositions;
+- counted decompositions;
 - exact ties with the best width observed for each graph; and
-- validated widths within one and four of the best observed width.
+- counted widths within one and four of the best observed width.
 
 Tied minima count as best for every tied solver. The quality--coverage curve
-reports the count with a valid width at most 0, 1, 2, 4 or 8 above the best
-observed width. Missing, invalid and timed-out results do not satisfy a profile
-threshold. Hovering or focusing a metric label explains its denominator and
-interpretation. Aggregate metric labels appear once in the header. Each curve
-has a wider invisible pointer target; hovering or focusing it identifies the
-solver, while its marked thresholds report exact values.
+reports the count with a counted width at most 0, 1, 2, 4 or 8 above the best
+observed width. Missing, invalid, timed-out and no-reduction results do not
+satisfy a profile threshold. Hovering or focusing a metric label explains its
+denominator and interpretation. Aggregate metric labels appear once in the
+header. Each curve has a wider invisible pointer target; hovering or focusing
+it identifies the solver, while its marked thresholds report exact values.
 
 The detailed view lays out every solver in a responsive grid under its graph;
 it does not require horizontal scrolling. Connected graphs with
@@ -61,9 +69,9 @@ filters:
 node export_markdown.js results.json README-table.md
 ```
 
-`presentation.js` is the shared source for the displayed field, width floor
-and metric definitions. `README-table.md` is generated; do not edit its
-numbers by hand.
+`presentation.js` is the shared source for the displayed field, the pinned
+min-degree filter and metric definitions. `README-table.md` is generated; do
+not edit its numbers by hand.
 
 ## Result format
 
@@ -149,7 +157,7 @@ deadline from a solver that exited early. Deadline results remain eligible for
 decomposition-metric comparisons but not elapsed-time rankings.
 
 Width, total bag size, bag count and elapsed time are minimized. Every rank is
-computed among validated decompositions for one graph.
+computed among counted decompositions for one graph.
 
 Large exports use schema version 3. The named JSON file contains the same
 dataset, run, and solver metadata plus `instance_count` and `instance_files`;

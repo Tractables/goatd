@@ -18,7 +18,7 @@
       <div class="title-block">
         <h1>goatd: solver comparison</h1>
         <p class="lede">
-          Validated decompositions of primal and incidence graphs derived from
+          Tree decompositions of primal and incidence graphs derived from
           preprocessed model-counting formulas, by goatd and seven public
           solvers; every solver receives the same ten-second wall-clock limit.
           The solver itself runs <a href="../">in the browser</a>, and the code
@@ -56,7 +56,7 @@
         <div class="section-heading compact">
           <div>
             <h2 id="scope-heading">Analysis scope</h2>
-            <p>Tree components are omitted. Filters apply to the comparison and graph records.</p>
+            <p>Tree components are omitted. The width filter uses the pinned NetworkX min-degree result.</p>
           </div>
           <p id="visible-count" class="visible-count" aria-live="polite"></p>
         </div>
@@ -85,9 +85,9 @@
             <span
               class="metric-help"
               tabindex="0"
-              aria-label="Minimum best-observed width: Keep graphs whose narrowest validated result from a displayed solver is at least this width. Graphs with no validated result are retained."
-              data-tooltip="Keep graphs whose narrowest validated result is at least this width. Graphs with no validated result are retained."
-            >Minimum best-observed width</span>
+              aria-label="Minimum NetworkX min-degree width: Exclude a graph only when the pinned deterministic min-degree run returned a counted width below this value. Graphs without a counted min-degree result are retained."
+              data-tooltip="Use the pinned deterministic min-degree result. Missing, invalid and no-reduction results are retained."
+            >Minimum min-degree width</span>
             <select id="minimum-width-filter">
               <option value="0">No minimum</option>
               <option value="10">10</option>
@@ -121,7 +121,7 @@
           <div class="subsection-heading">
             <h3>Quality–coverage curve</h3>
             <p>
-              Number of selected graphs with a validated width no more than Δ
+              Number of selected graphs with a counted width no more than Δ
               above the best observed for that graph.
             </p>
           </div>
@@ -131,8 +131,8 @@
               <desc id="profile-chart-description">Solver coverage at reported width excess thresholds.</desc>
             </svg>
             <figcaption>
-              Higher is better. A missing or invalid result does not satisfy
-              any threshold. Hover or focus a point for its exact value.
+              Higher is better. A missing, invalid or no-reduction result does
+              not satisfy any threshold. Hover or focus a point for its exact value.
             </figcaption>
             <div id="width-profile-legend" class="profile-legend" aria-label="Solver line styles"></div>
           </figure>
