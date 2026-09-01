@@ -133,8 +133,9 @@ fn elimination_stop(
     }
 }
 
-/// Builds a run's candidate list for a seed, given the weight vector.
-type InitialOrderBuilder = for<'w> fn(u64, &'w [u32]) -> Vec<(Order<'w>, u64)>;
+/// Builds a run's candidate list for a seed, given the weight vector and
+/// whether the preprocessed residual is large.
+type InitialOrderBuilder = for<'w> fn(u64, &'w [u32], bool) -> Vec<(Order<'w>, u64)>;
 
 #[derive(Clone, Copy)]
 enum CandidateRetention {
@@ -142,21 +143,31 @@ enum CandidateRetention {
     BestOnly,
 }
 
-/// The five fixed candidates at the front of the standard portfolio, ordered
-/// by the cost of one elimination step.
-fn standard_orders(base_seed: u64, weights: &[u32]) -> Vec<(Order<'_>, u64)> {
+/// The fixed candidates at the front of the standard portfolio, ordered by
+/// the cost of one elimination step. Large residuals first establish a cheap
+/// deterministic incumbent before sampled work.
+fn standard_orders(base_seed: u64, weights: &[u32], large_residual: bool) -> Vec<(Order<'_>, u64)> {
     let second_seed = base_seed.wrapping_add(SECOND_CANDIDATE_SEED_OFFSET);
-    vec![
+    let mut orders = Vec::with_capacity(if large_residual { 6 } else { 5 });
+    if large_residual {
+        orders.push((Order::MinDegree, base_seed));
+    }
+    orders.extend([
         (Order::MinDegreeSampled { weights }, base_seed),
         (Order::NestedDissection, base_seed),
         (Order::MinFillSampled { weights }, base_seed),
         (Order::MinDegreeSampled { weights }, second_seed),
         (Order::NestedDissection, second_seed),
-    ]
+    ]);
+    orders
 }
 
 /// The fixed candidate at the front of the sampled-min-fill portfolio.
-fn sampled_min_fill_orders(base_seed: u64, weights: &[u32]) -> Vec<(Order<'_>, u64)> {
+fn sampled_min_fill_orders(
+    base_seed: u64,
+    weights: &[u32],
+    _large_residual: bool,
+) -> Vec<(Order<'_>, u64)> {
     vec![(Order::MinFillSampled { weights }, base_seed)]
 }
 
@@ -188,8 +199,8 @@ fn run_portfolio(
     let soft_deadline = deadlines.soft;
     let hard_deadline = deadlines.hard;
     let mut prebuilt = engine::prebuild(graph);
-    let initial_orders = initial_orders(seed, weights);
     let large_residual = prebuilt.num_active() > MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS;
+    let initial_orders = initial_orders(seed, weights, large_residual);
     let mut candidates = match retention {
         CandidateRetention::All => CandidateSet::all(initial_orders.len() + 1),
         CandidateRetention::BestOnly => CandidateSet::best_only(),

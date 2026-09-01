@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use super::PortfolioConfig;
 use super::candidates::CandidateSet;
-use super::{EliminationPhase, elimination_stop, extra_sample, sample_seed};
+use super::{EliminationPhase, elimination_stop, extra_sample, sample_seed, standard_orders};
 use crate::elimination::Order;
 use crate::{Graph, TreeDecomposition};
 
@@ -43,6 +43,23 @@ fn best_only_candidate_storage_compares_compacted_bag_size() {
     let retained = candidates.into_decompositions();
     assert_eq!(retained.len(), 1);
     assert_eq!(retained[0].quality_key(), (1, 3));
+}
+
+#[test]
+fn only_a_large_standard_portfolio_starts_with_a_deterministic_min_degree_incumbent() {
+    let weights = [1; 3];
+    let small_orders = standard_orders(17, &weights, false);
+    let large_orders = standard_orders(17, &weights, true);
+
+    assert!(matches!(
+        small_orders[0],
+        (Order::MinDegreeSampled { .. }, 17)
+    ));
+    assert!(matches!(large_orders[0], (Order::MinDegree, 17)));
+    assert!(matches!(
+        large_orders[1],
+        (Order::MinDegreeSampled { .. }, 17)
+    ));
 }
 
 #[test]
