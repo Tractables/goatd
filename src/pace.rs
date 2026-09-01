@@ -5,6 +5,8 @@
 //! crate is 0-based. A `.td`'s bag vertices are bounded by the vertex count its
 //! solution line declares.
 
+use std::io::{self, Write};
+
 use crate::decomposition::{TdBag, TreeDecomposition};
 use crate::error::Error;
 use crate::graph::Graph;
@@ -79,12 +81,19 @@ impl Graph {
 }
 
 impl TreeDecomposition {
-    /// Render as a PACE `.td` decomposition (1-indexed bags and vertices).
+    /// Write this decomposition in PACE `.td` format.
+    ///
     /// A decomposition forest is connected between component roots for the
     /// PACE format; an empty decomposition is written as one empty bag.
-    pub fn to_td(&self) -> String {
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error from `out`.
+    pub fn write_td(&self, mut out: impl Write) -> io::Result<()> {
         if self.bags.is_empty() {
-            return format!("s td 1 0 {}\nb 1\n", self.num_vertices);
+            writeln!(out, "s td 1 0 {}", self.num_vertices)?;
+            writeln!(out, "b 1")?;
+            return Ok(());
         }
         let max_bag = self
             .bags
@@ -92,23 +101,24 @@ impl TreeDecomposition {
             .map(|b| b.vertices.len())
             .max()
             .unwrap_or(0);
-        let mut out = format!(
-            "s td {} {} {}\n",
+        writeln!(
+            out,
+            "s td {} {} {}",
             self.bags.len(),
             max_bag,
             self.num_vertices
-        );
+        )?;
         for (bag_id, bag) in self.bags.iter().enumerate() {
-            out.push_str(&format!("b {}", bag_id + 1));
+            write!(out, "b {}", bag_id + 1)?;
             for &v in &bag.vertices {
-                out.push_str(&format!(" {}", v + 1));
+                write!(out, " {}", v + 1)?;
             }
-            out.push('\n');
+            writeln!(out)?;
         }
         for (i, nbs) in self.adj.iter().enumerate() {
             for &j in nbs {
                 if i < j {
-                    out.push_str(&format!("{} {}\n", i + 1, j + 1));
+                    writeln!(out, "{} {}", i + 1, j + 1)?;
                 }
             }
         }
@@ -131,9 +141,19 @@ impl TreeDecomposition {
             }
         }
         for roots in component_roots.windows(2) {
-            out.push_str(&format!("{} {}\n", roots[0] + 1, roots[1] + 1));
+            writeln!(out, "{} {}", roots[0] + 1, roots[1] + 1)?;
         }
-        out
+        Ok(())
+    }
+
+    /// Render as a PACE `.td` decomposition (1-indexed bags and vertices).
+    /// A decomposition forest is connected between component roots for the
+    /// PACE format; an empty decomposition is written as one empty bag.
+    pub fn to_td(&self) -> String {
+        let mut out = Vec::new();
+        self.write_td(&mut out)
+            .expect("writing a tree decomposition into memory cannot fail");
+        String::from_utf8(out).expect("PACE output contains only ASCII")
     }
 
     /// Read a PACE `.td` decomposition — a treewidth solver's output.
