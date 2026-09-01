@@ -120,6 +120,24 @@ fn sampled_constructions_check_the_weight_count() {
     let weights = [1, 1];
 
     assert!(decompose(&graph, Order::MinFillSampled { weights: &weights }, 0, None,).is_err());
+    assert!(
+        decompose(
+            &graph,
+            Order::DegreePlusFillSampled { weights: &weights },
+            0,
+            None,
+        )
+        .is_err()
+    );
+    assert!(
+        decompose(
+            &graph,
+            Order::SparsestSubgraphSampled { weights: &weights },
+            0,
+            None,
+        )
+        .is_err()
+    );
     assert!(candidates(&graph, &weights, 0, PortfolioConfig::standard()).is_err());
 }
 
