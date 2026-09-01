@@ -291,37 +291,50 @@ trait ElimEntry {
 /// secondary key), so a caller can sample from it directly — mirrors htd's
 /// `PriorityQueue::topCollection`.
 #[derive(Clone)]
-pub(super) struct BucketMap {
-    buckets: BTreeMap<u64, Vec<u32>>,
-    position: Vec<Option<(u64, usize)>>,
+struct Bucket {
+    vertices: Vec<u32>,
+    sampling_mass: u64,
 }
 
-impl BucketMap {
-    fn with_capacity(n: usize) -> Self {
+#[derive(Clone)]
+pub(super) struct BucketMap<'a> {
+    buckets: BTreeMap<u64, Bucket>,
+    position: Vec<Option<(u64, usize)>>,
+    weights: &'a [u32],
+}
+
+impl<'a> BucketMap<'a> {
+    fn with_weights(weights: &'a [u32]) -> Self {
         BucketMap {
             buckets: BTreeMap::new(),
-            position: vec![None; n],
+            position: vec![None; weights.len()],
+            weights,
         }
     }
 
     fn insert(&mut self, v: u32, key: u64) {
-        let bucket = self.buckets.entry(key).or_default();
-        let idx = bucket.len();
-        bucket.push(v);
+        let bucket = self.buckets.entry(key).or_insert_with(|| Bucket {
+            vertices: Vec::new(),
+            sampling_mass: 0,
+        });
+        let idx = bucket.vertices.len();
+        bucket.vertices.push(v);
+        bucket.sampling_mass += sampling_mass(self.weights[v as usize]);
         self.position[v as usize] = Some((key, idx));
     }
 
     fn remove_vertex(&mut self, v: u32) {
         if let Some((key, idx)) = self.position[v as usize].take() {
             let bucket = self.buckets.get_mut(&key).expect("bucket missing");
-            let last_idx = bucket.len() - 1;
+            bucket.sampling_mass -= sampling_mass(self.weights[v as usize]);
+            let last_idx = bucket.vertices.len() - 1;
             if idx != last_idx {
-                let moved = bucket[last_idx];
-                bucket[idx] = moved;
+                let moved = bucket.vertices[last_idx];
+                bucket.vertices[idx] = moved;
                 self.position[moved as usize] = Some((key, idx));
             }
-            bucket.pop();
-            if bucket.is_empty() {
+            bucket.vertices.pop();
+            if bucket.vertices.is_empty() {
                 self.buckets.remove(&key);
             }
         }
@@ -337,11 +350,11 @@ impl BucketMap {
         self.insert(v, new_key);
     }
 
-    fn min_bucket(&self) -> Option<(u64, &[u32])> {
+    fn min_bucket(&self) -> Option<(u64, &[u32], u64)> {
         self.buckets
             .iter()
             .next()
-            .map(|(key, vertices)| (*key, vertices.as_slice()))
+            .map(|(key, bucket)| (*key, bucket.vertices.as_slice(), bucket.sampling_mass))
     }
 
     fn key_of(&self, v: u32) -> Option<u64> {
@@ -396,24 +409,17 @@ fn sample_tie_set(
     weights: &[u32],
     rng: &mut Xorshift64,
     uniform_mass: Option<u64>,
+    total_mass: u64,
 ) -> u32 {
     debug_assert!(!tie_set.is_empty());
     if tie_set.len() == 1 {
         return tie_set[0];
     }
-    let total = uniform_mass.map_or_else(
-        || {
-            tie_set
-                .iter()
-                .map(|&v| sampling_mass(weights[v as usize]))
-                .sum()
-        },
-        |mass| mass * tie_set.len() as u64,
-    );
-    // Compose two u32 draws into one u64 so the draw covers `total` up to 2^64.
+    // Compose two u32 draws into one u64 so the draw covers `total_mass` up to
+    // 2^64.
     let hi = rng.next_u32() as u64;
     let lo = rng.next_u32() as u64;
-    let r = ((hi << 32) | lo) % total;
+    let r = ((hi << 32) | lo) % total_mass;
     if let Some(mass) = uniform_mass {
         let pick = (r / mass) as usize;
         crate::meter::charge(1);
@@ -433,13 +439,9 @@ fn sample_tie_set(
             break;
         }
     }
-    // The dominant cost of weighted min-degree and min-fill sampling. Some
-    // residuals put thousands of same-degree vertices in one bucket, so the two
-    // passes over `tie_set` above outweigh the graph mutation that follows them
-    // by more than an order of magnitude: measured on one such residual, 316 M
-    // tie-set touches over an elimination run against 12 M units of charged
-    // graph work. A touch here costs what a charged graph touch costs, so the
-    // scan goes on the meter at face value and needs no weight of its own.
-    crate::meter::charge(tie_set.len() as u64 + pick as u64 + 1);
+    // Bucket membership updates maintain the total mass. The remaining prefix
+    // walk is the dominant cost for nonuniform weights, so charge its touches
+    // at the same rate as graph touches.
+    crate::meter::charge(pick as u64 + 1);
     tie_set[pick]
 }
