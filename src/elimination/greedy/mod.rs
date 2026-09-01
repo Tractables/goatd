@@ -372,22 +372,53 @@ fn sampling_mass(earlier_first_weight: u32) -> u64 {
     u64::from(u32::MAX - earlier_first_weight) + 1
 }
 
+/// The common mass when every public weight is equal. Detect it once per
+/// elimination order so uniform tie sets do not need repeated weight scans.
+fn uniform_sampling_mass(weights: &[u32]) -> Option<u64> {
+    let (&first, rest) = weights.split_first()?;
+    let mut scanned = 1u64;
+    for &weight in rest {
+        scanned += 1;
+        if weight != first {
+            crate::meter::charge(scanned);
+            return None;
+        }
+    }
+    crate::meter::charge(scanned);
+    Some(sampling_mass(first))
+}
+
 /// Pick one vertex from `tie_set`, giving smaller weights more mass.
 /// A one-vertex tie set draws nothing at all, so the RNG stream depends only
 /// on the ties the elimination actually had to break.
-fn sample_tie_set(tie_set: &[u32], weights: &[u32], rng: &mut Xorshift64) -> u32 {
+fn sample_tie_set(
+    tie_set: &[u32],
+    weights: &[u32],
+    rng: &mut Xorshift64,
+    uniform_mass: Option<u64>,
+) -> u32 {
     debug_assert!(!tie_set.is_empty());
     if tie_set.len() == 1 {
         return tie_set[0];
     }
-    let mut total: u64 = 0;
-    for &v in tie_set {
-        total += sampling_mass(weights[v as usize]);
-    }
+    let total = uniform_mass.map_or_else(
+        || {
+            tie_set
+                .iter()
+                .map(|&v| sampling_mass(weights[v as usize]))
+                .sum()
+        },
+        |mass| mass * tie_set.len() as u64,
+    );
     // Compose two u32 draws into one u64 so the draw covers `total` up to 2^64.
     let hi = rng.next_u32() as u64;
     let lo = rng.next_u32() as u64;
     let r = ((hi << 32) | lo) % total;
+    if let Some(mass) = uniform_mass {
+        let pick = (r / mass) as usize;
+        crate::meter::charge(1);
+        return tie_set[pick];
+    }
     let mut acc: u64 = 0;
     // The chosen index is tracked rather than returned from inside the loop, so
     // that the scan below can be charged on the way out. The initial value is

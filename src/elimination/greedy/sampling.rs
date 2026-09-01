@@ -54,6 +54,7 @@ pub(crate) fn eliminate_sampled_min_fill(
     } = stop;
     let n = graph.len();
     assert_eq!(weights.len(), n);
+    let uniform_mass = uniform_sampling_mass(weights);
 
     if graph.should_promote_bitset() {
         graph.promote_bitset();
@@ -91,7 +92,7 @@ pub(crate) fn eliminate_sampled_min_fill(
             }
         }
 
-        let v = sample_tie_set(tie_set, weights, &mut rng);
+        let v = sample_tie_set(tie_set, weights, &mut rng, uniform_mass);
 
         buckets.remove_vertex(v);
 
@@ -176,6 +177,7 @@ pub(crate) fn eliminate_sampled_min_degree(
     } = stop;
     let n = graph.len();
     assert_eq!(weights.len(), n);
+    let uniform_mass = uniform_sampling_mass(weights);
 
     let mut buckets = BucketMap::with_capacity(n);
     for v in 0..n {
@@ -202,7 +204,7 @@ pub(crate) fn eliminate_sampled_min_degree(
             }
         }
 
-        let v = sample_tie_set(tie_set, weights, &mut rng);
+        let v = sample_tie_set(tie_set, weights, &mut rng, uniform_mass);
         let vi = v as usize;
 
         if degree_stale[vi] {
