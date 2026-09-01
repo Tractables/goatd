@@ -63,9 +63,10 @@ fn extra_sample<'a>(
     debug_assert!(diverse_runs <= config::DIVERSE_SAMPLING_RUNS);
     if index < diverse_runs {
         let order = match index {
-            0 => Order::DegreePlusFillSampled { weights },
-            1 => Order::SparsestSubgraphSampled { weights },
-            _ => unreachable!("there are only two diverse sampled orders"),
+            0 => Order::AdjacentFillSampled { weights },
+            1 => Order::DegreePlusFillSampled { weights },
+            2 => Order::SparsestSubgraphSampled { weights },
+            _ => unreachable!("there are only three diverse sampled orders"),
         };
         return Some((order, sample_seed(base_seed, 0)));
     }

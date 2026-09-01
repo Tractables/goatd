@@ -3,8 +3,9 @@
 //! These stay outside `greedy.rs`'s skeleton on purpose. They do not pop from
 //! a heap: they read the whole minimum-priority bucket out of a [`BucketMap`]
 //! and draw a vertex from it at random, which means no lazy deletion, no stale
-//! entries to skip, and a priority structure that has to be kept exact rather
-//! than corrected on pop. `eliminate_sampled_min_fill` also has no
+//! entries to skip. The exact orders keep every affected priority current;
+//! adjacent-fill deliberately limits updates to direct neighbours.
+//! `eliminate_sampled_min_fill` also has no
 //! clique-residual fast drain — at fill 0 every remaining vertex ties, and
 //! draining them in index order would change the sampled order — and updates
 //! its buckets *before* the vertex is
@@ -21,6 +22,12 @@ enum FillPriority {
     Fill,
     DegreePlusFill,
     SparsestSubgraph,
+}
+
+#[derive(Clone, Copy)]
+enum FillUpdates {
+    Exact,
+    AdjacentOnly,
 }
 
 impl FillPriority {
@@ -51,8 +58,12 @@ fn rescore_neighbours(
     buckets: &mut BucketMap<'_>,
     fills: &mut Option<Vec<u64>>,
     priority: FillPriority,
-) {
+    hard_deadline: Option<Instant>,
+) -> bool {
     for &u in nbrs {
+        if expired(hard_deadline) {
+            return false;
+        }
         if graph.active[u as usize] {
             let new_fill = scratch.fill_count_of(graph, u);
             if let Some(fills) = fills {
@@ -64,6 +75,7 @@ fn rescore_neighbours(
             );
         }
     }
+    true
 }
 
 /// htd-style min-fill elimination: priority = fill only (no secondary degree
@@ -85,6 +97,30 @@ pub(crate) fn eliminate_sampled_min_fill(
         stop,
         initial_fill,
         FillPriority::Fill,
+        FillUpdates::Exact,
+    )
+}
+
+/// Fill elimination that refreshes scores only for neighbours of the
+/// eliminated vertex. The initial scores are exact, but later scores can lag
+/// when a fill edge changes the score of a vertex two hops away.
+pub(crate) fn eliminate_sampled_adjacent_fill(
+    graph: &mut EliminationGraph,
+    weights: &[u32],
+    seed: u64,
+    sink: ElimSink<'_>,
+    stop: ElimStop,
+    initial_fill: Option<&[u64]>,
+) -> ElimExit {
+    eliminate_sampled_fill_based(
+        graph,
+        weights,
+        seed,
+        sink,
+        stop,
+        initial_fill,
+        FillPriority::Fill,
+        FillUpdates::AdjacentOnly,
     )
 }
 
@@ -106,6 +142,7 @@ pub(crate) fn eliminate_sampled_degree_plus_fill(
         stop,
         initial_fill,
         FillPriority::DegreePlusFill,
+        FillUpdates::Exact,
     )
 }
 
@@ -127,6 +164,7 @@ pub(crate) fn eliminate_sampled_sparsest_subgraph(
         stop,
         initial_fill,
         FillPriority::SparsestSubgraph,
+        FillUpdates::Exact,
     )
 }
 
@@ -138,6 +176,7 @@ fn eliminate_sampled_fill_based(
     stop: ElimStop,
     initial_fill: Option<&[u64]>,
     priority: FillPriority,
+    fill_updates: FillUpdates,
 ) -> ElimExit {
     // No cheap mode here to degrade into, so the soft deadline is not this
     // core's to read.
@@ -155,7 +194,7 @@ fn eliminate_sampled_fill_based(
     }
 
     let mut scratch = FillScratch::new(n);
-    let mut affected = FillAffected::new(n);
+    let mut affected = matches!(fill_updates, FillUpdates::Exact).then(|| FillAffected::new(n));
     let mut fill_edges = Vec::new();
     let mut live_nbrs = Vec::new();
     // Plain min-fill already stores the current fill as the bucket key. Only
@@ -244,57 +283,65 @@ fn eliminate_sampled_fill_based(
                 }
             } else {
                 graph.remove_without_fill_nbrs(v, &live_nbrs);
-                rescore_neighbours(
+                let completed = rescore_neighbours(
                     &mut scratch,
                     graph,
                     &live_nbrs,
                     &mut buckets,
                     &mut fills,
                     priority,
+                    None,
                 );
+                debug_assert!(completed);
             }
         } else {
-            graph.eliminate_with_nbrs_record_fill(v, &live_nbrs, &mut fill_edges);
-            if !affected.collect_deltas(graph, &live_nbrs, &fill_edges, hard_deadline) {
-                return ElimExit::DeadlineReached;
-            }
-            while let Some((u, delta)) = affected.pop_delta() {
-                if expired(hard_deadline) {
-                    affected.clear();
-                    return ElimExit::DeadlineReached;
-                }
-                let old_fill = fills.as_ref().map_or_else(
-                    || {
-                        buckets
-                            .key_of(u)
-                            .expect("an active vertex has a fill bucket")
-                    },
-                    |fills| fills[u as usize],
-                );
-                debug_assert!(delta <= old_fill);
-                let new_fill = old_fill.saturating_sub(delta);
-                if let Some(fills) = &mut fills {
-                    fills[u as usize] = new_fill;
-                }
-                buckets.update(
-                    u,
-                    priority.key(new_fill, graph.degree(u) as u64, graph.len() as u64),
-                );
-            }
-            for &u in &live_nbrs {
-                if expired(hard_deadline) {
-                    return ElimExit::DeadlineReached;
-                }
-                if graph.active[u as usize] {
-                    let new_fill = scratch.fill_count_of(graph, u);
-                    if let Some(fills) = &mut fills {
-                        fills[u as usize] = new_fill;
+            match fill_updates {
+                FillUpdates::Exact => {
+                    graph.eliminate_with_nbrs_record_fill(v, &live_nbrs, &mut fill_edges);
+                    let affected = affected
+                        .as_mut()
+                        .expect("exact fill updates allocate affected-vertex scratch");
+                    if !affected.collect_deltas(graph, &live_nbrs, &fill_edges, hard_deadline) {
+                        return ElimExit::DeadlineReached;
                     }
-                    buckets.update(
-                        u,
-                        priority.key(new_fill, graph.degree(u) as u64, graph.len() as u64),
-                    );
+                    while let Some((u, delta)) = affected.pop_delta() {
+                        if expired(hard_deadline) {
+                            affected.clear();
+                            return ElimExit::DeadlineReached;
+                        }
+                        let old_fill = fills.as_ref().map_or_else(
+                            || {
+                                buckets
+                                    .key_of(u)
+                                    .expect("an active vertex has a fill bucket")
+                            },
+                            |fills| fills[u as usize],
+                        );
+                        debug_assert!(delta <= old_fill);
+                        let new_fill = old_fill.saturating_sub(delta);
+                        if let Some(fills) = &mut fills {
+                            fills[u as usize] = new_fill;
+                        }
+                        buckets.update(
+                            u,
+                            priority.key(new_fill, graph.degree(u) as u64, graph.len() as u64),
+                        );
+                    }
                 }
+                FillUpdates::AdjacentOnly => {
+                    graph.eliminate_with_nbrs(v, &live_nbrs);
+                }
+            }
+            if !rescore_neighbours(
+                &mut scratch,
+                graph,
+                &live_nbrs,
+                &mut buckets,
+                &mut fills,
+                priority,
+                hard_deadline,
+            ) {
+                return ElimExit::DeadlineReached;
             }
         }
         let bag_len = bag.len();

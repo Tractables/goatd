@@ -2,8 +2,8 @@ use crate::elimination::execution::{ElimSink, ElimStop};
 use crate::elimination::graph::EliminationGraph;
 use crate::elimination::greedy::min_fill::*;
 use crate::elimination::greedy::sampling::{
-    eliminate_sampled_degree_plus_fill, eliminate_sampled_min_fill,
-    eliminate_sampled_sparsest_subgraph,
+    eliminate_sampled_adjacent_fill, eliminate_sampled_degree_plus_fill,
+    eliminate_sampled_min_fill, eliminate_sampled_sparsest_subgraph,
 };
 
 #[test]
@@ -18,6 +18,34 @@ fn path_graph_eliminates_from_endpoints() {
     let first = bags[0][0];
     assert!(first == 0 || first == 3);
     assert_eq!(g.num_active, 0);
+}
+
+#[test]
+fn sampled_adjacent_fill_leaves_two_hop_scores_unchanged() {
+    let edges = [
+        (0, 3),
+        (0, 4),
+        (0, 5),
+        (1, 3),
+        (1, 4),
+        (1, 5),
+        (2, 3),
+        (2, 4),
+        (2, 5),
+    ];
+    let mut graph = EliminationGraph::from_edges(6, &edges);
+    let weights = vec![1; 6];
+    let mut bags = Vec::new();
+    let mut rank = Vec::new();
+    let sink = ElimSink::new(&mut bags, &mut rank, 0);
+
+    eliminate_sampled_adjacent_fill(&mut graph, &weights, 0, sink, ElimStop::default(), None);
+
+    assert_ne!(
+        bags[0][0] < 3,
+        bags[1][0] < 3,
+        "after one side is sampled, stale two-hop scores make the other side come next",
+    );
 }
 
 #[test]
