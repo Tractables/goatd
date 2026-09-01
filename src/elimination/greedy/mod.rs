@@ -39,7 +39,10 @@ mod tests;
 
 pub(super) use min_degree::eliminate_min_degree;
 pub(super) use min_fill::eliminate_min_fill;
-pub(super) use sampling::{eliminate_sampled_min_degree, eliminate_sampled_min_fill};
+pub(super) use sampling::{
+    eliminate_sampled_degree_plus_fill, eliminate_sampled_min_degree, eliminate_sampled_min_fill,
+    eliminate_sampled_sparsest_subgraph,
+};
 
 /// Above this many active vertices, a single cheap-mode eliminate on a dense
 /// residual can overshoot the deadline by seconds. Emergency-bail immediately
