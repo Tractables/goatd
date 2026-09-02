@@ -38,6 +38,12 @@ pub enum Order<'a> {
         /// Per-vertex weights, one entry per input graph vertex.
         weights: &'a [u32],
     },
+    /// Fill minus twice the degree with weighted sampling from the full
+    /// minimum-score tie set.
+    FillMinusDoubleDegreeSampled {
+        /// Per-vertex weights, one entry per input graph vertex.
+        weights: &'a [u32],
+    },
 }
 
 impl<'a> Order<'a> {
@@ -47,7 +53,8 @@ impl<'a> Order<'a> {
             Order::MinFillSampled { weights }
             | Order::MinDegreeSampled { weights }
             | Order::DegreePlusFillSampled { weights }
-            | Order::SparsestSubgraphSampled { weights } => Some(weights),
+            | Order::SparsestSubgraphSampled { weights }
+            | Order::FillMinusDoubleDegreeSampled { weights } => Some(weights),
             Order::MinFill | Order::MinDegree | Order::NestedDissection => None,
         }
     }
@@ -62,6 +69,9 @@ impl<'a> Order<'a> {
             Order::MinDegreeSampled { .. } => Order::MinDegreeSampled { weights },
             Order::DegreePlusFillSampled { .. } => Order::DegreePlusFillSampled { weights },
             Order::SparsestSubgraphSampled { .. } => Order::SparsestSubgraphSampled { weights },
+            Order::FillMinusDoubleDegreeSampled { .. } => {
+                Order::FillMinusDoubleDegreeSampled { weights }
+            }
         }
     }
 
@@ -72,6 +82,7 @@ impl<'a> Order<'a> {
             Order::MinFillSampled { .. }
                 | Order::DegreePlusFillSampled { .. }
                 | Order::SparsestSubgraphSampled { .. }
+                | Order::FillMinusDoubleDegreeSampled { .. }
         )
     }
 }

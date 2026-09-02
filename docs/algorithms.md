@@ -77,10 +77,10 @@ construction path with a cheaper degree key.
 
 The deterministic forms use a seeded per-vertex salt after the primary keys.
 The sampled forms instead draw from the complete minimum-key tie set. Besides
-fill and degree, sampled orders can minimize degree plus fill or fill minus
-degree. A caller may supply one weight per vertex; uniform weights give uniform
-sampling. Each score remains exact while the orders explore different
-elimination paths.
+fill and degree, sampled orders can minimize degree plus fill, fill minus
+degree, or fill minus twice the degree. A caller may supply one weight per
+vertex; uniform weights give uniform sampling. Each score remains exact while
+the orders explore different elimination paths.
 
 These choices extend the standard greedy heuristics with shared reductions,
 incremental scoring, explicit weighted ties, incumbent-width pruning, and

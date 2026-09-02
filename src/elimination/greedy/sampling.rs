@@ -21,6 +21,7 @@ enum FillPriority {
     Fill,
     DegreePlusFill,
     SparsestSubgraph,
+    FillMinusDoubleDegree,
 }
 
 impl FillPriority {
@@ -31,6 +32,10 @@ impl FillPriority {
             Self::SparsestSubgraph => {
                 debug_assert!(degree <= vertex_count);
                 fill + vertex_count - degree
+            }
+            Self::FillMinusDoubleDegree => {
+                debug_assert!(degree <= vertex_count);
+                fill.saturating_add((vertex_count - degree).saturating_mul(2))
             }
         }
     }
@@ -127,6 +132,27 @@ pub(crate) fn eliminate_sampled_sparsest_subgraph(
         stop,
         initial_fill,
         FillPriority::SparsestSubgraph,
+    )
+}
+
+/// Fill-minus-double-degree elimination with weighted sampling from the
+/// complete minimum-score tie set.
+pub(crate) fn eliminate_sampled_fill_minus_double_degree(
+    graph: &mut EliminationGraph,
+    weights: &[u32],
+    seed: u64,
+    sink: ElimSink<'_>,
+    stop: ElimStop,
+    initial_fill: Option<&[u64]>,
+) -> ElimExit {
+    eliminate_sampled_fill_based(
+        graph,
+        weights,
+        seed,
+        sink,
+        stop,
+        initial_fill,
+        FillPriority::FillMinusDoubleDegree,
     )
 }
 

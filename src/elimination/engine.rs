@@ -8,7 +8,8 @@ use super::execution::{self, ElimExit, ElimSteps};
 use super::graph::EliminationGraph;
 use super::greedy::{
     self, eliminate_min_degree, eliminate_min_fill, eliminate_sampled_degree_plus_fill,
-    eliminate_sampled_min_degree, eliminate_sampled_min_fill, eliminate_sampled_sparsest_subgraph,
+    eliminate_sampled_fill_minus_double_degree, eliminate_sampled_min_degree,
+    eliminate_sampled_min_fill, eliminate_sampled_sparsest_subgraph,
 };
 use super::nested_dissection::eliminate_nested_dissection;
 use super::preprocess::{Reduced, preprocess};
@@ -223,6 +224,19 @@ fn run_elimination_raw(
             },
             initial_fill,
         ),
+        Order::FillMinusDoubleDegreeSampled { weights } => {
+            eliminate_sampled_fill_minus_double_degree(
+                &mut g,
+                weights,
+                spec.seed,
+                steps.sink(),
+                ElimStop {
+                    soft_deadline: None,
+                    ..spec.stop
+                },
+                initial_fill,
+            )
+        }
         Order::NestedDissection => {
             eliminate_nested_dissection(&mut g, salt, spec.seed, steps.sink(), spec.stop)
         }
