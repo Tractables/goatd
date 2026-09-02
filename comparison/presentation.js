@@ -3,6 +3,7 @@
 const BenchmarkPresentation = (() => {
   const profileDeltas = Object.freeze([0, 1, 2, 4, 8]);
   const omittedSolverIds = Object.freeze(["goatd-portfolio-refined"]);
+  const canonicalPortfolioSolverId = "goatd-portfolio";
   const widthFloorSolverId = "networkx-min-degree";
   const defaultMinimumMinDegreeWidth = 30;
   const aggregateMetricDefinitions = Object.freeze([
@@ -26,7 +27,11 @@ const BenchmarkPresentation = (() => {
 
   function displayedSolvers(solvers) {
     const omitted = new Set(omittedSolverIds);
-    return solvers.filter((solver) => !omitted.has(solver.id));
+    return solvers.filter((solver) => {
+      if (omitted.has(solver.id)) return false;
+      return !solver.id.startsWith("goatd-portfolio")
+        || solver.id === canonicalPortfolioSolverId;
+    });
   }
 
   function minDegreeWidth(instance, statistics) {
@@ -50,6 +55,7 @@ const BenchmarkPresentation = (() => {
 
   return Object.freeze({
     aggregateMetricDefinitions,
+    canonicalPortfolioSolverId,
     defaultInstances,
     defaultMinimumMinDegreeWidth,
     displayedSolvers,

@@ -53,6 +53,10 @@ The summary reports, for every displayed solver:
 - exact ties with the best width observed for each graph; and
 - counted widths within one and four of the best observed width.
 
+The canonical result set contains one goatd row: the portfolio from current
+upstream main. Historical portfolio checkpoints stay in experiment records and
+git history; they are not part of the displayed field or its observed minima.
+
 Tied minima count as best for every tied solver. The quality--coverage curve
 reports the count with a counted width at most 0, 1, 2, 4 or 8 above the best
 observed width. Missing, invalid, timed-out and no-reduction results do not
