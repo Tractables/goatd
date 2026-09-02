@@ -41,17 +41,25 @@ impl Graph {
             if line.is_empty() || line.starts_with('c') {
                 continue;
             }
-            let tokens: Vec<&str> = line.split_whitespace().collect();
-            if tokens[0] == "p" {
+            let mut tokens = line.split_whitespace();
+            let first = tokens.next().expect("a nonempty line has a token");
+            if first == "p" {
                 // "p tw <num_vertices> <num_edges>"
                 if num_vertices.is_some() {
                     return Err(Error::Parse(format!("more than one problem line: {line}")));
                 }
-                if tokens.len() != 4 || tokens[1] != "tw" {
+                let format = tokens.next();
+                let vertices = tokens.next();
+                let edge_lines = tokens.next();
+                let (Some(vertices), Some(edge_lines)) = (vertices, edge_lines) else {
+                    return Err(Error::Parse(format!("malformed problem line: {line}")));
+                };
+                if format != Some("tw") || tokens.next().is_some() {
                     return Err(Error::Parse(format!("malformed problem line: {line}")));
                 }
-                num_vertices = Some(parse_count("vertex count", tokens[2])?);
-                declared_edge_lines = parse_count("edge count", tokens[3])?;
+                num_vertices = Some(parse_count("vertex count", vertices)?);
+                declared_edge_lines = parse_count("edge count", edge_lines)?;
+                edges.reserve(declared_edge_lines.min(text.len() / 4));
                 continue;
             }
             let Some(n) = num_vertices else {
@@ -59,11 +67,14 @@ impl Graph {
                     "edge line before the problem line: {line}"
                 )));
             };
-            if tokens.len() != 2 {
+            let Some(second) = tokens.next() else {
+                return Err(Error::Parse(format!("malformed edge line: {line}")));
+            };
+            if tokens.next().is_some() {
                 return Err(Error::Parse(format!("malformed edge line: {line}")));
             }
-            let u: u32 = to_zero_based("vertex", parse_count("vertex id", tokens[0])?, n as usize)?;
-            let v: u32 = to_zero_based("vertex", parse_count("vertex id", tokens[1])?, n as usize)?;
+            let u: u32 = to_zero_based("vertex", parse_count("vertex id", first)?, n as usize)?;
+            let v: u32 = to_zero_based("vertex", parse_count("vertex id", second)?, n as usize)?;
             num_edge_lines += 1;
             edges.push((u, v));
         }
