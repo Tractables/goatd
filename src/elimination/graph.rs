@@ -14,6 +14,32 @@
 /// At n = 16384: 16384 * 256 words * 8 bytes = 32 MB per graph.
 const BITSET_THRESH: usize = 16384;
 
+#[inline(always)]
+pub(super) fn intersection_popcount(left: &[u64], right: &[u64]) -> u64 {
+    debug_assert_eq!(left.len(), right.len());
+
+    let mut count_0 = 0u64;
+    let mut count_1 = 0u64;
+    let mut count_2 = 0u64;
+    let mut count_3 = 0u64;
+    let mut left_chunks = left.chunks_exact(4);
+    let mut right_chunks = right.chunks_exact(4);
+    for (left, right) in left_chunks.by_ref().zip(right_chunks.by_ref()) {
+        count_0 += (left[0] & right[0]).count_ones() as u64;
+        count_1 += (left[1] & right[1]).count_ones() as u64;
+        count_2 += (left[2] & right[2]).count_ones() as u64;
+        count_3 += (left[3] & right[3]).count_ones() as u64;
+    }
+    let tail = left_chunks
+        .remainder()
+        .iter()
+        .zip(right_chunks.remainder())
+        .map(|(&left, &right)| (left & right).count_ones() as u64)
+        .sum::<u64>();
+
+    count_0 + count_1 + count_2 + count_3 + tail
+}
+
 /// Mutable graph used by goatd during preprocessing, min-fill, and nested
 /// dissection. Supports active/inactive vertices for constant-time elimination.
 #[derive(Clone)]
@@ -572,9 +598,7 @@ impl EliminationGraph {
                 let u = j * 64 + lsb;
                 let ub = u * w;
                 let ubs = &self.bitset[ub..ub + w];
-                for l in 0..w {
-                    doubled += (ubs[l] & vbs[l]).count_ones() as u64;
-                }
+                doubled += intersection_popcount(ubs, vbs);
                 word &= word - 1;
             }
         }
