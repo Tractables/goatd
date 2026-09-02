@@ -41,17 +41,25 @@ impl Graph {
             if line.is_empty() || line.starts_with('c') {
                 continue;
             }
-            let tokens: Vec<&str> = line.split_whitespace().collect();
-            if tokens[0] == "p" {
+            let mut tokens = line.split_whitespace();
+            let first = tokens.next().expect("a nonempty line has a token");
+            if first == "p" {
                 // "p tw <num_vertices> <num_edges>"
                 if num_vertices.is_some() {
                     return Err(Error::Parse(format!("more than one problem line: {line}")));
                 }
-                if tokens.len() != 4 || tokens[1] != "tw" {
+                let format = tokens.next();
+                let vertices = tokens.next();
+                let edge_lines = tokens.next();
+                let (Some(vertices), Some(edge_lines)) = (vertices, edge_lines) else {
+                    return Err(Error::Parse(format!("malformed problem line: {line}")));
+                };
+                if format != Some("tw") || tokens.next().is_some() {
                     return Err(Error::Parse(format!("malformed problem line: {line}")));
                 }
-                num_vertices = Some(parse_count("vertex count", tokens[2])?);
-                declared_edge_lines = parse_count("edge count", tokens[3])?;
+                num_vertices = Some(parse_count("vertex count", vertices)?);
+                declared_edge_lines = parse_count("edge count", edge_lines)?;
+                edges.reserve(declared_edge_lines.min(text.len() / 4));
                 continue;
             }
             let Some(n) = num_vertices else {
@@ -59,11 +67,14 @@ impl Graph {
                     "edge line before the problem line: {line}"
                 )));
             };
-            if tokens.len() != 2 {
+            let Some(second) = tokens.next() else {
+                return Err(Error::Parse(format!("malformed edge line: {line}")));
+            };
+            if tokens.next().is_some() {
                 return Err(Error::Parse(format!("malformed edge line: {line}")));
             }
-            let u: u32 = to_zero_based("vertex", parse_count("vertex id", tokens[0])?, n as usize)?;
-            let v: u32 = to_zero_based("vertex", parse_count("vertex id", tokens[1])?, n as usize)?;
+            let u: u32 = to_zero_based("vertex", parse_count("vertex id", first)?, n as usize)?;
+            let v: u32 = to_zero_based("vertex", parse_count("vertex id", second)?, n as usize)?;
             num_edge_lines += 1;
             edges.push((u, v));
         }
@@ -80,6 +91,25 @@ impl Graph {
     }
 }
 
+fn push_decimal(buffer: &mut Vec<u8>, mut value: usize) {
+    let start = buffer.len();
+    loop {
+        buffer.push(b'0' + (value % 10) as u8);
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    buffer[start..].reverse();
+}
+
+fn write_line(out: &mut impl Write, buffer: &mut Vec<u8>) -> io::Result<()> {
+    buffer.push(b'\n');
+    out.write_all(buffer)?;
+    buffer.clear();
+    Ok(())
+}
+
 impl TreeDecomposition {
     /// Write this decomposition in PACE `.td` format.
     ///
@@ -90,9 +120,13 @@ impl TreeDecomposition {
     ///
     /// Returns an I/O error from `out`.
     pub fn write_td(&self, mut out: impl Write) -> io::Result<()> {
+        let mut line = Vec::with_capacity(128);
         if self.bags.is_empty() {
-            writeln!(out, "s td 1 0 {}", self.num_vertices)?;
-            writeln!(out, "b 1")?;
+            line.extend_from_slice(b"s td 1 0 ");
+            push_decimal(&mut line, self.num_vertices as usize);
+            write_line(&mut out, &mut line)?;
+            line.extend_from_slice(b"b 1");
+            write_line(&mut out, &mut line)?;
             return Ok(());
         }
         let max_bag = self
@@ -101,24 +135,29 @@ impl TreeDecomposition {
             .map(|b| b.vertices.len())
             .max()
             .unwrap_or(0);
-        writeln!(
-            out,
-            "s td {} {} {}",
-            self.bags.len(),
-            max_bag,
-            self.num_vertices
-        )?;
+        line.extend_from_slice(b"s td ");
+        push_decimal(&mut line, self.bags.len());
+        line.push(b' ');
+        push_decimal(&mut line, max_bag);
+        line.push(b' ');
+        push_decimal(&mut line, self.num_vertices as usize);
+        write_line(&mut out, &mut line)?;
         for (bag_id, bag) in self.bags.iter().enumerate() {
-            write!(out, "b {}", bag_id + 1)?;
+            line.extend_from_slice(b"b ");
+            push_decimal(&mut line, bag_id + 1);
             for &v in &bag.vertices {
-                write!(out, " {}", v + 1)?;
+                line.push(b' ');
+                push_decimal(&mut line, v as usize + 1);
             }
-            writeln!(out)?;
+            write_line(&mut out, &mut line)?;
         }
         for (i, nbs) in self.adj.iter().enumerate() {
             for &j in nbs {
                 if i < j {
-                    writeln!(out, "{} {}", i + 1, j + 1)?;
+                    push_decimal(&mut line, i + 1);
+                    line.push(b' ');
+                    push_decimal(&mut line, j + 1);
+                    write_line(&mut out, &mut line)?;
                 }
             }
         }
@@ -141,7 +180,10 @@ impl TreeDecomposition {
             }
         }
         for roots in component_roots.windows(2) {
-            writeln!(out, "{} {}", roots[0] + 1, roots[1] + 1)?;
+            push_decimal(&mut line, roots[0] + 1);
+            line.push(b' ');
+            push_decimal(&mut line, roots[1] + 1);
+            write_line(&mut out, &mut line)?;
         }
         Ok(())
     }
