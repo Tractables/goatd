@@ -69,9 +69,9 @@ refinement. Rustdoc documents each entry point.
 
 ## Bindings
 
-The same constructions are available from
-[Python](bindings/python/README.md) and from
-[C and C++](bindings/c/README.md).
+The same constructions are available through
+[Python](bindings/python/README.md), [C and C++](bindings/c/README.md), and
+[WebAssembly](bindings/wasm/README.md).
 
 ## Evaluation
 

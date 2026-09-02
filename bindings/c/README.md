@@ -1,5 +1,26 @@
 # goatd from C and C++
 
+<p align="center">
+  <a href="https://github.com/Tractables/goatd"><img
+     src="https://raw.githubusercontent.com/Tractables/goatd/main/docs/logo.png"
+     alt="goatd logo" width="280"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Tractables/goatd/releases/latest"><img
+     src="https://img.shields.io/github/v/release/Tractables/goatd"
+     alt="GitHub release"></a>
+  <a href="https://github.com/Tractables/goatd/actions/workflows/c-bindings.yml"><img
+     src="https://github.com/Tractables/goatd/actions/workflows/c-bindings.yml/badge.svg"
+     alt="C bindings"></a>
+  <a href="https://github.com/Tractables/goatd/blob/main/bindings/c/include/goatd.h"><img
+     src="https://img.shields.io/badge/API-C%20%2F%20C%2B%2B-blue"
+     alt="C and C++ API"></a>
+  <a href="https://github.com/Tractables/goatd/blob/main/LICENSE"><img
+     src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"
+     alt="License: Apache-2.0"></a>
+</p>
+
 A C ABI over the goatd library: a graph goes in as a vertex count and a flat
 edge array, and a tree decomposition comes out as bag offsets, a concatenated
 vertex array, and the edges between bags. The orders, budgets, seeds and
@@ -13,7 +34,7 @@ This is a separate crate with its own `Cargo.toml`. It builds the `goatd`
 sources beside it and carries the same version, which `goatd_version()`
 reports.
 
-## Prebuilt archives
+## Install from a release
 
 Each GitHub release attaches a `goatd-c-<tag>-<target>` archive
 (`.tar.gz` on Linux and macOS, `.zip` on Windows) for each of
@@ -79,7 +100,7 @@ sed -e 's|@PREFIX@|/usr/local|' -e 's|@VERSION@|0.1.2|' \
     bindings/c/goatd-c.pc.in > /usr/local/lib/pkgconfig/goatd-c.pc
 ```
 
-## The example
+## Use the API
 
 `example/example.c` builds a graph whose width is known, decomposes it three
 ways, checks the bags against the graph, and frees the result. CI compiles and
@@ -118,7 +139,7 @@ dropped.
 goatd is single-threaded. Each thread may call it independently, on its own
 graph; error messages are recorded per thread.
 
-## The header
+## Regenerate the header
 
 `include/goatd.h` is generated from `src/lib.rs` by
 [cbindgen](https://github.com/mozilla/cbindgen) and committed. CI regenerates
