@@ -193,10 +193,12 @@ impl FillAffected {
 
     fn increment(&mut self, vertex: u32) {
         let index = vertex as usize;
-        if self.delta[index] == 0 {
+        let delta = &mut self.delta[index];
+        let first = *delta == 0;
+        *delta += 1;
+        if first {
             self.vertices.push(vertex);
         }
-        self.delta[index] += 1;
     }
 
     fn mark_inside(&mut self, vertex: u32) {
