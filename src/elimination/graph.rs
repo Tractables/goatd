@@ -590,7 +590,7 @@ impl EliminationGraph {
         }
 
         // Dense fallback: O(k · w).
-        let mut doubled = 0u64;
+        let mut edges = 0u64;
         for j in 0..w {
             let mut word = vbs[j];
             while word != 0 {
@@ -598,10 +598,12 @@ impl EliminationGraph {
                 let u = j * 64 + lsb;
                 let ub = u * w;
                 let ubs = &self.bitset[ub..ub + w];
-                doubled += intersection_popcount(ubs, vbs);
+                let higher_bits = if lsb == 63 { 0 } else { u64::MAX << (lsb + 1) };
+                edges += (ubs[j] & vbs[j] & higher_bits).count_ones() as u64;
+                edges += intersection_popcount(&ubs[j + 1..], &vbs[j + 1..]);
                 word &= word - 1;
             }
         }
-        total_pairs - doubled / 2
+        total_pairs - edges
     }
 }
