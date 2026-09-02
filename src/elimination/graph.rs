@@ -756,10 +756,9 @@ impl EliminationGraph {
                 let u = j * 64 + lsb;
                 let ub = u * w;
                 let ubs = &self.bitset[ub..ub + w];
-                let higher_bits = if lsb == 63 { 0 } else { u64::MAX << (lsb + 1) };
-                edges += popcount(ubs[j] & vbs[j] & higher_bits);
-                edges += intersection_popcount_by(&ubs[j + 1..], &vbs[j + 1..], popcount);
                 word &= word - 1;
+                edges += popcount(ubs[j] & word);
+                edges += intersection_popcount_by(&ubs[j + 1..], &vbs[j + 1..], popcount);
             }
         }
         total_pairs - edges
