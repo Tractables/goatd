@@ -233,6 +233,11 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             ],
             &["--hard-budget", "--budget", "at least"],
         ),
+        (&["--no-hedge"], &["--no-hedge", "minfill", "portfolio"]),
+        (
+            &["--order", "flowcutter", "--trace"],
+            &["--trace", "flowcutter", "portfolio"],
+        ),
         (&["--ties", "salt"], &["--ties"]),
         (&["--budget", "0"], &["--budget", "positive"]),
         (&["--order", "treewidth"], &["--order"]),
@@ -256,6 +261,106 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             );
         }
     }
+}
+
+#[test]
+fn the_trace_names_the_candidate_the_decomposition_came_from() {
+    let out = goatd(
+        &["-", "--order", "portfolio", "--budget", "500", "--trace"],
+        Some(&grid_gr()),
+    );
+
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let err = stderr_of(&out);
+    let mut candidates: Vec<&str> = Vec::new();
+    let mut winner = None;
+    for line in err.lines() {
+        if let Some(rest) = line.strip_prefix("c trace winner candidate=") {
+            winner = Some(rest);
+        } else if let Some(rest) = line.strip_prefix("c trace candidate=") {
+            candidates.push(rest);
+        }
+    }
+    assert!(candidates.len() > 3, "one line per candidate: {err}");
+    assert!(
+        candidates.iter().any(|line| line.starts_with("min-fill ")),
+        "{err}"
+    );
+    // A 500 ms budget is below the extended-sampling threshold, so the
+    // schedule is the fixed candidates and ordinary restarts.
+    assert!(
+        candidates.iter().any(|line| line.starts_with("sample ")),
+        "{err}"
+    );
+    for line in &candidates {
+        assert!(
+            line.contains(" width=") || line.contains(" outcome="),
+            "a candidate line says what it produced: {line}"
+        );
+    }
+    let winner = winner.expect("a winner line");
+    assert!(
+        candidates.iter().any(|line| line.starts_with(winner)),
+        "the winner must be one of the candidates: {err}"
+    );
+
+    let out = goatd(
+        &["-", "--order", "portfolio", "--budget", "500"],
+        Some(&grid_gr()),
+    );
+    let err = stderr_of(&out);
+    assert!(!err.contains("c trace"), "no trace without the flag: {err}");
+}
+
+#[test]
+fn the_default_portfolio_hedges_and_no_hedge_turns_that_off() {
+    let out = goatd(
+        &["-", "--order", "portfolio", "--budget", "500", "--trace"],
+        Some(&grid_gr()),
+    );
+
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let err = stderr_of(&out);
+    let mut modified: Vec<&str> = Vec::new();
+    for line in err.lines() {
+        let Some(rest) = line.strip_prefix("c trace candidate=") else {
+            continue;
+        };
+        if rest.starts_with("sample ") {
+            assert!(
+                rest.contains(" pass=plain"),
+                "every restart stays plain: {line}"
+            );
+        } else if rest.contains(" pass=modified") {
+            modified.push(rest.split(' ').next().expect("a stage name"));
+        }
+    }
+    assert_eq!(
+        modified,
+        ["min-degree", "min-fill", "min-degree"],
+        "the fixed orders that read weights run again on the ranked ones: {err}"
+    );
+
+    let out = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            "500",
+            "--no-hedge",
+            "--trace",
+        ],
+        Some(&grid_gr()),
+    );
+
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let err = stderr_of(&out);
+    assert!(err.contains("c trace candidate="), "{err}");
+    assert!(
+        !err.contains(" pass="),
+        "one pass, so no pass to name: {err}"
+    );
 }
 
 #[test]
