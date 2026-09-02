@@ -145,7 +145,7 @@ fn eliminate_sampled_fill_based(
     // Plain min-fill already stores the current fill as the bucket key. Only
     // composite scores need a second array to recover the fill component.
     let mut fills = priority.tracks_fill_separately().then(|| vec![0; n]);
-    let mut buckets = BucketMap::with_weights(weights);
+    let mut buckets = BucketMap::with_weights(weights, uniform_mass);
     for v in 0..n {
         if graph.active[v] {
             let f = match initial_fill {
@@ -311,7 +311,7 @@ pub(crate) fn eliminate_sampled_min_degree(
     assert_eq!(weights.len(), n);
     let uniform_mass = uniform_sampling_mass(weights);
 
-    let mut buckets = BucketMap::with_weights(weights);
+    let mut buckets = BucketMap::with_weights(weights, uniform_mass);
     for v in 0..n {
         if graph.active[v] {
             buckets.insert(v as u32, graph.degree(v as u32) as u64);

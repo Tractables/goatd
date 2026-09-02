@@ -341,15 +341,17 @@ pub(super) struct BucketMap<'a> {
     spare_vertices: Vec<Vec<u32>>,
     position: Vec<BucketPosition>,
     weights: &'a [u32],
+    uniform_mass: Option<u64>,
 }
 
 impl<'a> BucketMap<'a> {
-    fn with_weights(weights: &'a [u32]) -> Self {
+    fn with_weights(weights: &'a [u32], uniform_mass: Option<u64>) -> Self {
         BucketMap {
             buckets: BTreeMap::new(),
             spare_vertices: Vec::new(),
             position: vec![BucketPosition::VACANT; weights.len()],
             weights,
+            uniform_mass,
         }
     }
 
@@ -363,7 +365,9 @@ impl<'a> BucketMap<'a> {
         };
         let idx = bucket.vertices.len();
         bucket.vertices.push(v);
-        bucket.sampling_mass += sampling_mass(self.weights[v as usize]);
+        if self.uniform_mass.is_none() {
+            bucket.sampling_mass += sampling_mass(self.weights[v as usize]);
+        }
         debug_assert!(self.position[v as usize].is_vacant());
         self.position[v as usize] = BucketPosition { key, index: idx };
     }
@@ -378,7 +382,9 @@ impl<'a> BucketMap<'a> {
     #[inline]
     fn remove_at(&mut self, v: u32, position: BucketPosition) {
         let bucket = self.buckets.get_mut(&position.key).expect("bucket missing");
-        bucket.sampling_mass -= sampling_mass(self.weights[v as usize]);
+        if self.uniform_mass.is_none() {
+            bucket.sampling_mass -= sampling_mass(self.weights[v as usize]);
+        }
         let last_idx = bucket.vertices.len() - 1;
         if position.index != last_idx {
             let moved = bucket.vertices[last_idx];
@@ -409,10 +415,12 @@ impl<'a> BucketMap<'a> {
     }
 
     fn min_bucket(&self) -> Option<(u64, &[u32], u64)> {
-        self.buckets
-            .iter()
-            .next()
-            .map(|(key, bucket)| (*key, bucket.vertices.as_slice(), bucket.sampling_mass))
+        self.buckets.iter().next().map(|(key, bucket)| {
+            let mass = self.uniform_mass.map_or(bucket.sampling_mass, |mass| {
+                mass * bucket.vertices.len() as u64
+            });
+            (*key, bucket.vertices.as_slice(), mass)
+        })
     }
 
     fn key_of(&self, v: u32) -> Option<u64> {
