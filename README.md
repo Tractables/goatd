@@ -75,21 +75,10 @@ The same constructions are available from
 
 ## Evaluation
 
-The [solver comparison](https://tractables.github.io/goatd/comparison/)
-evaluates the shipped portfolio and seven public baselines on component graphs
-obtained from Model Counting Competition CNFs after two seconds of
-preprocessing. Each configuration receives ten seconds on one CPU, and every
-decomposition is checked by the same validator.
-
-The default view excludes tree components. It also excludes a graph when the
-pinned NetworkX min-degree run returned a counted decomposition of width below
-30. If that run did not return a counted decomposition, the graph remains.
-This keeps the selected graphs fixed when new solver results are added.
-
-A counted result passes validation, contains more than one bag, and has width
-below the graph's one-bag width `|V| - 1`. A result that does not improve that
-bound is counted like a timeout. “Exact best” means a tie with the smallest
-counted width found, not a proven optimum.
+The [solver comparison](https://tractables.github.io/goatd/comparison/) runs
+the shipped portfolio and seven public baselines on 9,413 selected component
+graphs derived from Model Counting Competition formulas. Each receives ten
+seconds on one CPU.
 
 <!-- Generated table; 9,413 selected graphs. -->
 
@@ -103,6 +92,12 @@ counted width found, not a proven optimum.
 | NetworkX min-degree | 8,999 (95.6%) | 138 (1.5%) | 153 (1.6%) | 261 (2.8%) |
 | NetworkX min-fill | 8,279 (88.0%) | 72 (0.8%) | 229 (2.4%) | 1,926 (20.5%) |
 | Arboretum heuristic | 5,549 (59.0%) | 44 (0.5%) | 178 (1.9%) | 1,189 (12.6%) |
+
+Every decomposition is checked by the same validator. The default selection
+omits tree components and graphs where pinned NetworkX min-degree returns a
+validated width below 30. “Nontrivial” means a validated multi-bag
+decomposition narrower than `|V| - 1`. “Exact best” is the smallest width
+observed among the displayed solvers, not a proven optimum.
 
 ## Building and contributing
 
