@@ -4,7 +4,7 @@
 //! The sampling cores draw from the full set tied on the primary key.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BinaryHeap, btree_map::Entry};
 use std::time::Instant;
 
 use super::execution::{DEADLINE_CHECK_STRIDE, ElimExit, ElimSink, ElimStop, exceeds_width_bound};
@@ -338,6 +338,7 @@ impl BucketPosition {
 #[derive(Clone)]
 pub(super) struct BucketMap<'a> {
     buckets: BTreeMap<u64, Bucket>,
+    spare_vertices: Vec<Vec<u32>>,
     position: Vec<BucketPosition>,
     weights: &'a [u32],
 }
@@ -346,16 +347,20 @@ impl<'a> BucketMap<'a> {
     fn with_weights(weights: &'a [u32]) -> Self {
         BucketMap {
             buckets: BTreeMap::new(),
+            spare_vertices: Vec::new(),
             position: vec![BucketPosition::VACANT; weights.len()],
             weights,
         }
     }
 
     fn insert(&mut self, v: u32, key: u64) {
-        let bucket = self.buckets.entry(key).or_insert_with(|| Bucket {
-            vertices: Vec::new(),
-            sampling_mass: 0,
-        });
+        let bucket = match self.buckets.entry(key) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(Bucket {
+                vertices: self.spare_vertices.pop().unwrap_or_default(),
+                sampling_mass: 0,
+            }),
+        };
         let idx = bucket.vertices.len();
         bucket.vertices.push(v);
         bucket.sampling_mass += sampling_mass(self.weights[v as usize]);
@@ -378,8 +383,10 @@ impl<'a> BucketMap<'a> {
                 };
             }
             bucket.vertices.pop();
-            if bucket.vertices.is_empty() {
-                self.buckets.remove(&position.key);
+            let empty = bucket.vertices.is_empty();
+            if empty {
+                let bucket = self.buckets.remove(&position.key).expect("bucket missing");
+                self.spare_vertices.push(bucket.vertices);
             }
         }
     }

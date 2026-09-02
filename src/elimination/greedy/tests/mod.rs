@@ -83,6 +83,24 @@ fn bucket_positions_use_less_space_than_the_optional_tuple() {
 }
 
 #[test]
+fn empty_priority_buckets_reuse_their_vertex_storage() {
+    let weights = [1];
+    let mut buckets = super::BucketMap::with_weights(&weights);
+
+    buckets.insert(0, 3);
+    let capacity = buckets.buckets.get(&3).unwrap().vertices.capacity();
+    buckets.remove_vertex(0);
+    assert_eq!(buckets.spare_vertices.len(), 1);
+
+    buckets.insert(0, 7);
+    assert!(buckets.spare_vertices.is_empty());
+    assert_eq!(
+        buckets.buckets.get(&7).unwrap().vertices.capacity(),
+        capacity
+    );
+}
+
+#[test]
 fn affected_membership_uses_one_word_per_vertex_block() {
     let affected = super::FillAffected::new(130);
     assert_eq!(affected.inside.len(), 3);
