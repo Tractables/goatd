@@ -230,6 +230,7 @@ fn eliminate_sampled_fill_based(
                 );
             }
         } else {
+            affected.prepare_inside(graph, v, &live_nbrs);
             graph.eliminate_with_nbrs_record_fill(v, &live_nbrs, &mut fill_edges);
             if !affected.collect_deltas(graph, &live_nbrs, &fill_edges, hard_deadline) {
                 return ElimExit::DeadlineReached;

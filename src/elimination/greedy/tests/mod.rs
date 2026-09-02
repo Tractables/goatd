@@ -151,11 +151,22 @@ fn affected_membership_uses_one_word_per_vertex_block() {
 fn affected_membership_excludes_the_eliminated_neighbourhood() {
     let mut graph = crate::elimination::graph::EliminationGraph::from_edges(
         130,
-        &[(1, 2), (1, 65), (2, 65), (1, 129), (2, 129)],
+        &[
+            (0, 1),
+            (0, 2),
+            (0, 65),
+            (1, 2),
+            (1, 65),
+            (2, 65),
+            (1, 129),
+            (2, 129),
+        ],
     );
     graph.promote_bitset();
     let mut affected = super::FillAffected::new(130);
 
+    affected.prepare_inside(&graph, 0, &[1, 2, 65]);
+    graph.remove_without_fill_nbrs(0, &[1, 2, 65]);
     assert!(affected.collect_deltas(&graph, &[1, 2, 65], &[(1, 2)], None));
     assert_eq!(affected.pop_delta(), Some((129, 1)));
     assert_eq!(affected.pop_delta(), None);
