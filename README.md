@@ -104,6 +104,25 @@ proven optimum.
 Build setup is in [Building](docs/building.md). Contributions follow
 [CONTRIBUTING.md](docs/CONTRIBUTING.md).
 
+## Citing
+
+goatd has no accompanying paper, so cite the software:
+
+```bibtex
+@misc{goatd,
+  author       = {Van den Broeck, Guy},
+  title        = {goatd: Greatest Of All Tree Decompositions},
+  year         = {2026},
+  howpublished = {\url{https://github.com/Tractables/goatd}},
+  note         = {Rust library and command-line solver, version 0.1.2}
+}
+```
+
+Name the version you ran. [CITATION.cff](CITATION.cff) holds the same metadata
+for GitHub's "Cite this repository" button, which generates a `@software`
+entry; the entry above is `@misc` because the `plain` and `apalike` styles have
+no URL field and print such an entry without its link.
+
 ## Licence
 
 Apache-2.0. Vendored code and modifications are recorded in
