@@ -716,9 +716,10 @@ impl EliminationGraph {
         }
         let total_pairs = k * (k - 1) / 2;
 
-        // Sparse path: k(k-1)/2 < k·w (i.e. k ≤ 2w) means iterating pairs
-        // directly beats a dense row scan per neighbour.
-        if k < (2 * w) as u64 {
+        // Hardware popcount makes dense scans win sooner. Keep the portable
+        // path's earlier break-even for targets where each word costs more.
+        let sparse_threshold = if self.hardware_popcount { w } else { 2 * w };
+        if k < sparse_threshold as u64 {
             let mut nbrs: [u32; 256] = [0; 256];
             let klen = k as usize;
             if klen <= nbrs.len() {
