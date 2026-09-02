@@ -361,7 +361,36 @@ impl EliminationGraph {
         &mut self,
         v: u32,
         neighbours: &[u32],
+        fill_edges: Option<&mut Vec<(u32, u32)>>,
+    ) {
+        #[cfg(target_arch = "x86_64")]
+        if self.hardware_popcount {
+            // SAFETY: the flag is set only after runtime feature detection.
+            return unsafe { self.eliminate_with_nbrs_bs_popcnt(v, neighbours, fill_edges) };
+        }
+        self.eliminate_with_nbrs_bs_by(v, neighbours, fill_edges, |word| word.count_ones());
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "popcnt")]
+    unsafe fn eliminate_with_nbrs_bs_popcnt(
+        &mut self,
+        v: u32,
+        neighbours: &[u32],
+        fill_edges: Option<&mut Vec<(u32, u32)>>,
+    ) {
+        self.eliminate_with_nbrs_bs_by(v, neighbours, fill_edges, |word| {
+            std::arch::x86_64::_popcnt64(word as i64) as u32
+        });
+    }
+
+    #[inline(always)]
+    fn eliminate_with_nbrs_bs_by(
+        &mut self,
+        v: u32,
+        neighbours: &[u32],
         mut fill_edges: Option<&mut Vec<(u32, u32)>>,
+        popcount: impl Fn(u64) -> u32 + Copy,
     ) {
         let vi = v as usize;
         let w = self.bitset_words;
@@ -394,7 +423,7 @@ impl EliminationGraph {
                     }
                 }
                 self.bitset[ub + j] |= fill_mask;
-                let added = fill_mask.count_ones();
+                let added = popcount(fill_mask);
                 self.bitset_degree[u] += added;
                 pushes += added as usize;
             }
