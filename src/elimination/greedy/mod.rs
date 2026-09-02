@@ -214,6 +214,16 @@ impl FillAffected {
         self.inside[vertex >> 6] & (1u64 << (vertex & 63)) != 0
     }
 
+    fn clear_inside(&mut self, nbrs: &[u32], bitset_words: usize) {
+        if bitset_words > 0 {
+            self.inside.fill(0);
+        } else {
+            for &vertex in nbrs {
+                self.unmark_inside(vertex);
+            }
+        }
+    }
+
     /// Accumulate exact fill-score decreases caused by `fill_edges`. Returns
     /// false after clearing its scratch if `deadline` passes during the scan.
     fn collect_deltas(
@@ -231,9 +241,7 @@ impl FillAffected {
         for &(left, right) in fill_edges {
             if crate::deadline::expired(deadline) {
                 self.clear();
-                for &vertex in nbrs {
-                    self.unmark_inside(vertex);
-                }
+                self.clear_inside(nbrs, graph.bitset_words);
                 return false;
             }
             if graph.bitset_words > 0 {
@@ -268,9 +276,7 @@ impl FillAffected {
                 }
             }
         }
-        for &vertex in nbrs {
-            self.unmark_inside(vertex);
-        }
+        self.clear_inside(nbrs, graph.bitset_words);
         true
     }
 
