@@ -38,10 +38,12 @@ cbindgen --config bindings/c/cbindgen.toml --crate goatd-c \
 diff -u bindings/c/include/goatd.h /tmp/goatd.h
 ```
 
-The core crate and the bindings carry one version, so a version bump changes
-`Cargo.toml` and every manifest under `bindings/`.
+The core crate, the bindings and the citation metadata carry one version, so a
+version bump changes `Cargo.toml`, every manifest under `bindings/`, the
+`version` in `CITATION.cff` and the version in the `README.md` BibTeX entry.
 `.github/scripts/check-versions.sh` checks that, and CI runs it on every
-change.
+change. `date-released` in `CITATION.cff` is not checked; set it to the date
+of the release being tagged.
 
 Build setup, including the C++ compiler used for FlowCutter and the extra
 tools the bindings need, is documented in [building.md](building.md).
