@@ -4,7 +4,8 @@
 //! The sampling cores draw from the full set tied on the primary key.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, btree_map::Entry};
+use std::collections::{BinaryHeap, HashMap, hash_map::Entry};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::time::Instant;
 
 use super::execution::{DEADLINE_CHECK_STRIDE, ElimExit, ElimSink, ElimStop, exceeds_width_bound};
@@ -320,6 +321,31 @@ struct Bucket {
     sampling_mass: u64,
 }
 
+/// Hashes internal `u64` priority keys without the cost of general-purpose
+/// keyed hashing.
+#[derive(Clone, Default)]
+struct PriorityHasher(u64);
+
+impl Hasher for PriorityHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut hash = 0u64;
+        for &byte in bytes {
+            hash = hash.rotate_left(8) ^ u64::from(byte);
+        }
+        self.0 = hash;
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
+}
+
+type PriorityBuckets = HashMap<u64, Bucket, BuildHasherDefault<PriorityHasher>>;
+
 #[derive(Clone, Copy)]
 struct BucketPosition {
     key: u64,
@@ -339,7 +365,11 @@ impl BucketPosition {
 
 #[derive(Clone)]
 pub(super) struct BucketMap<'a> {
-    buckets: BTreeMap<u64, Bucket>,
+    buckets: PriorityBuckets,
+    /// Exact while `minimum_dirty` is false. Removing the current minimum
+    /// marks it dirty; the next read scans the live priority keys once.
+    minimum_key: Option<u64>,
+    minimum_dirty: bool,
     spare_vertices: Vec<Vec<u32>>,
     position: Vec<BucketPosition>,
     weights: &'a [u32],
@@ -349,7 +379,9 @@ pub(super) struct BucketMap<'a> {
 impl<'a> BucketMap<'a> {
     fn with_weights(weights: &'a [u32], uniform_mass: Option<u64>) -> Self {
         BucketMap {
-            buckets: BTreeMap::new(),
+            buckets: PriorityBuckets::default(),
+            minimum_key: None,
+            minimum_dirty: false,
             spare_vertices: Vec::new(),
             position: vec![BucketPosition::VACANT; weights.len()],
             weights,
@@ -360,10 +392,13 @@ impl<'a> BucketMap<'a> {
     fn insert(&mut self, v: u32, key: u64) {
         let bucket = match self.buckets.entry(key) {
             Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => entry.insert(Bucket {
-                vertices: self.spare_vertices.pop().unwrap_or_default(),
-                sampling_mass: 0,
-            }),
+            Entry::Vacant(entry) => {
+                self.minimum_key = Some(self.minimum_key.map_or(key, |minimum| minimum.min(key)));
+                entry.insert(Bucket {
+                    vertices: self.spare_vertices.pop().unwrap_or_default(),
+                    sampling_mass: 0,
+                })
+            }
         };
         let idx = bucket.vertices.len();
         bucket.vertices.push(v);
@@ -383,7 +418,11 @@ impl<'a> BucketMap<'a> {
 
     #[inline]
     fn remove_at(&mut self, v: u32, position: BucketPosition) {
-        let bucket = self.buckets.get_mut(&position.key).expect("bucket missing");
+        let mut entry = match self.buckets.entry(position.key) {
+            Entry::Occupied(entry) => entry,
+            Entry::Vacant(_) => panic!("bucket missing"),
+        };
+        let bucket = entry.get_mut();
         if self.uniform_mass.is_none() {
             bucket.sampling_mass -= sampling_mass(self.weights[v as usize]);
         }
@@ -399,8 +438,9 @@ impl<'a> BucketMap<'a> {
         bucket.vertices.pop();
         let empty = bucket.vertices.is_empty();
         if empty {
-            let bucket = self.buckets.remove(&position.key).expect("bucket missing");
+            let (_, bucket) = entry.remove_entry();
             self.spare_vertices.push(bucket.vertices);
+            self.minimum_dirty |= self.minimum_key == Some(position.key);
         }
     }
 
@@ -416,12 +456,17 @@ impl<'a> BucketMap<'a> {
         self.insert(v, new_key);
     }
 
-    fn min_bucket(&self) -> Option<(u64, &[u32], u64)> {
-        self.buckets.iter().next().map(|(key, bucket)| {
+    fn min_bucket(&mut self) -> Option<(u64, &[u32], u64)> {
+        if self.minimum_dirty {
+            self.minimum_key = self.buckets.keys().copied().min();
+            self.minimum_dirty = false;
+        }
+        self.minimum_key.map(|key| {
+            let bucket = self.buckets.get(&key).expect("minimum bucket missing");
             let mass = self.uniform_mass.map_or(bucket.sampling_mass, |mass| {
                 mass * bucket.vertices.len() as u64
             });
-            (*key, bucket.vertices.as_slice(), mass)
+            (key, bucket.vertices.as_slice(), mass)
         })
     }
 

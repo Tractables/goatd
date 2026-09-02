@@ -90,6 +90,20 @@ fn vacant_bucket_positions_do_not_reserve_a_priority_key() {
 }
 
 #[test]
+fn priority_buckets_recompute_an_emptied_minimum() {
+    let weights = [1, 1];
+    let mut buckets = super::BucketMap::with_weights(&weights, Some(super::sampling_mass(1)));
+
+    buckets.insert(0, 3);
+    buckets.insert(1, 5);
+    buckets.update(0, 7);
+    assert_eq!(buckets.min_bucket().unwrap().0, 5);
+
+    buckets.remove_vertex(1);
+    assert_eq!(buckets.min_bucket().unwrap().0, 7);
+}
+
+#[test]
 fn bucket_positions_use_less_space_than_the_optional_tuple() {
     assert!(
         std::mem::size_of::<super::BucketPosition>() < std::mem::size_of::<Option<(u64, usize)>>()
