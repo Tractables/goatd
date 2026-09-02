@@ -38,8 +38,9 @@ samples. An extra sample that reaches the soft deadline stops there; the
 remaining hard-budget interval is reserved for a trailing FlowCutter
 candidate. By default, a 4.75-second soft budget has a 9.5-second hard
 deadline. Callers that need more time to write the result can set an earlier
-hard budget independently without changing the soft schedule. The library
-remains single-threaded throughout.
+hard budget independently without changing the soft schedule. Both standard
+configurations hedge, which adds the candidates described under *The hedge*.
+The library remains single-threaded throughout.
 
 ## Preprocessing
 
@@ -86,6 +87,69 @@ score remains exact while the orders explore different elimination paths.
 These choices extend the standard greedy heuristics with shared reductions,
 incremental scoring, explicit weighted ties, incumbent-width pruning, and
 budget-aware completion.
+
+## Vertex coordinates
+
+`embedding::Embedding::compute` places the vertices by repeated lazy
+random-walk averaging: each round moves every vertex halfway toward the mean
+of its neighbours, then whitens the cloud — recentre it, rotate it onto the
+eigenvectors of its covariance with cyclic Jacobi, and rescale every axis to
+unit standard deviation. Without the whitening the averaging collapses the
+graph onto one point. With it the averaging is subspace iteration on the lazy
+random walk: the axes settle on the walk's slowest modes, they come out in
+descending order of variance, and the leading one approximates a Fiedler
+vector.
+
+Whitening pins the frame only up to a rotation, since axes with close
+eigenvalues can come back swapped or flipped, so the loop watches quantities a
+rotation leaves alone. It stops after `patience` consecutive rounds in which no
+squared eccentricity and no squared edge length changed by more than the
+tolerance (1e-4 in whitened units by default), at the round cap (1,000 by
+default), or when the caller's stop signal fires, and returns the last
+coordinates. A round costs `O(m·d + n·d²)` and is charged to the construction
+meter.
+
+The distance of a vertex from the centre of the cloud says how peripheral it
+is. `Embedding::rank_weights` turns that order into sampling weights, spread
+over the whole `u32` range: a sampled order draws a tied vertex with mass
+`u32::MAX - weight + 1`, so literal ranks would differ in mass by a few parts
+in 2^32 and draw almost uniformly.
+
+## The hedge
+
+Peripheral-first sampling weights help some graphs and hurt others.
+`PortfolioConfig::with_hedge` runs the portfolio's own candidates and the
+weighted ones instead of choosing between them, and the cost is the time the
+second set takes.
+
+The plain candidates go first: the diverse pass runs on the caller's weights
+and the seeds it always had. Then the fixed orders that read the weights run
+again on the ranking, and the diverse pass follows on the ranking and on those
+same seeds. Every ordinary restart stays plain, on the seed sequence and in
+the order a portfolio without the hedge runs, so no restart that portfolio
+would have reached goes unrun. Nothing repeats a deterministic order, which
+ignores weights. Ordering matters under a budget: where the schedule finishes,
+the second set is free, and where the budget binds, the second set costs later
+candidates rather than displacing the first. The incumbent width bound and the
+deadlines apply to every candidate of both sets.
+
+`PortfolioConfig::standard` and `standard_with_budget` hedge on a ranking in
+three dimensions. The placement runs when the first candidate that reads it
+asks for it, after the plain diverse pass, so a run that ends inside the plain
+pass never pays for it; it is charged to the construction meter and stops at
+the soft deadline. A residual too large for the expensive orders runs sampled
+min-degree, as it does without a hedge, and there is nothing there to hedge.
+`with_hedge(Hedge::Off)` runs the schedule without any of it.
+
+## Attributing a result
+
+`portfolio::decompose_traced` reports each candidate to a caller-supplied sink
+as it finishes: which candidate of the schedule it was (`portfolio::Stage`),
+the seed, the pass of a hedge, whether it produced a decomposition or stopped
+at the width bound or the deadline, and how far into the portfolio it
+finished. A candidate that produced one also says whether the portfolio would
+return it, so the winner is reported rather than inferred.
+`portfolio::decompose` is the same run with the sink discarded.
 
 ## Nested dissection and multilevel bisection
 

@@ -2,7 +2,8 @@ use std::time::Duration;
 
 use goatd::Graph;
 use goatd::portfolio::{
-    PortfolioConfig, candidates, decompose, decompose_and_refine, sampled_min_fill_candidates,
+    Hedge, Pass, PortfolioConfig, Stage, candidates, decompose, decompose_and_refine,
+    decompose_traced, sampled_min_fill_candidates,
 };
 
 fn grid(side: u32) -> Graph {
@@ -88,6 +89,41 @@ fn zero_extra_sampling_runs_still_runs_the_initial_candidates() {
             .iter()
             .all(|decomposition| decomposition.validate(&graph).is_ok())
     );
+}
+
+/// The restarts of a run, and how many candidates it ran on the hedge's
+/// ranking.
+fn restarts(graph: &Graph, config: PortfolioConfig) -> (Vec<(u64, Pass)>, usize) {
+    let weight = vec![1; graph.num_vertices() as usize];
+    let mut samples = Vec::new();
+    let mut modified = 0;
+    decompose_traced(graph, &weight, 0, config, &mut |candidate| {
+        if candidate.pass == Pass::Modified {
+            modified += 1;
+        }
+        if candidate.stage == Stage::Sample {
+            samples.push((candidate.seed, candidate.pass));
+        }
+    })
+    .expect("a decomposition");
+    (samples, modified)
+}
+
+#[test]
+fn the_default_portfolio_hedges_and_leaves_the_restarts_alone() {
+    let graph = grid(6);
+
+    let (hedged, hedged_twice) = restarts(&graph, PortfolioConfig::standard());
+    let (plain, plain_twice) = restarts(&graph, PortfolioConfig::standard().with_hedge(Hedge::Off));
+
+    assert!(hedged_twice > 0, "the default runs a modified pass");
+    assert_eq!(plain_twice, 0, "Hedge::Off runs each candidate once");
+    assert_eq!(hedged.len(), plain.len(), "the restart count is the same");
+    for (index, (left, right)) in hedged.iter().zip(&plain).enumerate() {
+        assert_eq!(left.0, right.0, "restart {index} runs another seed");
+        assert_eq!(left.1, Pass::Plain, "restart {index} is not plain");
+        assert_eq!(right.1, Pass::Only, "restart {index} of an unhedged run");
+    }
 }
 
 #[test]

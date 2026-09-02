@@ -2,17 +2,7 @@ use crate::TreeDecomposition;
 use crate::decomposition::SubsumedBagCompaction;
 use crate::elimination::engine::OrderRun;
 
-/// What one portfolio candidate's elimination left behind.
-pub(super) enum CandidateOutcome {
-    /// A decomposition, recorded and folded into the best width so far.
-    Produced,
-    /// A bag passed the width bound, so nothing usable came back. That bound
-    /// comes from a candidate that already produced one, so a winner exists.
-    WidthAborted,
-    /// The hard deadline was reached, with or without a completed residual.
-    /// Later candidates should not start.
-    DeadlineReached,
-}
+use super::trace::CandidateOutcome;
 
 /// Produced decompositions and the incumbent width handed to later
 /// elimination candidates.
@@ -53,32 +43,43 @@ impl CandidateSet {
         self.decompositions.is_empty()
     }
 
-    pub(super) fn push(&mut self, decomposition: TreeDecomposition) {
-        let width = decomposition.treewidth();
+    /// Record a decomposition and report what it is worth. `best` says whether
+    /// the set would now return this one: in best-only mode that is whether it
+    /// was retained, and in all-candidates mode whether its quality key is the
+    /// smallest so far, which is what the final sort picks.
+    pub(super) fn push(&mut self, decomposition: TreeDecomposition) -> CandidateOutcome {
+        let (width, total_bag_size) = decomposition.quality_key();
         self.best_width = Some(self.best_width.map_or(width, |best| best.min(width)));
+        let mut best = false;
         if !self.retain_only_best {
-            self.decompositions.push(decomposition);
-        } else {
-            if self.best_quality_key.is_some_and(|best| width > best.0) {
-                return;
+            best = self
+                .best_quality_key
+                .is_none_or(|incumbent| (width, total_bag_size) < incumbent);
+            if best {
+                self.best_quality_key = Some((width, total_bag_size));
             }
+            self.decompositions.push(decomposition);
+        } else if self.best_quality_key.is_none_or(|best| width <= best.0) {
             let compaction = decomposition.subsumed_bag_compaction();
             let quality_key = (width, compaction.total_bag_size());
             if self.best_quality_key.is_none_or(|best| quality_key < best) {
+                best = true;
                 self.decompositions.clear();
                 self.decompositions.push(decomposition);
                 self.best_quality_key = Some(quality_key);
                 self.best_compaction = Some(compaction);
             }
         }
+        CandidateOutcome::Produced {
+            width,
+            total_bag_size,
+            best,
+        }
     }
 
     pub(super) fn record_elimination(&mut self, run: OrderRun) -> CandidateOutcome {
         match run {
-            OrderRun::Completed(decomposition) => {
-                self.push(decomposition);
-                CandidateOutcome::Produced
-            }
+            OrderRun::Completed(decomposition) => self.push(decomposition),
             OrderRun::CompletedAtDeadline(decomposition) => {
                 self.push(decomposition);
                 CandidateOutcome::DeadlineReached

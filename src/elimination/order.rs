@@ -38,7 +38,7 @@ pub enum Order<'a> {
 
 impl<'a> Order<'a> {
     /// The sampling weights carried by this order, if any.
-    pub(super) fn tie_weights(self) -> Option<&'a [u32]> {
+    pub(crate) fn tie_weights(self) -> Option<&'a [u32]> {
         match self {
             Order::MinFillSampled { weights }
             | Order::MinDegreeSampled { weights }
