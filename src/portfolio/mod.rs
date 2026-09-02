@@ -26,7 +26,7 @@ use crate::{Error, Graph, TreeDecomposition};
 use candidates::CandidateSet;
 use config::MIN_FLOWCUTTER_CANDIDATE_MS;
 
-pub use config::{Hedge, PortfolioConfig};
+pub use config::{Hedge, MAX_DIVERSE_SAMPLING_RUNS, PortfolioConfig};
 pub use trace::{CandidateOutcome, CandidateTrace, Pass, Stage};
 
 /// Exit early if FlowCutter hasn't improved treewidth for this long. Caps
@@ -231,7 +231,7 @@ fn extra_sample(schedule: Schedule<'_>, index: u64) -> Option<Sample<'_>> {
         );
     }
 
-    debug_assert!(schedule.diverse_runs <= config::DIVERSE_SAMPLING_RUNS);
+    debug_assert!(schedule.diverse_runs <= config::MAX_DIVERSE_SAMPLING_RUNS);
     // The first diverse pass is the one a portfolio without the hedge runs:
     // the caller's weights and the same seeds.
     if index < schedule.diverse_runs {

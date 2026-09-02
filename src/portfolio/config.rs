@@ -13,7 +13,10 @@ const EXTENDED_SAMPLING_RUNS: u64 = 1_000;
 pub(super) const DIVERSE_INITIAL_COEFFICIENTS: [i8; 10] = [1, -1, -2, -3, -4, -5, -8, -7, -16, -32];
 pub(super) const DIVERSE_REPLAY_COEFFICIENTS: [i8; 4] = [-3, -5, -8, -16];
 const DIVERSE_REPLAY_SEEDS: u64 = 9;
-pub(super) const DIVERSE_SAMPLING_RUNS: u64 = DIVERSE_INITIAL_COEFFICIENTS.len() as u64
+/// The most diverse-score elimination orders the sampler has: one for each
+/// initial degree coefficient, then each replay coefficient across its seeds.
+/// [`PortfolioConfig::with_diverse_sampling_runs`] rejects anything above it.
+pub const MAX_DIVERSE_SAMPLING_RUNS: u64 = DIVERSE_INITIAL_COEFFICIENTS.len() as u64
     + DIVERSE_REPLAY_COEFFICIENTS.len() as u64 * DIVERSE_REPLAY_SEEDS;
 // A 4.75 s soft budget reaches the two-stage hard deadline at 9.5 s, leaving
 // output headroom under a ten-second process limit.
@@ -131,6 +134,20 @@ impl PortfolioConfig {
         self
     }
 
+    /// Set how many diverse-score elimination orders run before the ordinary
+    /// sampled min-fill seeds. They vary the elimination score rather than the
+    /// tie-breaking seed, so they reach orders repeated min-fill sampling does
+    /// not. Large residuals run sampled min-degree instead and ignore this.
+    ///
+    /// Capped at [`MAX_DIVERSE_SAMPLING_RUNS`]; a larger value is rejected when
+    /// the portfolio runs. [`PortfolioConfig::standard_with_budget`] sets this
+    /// along with a larger ordinary sample cap and a trailing FlowCutter
+    /// candidate; set it here to take the diverse orders on their own.
+    pub fn with_diverse_sampling_runs(mut self, runs: u64) -> Self {
+        self.diverse_sampling_runs = runs;
+        self
+    }
+
     /// Defaults for the standard candidate set: no deadline, up to 100 extra
     /// seeds, no FlowCutter candidate, and the eccentricity hedge.
     pub fn standard() -> Self {
@@ -158,7 +175,11 @@ impl PortfolioConfig {
             soft_budget: Some(budget),
             hard_budget: None,
             sampling_runs,
-            diverse_sampling_runs: if extended { DIVERSE_SAMPLING_RUNS } else { 0 },
+            diverse_sampling_runs: if extended {
+                MAX_DIVERSE_SAMPLING_RUNS
+            } else {
+                0
+            },
             flowcutter_budget: extended.then_some(budget),
             hedge: DEFAULT_HEDGE,
         }
@@ -195,6 +216,11 @@ pub(super) fn validate(config: PortfolioConfig) -> Result<(), Error> {
         return Err(Error::InvalidInput(
             "portfolio FlowCutter budget does not fit in milliseconds".into(),
         ));
+    }
+    if config.diverse_sampling_runs > MAX_DIVERSE_SAMPLING_RUNS {
+        return Err(Error::InvalidInput(format!(
+            "portfolio diverse sampling runs must be at most {MAX_DIVERSE_SAMPLING_RUNS}"
+        )));
     }
     if let Hedge::EccentricityPasses { dim, rounds } = config.hedge {
         if dim == 0 || dim > MAX_DIM {
