@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use super::PortfolioConfig;
 use super::candidates::CandidateSet;
+use super::config::{MAX_DIVERSE_SAMPLING_RUNS, validate};
 use super::{EliminationPhase, elimination_stop, extra_sample, sample_seed};
 use crate::elimination::Order;
 use crate::{Graph, TreeDecomposition};
@@ -65,6 +66,32 @@ fn a_ten_second_outer_window_with_output_headroom_raises_the_sampling_cap() {
     assert_eq!(config.sampling_runs, 1_000);
     assert_eq!(config.diverse_sampling_runs, 46);
     assert_eq!(config.flowcutter_budget, Some(budget));
+}
+
+#[test]
+fn diverse_orders_can_be_taken_without_the_flowcutter_slot() {
+    let budget = Duration::from_millis(4_750);
+    let config = PortfolioConfig::standard()
+        .with_soft_budget(budget)
+        .with_sampling_runs(1_000)
+        .with_diverse_sampling_runs(MAX_DIVERSE_SAMPLING_RUNS);
+
+    assert_eq!(config.sampling_runs, 1_000);
+    assert_eq!(config.diverse_sampling_runs, MAX_DIVERSE_SAMPLING_RUNS);
+    assert_eq!(config.flowcutter_budget, None);
+    assert!(validate(config).is_ok());
+}
+
+#[test]
+fn more_diverse_orders_than_the_sampler_has_is_rejected() {
+    let config =
+        PortfolioConfig::standard().with_diverse_sampling_runs(MAX_DIVERSE_SAMPLING_RUNS + 1);
+
+    let message = validate(config).unwrap_err().to_string();
+    assert!(
+        message.contains("diverse sampling runs"),
+        "unexpected message: {message}"
+    );
 }
 
 #[test]
