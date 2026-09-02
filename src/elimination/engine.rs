@@ -7,8 +7,8 @@ use super::build_td::build_td_from_ranked_bags;
 use super::execution::{self, ElimExit, ElimSteps};
 use super::graph::EliminationGraph;
 use super::greedy::{
-    self, eliminate_min_degree, eliminate_min_fill, eliminate_sampled_min_degree,
-    eliminate_sampled_min_fill,
+    self, eliminate_min_degree, eliminate_min_fill, eliminate_sampled_fill_degree,
+    eliminate_sampled_min_degree, eliminate_sampled_min_fill,
 };
 use super::nested_dissection::eliminate_nested_dissection;
 use super::preprocess::{Reduced, preprocess};
@@ -200,6 +200,21 @@ fn run_elimination_raw(
                 soft_deadline: None,
                 ..spec.stop
             },
+        ),
+        Order::FillDegreeSampled {
+            weights,
+            degree_coefficient,
+        } => eliminate_sampled_fill_degree(
+            &mut g,
+            weights,
+            spec.seed,
+            steps.sink(),
+            ElimStop {
+                soft_deadline: None,
+                ..spec.stop
+            },
+            initial_fill,
+            degree_coefficient,
         ),
         Order::NestedDissection => {
             eliminate_nested_dissection(&mut g, salt, spec.seed, steps.sink(), spec.stop)

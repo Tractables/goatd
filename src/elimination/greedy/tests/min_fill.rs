@@ -1,7 +1,9 @@
 use crate::elimination::execution::{ElimSink, ElimStop};
 use crate::elimination::graph::EliminationGraph;
 use crate::elimination::greedy::min_fill::*;
-use crate::elimination::greedy::sampling::eliminate_sampled_min_fill;
+use crate::elimination::greedy::sampling::{
+    eliminate_sampled_fill_degree, eliminate_sampled_min_fill,
+};
 
 #[test]
 fn path_graph_eliminates_from_endpoints() {
@@ -92,5 +94,61 @@ fn sampled_min_fill_rechecks_vertices_two_hops_from_an_elimination() {
             "step {step} selected vertex {selected} with fill {selected_fill}, minimum {minimum_fill}",
         );
         reference.eliminate(selected);
+    }
+}
+
+fn assert_sampled_fill_degree_minimizes_score(degree_coefficient: i8) {
+    let edges = [
+        (0, 1),
+        (0, 2),
+        (0, 3),
+        (1, 2),
+        (1, 3),
+        (2, 3),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+    ];
+    let mut graph = EliminationGraph::from_edges(7, &edges);
+    let weights = vec![1; 7];
+    let mut bags = Vec::new();
+    let mut rank = Vec::new();
+    let sink = ElimSink::new(&mut bags, &mut rank, 0);
+
+    eliminate_sampled_fill_degree(
+        &mut graph,
+        &weights,
+        0,
+        sink,
+        ElimStop::default(),
+        None,
+        degree_coefficient,
+    );
+
+    let mut reference = EliminationGraph::from_edges(7, &edges);
+    for (step, bag) in bags.iter().enumerate() {
+        let selected = bag[0];
+        let selected_score = reference.fill_count_of_bs(selected) as i64
+            + i64::from(degree_coefficient) * reference.degree(selected) as i64;
+        let minimum_score = (0..7)
+            .filter(|&vertex| reference.active[vertex])
+            .map(|vertex| {
+                reference.fill_count_of_bs(vertex as u32) as i64
+                    + i64::from(degree_coefficient) * reference.degree(vertex as u32) as i64
+            })
+            .min()
+            .unwrap();
+        assert_eq!(
+            selected_score, minimum_score,
+            "step {step} selected vertex {selected} with score {selected_score}, minimum {minimum_score}",
+        );
+        reference.eliminate(selected);
+    }
+}
+
+#[test]
+fn sampled_fill_degree_selects_a_minimum_score() {
+    for degree_coefficient in [1, -1, -2, -16] {
+        assert_sampled_fill_degree_minimizes_score(degree_coefficient);
     }
 }

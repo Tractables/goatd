@@ -9,6 +9,11 @@ pub(super) const MAX_SAMPLING_RUNS: u64 = 100;
 
 /// Larger budgeted runs keep exploring after the short-run sample cap.
 const EXTENDED_SAMPLING_RUNS: u64 = 1_000;
+pub(super) const DIVERSE_INITIAL_COEFFICIENTS: [i8; 10] = [1, -1, -2, -3, -4, -5, -8, -7, -16, -32];
+pub(super) const DIVERSE_REPLAY_COEFFICIENTS: [i8; 4] = [-3, -5, -8, -16];
+const DIVERSE_REPLAY_SEEDS: u64 = 9;
+pub(super) const DIVERSE_SAMPLING_RUNS: u64 = DIVERSE_INITIAL_COEFFICIENTS.len() as u64
+    + DIVERSE_REPLAY_COEFFICIENTS.len() as u64 * DIVERSE_REPLAY_SEEDS;
 // A 4.75 s soft budget reaches the two-stage hard deadline at 9.5 s, leaving
 // output headroom under a ten-second process limit.
 const EXTENDED_SAMPLING_MIN_SOFT_BUDGET: Duration = Duration::from_millis(4_750);
@@ -26,6 +31,7 @@ pub struct PortfolioConfig {
     pub(super) soft_budget: Option<Duration>,
     pub(super) hard_budget: Option<Duration>,
     pub(super) sampling_runs: u64,
+    pub(super) diverse_sampling_runs: u64,
     pub(super) flowcutter_budget: Option<Duration>,
 }
 
@@ -37,6 +43,7 @@ impl PortfolioConfig {
             soft_budget: Some(Duration::from_millis(SAMPLED_MIN_FILL_TIMEOUT_MS)),
             hard_budget: None,
             sampling_runs: MAX_SAMPLING_RUNS,
+            diverse_sampling_runs: 0,
             flowcutter_budget: None,
         }
     }
@@ -65,7 +72,8 @@ impl PortfolioConfig {
         self
     }
 
-    /// Set the maximum number of extra sampled elimination orders.
+    /// Set the maximum number of ordinary sampled min-fill orders. Large
+    /// residuals use sampled min-degree in their place.
     pub fn with_sampling_runs(mut self, runs: u64) -> Self {
         self.sampling_runs = runs;
         self
@@ -78,6 +86,7 @@ impl PortfolioConfig {
             soft_budget: None,
             hard_budget: None,
             sampling_runs: MAX_SAMPLING_RUNS,
+            diverse_sampling_runs: 0,
             flowcutter_budget: None,
         }
     }
@@ -96,6 +105,7 @@ impl PortfolioConfig {
             soft_budget: Some(budget),
             hard_budget: None,
             sampling_runs,
+            diverse_sampling_runs: if extended { DIVERSE_SAMPLING_RUNS } else { 0 },
             flowcutter_budget: extended.then_some(budget),
         }
     }

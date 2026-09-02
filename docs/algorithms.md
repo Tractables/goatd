@@ -17,10 +17,11 @@ across five elimination runs:
 
 The inexpensive order runs first so a valid candidate exists early. Later
 runs receive the best width already found and stop when a bag is too wide to
-win. With time left, the portfolio tries further sampled min-fill seeds; on a
-very large residual it uses sampled min-degree and skips the expensive fixed
-orders instead. Initial fill counts are computed only when sampled min-fill
-first runs, then reused across its seeds. The best-only path contracts bags
+win. With time left, the portfolio tries sampled fill/degree scores followed
+by further sampled min-fill seeds; on a very large residual it uses sampled
+min-degree and skips the expensive fixed orders instead. Initial fill counts
+are computed only when a fill-based order first runs, then reused across the
+remaining scores and seeds. The best-only path contracts bags
 contained in an adjacent bag in each candidate that can still win, then
 minimizes `(treewidth, total bag size)`. `sampled_min_fill_candidates` exposes
 the smaller variant used by callers that want to apply their own ranking.
@@ -76,10 +77,11 @@ use a stamped marker array. Min-degree uses the same elimination and bag
 construction path with a cheaper degree key.
 
 The deterministic forms use a seeded per-vertex salt after the primary keys.
-The sampled forms instead draw from the complete minimum-key tie set. A caller
-may supply one weight per vertex; uniform weights give uniform sampling. This
-keeps the usual min-fill or min-degree criterion while allowing the portfolio
-to explore materially different orders.
+The sampled forms instead draw from the complete minimum-key tie set. Besides
+fill and degree, a sampled order can minimize
+`fill + degree_coefficient * degree` for a signed coefficient. A caller may
+supply one weight per vertex; uniform weights give uniform sampling. Each
+score remains exact while the orders explore different elimination paths.
 
 These choices extend the standard greedy heuristics with shared reductions,
 incremental scoring, explicit weighted ties, incumbent-width pruning, and

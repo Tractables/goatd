@@ -41,6 +41,52 @@ fn is_min_degree_variant(order: Order<'_>) -> bool {
     matches!(order, Order::MinDegree | Order::MinDegreeSampled { .. })
 }
 
+fn sample_seed(base_seed: u64, sample_index: u64) -> u64 {
+    base_seed.wrapping_add(SAMPLE_SEED_OFFSET + sample_index.wrapping_mul(SAMPLE_SEED_STRIDE))
+}
+
+fn extra_sample<'a>(
+    base_seed: u64,
+    large_residual: bool,
+    ordinary_runs: u64,
+    diverse_runs: u64,
+    index: u64,
+    weights: &'a [u32],
+) -> Option<(Order<'a>, u64)> {
+    if large_residual {
+        return (index < ordinary_runs).then_some((
+            Order::MinDegreeSampled { weights },
+            sample_seed(base_seed, index),
+        ));
+    }
+
+    debug_assert!(diverse_runs <= config::DIVERSE_SAMPLING_RUNS);
+    if index < diverse_runs {
+        let initial_runs = config::DIVERSE_INITIAL_COEFFICIENTS.len() as u64;
+        let (degree_coefficient, score_seed_index) = if index < initial_runs {
+            (config::DIVERSE_INITIAL_COEFFICIENTS[index as usize], 0)
+        } else {
+            let replay_index = index - initial_runs;
+            let replay_runs = config::DIVERSE_REPLAY_COEFFICIENTS.len() as u64;
+            (
+                config::DIVERSE_REPLAY_COEFFICIENTS[(replay_index % replay_runs) as usize],
+                1 + replay_index / replay_runs,
+            )
+        };
+        let order = Order::FillDegreeSampled {
+            weights,
+            degree_coefficient,
+        };
+        return Some((order, sample_seed(base_seed, score_seed_index)));
+    }
+
+    let ordinary_index = index - diverse_runs;
+    (ordinary_index < ordinary_runs).then_some((
+        Order::MinFillSampled { weights },
+        sample_seed(base_seed, ordinary_index),
+    ))
+}
+
 fn flowcutter_candidate(
     graph: &Graph,
     configured_budget: Duration,
@@ -212,32 +258,40 @@ fn run_portfolio(
     // base portfolio returns in tens of ms. Falls back to sampled min-degree on
     // large residuals, matching the main loop's skip rule. A started extra
     // sample stops at the soft deadline so it cannot consume the trailing
-    // FlowCutter and output interval. The phase also stops at `sampling_runs`
-    // samples regardless.
-    let sample_order = if large_residual {
-        Order::MinDegreeSampled { weights }
-    } else {
-        Order::MinFillSampled { weights }
-    };
+    // FlowCutter and output interval. On extended small/medium runs, diverse
+    // fill-degree scores precede the complete ordinary min-fill seed sequence.
     let max_samples = config.sampling_runs;
+    let diverse_samples = if large_residual {
+        0
+    } else {
+        config.diverse_sampling_runs
+    };
+    let total_samples = max_samples.saturating_add(diverse_samples);
     let mut sample_index: u64 = 0;
     // Normally the soft deadline fires first; the portfolio hard-deadline
     // check also prevents another sample after an initial candidate used the
     // complete two-stage window.
-    while sample_index < max_samples
+    while sample_index < total_samples
         && !hard_deadline_tripped
         && !expired(soft_deadline)
         && !expired(hard_deadline)
     {
-        let sample_seed =
-            seed.wrapping_add(SAMPLE_SEED_OFFSET + sample_index.wrapping_mul(SAMPLE_SEED_STRIDE));
+        let (sample_order, candidate_seed) = extra_sample(
+            seed,
+            large_residual,
+            max_samples,
+            diverse_samples,
+            sample_index,
+            weights,
+        )
+        .expect("sample index is below the configured total");
         // Extra sampling only runs after the fixed candidates, so at least one prior
         // candidate won, so deadline completion is unnecessary here.
         let run = engine::run_order_prebuilt(
             &mut prebuilt,
             engine::RunSpec {
                 order: sample_order,
-                seed: sample_seed,
+                seed: candidate_seed,
                 stop: elimination_stop(
                     EliminationPhase::ExtraSampling,
                     soft_deadline,
