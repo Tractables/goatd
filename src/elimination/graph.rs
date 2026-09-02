@@ -50,6 +50,9 @@ pub(super) struct EliminationGraph {
     /// clique-residual detection: the residual is complete iff
     /// `num_edges == num_active*(num_active-1)/2`.
     pub(super) num_edges: usize,
+    /// Live degree in bitset mode. Adjacency rows stop being maintained after
+    /// promotion, while this cache is updated with each bitset mutation.
+    bitset_degree: Vec<u32>,
     /// Stamp-marker scratch for deduping fill-edge additions in
     /// O(Σdeg + k²) instead of O(k²·deg_avg). u16 halves memory footprint vs
     /// u32; the stamp wraps and clears the marker array when it does.
@@ -70,6 +73,7 @@ impl EliminationGraph {
             active: vec![true; n],
             num_active: n,
             num_edges: 0,
+            bitset_degree: Vec::new(),
             elim_marker: vec![0u16; n],
             elim_stamp: 0,
             bitset: Vec::new(),
@@ -95,6 +99,7 @@ impl EliminationGraph {
             let w = n.div_ceil(64);
             g.bitset = vec![0u64; n * w];
             g.bitset_words = w;
+            g.bitset_degree = g.adj.iter().map(|row| row.len() as u32).collect();
             for v in 0..n {
                 for &u in g.adj[v].iter() {
                     g.bitset[v * w + u as usize / 64] |= 1u64 << (u as usize % 64);
@@ -133,6 +138,7 @@ impl EliminationGraph {
         }
         let w = n.div_ceil(64);
         let mut bs = vec![0u64; n * w];
+        self.bitset_degree = self.adj.iter().map(|row| row.len() as u32).collect();
         for v in 0..n {
             if !self.active[v] {
                 continue;
@@ -154,6 +160,7 @@ impl EliminationGraph {
             active: self.active.clone(),
             num_active: self.num_active,
             num_edges: self.num_edges,
+            bitset_degree: self.bitset_degree.clone(),
             elim_marker: self.elim_marker.clone(),
             elim_stamp: self.elim_stamp,
             bitset: self.bitset.clone(),
@@ -177,6 +184,8 @@ impl EliminationGraph {
         }
         self.bitset[vi * w + word_u] |= bit_u;
         self.bitset[ui * w + vi / 64] |= 1u64 << (vi % 64);
+        self.bitset_degree[ui] += 1;
+        self.bitset_degree[vi] += 1;
         self.num_edges += 1;
         true
     }
@@ -187,13 +196,7 @@ impl EliminationGraph {
 
     pub(super) fn degree(&self, v: u32) -> usize {
         if self.bitset_words > 0 {
-            let vi = v as usize;
-            let w = self.bitset_words;
-            let vb = vi * w;
-            self.bitset[vb..vb + w]
-                .iter()
-                .map(|x| x.count_ones() as usize)
-                .sum()
+            self.bitset_degree[v as usize] as usize
         } else {
             self.adj[v as usize].len()
         }
@@ -355,14 +358,18 @@ impl EliminationGraph {
                     }
                 }
                 self.bitset[ub + j] |= fill_mask;
-                pushes += fill_mask.count_ones() as usize;
+                let added = fill_mask.count_ones();
+                self.bitset_degree[u] += added;
+                pushes += added as usize;
             }
             self.bitset[ub + vi / 64] &= !(1u64 << (vi % 64));
+            self.bitset_degree[u] -= 1;
         }
 
         for j in 0..w {
             self.bitset[vb + j] = 0;
         }
+        self.bitset_degree[vi] = 0;
         if self.active[vi] {
             self.active[vi] = false;
             self.num_active -= 1;
@@ -450,11 +457,13 @@ impl EliminationGraph {
             let w = self.bitset_words;
             for &u in nbrs {
                 self.bitset[u as usize * w + vi / 64] &= !(1u64 << (vi % 64));
+                self.bitset_degree[u as usize] -= 1;
             }
             let vb = vi * w;
             for j in 0..w {
                 self.bitset[vb + j] = 0;
             }
+            self.bitset_degree[vi] = 0;
         } else {
             for &u in nbrs {
                 let row = &mut self.adj[u as usize];
@@ -552,7 +561,7 @@ impl EliminationGraph {
         let w = self.bitset_words;
         let vb = vi * w;
         let vbs = &self.bitset[vb..vb + w];
-        let k: u64 = vbs.iter().map(|x| x.count_ones() as u64).sum();
+        let k = self.bitset_degree[vi] as u64;
         if k < 2 {
             return 0;
         }
