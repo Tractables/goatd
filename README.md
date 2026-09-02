@@ -94,10 +94,10 @@ seconds on one CPU.
 | Arboretum heuristic | 5,549 (59.0%) | 44 (0.5%) | 178 (1.9%) | 1,189 (12.6%) |
 
 Every decomposition is checked by the same validator. The default selection
-omits tree components and graphs where pinned NetworkX min-degree returns a
-validated width below 30. “Nontrivial” means a validated multi-bag
-decomposition narrower than `|V| - 1`. “Exact best” is the smallest width
-observed among the displayed solvers, not a proven optimum.
+omits graphs where pinned NetworkX min-degree returns a validated width below
+30. “Nontrivial” means a validated decomposition narrower than `|V| - 1`.
+“Exact best” is the smallest width observed among the displayed solvers, not a
+proven optimum.
 
 ## Building and contributing
 
