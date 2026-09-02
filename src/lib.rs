@@ -3,7 +3,9 @@
 //! A [`Graph`] goes in and a [`TreeDecomposition`] comes out.
 //!
 //! [`elimination`] provides min-fill, min-degree, and nested-dissection orders.
-//! [`flowcutter`] provides the vendored FlowCutter decomposer and a Rust
+//! [`embedding`] places the vertices in space and ranks them by how peripheral
+//! they are, which is one source of the sampling weights those orders break
+//! ties with. [`flowcutter`] provides the vendored FlowCutter decomposer and a Rust
 //! separator search. [`portfolio`] combines constructions, and
 //! [`decomposition`] contains the result type and its separator-based
 //! refinement. [`partition`] exposes
@@ -34,6 +36,7 @@
 mod deadline;
 pub mod decomposition;
 pub mod elimination;
+pub mod embedding;
 mod error;
 pub mod flowcutter;
 mod graph;
