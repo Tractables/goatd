@@ -719,32 +719,9 @@ impl EliminationGraph {
         // Hardware popcount makes dense scans win sooner. Keep the portable
         // path's earlier break-even for targets where each word costs more.
         let sparse_threshold = if self.hardware_popcount { w } else { 2 * w };
-        if k < sparse_threshold as u64 {
-            let mut nbrs: [u32; 256] = [0; 256];
-            let klen = k as usize;
-            if klen <= nbrs.len() {
-                let mut idx = 0;
-                for (j, &v_word) in vbs.iter().enumerate() {
-                    let mut word = v_word;
-                    while word != 0 {
-                        let lsb = word.trailing_zeros() as usize;
-                        nbrs[idx] = (j * 64 + lsb) as u32;
-                        idx += 1;
-                        word &= word - 1;
-                    }
-                }
-                let mut edges = 0u64;
-                for i in 0..klen {
-                    let u = nbrs[i] as usize;
-                    let ub = u * w;
-                    for &other in &nbrs[i + 1..klen] {
-                        let x = other as usize;
-                        let bit = (self.bitset[ub + (x >> 6)] >> (x & 63)) & 1;
-                        edges += bit;
-                    }
-                }
-                return total_pairs - edges;
-            }
+        let klen = k as usize;
+        if k < sparse_threshold as u64 && klen <= 256 {
+            return self.fill_count_of_bs_sparse(vbs, klen, w, total_pairs);
         }
 
         // Dense fallback: O(k · w).
@@ -759,6 +736,32 @@ impl EliminationGraph {
                 word &= word - 1;
                 edges += popcount(ubs[j] & word);
                 edges += intersection_popcount_by(&ubs[j + 1..], &vbs[j + 1..], popcount);
+            }
+        }
+        total_pairs - edges
+    }
+
+    #[inline(never)]
+    fn fill_count_of_bs_sparse(&self, vbs: &[u64], klen: usize, w: usize, total_pairs: u64) -> u64 {
+        let mut nbrs = [0u32; 256];
+        let mut idx = 0;
+        for (j, &v_word) in vbs.iter().enumerate() {
+            let mut word = v_word;
+            while word != 0 {
+                let lsb = word.trailing_zeros() as usize;
+                nbrs[idx] = (j * 64 + lsb) as u32;
+                idx += 1;
+                word &= word - 1;
+            }
+        }
+        let mut edges = 0u64;
+        for i in 0..klen {
+            let u = nbrs[i] as usize;
+            let ub = u * w;
+            for &other in &nbrs[i + 1..klen] {
+                let x = other as usize;
+                let bit = (self.bitset[ub + (x >> 6)] >> (x & 63)) & 1;
+                edges += bit;
             }
         }
         total_pairs - edges
