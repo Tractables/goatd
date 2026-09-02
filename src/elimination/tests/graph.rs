@@ -118,6 +118,10 @@ fn dense_fill_count_handles_a_partial_final_word() {
     let graph = EliminationGraph::from_edges(300, &edges);
     assert_eq!(graph.bitset_words, 5);
     assert_eq!(graph.fill_count_of_bs(0), 8_256);
+    assert_eq!(
+        graph.fill_count_of_bs(0),
+        graph.fill_count_of_bs_portable(0)
+    );
 }
 
 #[test]

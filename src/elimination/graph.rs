@@ -14,8 +14,41 @@
 /// At n = 16384: 16384 * 256 words * 8 bytes = 32 MB per graph.
 const BITSET_THRESH: usize = 16384;
 
-#[inline(always)]
+fn hardware_popcount_available() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::arch::is_x86_feature_detected!("popcnt")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+#[cfg(test)]
 pub(super) fn intersection_popcount(left: &[u64], right: &[u64]) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    if hardware_popcount_available() {
+        // SAFETY: the runtime check above establishes the target feature.
+        return unsafe { intersection_popcount_popcnt(left, right) };
+    }
+    intersection_popcount_by(left, right, |word| word.count_ones() as u64)
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[target_feature(enable = "popcnt")]
+unsafe fn intersection_popcount_popcnt(left: &[u64], right: &[u64]) -> u64 {
+    intersection_popcount_by(left, right, |word| {
+        std::arch::x86_64::_popcnt64(word as i64) as u64
+    })
+}
+
+#[inline(always)]
+fn intersection_popcount_by(
+    left: &[u64],
+    right: &[u64],
+    popcount: impl Fn(u64) -> u64 + Copy,
+) -> u64 {
     debug_assert_eq!(left.len(), right.len());
 
     let mut count_0 = 0u64;
@@ -25,15 +58,15 @@ pub(super) fn intersection_popcount(left: &[u64], right: &[u64]) -> u64 {
     let (left_chunks, left_tail) = left.as_chunks::<4>();
     let (right_chunks, right_tail) = right.as_chunks::<4>();
     for (left, right) in left_chunks.iter().zip(right_chunks) {
-        count_0 += (left[0] & right[0]).count_ones() as u64;
-        count_1 += (left[1] & right[1]).count_ones() as u64;
-        count_2 += (left[2] & right[2]).count_ones() as u64;
-        count_3 += (left[3] & right[3]).count_ones() as u64;
+        count_0 += popcount(left[0] & right[0]);
+        count_1 += popcount(left[1] & right[1]);
+        count_2 += popcount(left[2] & right[2]);
+        count_3 += popcount(left[3] & right[3]);
     }
     let tail = left_tail
         .iter()
         .zip(right_tail)
-        .map(|(&left, &right)| (left & right).count_ones() as u64)
+        .map(|(&left, &right)| popcount(left & right))
         .sum::<u64>();
 
     count_0 + count_1 + count_2 + count_3 + tail
@@ -64,6 +97,7 @@ pub(super) struct EliminationGraph {
     pub(super) bitset: Vec<u64>,
     /// Number of u64 words per vertex in `bitset`. 0 iff bitset is disabled.
     pub(super) bitset_words: usize,
+    hardware_popcount: bool,
 }
 
 impl EliminationGraph {
@@ -78,6 +112,7 @@ impl EliminationGraph {
             elim_stamp: 0,
             bitset: Vec::new(),
             bitset_words: 0,
+            hardware_popcount: hardware_popcount_available(),
         }
     }
 
@@ -165,6 +200,7 @@ impl EliminationGraph {
             elim_stamp: self.elim_stamp,
             bitset: self.bitset.clone(),
             bitset_words: self.bitset_words,
+            hardware_popcount: self.hardware_popcount,
         }
     }
 
@@ -557,6 +593,27 @@ impl EliminationGraph {
     /// summed and halved gives edges within N(v). O(k · words) vs
     /// O(k · avg_deg) for the marker path.
     pub(super) fn fill_count_of_bs(&self, v: u32) -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        if self.hardware_popcount {
+            // SAFETY: the flag is set only after runtime feature detection.
+            return unsafe { self.fill_count_of_bs_popcnt(v) };
+        }
+        self.fill_count_of_bs_by(v, |word| word.count_ones() as u64)
+    }
+
+    #[cfg(test)]
+    pub(super) fn fill_count_of_bs_portable(&self, v: u32) -> u64 {
+        self.fill_count_of_bs_by(v, |word| word.count_ones() as u64)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "popcnt")]
+    unsafe fn fill_count_of_bs_popcnt(&self, v: u32) -> u64 {
+        self.fill_count_of_bs_by(v, |word| std::arch::x86_64::_popcnt64(word as i64) as u64)
+    }
+
+    #[inline(always)]
+    fn fill_count_of_bs_by(&self, v: u32, popcount: impl Fn(u64) -> u64 + Copy) -> u64 {
         let vi = v as usize;
         let w = self.bitset_words;
         let vb = vi * w;
@@ -607,8 +664,8 @@ impl EliminationGraph {
                 let ub = u * w;
                 let ubs = &self.bitset[ub..ub + w];
                 let higher_bits = if lsb == 63 { 0 } else { u64::MAX << (lsb + 1) };
-                edges += (ubs[j] & vbs[j] & higher_bits).count_ones() as u64;
-                edges += intersection_popcount(&ubs[j + 1..], &vbs[j + 1..]);
+                edges += popcount(ubs[j] & vbs[j] & higher_bits);
+                edges += intersection_popcount_by(&ubs[j + 1..], &vbs[j + 1..], popcount);
                 word &= word - 1;
             }
         }
