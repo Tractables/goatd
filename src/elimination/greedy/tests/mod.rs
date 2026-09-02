@@ -62,3 +62,23 @@ fn priority_buckets_track_their_weighted_sampling_mass() {
     assert_eq!(vertices, &[2]);
     assert_eq!(total_mass, super::sampling_mass(weights[2]));
 }
+
+#[test]
+fn affected_membership_uses_one_word_per_vertex_block() {
+    let affected = super::FillAffected::new(130);
+    assert_eq!(affected.inside.len(), 3);
+}
+
+#[test]
+fn affected_membership_excludes_the_eliminated_neighbourhood() {
+    let mut graph = crate::elimination::graph::EliminationGraph::from_edges(
+        130,
+        &[(1, 2), (1, 65), (2, 65), (1, 129), (2, 129)],
+    );
+    graph.promote_bitset();
+    let mut affected = super::FillAffected::new(130);
+
+    assert!(affected.collect_deltas(&graph, &[1, 2, 65], &[(1, 2)], None));
+    assert_eq!(affected.pop_delta(), Some((129, 1)));
+    assert_eq!(affected.pop_delta(), None);
+}

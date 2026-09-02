@@ -157,7 +157,7 @@ impl FillScratch {
 /// common neighbours outside the filled neighbourhood. Each such edge lowers
 /// their fill score by exactly one.
 struct FillAffected {
-    inside: Vec<bool>,
+    inside: Vec<u64>,
     marker: Vec<u16>,
     stamp: u16,
     delta: Vec<u64>,
@@ -167,7 +167,7 @@ struct FillAffected {
 impl FillAffected {
     fn new(n: usize) -> Self {
         Self {
-            inside: vec![false; n],
+            inside: vec![0; n.div_ceil(64)],
             marker: vec![0; n],
             stamp: 0,
             delta: vec![0; n],
@@ -199,6 +199,21 @@ impl FillAffected {
         self.delta[index] += 1;
     }
 
+    fn mark_inside(&mut self, vertex: u32) {
+        let vertex = vertex as usize;
+        self.inside[vertex >> 6] |= 1u64 << (vertex & 63);
+    }
+
+    fn unmark_inside(&mut self, vertex: u32) {
+        let vertex = vertex as usize;
+        self.inside[vertex >> 6] &= !(1u64 << (vertex & 63));
+    }
+
+    fn is_inside(&self, vertex: u32) -> bool {
+        let vertex = vertex as usize;
+        self.inside[vertex >> 6] & (1u64 << (vertex & 63)) != 0
+    }
+
     /// Accumulate exact fill-score decreases caused by `fill_edges`. Returns
     /// false after clearing its scratch if `deadline` passes during the scan.
     fn collect_deltas(
@@ -210,14 +225,14 @@ impl FillAffected {
     ) -> bool {
         debug_assert!(self.vertices.is_empty());
         for &vertex in nbrs {
-            self.inside[vertex as usize] = true;
+            self.mark_inside(vertex);
         }
 
         for &(left, right) in fill_edges {
             if crate::deadline::expired(deadline) {
                 self.clear();
                 for &vertex in nbrs {
-                    self.inside[vertex as usize] = false;
+                    self.unmark_inside(vertex);
                 }
                 return false;
             }
@@ -227,14 +242,13 @@ impl FillAffected {
                 let left_start = left as usize * words;
                 let right_start = right as usize * words;
                 for word in 0..words {
-                    let mut common =
-                        graph.bitset[left_start + word] & graph.bitset[right_start + word];
+                    let mut common = graph.bitset[left_start + word]
+                        & graph.bitset[right_start + word]
+                        & !self.inside[word];
                     while common != 0 {
                         let bit = common.trailing_zeros() as usize;
                         let vertex = (word * 64 + bit) as u32;
-                        if !self.inside[vertex as usize] {
-                            self.increment(vertex);
-                        }
+                        self.increment(vertex);
                         common &= common - 1;
                     }
                 }
@@ -248,14 +262,14 @@ impl FillAffected {
                     self.marker[vertex as usize] = stamp;
                 }
                 for &vertex in right_row {
-                    if self.marker[vertex as usize] == stamp && !self.inside[vertex as usize] {
+                    if self.marker[vertex as usize] == stamp && !self.is_inside(vertex) {
                         self.increment(vertex);
                     }
                 }
             }
         }
         for &vertex in nbrs {
-            self.inside[vertex as usize] = false;
+            self.unmark_inside(vertex);
         }
         true
     }
