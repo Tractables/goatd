@@ -65,10 +65,9 @@ jobs:
         run: cargo package --locked
 
       # Each binding wraps the core it sits beside and carries the core's
-      # version, as does the citation metadata. Catch a bump that reached one
-      # file and not another here, rather than at the tag that would ship the
-      # mismatch.
-      - name: Check that every crate and the citation carry the same version
+      # version. Catch a bump that reached one crate and not another here,
+      # rather than at the tag that would ship the mismatch.
+      - name: Check that every crate carries the same version
         if: runner.os == 'Linux'
         run: .github/scripts/check-versions.sh
 

@@ -21,7 +21,6 @@ include = [
     "build.rs",
     "Cargo.toml",
     "README.md",
-    "CITATION.cff",
     "CLAUDE.md",
     "AGENTS.md",
     "docs/**/*.md",
