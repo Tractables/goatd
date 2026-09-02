@@ -22,18 +22,17 @@ pub(super) fn intersection_popcount(left: &[u64], right: &[u64]) -> u64 {
     let mut count_1 = 0u64;
     let mut count_2 = 0u64;
     let mut count_3 = 0u64;
-    let mut left_chunks = left.chunks_exact(4);
-    let mut right_chunks = right.chunks_exact(4);
-    for (left, right) in left_chunks.by_ref().zip(right_chunks.by_ref()) {
+    let (left_chunks, left_tail) = left.as_chunks::<4>();
+    let (right_chunks, right_tail) = right.as_chunks::<4>();
+    for (left, right) in left_chunks.iter().zip(right_chunks) {
         count_0 += (left[0] & right[0]).count_ones() as u64;
         count_1 += (left[1] & right[1]).count_ones() as u64;
         count_2 += (left[2] & right[2]).count_ones() as u64;
         count_3 += (left[3] & right[3]).count_ones() as u64;
     }
-    let tail = left_chunks
-        .remainder()
+    let tail = left_tail
         .iter()
-        .zip(right_chunks.remainder())
+        .zip(right_tail)
         .map(|(&left, &right)| (left & right).count_ones() as u64)
         .sum::<u64>();
 
