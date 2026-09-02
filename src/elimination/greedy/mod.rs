@@ -371,23 +371,28 @@ impl<'a> BucketMap<'a> {
     fn remove_vertex(&mut self, v: u32) {
         let position = std::mem::replace(&mut self.position[v as usize], BucketPosition::VACANT);
         if !position.is_vacant() {
-            let bucket = self.buckets.get_mut(&position.key).expect("bucket missing");
-            bucket.sampling_mass -= sampling_mass(self.weights[v as usize]);
-            let last_idx = bucket.vertices.len() - 1;
-            if position.index != last_idx {
-                let moved = bucket.vertices[last_idx];
-                bucket.vertices[position.index] = moved;
-                self.position[moved as usize] = BucketPosition {
-                    key: position.key,
-                    index: position.index,
-                };
-            }
-            bucket.vertices.pop();
-            let empty = bucket.vertices.is_empty();
-            if empty {
-                let bucket = self.buckets.remove(&position.key).expect("bucket missing");
-                self.spare_vertices.push(bucket.vertices);
-            }
+            self.remove_at(v, position);
+        }
+    }
+
+    #[inline]
+    fn remove_at(&mut self, v: u32, position: BucketPosition) {
+        let bucket = self.buckets.get_mut(&position.key).expect("bucket missing");
+        bucket.sampling_mass -= sampling_mass(self.weights[v as usize]);
+        let last_idx = bucket.vertices.len() - 1;
+        if position.index != last_idx {
+            let moved = bucket.vertices[last_idx];
+            bucket.vertices[position.index] = moved;
+            self.position[moved as usize] = BucketPosition {
+                key: position.key,
+                index: position.index,
+            };
+        }
+        bucket.vertices.pop();
+        let empty = bucket.vertices.is_empty();
+        if empty {
+            let bucket = self.buckets.remove(&position.key).expect("bucket missing");
+            self.spare_vertices.push(bucket.vertices);
         }
     }
 
@@ -397,7 +402,8 @@ impl<'a> BucketMap<'a> {
             return;
         }
         if !position.is_vacant() {
-            self.remove_vertex(v);
+            self.position[v as usize] = BucketPosition::VACANT;
+            self.remove_at(v, position);
         }
         self.insert(v, new_key);
     }
