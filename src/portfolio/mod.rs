@@ -23,7 +23,7 @@ use crate::{Error, Graph, TreeDecomposition};
 use candidates::{CandidateOutcome, CandidateSet};
 use config::MIN_FLOWCUTTER_CANDIDATE_MS;
 
-pub use config::PortfolioConfig;
+pub use config::{MAX_DIVERSE_SAMPLING_RUNS, PortfolioConfig};
 
 /// Exit early if FlowCutter hasn't improved treewidth for this long. Caps
 /// per-graph overhead where FlowCutter converges fast.
@@ -60,7 +60,7 @@ fn extra_sample<'a>(
         ));
     }
 
-    debug_assert!(diverse_runs <= config::DIVERSE_SAMPLING_RUNS);
+    debug_assert!(diverse_runs <= config::MAX_DIVERSE_SAMPLING_RUNS);
     if index < diverse_runs {
         let initial_runs = config::DIVERSE_INITIAL_COEFFICIENTS.len() as u64;
         let (degree_coefficient, score_seed_index) = if index < initial_runs {
