@@ -73,6 +73,14 @@ fn fill_count_is_the_edges_missing_among_the_neighbours() {
 }
 
 #[test]
+fn bitset_difference_counts_only_left_neighbours() {
+    let graph = EliminationGraph::from_edges(4, &[(0, 1), (0, 2), (0, 3), (1, 2)]);
+    assert!(graph.bitset_words > 0);
+    assert_eq!(graph.bitset_difference_count(0, 1), 2);
+    assert_eq!(graph.bitset_difference_count(1, 0), 1);
+}
+
+#[test]
 fn bitset_intersection_count_handles_four_word_chunks_and_tail() {
     let left = [
         0xffff,

@@ -72,6 +72,35 @@ fn intersection_popcount_by(
     count_0 + count_1 + count_2 + count_3 + tail
 }
 
+#[inline(always)]
+fn difference_popcount_by(
+    left: &[u64],
+    right: &[u64],
+    popcount: impl Fn(u64) -> u64 + Copy,
+) -> u64 {
+    debug_assert_eq!(left.len(), right.len());
+
+    let mut count_0 = 0u64;
+    let mut count_1 = 0u64;
+    let mut count_2 = 0u64;
+    let mut count_3 = 0u64;
+    let (left_chunks, left_tail) = left.as_chunks::<4>();
+    let (right_chunks, right_tail) = right.as_chunks::<4>();
+    for (left, right) in left_chunks.iter().zip(right_chunks) {
+        count_0 += popcount(left[0] & !right[0]);
+        count_1 += popcount(left[1] & !right[1]);
+        count_2 += popcount(left[2] & !right[2]);
+        count_3 += popcount(left[3] & !right[3]);
+    }
+    let tail = left_tail
+        .iter()
+        .zip(right_tail)
+        .map(|(&left, &right)| popcount(left & !right))
+        .sum::<u64>();
+
+    count_0 + count_1 + count_2 + count_3 + tail
+}
+
 /// Mutable graph used by goatd during preprocessing, min-fill, and nested
 /// dissection. Supports active/inactive vertices for constant-time elimination.
 #[derive(Clone)]
@@ -236,6 +265,40 @@ impl EliminationGraph {
         } else {
             self.adj[v as usize].len()
         }
+    }
+
+    pub(super) fn bitset_difference_count(&self, left: u32, right: u32) -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        if self.hardware_popcount {
+            // SAFETY: the flag is set only after runtime feature detection.
+            return unsafe { self.bitset_difference_count_popcnt(left, right) };
+        }
+        self.bitset_difference_count_by(left, right, |word| word.count_ones() as u64)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "popcnt")]
+    unsafe fn bitset_difference_count_popcnt(&self, left: u32, right: u32) -> u64 {
+        self.bitset_difference_count_by(left, right, |word| {
+            std::arch::x86_64::_popcnt64(word as i64) as u64
+        })
+    }
+
+    #[inline(always)]
+    fn bitset_difference_count_by(
+        &self,
+        left: u32,
+        right: u32,
+        popcount: impl Fn(u64) -> u64 + Copy,
+    ) -> u64 {
+        let words = self.bitset_words;
+        let left_start = left as usize * words;
+        let right_start = right as usize * words;
+        difference_popcount_by(
+            &self.bitset[left_start..left_start + words],
+            &self.bitset[right_start..right_start + words],
+            popcount,
+        )
     }
 
     pub(super) fn collect_live_nbrs_into(&self, v: u32, buf: &mut Vec<u32>) {

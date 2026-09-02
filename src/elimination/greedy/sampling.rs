@@ -193,17 +193,9 @@ fn eliminate_sampled_fill_based(
             // When v is simplicial, N(v) is a clique so no fill edges are added.
             // Δfill(u) = -|N(u) \ N(v) \ {v}| = -(popcount(bs[u] & ~bs[v]) - 1).
             if graph.bitset_words > 0 {
-                let w = graph.bitset_words;
-                let vb = v as usize * w;
                 for &u in &live_nbrs {
                     let ui = u as usize;
-                    let ub = ui * w;
-                    let mut o_count = 0u64;
-                    for j in 0..w {
-                        o_count +=
-                            (graph.bitset[ub + j] & !graph.bitset[vb + j]).count_ones() as u64;
-                    }
-                    o_count = o_count.saturating_sub(1); // exclude v's own bit
+                    let o_count = graph.bitset_difference_count(u, v).saturating_sub(1); // exclude v's own bit
                     if let Some(fills) = &mut fills {
                         fills[ui] = fills[ui].saturating_sub(o_count);
                     } else {
