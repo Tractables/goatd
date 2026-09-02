@@ -5,10 +5,12 @@
 //! construction in [`crate::elimination::decompose`] does not go through
 //! here.
 
+use std::cell::OnceCell;
 use std::time::{Duration, Instant};
 
 mod candidates;
 mod config;
+mod trace;
 
 #[cfg(test)]
 mod tests;
@@ -18,12 +20,14 @@ use crate::decomposition;
 use crate::elimination::Order;
 use crate::elimination::engine;
 use crate::elimination::execution::ElimStop;
+use crate::embedding::{self, Embedding};
 use crate::flowcutter::{Budget, decompose as flowcutter_decompose};
 use crate::{Error, Graph, TreeDecomposition};
-use candidates::{CandidateOutcome, CandidateSet};
+use candidates::CandidateSet;
 use config::MIN_FLOWCUTTER_CANDIDATE_MS;
 
-pub use config::{MAX_DIVERSE_SAMPLING_RUNS, PortfolioConfig};
+pub use config::{Hedge, MAX_DIVERSE_SAMPLING_RUNS, PortfolioConfig};
+pub use trace::{CandidateOutcome, CandidateTrace, Pass, Stage};
 
 /// Exit early if FlowCutter hasn't improved treewidth for this long. Caps
 /// per-graph overhead where FlowCutter converges fast.
@@ -45,46 +49,243 @@ fn sample_seed(base_seed: u64, sample_index: u64) -> u64 {
     base_seed.wrapping_add(SAMPLE_SEED_OFFSET + sample_index.wrapping_mul(SAMPLE_SEED_STRIDE))
 }
 
-fn extra_sample<'a>(
-    base_seed: u64,
-    large_residual: bool,
-    ordinary_runs: u64,
-    diverse_runs: u64,
-    index: u64,
-    weights: &'a [u32],
-) -> Option<(Order<'a>, u64)> {
-    if large_residual {
-        return (index < ordinary_runs).then_some((
-            Order::MinDegreeSampled { weights },
-            sample_seed(base_seed, index),
-        ));
-    }
+/// The sampling weights the hedge's second pass runs on: the vertices ranked
+/// by eccentricity, most peripheral first. The ranking is placed the first
+/// time a candidate asks for it, which is after the plain diverse pass, so a
+/// run that ends inside the plain pass never pays for the placement.
+#[derive(Clone, Copy)]
+struct ModifiedWeights<'a> {
+    cell: &'a OnceCell<Vec<u32>>,
+    graph: &'a Graph,
+    dim: usize,
+    rounds: usize,
+    seed: u64,
+    soft_deadline: Option<Instant>,
+}
 
-    debug_assert!(diverse_runs <= config::MAX_DIVERSE_SAMPLING_RUNS);
-    if index < diverse_runs {
-        let initial_runs = config::DIVERSE_INITIAL_COEFFICIENTS.len() as u64;
-        let (degree_coefficient, score_seed_index) = if index < initial_runs {
-            (config::DIVERSE_INITIAL_COEFFICIENTS[index as usize], 0)
-        } else {
-            let replay_index = index - initial_runs;
-            let replay_runs = config::DIVERSE_REPLAY_COEFFICIENTS.len() as u64;
-            (
-                config::DIVERSE_REPLAY_COEFFICIENTS[(replay_index % replay_runs) as usize],
-                1 + replay_index / replay_runs,
+impl<'a> ModifiedWeights<'a> {
+    fn get(self) -> &'a [u32] {
+        self.cell.get_or_init(|| {
+            Embedding::compute(
+                self.graph,
+                self.dim,
+                self.seed,
+                self.rounds,
+                embedding::DEFAULT_PATIENCE,
+                embedding::DEFAULT_TOLERANCE,
+                &mut || expired(self.soft_deadline),
             )
-        };
-        let order = Order::FillDegreeSampled {
-            weights,
-            degree_coefficient,
-        };
-        return Some((order, sample_seed(base_seed, score_seed_index)));
+            .rank_weights(true)
+        })
+    }
+}
+
+/// Everything the sampling phase draws a candidate from. The phase asks for
+/// index 0, 1, 2, … and stops at the first `None`.
+#[derive(Clone, Copy)]
+struct Schedule<'a> {
+    base_seed: u64,
+    /// A residual too large for the expensive orders: sampled min-degree only.
+    large_residual: bool,
+    /// Ordinary restarts on offer.
+    ordinary_runs: u64,
+    /// Diverse candidates in one pass.
+    diverse_runs: u64,
+    /// The weights the hedge's second pass runs on, or `None` when nothing is
+    /// hedged.
+    modified: Option<ModifiedWeights<'a>>,
+    /// How many fixed orders the hedge repeats, zero when nothing repeats
+    /// them.
+    fixed_runs: u64,
+    /// Builds the fixed orders, for the repeats.
+    initial_orders: InitialOrderBuilder,
+    /// The sampling weights every plain candidate draws with: the caller's.
+    weights: &'a [u32],
+}
+
+impl<'a> Schedule<'a> {
+    /// Whether the portfolio's own candidates run against modified ones.
+    fn hedged(self) -> bool {
+        self.modified.is_some()
     }
 
-    let ordinary_index = index - diverse_runs;
-    (ordinary_index < ordinary_runs).then_some((
-        Order::MinFillSampled { weights },
+    /// The weights of the modified pass.
+    ///
+    /// # Panics
+    ///
+    /// Panics when nothing is hedged, which leaves no modified candidate to
+    /// ask.
+    fn modified_weights(self) -> &'a [u32] {
+        self.modified
+            .expect("a modified candidate runs only under a hedge")
+            .get()
+    }
+
+    /// Diverse candidates in all: two passes when the weights are hedged.
+    fn diverse_total(self) -> u64 {
+        self.diverse_runs * if self.hedged() { 2 } else { 1 }
+    }
+
+    /// Candidates before the ordinary restarts.
+    fn passes_total(self) -> u64 {
+        self.diverse_total().saturating_add(self.fixed_runs)
+    }
+
+    /// Candidates the sampling phase has to offer.
+    fn total(self) -> u64 {
+        self.passes_total().saturating_add(self.ordinary_runs)
+    }
+
+    /// Which pass a candidate belongs to.
+    fn pass(self, plain: bool) -> Pass {
+        match (self.hedged(), plain) {
+            (false, _) => Pass::Only,
+            (true, true) => Pass::Plain,
+            (true, false) => Pass::Modified,
+        }
+    }
+
+    /// The `index`-th fixed order that reads weights, on the modified ones.
+    fn weighted_fixed(self, index: u64) -> Option<(Order<'a>, u64)> {
+        (self.initial_orders)(self.base_seed, self.modified_weights())
+            .into_iter()
+            .filter(|(order, _)| reads_weights(*order))
+            .nth(index as usize)
+    }
+
+    /// The `index`-th candidate of one diverse pass, on the caller's weights
+    /// when `plain` and on the modified ones otherwise.
+    fn diverse_sample(self, index: u64, plain: bool) -> Option<Sample<'a>> {
+        let (degree_coefficient, seed_index) = Self::diverse_candidate(index);
+        let weights = if plain {
+            self.weights
+        } else {
+            self.modified_weights()
+        };
+        sample_at(
+            Order::FillDegreeSampled {
+                weights,
+                degree_coefficient,
+            },
+            sample_seed(self.base_seed, seed_index),
+            self.pass(plain),
+            EliminationPhase::ExtraSampling,
+        )
+    }
+
+    /// The coefficient and seed index of the `index`-th candidate of one
+    /// diverse pass.
+    fn diverse_candidate(index: u64) -> (i8, u64) {
+        let initial_runs = config::DIVERSE_INITIAL_COEFFICIENTS.len() as u64;
+        if index < initial_runs {
+            return (config::DIVERSE_INITIAL_COEFFICIENTS[index as usize], 0);
+        }
+        let replay_index = index - initial_runs;
+        let replay_runs = config::DIVERSE_REPLAY_COEFFICIENTS.len() as u64;
+        (
+            config::DIVERSE_REPLAY_COEFFICIENTS[(replay_index % replay_runs) as usize],
+            1 + replay_index / replay_runs,
+        )
+    }
+}
+
+/// One candidate of the sampling phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Sample<'a> {
+    order: Order<'a>,
+    seed: u64,
+    pass: Pass,
+    stage: Stage,
+}
+
+/// One sample, labelled as `phase` labels its order.
+fn sample_at(
+    order: Order<'_>,
+    seed: u64,
+    pass: Pass,
+    phase: EliminationPhase,
+) -> Option<Sample<'_>> {
+    Some(Sample {
+        order,
+        seed,
+        pass,
+        stage: stage_of(order, phase),
+    })
+}
+
+fn extra_sample(schedule: Schedule<'_>, index: u64) -> Option<Sample<'_>> {
+    let base_seed = schedule.base_seed;
+    if schedule.large_residual {
+        // A large residual runs sampled min-degree whatever else is set, so
+        // there is nothing here for a hedge to run against.
+        if index >= schedule.ordinary_runs {
+            return None;
+        }
+        return sample_at(
+            Order::MinDegreeSampled {
+                weights: schedule.weights,
+            },
+            sample_seed(base_seed, index),
+            Pass::Only,
+            EliminationPhase::ExtraSampling,
+        );
+    }
+
+    debug_assert!(schedule.diverse_runs <= config::MAX_DIVERSE_SAMPLING_RUNS);
+    // The first diverse pass is the one a portfolio without the hedge runs:
+    // the caller's weights and the same seeds.
+    if index < schedule.diverse_runs {
+        return schedule.diverse_sample(index, true);
+    }
+    if schedule.hedged() {
+        // Then the fixed orders that read the weights, on the ranking this
+        // time, and then the diverse pass again on it.
+        let after_plain = index - schedule.diverse_runs;
+        if after_plain < schedule.fixed_runs {
+            let (order, seed) = schedule.weighted_fixed(after_plain)?;
+            return sample_at(order, seed, Pass::Modified, EliminationPhase::Initial);
+        }
+        let after_fixed = after_plain - schedule.fixed_runs;
+        if after_fixed < schedule.diverse_runs {
+            return schedule.diverse_sample(after_fixed, false);
+        }
+    }
+
+    let ordinary_index = index - schedule.passes_total();
+    if ordinary_index >= schedule.ordinary_runs {
+        return None;
+    }
+    // Nothing is given up here: the restarts are the whole sequence a
+    // portfolio without the hedge runs, seed for seed.
+    sample_at(
+        Order::MinFillSampled {
+            weights: schedule.weights,
+        },
         sample_seed(base_seed, ordinary_index),
-    ))
+        schedule.pass(true),
+        EliminationPhase::ExtraSampling,
+    )
+}
+
+/// The label for `order` in `phase`. A sampled min-fill order is a restart in
+/// the sampling phase and the portfolio's own min-fill candidate before it.
+fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
+    match (order, phase) {
+        (Order::NestedDissection, _) => Stage::NestedDissection,
+        (Order::MinDegree | Order::MinDegreeSampled { .. }, _) => Stage::MinDegree,
+        (Order::MinFill | Order::MinFillSampled { .. }, EliminationPhase::Initial) => {
+            Stage::MinFill
+        }
+        (Order::MinFill | Order::MinFillSampled { .. }, EliminationPhase::ExtraSampling) => {
+            Stage::Sample
+        }
+        (
+            Order::FillDegreeSampled {
+                degree_coefficient, ..
+            },
+            _,
+        ) => Stage::Diverse { degree_coefficient },
+    }
 }
 
 fn flowcutter_candidate(
@@ -165,6 +366,12 @@ fn standard_orders(base_seed: u64, weights: &[u32]) -> Vec<(Order<'_>, u64)> {
     ]
 }
 
+/// Whether `order` draws its ties from the sampling weights, and so runs a
+/// second time under a hedge.
+fn reads_weights(order: Order<'_>) -> bool {
+    order.tie_weights().is_some()
+}
+
 /// The fixed candidate at the front of the sampled-min-fill portfolio.
 fn sampled_min_fill_orders(base_seed: u64, weights: &[u32]) -> Vec<(Order<'_>, u64)> {
     vec![(Order::MinFillSampled { weights }, base_seed)]
@@ -179,7 +386,8 @@ fn sampled_min_fill_orders(base_seed: u64, weights: &[u32]) -> Vec<(Order<'_>, u
 /// yields a decomposition).
 ///
 /// `weights` has one entry per vertex and is what the sampling orders draw tie
-/// sets with; every candidate and every sampled order shares it.
+/// sets with. Every candidate and every sampled order shares it unless the
+/// portfolio hedges, which runs a second pass on weights of its own.
 fn run_portfolio(
     graph: &Graph,
     weights: &[u32],
@@ -187,19 +395,45 @@ fn run_portfolio(
     initial_orders: InitialOrderBuilder,
     config: PortfolioConfig,
     retention: CandidateRetention,
+    trace: &mut dyn FnMut(CandidateTrace),
 ) -> Result<CandidateSet, crate::Error> {
     config::validate(config)?;
-    let deadlines = crate::deadline::staged(
-        crate::meter::now(),
-        config.soft_budget,
-        config.hard_budget,
-        "portfolio",
-    )?;
+    let started = crate::meter::now();
+    let deadlines =
+        crate::deadline::staged(started, config.soft_budget, config.hard_budget, "portfolio")?;
     let soft_deadline = deadlines.soft;
     let hard_deadline = deadlines.hard;
     let mut prebuilt = engine::prebuild(graph);
-    let initial_orders = initial_orders(seed, weights);
     let large_residual = prebuilt.num_active() > MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS;
+    let ranking = OnceCell::new();
+    let modified = match config.hedge {
+        Hedge::Off => None,
+        // A large residual runs sampled min-degree restarts whatever is set,
+        // so there is nothing there for a hedge to run against.
+        Hedge::EccentricityPasses { .. } if large_residual => None,
+        Hedge::EccentricityPasses { dim, rounds } => Some(ModifiedWeights {
+            cell: &ranking,
+            graph,
+            dim,
+            rounds,
+            seed,
+            soft_deadline,
+        }),
+    };
+    // The hedge repeats the fixed orders that read weights after the plain
+    // diverse pass. Which orders those are does not depend on the weights, so
+    // the count is known before a ranking is placed.
+    let fixed_runs = if modified.is_some() {
+        initial_orders(seed, weights)
+            .iter()
+            .filter(|(order, _)| reads_weights(*order))
+            .count() as u64
+    } else {
+        0
+    };
+    // The builder is needed again for the fixed orders the hedge repeats.
+    let order_builder = initial_orders;
+    let initial_orders = initial_orders(seed, weights);
     let mut candidates = match retention {
         CandidateRetention::All => CandidateSet::all(initial_orders.len() + 1),
         CandidateRetention::BestOnly => CandidateSet::best_only(),
@@ -240,12 +474,20 @@ fn run_portfolio(
                 complete_on_deadline,
             },
         );
-        hard_deadline_tripped = match candidates.record_elimination(run) {
+        let outcome = candidates.record_elimination(run);
+        trace(CandidateTrace {
+            stage: stage_of(order, EliminationPhase::Initial),
+            seed: candidate_seed,
+            pass: Pass::Only,
+            outcome,
+            elapsed: crate::meter::now().saturating_duration_since(started),
+        });
+        hard_deadline_tripped = match outcome {
             CandidateOutcome::DeadlineReached => true,
             // Nothing usable from this candidate, but the portfolio is still inside
             // its budget.
             CandidateOutcome::WidthAborted => false,
-            CandidateOutcome::Produced => expired(hard_deadline),
+            CandidateOutcome::Produced { .. } => expired(hard_deadline),
         };
         if hard_deadline_tripped {
             break;
@@ -260,13 +502,25 @@ fn run_portfolio(
     // sample stops at the soft deadline so it cannot consume the trailing
     // FlowCutter and output interval. On extended small/medium runs, diverse
     // fill-degree scores precede the complete ordinary min-fill seed sequence.
+    // A hedge adds the weighted fixed orders and a second diverse pass between
+    // the two, and leaves the restarts where they were.
     let max_samples = config.sampling_runs;
     let diverse_samples = if large_residual {
         0
     } else {
         config.diverse_sampling_runs
     };
-    let total_samples = max_samples.saturating_add(diverse_samples);
+    let schedule = Schedule {
+        base_seed: seed,
+        large_residual,
+        ordinary_runs: max_samples,
+        diverse_runs: diverse_samples,
+        modified,
+        fixed_runs,
+        initial_orders: order_builder,
+        weights,
+    };
+    let total_samples = schedule.total();
     let mut sample_index: u64 = 0;
     // Normally the soft deadline fires first; the portfolio hard-deadline
     // check also prevents another sample after an initial candidate used the
@@ -276,22 +530,15 @@ fn run_portfolio(
         && !expired(soft_deadline)
         && !expired(hard_deadline)
     {
-        let (sample_order, candidate_seed) = extra_sample(
-            seed,
-            large_residual,
-            max_samples,
-            diverse_samples,
-            sample_index,
-            weights,
-        )
-        .expect("sample index is below the configured total");
+        let candidate = extra_sample(schedule, sample_index)
+            .expect("sample index is below the configured total");
         // Extra sampling only runs after the fixed candidates, so at least one prior
         // candidate won, so deadline completion is unnecessary here.
         let run = engine::run_order_prebuilt(
             &mut prebuilt,
             engine::RunSpec {
-                order: sample_order,
-                seed: candidate_seed,
+                order: candidate.order,
+                seed: candidate.seed,
                 stop: elimination_stop(
                     EliminationPhase::ExtraSampling,
                     soft_deadline,
@@ -301,12 +548,22 @@ fn run_portfolio(
                 complete_on_deadline: false,
             },
         );
-        match candidates.record_elimination(run) {
+        let outcome = candidates.record_elimination(run);
+        trace(CandidateTrace {
+            stage: candidate.stage,
+            seed: candidate.seed,
+            pass: candidate.pass,
+            outcome,
+            elapsed: crate::meter::now().saturating_duration_since(started),
+        });
+        match outcome {
             // No time left for more sampled orders.
             CandidateOutcome::DeadlineReached => break,
             // A width-aborted seed keeps sampling: another seed
             // explores a different elimination order.
-            CandidateOutcome::Produced | CandidateOutcome::WidthAborted => sample_index += 1,
+            CandidateOutcome::Produced { .. } | CandidateOutcome::WidthAborted => {
+                sample_index += 1;
+            }
         }
     }
     // Runs vanilla FlowCutter once as a final portfolio candidate. Placed after
@@ -320,7 +577,14 @@ fn run_portfolio(
         .filter(|_| !hard_deadline_tripped && !expired(hard_deadline))
         && let Some(decomposition) = flowcutter_candidate(graph, configured_budget, hard_deadline)?
     {
-        candidates.push(decomposition);
+        let outcome = candidates.push(decomposition);
+        trace(CandidateTrace {
+            stage: Stage::FlowCutter,
+            seed,
+            pass: Pass::Only,
+            outcome,
+            elapsed: crate::meter::now().saturating_duration_since(started),
+        });
     }
     Ok(candidates)
 }
@@ -351,6 +615,7 @@ pub fn sampled_min_fill_candidates(
         sampled_min_fill_orders,
         config,
         CandidateRetention::All,
+        &mut |_| {},
     )?
     .into_decompositions())
 }
@@ -361,9 +626,18 @@ fn standard_candidate_set(
     seed: u64,
     config: PortfolioConfig,
     retention: CandidateRetention,
+    trace: &mut dyn FnMut(CandidateTrace),
 ) -> Result<CandidateSet, crate::Error> {
     validate_weights(graph, weights)?;
-    run_portfolio(graph, weights, seed, standard_orders, config, retention)
+    run_portfolio(
+        graph,
+        weights,
+        seed,
+        standard_orders,
+        config,
+        retention,
+        trace,
+    )
 }
 
 /// Run the standard portfolio and return every decomposition it produced,
@@ -381,9 +655,15 @@ pub fn candidates(
     seed: u64,
     config: PortfolioConfig,
 ) -> Result<Vec<TreeDecomposition>, crate::Error> {
-    let mut decompositions =
-        standard_candidate_set(graph, weights, seed, config, CandidateRetention::All)?
-            .into_decompositions();
+    let mut decompositions = standard_candidate_set(
+        graph,
+        weights,
+        seed,
+        config,
+        CandidateRetention::All,
+        &mut |_| {},
+    )?
+    .into_decompositions();
     decompositions.sort_by_key(TreeDecomposition::quality_key);
     Ok(decompositions)
 }
@@ -400,13 +680,37 @@ pub fn decompose(
     seed: u64,
     config: PortfolioConfig,
 ) -> Result<TreeDecomposition, crate::Error> {
-    Ok(
-        standard_candidate_set(graph, weights, seed, config, CandidateRetention::BestOnly)?
-            .into_decompositions()
-            .into_iter()
-            .next()
-            .expect("first candidate always produces a decomposition"),
-    )
+    decompose_traced(graph, weights, seed, config, &mut |_| {})
+}
+
+/// [`decompose`], reporting every candidate to `trace` as it finishes.
+///
+/// The portfolio returns one decomposition and says nothing about where it
+/// came from; this says. The candidate the portfolio returns is the last one
+/// reported as [`CandidateOutcome::Produced`] with `best` set.
+///
+/// # Errors
+///
+/// Returns the same configuration and weight errors as [`candidates`].
+pub fn decompose_traced(
+    graph: &Graph,
+    weights: &[u32],
+    seed: u64,
+    config: PortfolioConfig,
+    trace: &mut dyn FnMut(CandidateTrace),
+) -> Result<TreeDecomposition, crate::Error> {
+    Ok(standard_candidate_set(
+        graph,
+        weights,
+        seed,
+        config,
+        CandidateRetention::BestOnly,
+        trace,
+    )?
+    .into_decompositions()
+    .into_iter()
+    .next()
+    .expect("first candidate always produces a decomposition"))
 }
 
 /// The standard portfolio's winner, refined by FlowCutter cuts

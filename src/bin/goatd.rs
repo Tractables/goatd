@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 use goatd::decomposition::refine_with_flowcutter;
 use goatd::elimination::{Order, decompose as eliminate};
 use goatd::flowcutter::{Budget, decompose as flowcutter};
-use goatd::portfolio::{PortfolioConfig, decompose as portfolio};
+use goatd::portfolio::{
+    CandidateOutcome, CandidateTrace, Hedge, Pass, PortfolioConfig, decompose_traced as portfolio,
+};
 use goatd::{Graph, TreeDecomposition};
 
 const USAGE: &str = "\
@@ -42,6 +44,11 @@ options:
                         FlowCutter slot, and the refinement's deadline
   --hard-budget <ms>    portfolio only: hard wall-clock cutoff; defaults to
                         twice --budget
+  --no-hedge            portfolio only: run every candidate once, on uniform
+                        weights, instead of repeating the candidates that read
+                        weights on a ranking the portfolio computes itself
+  --trace               portfolio only: write one line per candidate and one
+                        for the winner to stderr as they complete
   --steps <n>           flowcutter only: a step budget in place of a clock,
                         for a run that repeats exactly
   --refine              re-cut the decomposition along FlowCutter separators
@@ -93,6 +100,8 @@ struct Args {
     weights: Option<String>,
     budget: Option<Duration>,
     hard_budget: Option<Duration>,
+    no_hedge: bool,
+    trace: bool,
     steps: Option<u64>,
     refine: bool,
 }
@@ -116,6 +125,8 @@ fn parse_args(argv: &[String]) -> Args {
     let mut weights = None;
     let mut budget = None;
     let mut hard_budget = None;
+    let mut no_hedge = false;
+    let mut trace = false;
     let mut steps = None;
     let mut refine = false;
 
@@ -170,6 +181,8 @@ fn parse_args(argv: &[String]) -> Args {
                 }
                 hard_budget = Some(Duration::from_millis(milliseconds));
             }
+            "--no-hedge" => no_hedge = true,
+            "--trace" => trace = true,
             "--steps" => {
                 let n = number(&mut i, arg);
                 if n == 0 {
@@ -236,6 +249,12 @@ fn parse_args(argv: &[String]) -> Args {
             usage_error("--hard-budget must be at least --budget");
         }
     }
+    if no_hedge {
+        needs("--no-hedge", order == Method::Portfolio, "portfolio");
+    }
+    if trace {
+        needs("--trace", order == Method::Portfolio, "portfolio");
+    }
 
     Args {
         input,
@@ -246,6 +265,8 @@ fn parse_args(argv: &[String]) -> Args {
         weights,
         budget,
         hard_budget,
+        no_hedge,
+        trace,
         steps,
         refine,
     }
@@ -319,10 +340,51 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             if let Some(hard_budget) = args.hard_budget {
                 config = config.with_hard_budget(hard_budget);
             }
-            portfolio(graph, &weights, seed, config)
-                .unwrap_or_else(|error| fail(&error.to_string()))
+            if args.no_hedge {
+                config = config.with_hedge(Hedge::Off);
+            }
+            let mut winner = None;
+            let mut report = |candidate: CandidateTrace| {
+                if args.trace {
+                    print_candidate(&candidate);
+                }
+                if let CandidateOutcome::Produced { best: true, .. } = candidate.outcome {
+                    winner = Some((candidate.stage, candidate.seed));
+                }
+            };
+            let td = portfolio(graph, &weights, seed, config, &mut report)
+                .unwrap_or_else(|error| fail(&error.to_string()));
+            if args.trace
+                && let Some((stage, seed)) = winner
+            {
+                eprintln!("c trace winner candidate={stage} seed={seed}");
+            }
+            td
         }
     }
+}
+
+/// `c trace candidate=…`, on stderr so it does not touch the decomposition.
+fn print_candidate(candidate: &CandidateTrace) {
+    let mut line = format!(
+        "c trace candidate={} seed={}",
+        candidate.stage, candidate.seed
+    );
+    match candidate.pass {
+        Pass::Only => {}
+        Pass::Plain => line.push_str(" pass=plain"),
+        Pass::Modified => line.push_str(" pass=modified"),
+    }
+    match candidate.outcome {
+        CandidateOutcome::Produced {
+            width,
+            total_bag_size,
+            ..
+        } => line.push_str(&format!(" width={width} bags={total_bag_size}")),
+        CandidateOutcome::WidthAborted => line.push_str(" outcome=aborted"),
+        CandidateOutcome::DeadlineReached => line.push_str(" outcome=deadline"),
+    }
+    eprintln!("{line} ms={}", candidate.elapsed.as_millis());
 }
 
 fn main() {

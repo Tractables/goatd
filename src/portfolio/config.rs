@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use crate::Error;
+use crate::embedding::{DEFAULT_MAX_ROUNDS, MAX_DIM};
 
 /// Cap on extra sampled orders when there is no deadline. 100 is the knee
 /// measured across benchmark graphs: fewer leaves quality on the table, more
@@ -27,6 +28,55 @@ const SAMPLED_MIN_FILL_TIMEOUT_MS: u64 = 1000;
 
 pub(super) const MIN_FLOWCUTTER_CANDIDATE_MS: u64 = 50;
 
+/// Dimensions the hedge places the vertices in.
+const DEFAULT_HEDGE_DIM: usize = 3;
+
+/// What the standard portfolio hedges with unless the caller says otherwise.
+const DEFAULT_HEDGE: Hedge = Hedge::eccentricity();
+
+/// Whether the portfolio runs the candidates that read sampling weights a
+/// second time, on weights of its own.
+///
+/// Peripheral-first weights help some graphs and hurt others. Running them
+/// against the candidates the portfolio would have run anyway, and keeping the
+/// narrower result, costs the time of the extra candidates and nothing else.
+///
+/// A residual too large for the expensive orders runs sampled min-degree
+/// restarts whatever is set here, so a hedge does not reach it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Hedge {
+    /// No hedge: every candidate runs once, on the caller's weights.
+    Off,
+    /// The fixed orders that read the weights and the diverse pass run a
+    /// second time on an eccentricity ranking, which the portfolio computes
+    /// itself: the vertices placed in `dim` dimensions, most peripheral first.
+    ///
+    /// The plain candidates go first, on the caller's weights and the seeds
+    /// they always had, and every ordinary restart stays plain on the seed
+    /// sequence a portfolio without the hedge runs. Nothing repeats a
+    /// deterministic order, which ignores weights.
+    EccentricityPasses {
+        /// Dimensions the placement has, at most
+        /// [`MAX_DIM`](crate::embedding::MAX_DIM).
+        dim: usize,
+        /// Round cap on the placement. The rounds also stop at the portfolio's
+        /// soft deadline.
+        rounds: usize,
+    },
+}
+
+impl Hedge {
+    /// The hedge the standard portfolio runs: three dimensions, under the
+    /// embedding's default round cap.
+    pub const fn eccentricity() -> Self {
+        Hedge::EccentricityPasses {
+            dim: DEFAULT_HEDGE_DIM,
+            rounds: DEFAULT_MAX_ROUNDS,
+        }
+    }
+}
+
 /// What a portfolio runs under, beyond the candidate list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
@@ -36,6 +86,7 @@ pub struct PortfolioConfig {
     pub(super) sampling_runs: u64,
     pub(super) diverse_sampling_runs: u64,
     pub(super) flowcutter_budget: Option<Duration>,
+    pub(super) hedge: Hedge,
 }
 
 impl PortfolioConfig {
@@ -48,6 +99,7 @@ impl PortfolioConfig {
             sampling_runs: MAX_SAMPLING_RUNS,
             diverse_sampling_runs: 0,
             flowcutter_budget: None,
+            hedge: Hedge::Off,
         }
     }
 
@@ -97,7 +149,7 @@ impl PortfolioConfig {
     }
 
     /// Defaults for the standard candidate set: no deadline, up to 100 extra
-    /// seeds, and no FlowCutter candidate.
+    /// seeds, no FlowCutter candidate, and the eccentricity hedge.
     pub fn standard() -> Self {
         Self {
             soft_budget: None,
@@ -105,6 +157,7 @@ impl PortfolioConfig {
             sampling_runs: MAX_SAMPLING_RUNS,
             diverse_sampling_runs: 0,
             flowcutter_budget: None,
+            hedge: DEFAULT_HEDGE,
         }
     }
 
@@ -128,7 +181,17 @@ impl PortfolioConfig {
                 0
             },
             flowcutter_budget: extended.then_some(budget),
+            hedge: DEFAULT_HEDGE,
         }
+    }
+
+    /// Run the candidates that read sampling weights a second time on weights
+    /// the portfolio ranks itself. [`Hedge::Off`] turns the standard
+    /// portfolio's hedge off and leaves every candidate on the caller's
+    /// weights.
+    pub fn with_hedge(mut self, hedge: Hedge) -> Self {
+        self.hedge = hedge;
+        self
     }
 }
 
@@ -158,6 +221,18 @@ pub(super) fn validate(config: PortfolioConfig) -> Result<(), Error> {
         return Err(Error::InvalidInput(format!(
             "portfolio diverse sampling runs must be at most {MAX_DIVERSE_SAMPLING_RUNS}"
         )));
+    }
+    if let Hedge::EccentricityPasses { dim, rounds } = config.hedge {
+        if dim == 0 || dim > MAX_DIM {
+            return Err(Error::InvalidInput(format!(
+                "portfolio hedge dimension {dim} is outside 1..={MAX_DIM}"
+            )));
+        }
+        if rounds == 0 {
+            return Err(Error::InvalidInput(
+                "portfolio hedge placement needs at least one round".into(),
+            ));
+        }
     }
     Ok(())
 }

@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use goatd::elimination::{Order, decompose};
-use goatd::portfolio::{PortfolioConfig, candidates};
+use goatd::embedding::{DEFAULT_MAX_ROUNDS, DEFAULT_PATIENCE, DEFAULT_TOLERANCE, Embedding};
+use goatd::portfolio::{Hedge, PortfolioConfig, candidates};
 use goatd::{Graph, TreeDecomposition};
 
 #[test]
@@ -140,4 +141,53 @@ fn elimination_rejects_an_unrepresentable_budget() {
     let graph = Graph::new(1, []);
 
     assert!(decompose(&graph, Order::MinFill, 0, Some(Duration::MAX)).is_err());
+}
+
+#[test]
+fn a_placement_ranks_the_ends_of_a_path_first() {
+    let graph = Graph::new(9, (0..8).map(|vertex| (vertex, vertex + 1)));
+
+    let embedding = Embedding::compute(
+        &graph,
+        1,
+        7,
+        DEFAULT_MAX_ROUNDS,
+        DEFAULT_PATIENCE,
+        DEFAULT_TOLERANCE,
+        &mut || false,
+    );
+    let weights = embedding.rank_weights(true);
+
+    assert_eq!(embedding.num_vertices(), 9);
+    assert_eq!(embedding.dim(), 1);
+    assert_eq!(weights.len(), 9);
+    let drawn_first = weights
+        .iter()
+        .enumerate()
+        .min_by_key(|&(_, weight)| weight)
+        .map(|(vertex, _)| vertex);
+    assert!(
+        drawn_first == Some(0) || drawn_first == Some(8),
+        "an end of the path is the most peripheral vertex, got {drawn_first:?}"
+    );
+    assert_eq!(weights[4], *weights.iter().max().expect("nine weights"));
+}
+
+#[test]
+fn a_portfolio_hedge_that_could_never_be_placed_is_rejected() {
+    let graph = Graph::new(3, [(0, 1), (1, 2)]);
+    let weights = [1; 3];
+    let too_many_dimensions =
+        PortfolioConfig::standard().with_hedge(Hedge::EccentricityPasses { dim: 9, rounds: 8 });
+
+    assert!(candidates(&graph, &weights, 0, too_many_dimensions).is_err());
+    assert!(
+        candidates(
+            &graph,
+            &weights,
+            0,
+            PortfolioConfig::standard().with_hedge(Hedge::Off)
+        )
+        .is_ok()
+    );
 }
