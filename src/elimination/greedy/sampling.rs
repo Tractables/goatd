@@ -145,7 +145,7 @@ fn eliminate_sampled_fill_based(
     // Plain min-fill already stores the current fill as the bucket key. Only
     // composite scores need a second array to recover the fill component.
     let mut fills = priority.tracks_fill_separately().then(|| vec![0; n]);
-    let mut buckets = BucketMap::with_weights(weights);
+    let mut buckets = BucketMap::with_weights(weights, uniform_mass);
     for v in 0..n {
         if graph.active[v] {
             let f = match initial_fill {
@@ -193,17 +193,9 @@ fn eliminate_sampled_fill_based(
             // When v is simplicial, N(v) is a clique so no fill edges are added.
             // Δfill(u) = -|N(u) \ N(v) \ {v}| = -(popcount(bs[u] & ~bs[v]) - 1).
             if graph.bitset_words > 0 {
-                let w = graph.bitset_words;
-                let vb = v as usize * w;
                 for &u in &live_nbrs {
                     let ui = u as usize;
-                    let ub = ui * w;
-                    let mut o_count = 0u64;
-                    for j in 0..w {
-                        o_count +=
-                            (graph.bitset[ub + j] & !graph.bitset[vb + j]).count_ones() as u64;
-                    }
-                    o_count = o_count.saturating_sub(1); // exclude v's own bit
+                    let o_count = graph.bitset_difference_count(u, v).saturating_sub(1); // exclude v's own bit
                     if let Some(fills) = &mut fills {
                         fills[ui] = fills[ui].saturating_sub(o_count);
                     } else {
@@ -238,6 +230,7 @@ fn eliminate_sampled_fill_based(
                 );
             }
         } else {
+            affected.prepare_inside(graph, v, &live_nbrs);
             graph.eliminate_with_nbrs_record_fill(v, &live_nbrs, &mut fill_edges);
             if !affected.collect_deltas(graph, &live_nbrs, &fill_edges, hard_deadline) {
                 return ElimExit::DeadlineReached;
@@ -311,7 +304,7 @@ pub(crate) fn eliminate_sampled_min_degree(
     assert_eq!(weights.len(), n);
     let uniform_mass = uniform_sampling_mass(weights);
 
-    let mut buckets = BucketMap::with_weights(weights);
+    let mut buckets = BucketMap::with_weights(weights, uniform_mass);
     for v in 0..n {
         if graph.active[v] {
             buckets.insert(v as u32, graph.degree(v as u32) as u64);

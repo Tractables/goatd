@@ -4,7 +4,8 @@
 //! The sampling cores draw from the full set tied on the primary key.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BinaryHeap, HashMap, hash_map::Entry};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::time::Instant;
 
 use super::execution::{DEADLINE_CHECK_STRIDE, ElimExit, ElimSink, ElimStop, exceeds_width_bound};
@@ -157,7 +158,7 @@ impl FillScratch {
 /// common neighbours outside the filled neighbourhood. Each such edge lowers
 /// their fill score by exactly one.
 struct FillAffected {
-    inside: Vec<bool>,
+    inside: Vec<u64>,
     marker: Vec<u16>,
     stamp: u16,
     delta: Vec<u64>,
@@ -167,7 +168,7 @@ struct FillAffected {
 impl FillAffected {
     fn new(n: usize) -> Self {
         Self {
-            inside: vec![false; n],
+            inside: vec![0; n.div_ceil(64)],
             marker: vec![0; n],
             stamp: 0,
             delta: vec![0; n],
@@ -193,10 +194,49 @@ impl FillAffected {
 
     fn increment(&mut self, vertex: u32) {
         let index = vertex as usize;
-        if self.delta[index] == 0 {
+        let delta = &mut self.delta[index];
+        let first = *delta == 0;
+        *delta += 1;
+        if first {
             self.vertices.push(vertex);
         }
-        self.delta[index] += 1;
+    }
+
+    fn mark_inside(&mut self, vertex: u32) {
+        let vertex = vertex as usize;
+        self.inside[vertex >> 6] |= 1u64 << (vertex & 63);
+    }
+
+    fn unmark_inside(&mut self, vertex: u32) {
+        let vertex = vertex as usize;
+        self.inside[vertex >> 6] &= !(1u64 << (vertex & 63));
+    }
+
+    fn is_inside(&self, vertex: u32) -> bool {
+        let vertex = vertex as usize;
+        self.inside[vertex >> 6] & (1u64 << (vertex & 63)) != 0
+    }
+
+    fn clear_inside(&mut self, nbrs: &[u32], bitset_words: usize) {
+        if bitset_words > 0 {
+            self.inside.fill(0);
+        } else {
+            for &vertex in nbrs {
+                self.unmark_inside(vertex);
+            }
+        }
+    }
+
+    fn prepare_inside(&mut self, graph: &EliminationGraph, v: u32, nbrs: &[u32]) {
+        if graph.bitset_words > 0 {
+            let start = v as usize * graph.bitset_words;
+            self.inside
+                .copy_from_slice(&graph.bitset[start..start + graph.bitset_words]);
+        } else {
+            for &vertex in nbrs {
+                self.mark_inside(vertex);
+            }
+        }
     }
 
     /// Accumulate exact fill-score decreases caused by `fill_edges`. Returns
@@ -209,16 +249,11 @@ impl FillAffected {
         deadline: Option<Instant>,
     ) -> bool {
         debug_assert!(self.vertices.is_empty());
-        for &vertex in nbrs {
-            self.inside[vertex as usize] = true;
-        }
 
         for &(left, right) in fill_edges {
             if crate::deadline::expired(deadline) {
                 self.clear();
-                for &vertex in nbrs {
-                    self.inside[vertex as usize] = false;
-                }
+                self.clear_inside(nbrs, graph.bitset_words);
                 return false;
             }
             if graph.bitset_words > 0 {
@@ -227,14 +262,13 @@ impl FillAffected {
                 let left_start = left as usize * words;
                 let right_start = right as usize * words;
                 for word in 0..words {
-                    let mut common =
-                        graph.bitset[left_start + word] & graph.bitset[right_start + word];
+                    let mut common = graph.bitset[left_start + word]
+                        & graph.bitset[right_start + word]
+                        & !self.inside[word];
                     while common != 0 {
                         let bit = common.trailing_zeros() as usize;
                         let vertex = (word * 64 + bit) as u32;
-                        if !self.inside[vertex as usize] {
-                            self.increment(vertex);
-                        }
+                        self.increment(vertex);
                         common &= common - 1;
                     }
                 }
@@ -248,15 +282,13 @@ impl FillAffected {
                     self.marker[vertex as usize] = stamp;
                 }
                 for &vertex in right_row {
-                    if self.marker[vertex as usize] == stamp && !self.inside[vertex as usize] {
+                    if self.marker[vertex as usize] == stamp && !self.is_inside(vertex) {
                         self.increment(vertex);
                     }
                 }
             }
         }
-        for &vertex in nbrs {
-            self.inside[vertex as usize] = false;
-        }
+        self.clear_inside(nbrs, graph.bitset_words);
         true
     }
 
@@ -298,69 +330,285 @@ struct Bucket {
     sampling_mass: u64,
 }
 
+/// Hashes internal `u64` priority keys without the cost of general-purpose
+/// keyed hashing.
+#[derive(Clone, Default)]
+struct PriorityHasher(u64);
+
+impl Hasher for PriorityHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut hash = 0u64;
+        for &byte in bytes {
+            hash = hash.rotate_left(8) ^ u64::from(byte);
+        }
+        self.0 = hash;
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
+}
+
+type PriorityHashMap = HashMap<u64, Bucket, BuildHasherDefault<PriorityHasher>>;
+
+const MAX_DENSE_PRIORITY_KEY: usize = (1 << 16) - 1;
+
+#[derive(Clone)]
+enum PriorityBuckets {
+    Dense {
+        slots: Vec<Option<Bucket>>,
+        max_key: usize,
+    },
+    Hashed(PriorityHashMap),
+}
+
+#[derive(Clone, Copy)]
+struct BucketPosition {
+    key: u64,
+    index: usize,
+}
+
+impl BucketPosition {
+    const VACANT: Self = Self {
+        key: 0,
+        index: usize::MAX,
+    };
+
+    fn is_vacant(self) -> bool {
+        self.index == usize::MAX
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct BucketMap<'a> {
-    buckets: BTreeMap<u64, Bucket>,
-    position: Vec<Option<(u64, usize)>>,
+    buckets: PriorityBuckets,
+    /// Exact while `minimum_dirty` is false. Removing the current minimum
+    /// marks it dirty; the next read scans the live priority keys once.
+    minimum_key: Option<u64>,
+    minimum_dirty: bool,
+    spare_vertices: Vec<Vec<u32>>,
+    position: Vec<BucketPosition>,
     weights: &'a [u32],
+    uniform_mass: Option<u64>,
 }
 
 impl<'a> BucketMap<'a> {
-    fn with_weights(weights: &'a [u32]) -> Self {
+    fn with_weights(weights: &'a [u32], uniform_mass: Option<u64>) -> Self {
+        // Most fill-based priorities stay close to the vertex count. Direct
+        // slots avoid hashing there; a cap bounds their allocation before a
+        // large score switches the map to hashed storage.
+        let max_dense_key = weights
+            .len()
+            .saturating_mul(4)
+            .clamp(256, MAX_DENSE_PRIORITY_KEY);
         BucketMap {
-            buckets: BTreeMap::new(),
-            position: vec![None; weights.len()],
+            buckets: PriorityBuckets::Dense {
+                slots: Vec::new(),
+                max_key: max_dense_key,
+            },
+            minimum_key: None,
+            minimum_dirty: false,
+            spare_vertices: Vec::new(),
+            position: vec![BucketPosition::VACANT; weights.len()],
             weights,
+            uniform_mass,
         }
     }
 
     fn insert(&mut self, v: u32, key: u64) {
-        let bucket = self.buckets.entry(key).or_insert_with(|| Bucket {
-            vertices: Vec::new(),
-            sampling_mass: 0,
-        });
+        let dense_key = usize::try_from(key).ok();
+        let promote = matches!(
+            &self.buckets,
+            PriorityBuckets::Dense { max_key, .. }
+                if dense_key.is_none_or(|key| key > *max_key)
+        );
+        if promote {
+            self.promote_buckets_to_hash();
+        }
+
+        let bucket = match &mut self.buckets {
+            PriorityBuckets::Dense { slots, .. } => {
+                let key_index = dense_key.expect("dense priority key");
+                if key_index >= slots.len() {
+                    slots.resize_with(key_index + 1, || None);
+                }
+                if slots[key_index].is_none() {
+                    self.minimum_key =
+                        Some(self.minimum_key.map_or(key, |minimum| minimum.min(key)));
+                    slots[key_index] = Some(Bucket {
+                        vertices: self.spare_vertices.pop().unwrap_or_default(),
+                        sampling_mass: 0,
+                    });
+                }
+                slots[key_index].as_mut().expect("inserted priority bucket")
+            }
+            PriorityBuckets::Hashed(buckets) => match buckets.entry(key) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    self.minimum_key =
+                        Some(self.minimum_key.map_or(key, |minimum| minimum.min(key)));
+                    entry.insert(Bucket {
+                        vertices: self.spare_vertices.pop().unwrap_or_default(),
+                        sampling_mass: 0,
+                    })
+                }
+            },
+        };
         let idx = bucket.vertices.len();
         bucket.vertices.push(v);
-        bucket.sampling_mass += sampling_mass(self.weights[v as usize]);
-        self.position[v as usize] = Some((key, idx));
+        if self.uniform_mass.is_none() {
+            bucket.sampling_mass += sampling_mass(self.weights[v as usize]);
+        }
+        debug_assert!(self.position[v as usize].is_vacant());
+        self.position[v as usize] = BucketPosition { key, index: idx };
     }
 
     fn remove_vertex(&mut self, v: u32) {
-        if let Some((key, idx)) = self.position[v as usize].take() {
-            let bucket = self.buckets.get_mut(&key).expect("bucket missing");
-            bucket.sampling_mass -= sampling_mass(self.weights[v as usize]);
-            let last_idx = bucket.vertices.len() - 1;
-            if idx != last_idx {
-                let moved = bucket.vertices[last_idx];
-                bucket.vertices[idx] = moved;
-                self.position[moved as usize] = Some((key, idx));
+        let position = std::mem::replace(&mut self.position[v as usize], BucketPosition::VACANT);
+        if !position.is_vacant() {
+            self.remove_at(v, position);
+        }
+    }
+
+    #[inline]
+    fn remove_at(&mut self, v: u32, position: BucketPosition) {
+        match &mut self.buckets {
+            PriorityBuckets::Dense { slots, .. } => {
+                let key = usize::try_from(position.key).expect("dense priority key");
+                let bucket = slots[key].as_mut().expect("bucket missing");
+                if Self::remove_from_bucket(
+                    bucket,
+                    &mut self.position,
+                    self.weights,
+                    self.uniform_mass,
+                    v,
+                    position,
+                ) {
+                    let bucket = slots[key].take().expect("bucket missing");
+                    self.spare_vertices.push(bucket.vertices);
+                    self.minimum_dirty |= self.minimum_key == Some(position.key);
+                }
             }
-            bucket.vertices.pop();
-            if bucket.vertices.is_empty() {
-                self.buckets.remove(&key);
+            PriorityBuckets::Hashed(buckets) => {
+                let mut entry = match buckets.entry(position.key) {
+                    Entry::Occupied(entry) => entry,
+                    Entry::Vacant(_) => panic!("bucket missing"),
+                };
+                let bucket = entry.get_mut();
+                if Self::remove_from_bucket(
+                    bucket,
+                    &mut self.position,
+                    self.weights,
+                    self.uniform_mass,
+                    v,
+                    position,
+                ) {
+                    let (_, bucket) = entry.remove_entry();
+                    self.spare_vertices.push(bucket.vertices);
+                    self.minimum_dirty |= self.minimum_key == Some(position.key);
+                }
             }
         }
     }
 
+    #[inline(always)]
+    fn remove_from_bucket(
+        bucket: &mut Bucket,
+        positions: &mut [BucketPosition],
+        weights: &[u32],
+        uniform_mass: Option<u64>,
+        v: u32,
+        position: BucketPosition,
+    ) -> bool {
+        if uniform_mass.is_none() {
+            bucket.sampling_mass -= sampling_mass(weights[v as usize]);
+        }
+        let last_idx = bucket.vertices.len() - 1;
+        if position.index != last_idx {
+            let moved = bucket.vertices[last_idx];
+            bucket.vertices[position.index] = moved;
+            positions[moved as usize] = BucketPosition {
+                key: position.key,
+                index: position.index,
+            };
+        }
+        bucket.vertices.pop();
+        bucket.vertices.is_empty()
+    }
+
     fn update(&mut self, v: u32, new_key: u64) {
-        if let Some((cur_key, _)) = self.position[v as usize] {
-            if cur_key == new_key {
-                return;
-            }
-            self.remove_vertex(v);
+        let position = self.position[v as usize];
+        if !position.is_vacant() && position.key == new_key {
+            return;
+        }
+        if !position.is_vacant() {
+            self.position[v as usize] = BucketPosition::VACANT;
+            self.remove_at(v, position);
         }
         self.insert(v, new_key);
     }
 
-    fn min_bucket(&self) -> Option<(u64, &[u32], u64)> {
-        self.buckets
-            .iter()
-            .next()
-            .map(|(key, bucket)| (*key, bucket.vertices.as_slice(), bucket.sampling_mass))
+    fn min_bucket(&mut self) -> Option<(u64, &[u32], u64)> {
+        if self.minimum_dirty {
+            self.minimum_key = match &self.buckets {
+                PriorityBuckets::Dense { slots, .. } => {
+                    let start = self
+                        .minimum_key
+                        .and_then(|key| usize::try_from(key).ok())
+                        .unwrap_or(0)
+                        .min(slots.len());
+                    slots[start..]
+                        .iter()
+                        .position(Option::is_some)
+                        .map(|offset| (start + offset) as u64)
+                }
+                PriorityBuckets::Hashed(buckets) => buckets.keys().copied().min(),
+            };
+            self.minimum_dirty = false;
+        }
+        self.minimum_key.map(|key| {
+            let bucket = self.bucket(key).expect("minimum bucket missing");
+            let mass = self.uniform_mass.map_or(bucket.sampling_mass, |mass| {
+                mass * bucket.vertices.len() as u64
+            });
+            (key, bucket.vertices.as_slice(), mass)
+        })
     }
 
     fn key_of(&self, v: u32) -> Option<u64> {
-        self.position[v as usize].map(|(key, _)| key)
+        let position = self.position[v as usize];
+        (!position.is_vacant()).then_some(position.key)
+    }
+
+    fn bucket(&self, key: u64) -> Option<&Bucket> {
+        match &self.buckets {
+            PriorityBuckets::Dense { slots, .. } => usize::try_from(key)
+                .ok()
+                .and_then(|key| slots.get(key))
+                .and_then(Option::as_ref),
+            PriorityBuckets::Hashed(buckets) => buckets.get(&key),
+        }
+    }
+
+    fn promote_buckets_to_hash(&mut self) {
+        let PriorityBuckets::Dense { slots, .. } = std::mem::replace(
+            &mut self.buckets,
+            PriorityBuckets::Hashed(PriorityHashMap::default()),
+        ) else {
+            return;
+        };
+        let PriorityBuckets::Hashed(buckets) = &mut self.buckets else {
+            unreachable!();
+        };
+        for (key, bucket) in slots.into_iter().enumerate() {
+            if let Some(bucket) = bucket {
+                buckets.insert(key as u64, bucket);
+            }
+        }
     }
 }
 

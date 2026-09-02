@@ -14,6 +14,93 @@
 /// At n = 16384: 16384 * 256 words * 8 bytes = 32 MB per graph.
 const BITSET_THRESH: usize = 16384;
 
+fn hardware_popcount_available() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::arch::is_x86_feature_detected!("popcnt")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+#[cfg(test)]
+pub(super) fn intersection_popcount(left: &[u64], right: &[u64]) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    if hardware_popcount_available() {
+        // SAFETY: the runtime check above establishes the target feature.
+        return unsafe { intersection_popcount_popcnt(left, right) };
+    }
+    intersection_popcount_by(left, right, |word| word.count_ones() as u64)
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+#[target_feature(enable = "popcnt")]
+unsafe fn intersection_popcount_popcnt(left: &[u64], right: &[u64]) -> u64 {
+    intersection_popcount_by(left, right, |word| {
+        std::arch::x86_64::_popcnt64(word as i64) as u64
+    })
+}
+
+#[inline(always)]
+fn intersection_popcount_by(
+    left: &[u64],
+    right: &[u64],
+    popcount: impl Fn(u64) -> u64 + Copy,
+) -> u64 {
+    debug_assert_eq!(left.len(), right.len());
+
+    let mut count_0 = 0u64;
+    let mut count_1 = 0u64;
+    let mut count_2 = 0u64;
+    let mut count_3 = 0u64;
+    let (left_chunks, left_tail) = left.as_chunks::<4>();
+    let (right_chunks, right_tail) = right.as_chunks::<4>();
+    for (left, right) in left_chunks.iter().zip(right_chunks) {
+        count_0 += popcount(left[0] & right[0]);
+        count_1 += popcount(left[1] & right[1]);
+        count_2 += popcount(left[2] & right[2]);
+        count_3 += popcount(left[3] & right[3]);
+    }
+    let tail = left_tail
+        .iter()
+        .zip(right_tail)
+        .map(|(&left, &right)| popcount(left & right))
+        .sum::<u64>();
+
+    count_0 + count_1 + count_2 + count_3 + tail
+}
+
+#[inline(always)]
+fn difference_popcount_by(
+    left: &[u64],
+    right: &[u64],
+    popcount: impl Fn(u64) -> u64 + Copy,
+) -> u64 {
+    debug_assert_eq!(left.len(), right.len());
+
+    let mut count_0 = 0u64;
+    let mut count_1 = 0u64;
+    let mut count_2 = 0u64;
+    let mut count_3 = 0u64;
+    let (left_chunks, left_tail) = left.as_chunks::<4>();
+    let (right_chunks, right_tail) = right.as_chunks::<4>();
+    for (left, right) in left_chunks.iter().zip(right_chunks) {
+        count_0 += popcount(left[0] & !right[0]);
+        count_1 += popcount(left[1] & !right[1]);
+        count_2 += popcount(left[2] & !right[2]);
+        count_3 += popcount(left[3] & !right[3]);
+    }
+    let tail = left_tail
+        .iter()
+        .zip(right_tail)
+        .map(|(&left, &right)| popcount(left & !right))
+        .sum::<u64>();
+
+    count_0 + count_1 + count_2 + count_3 + tail
+}
+
 /// Mutable graph used by goatd during preprocessing, min-fill, and nested
 /// dissection. Supports active/inactive vertices for constant-time elimination.
 #[derive(Clone)]
@@ -25,6 +112,9 @@ pub(super) struct EliminationGraph {
     /// clique-residual detection: the residual is complete iff
     /// `num_edges == num_active*(num_active-1)/2`.
     pub(super) num_edges: usize,
+    /// Live degree in bitset mode. Adjacency rows stop being maintained after
+    /// promotion, while this cache is updated with each bitset mutation.
+    bitset_degree: Vec<u32>,
     /// Stamp-marker scratch for deduping fill-edge additions in
     /// O(Σdeg + k²) instead of O(k²·deg_avg). u16 halves memory footprint vs
     /// u32; the stamp wraps and clears the marker array when it does.
@@ -36,6 +126,7 @@ pub(super) struct EliminationGraph {
     pub(super) bitset: Vec<u64>,
     /// Number of u64 words per vertex in `bitset`. 0 iff bitset is disabled.
     pub(super) bitset_words: usize,
+    hardware_popcount: bool,
 }
 
 impl EliminationGraph {
@@ -45,10 +136,12 @@ impl EliminationGraph {
             active: vec![true; n],
             num_active: n,
             num_edges: 0,
+            bitset_degree: Vec::new(),
             elim_marker: vec![0u16; n],
             elim_stamp: 0,
             bitset: Vec::new(),
             bitset_words: 0,
+            hardware_popcount: hardware_popcount_available(),
         }
     }
 
@@ -70,6 +163,7 @@ impl EliminationGraph {
             let w = n.div_ceil(64);
             g.bitset = vec![0u64; n * w];
             g.bitset_words = w;
+            g.bitset_degree = g.adj.iter().map(|row| row.len() as u32).collect();
             for v in 0..n {
                 for &u in g.adj[v].iter() {
                     g.bitset[v * w + u as usize / 64] |= 1u64 << (u as usize % 64);
@@ -108,6 +202,7 @@ impl EliminationGraph {
         }
         let w = n.div_ceil(64);
         let mut bs = vec![0u64; n * w];
+        self.bitset_degree = self.adj.iter().map(|row| row.len() as u32).collect();
         for v in 0..n {
             if !self.active[v] {
                 continue;
@@ -129,10 +224,12 @@ impl EliminationGraph {
             active: self.active.clone(),
             num_active: self.num_active,
             num_edges: self.num_edges,
+            bitset_degree: self.bitset_degree.clone(),
             elim_marker: self.elim_marker.clone(),
             elim_stamp: self.elim_stamp,
             bitset: self.bitset.clone(),
             bitset_words: self.bitset_words,
+            hardware_popcount: self.hardware_popcount,
         }
     }
 
@@ -152,6 +249,8 @@ impl EliminationGraph {
         }
         self.bitset[vi * w + word_u] |= bit_u;
         self.bitset[ui * w + vi / 64] |= 1u64 << (vi % 64);
+        self.bitset_degree[ui] += 1;
+        self.bitset_degree[vi] += 1;
         self.num_edges += 1;
         true
     }
@@ -162,16 +261,44 @@ impl EliminationGraph {
 
     pub(super) fn degree(&self, v: u32) -> usize {
         if self.bitset_words > 0 {
-            let vi = v as usize;
-            let w = self.bitset_words;
-            let vb = vi * w;
-            self.bitset[vb..vb + w]
-                .iter()
-                .map(|x| x.count_ones() as usize)
-                .sum()
+            self.bitset_degree[v as usize] as usize
         } else {
             self.adj[v as usize].len()
         }
+    }
+
+    pub(super) fn bitset_difference_count(&self, left: u32, right: u32) -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        if self.hardware_popcount {
+            // SAFETY: the flag is set only after runtime feature detection.
+            return unsafe { self.bitset_difference_count_popcnt(left, right) };
+        }
+        self.bitset_difference_count_by(left, right, |word| word.count_ones() as u64)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "popcnt")]
+    unsafe fn bitset_difference_count_popcnt(&self, left: u32, right: u32) -> u64 {
+        self.bitset_difference_count_by(left, right, |word| {
+            std::arch::x86_64::_popcnt64(word as i64) as u64
+        })
+    }
+
+    #[inline(always)]
+    fn bitset_difference_count_by(
+        &self,
+        left: u32,
+        right: u32,
+        popcount: impl Fn(u64) -> u64 + Copy,
+    ) -> u64 {
+        let words = self.bitset_words;
+        let left_start = left as usize * words;
+        let right_start = right as usize * words;
+        difference_popcount_by(
+            &self.bitset[left_start..left_start + words],
+            &self.bitset[right_start..right_start + words],
+            popcount,
+        )
     }
 
     pub(super) fn collect_live_nbrs_into(&self, v: u32, buf: &mut Vec<u32>) {
@@ -297,7 +424,36 @@ impl EliminationGraph {
         &mut self,
         v: u32,
         neighbours: &[u32],
+        fill_edges: Option<&mut Vec<(u32, u32)>>,
+    ) {
+        #[cfg(target_arch = "x86_64")]
+        if self.hardware_popcount {
+            // SAFETY: the flag is set only after runtime feature detection.
+            return unsafe { self.eliminate_with_nbrs_bs_popcnt(v, neighbours, fill_edges) };
+        }
+        self.eliminate_with_nbrs_bs_by(v, neighbours, fill_edges, |word| word.count_ones());
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "popcnt")]
+    unsafe fn eliminate_with_nbrs_bs_popcnt(
+        &mut self,
+        v: u32,
+        neighbours: &[u32],
+        fill_edges: Option<&mut Vec<(u32, u32)>>,
+    ) {
+        self.eliminate_with_nbrs_bs_by(v, neighbours, fill_edges, |word| {
+            std::arch::x86_64::_popcnt64(word as i64) as u32
+        });
+    }
+
+    #[inline(always)]
+    fn eliminate_with_nbrs_bs_by(
+        &mut self,
+        v: u32,
+        neighbours: &[u32],
         mut fill_edges: Option<&mut Vec<(u32, u32)>>,
+        popcount: impl Fn(u64) -> u32 + Copy,
     ) {
         let vi = v as usize;
         let w = self.bitset_words;
@@ -330,14 +486,18 @@ impl EliminationGraph {
                     }
                 }
                 self.bitset[ub + j] |= fill_mask;
-                pushes += fill_mask.count_ones() as usize;
+                let added = popcount(fill_mask);
+                self.bitset_degree[u] += added;
+                pushes += added as usize;
             }
             self.bitset[ub + vi / 64] &= !(1u64 << (vi % 64));
+            self.bitset_degree[u] -= 1;
         }
 
         for j in 0..w {
             self.bitset[vb + j] = 0;
         }
+        self.bitset_degree[vi] = 0;
         if self.active[vi] {
             self.active[vi] = false;
             self.num_active -= 1;
@@ -425,11 +585,13 @@ impl EliminationGraph {
             let w = self.bitset_words;
             for &u in nbrs {
                 self.bitset[u as usize * w + vi / 64] &= !(1u64 << (vi % 64));
+                self.bitset_degree[u as usize] -= 1;
             }
             let vb = vi * w;
             for j in 0..w {
                 self.bitset[vb + j] = 0;
             }
+            self.bitset_degree[vi] = 0;
         } else {
             for &u in nbrs {
                 let row = &mut self.adj[u as usize];
@@ -523,48 +685,47 @@ impl EliminationGraph {
     /// summed and halved gives edges within N(v). O(k · words) vs
     /// O(k · avg_deg) for the marker path.
     pub(super) fn fill_count_of_bs(&self, v: u32) -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        if self.hardware_popcount {
+            // SAFETY: the flag is set only after runtime feature detection.
+            return unsafe { self.fill_count_of_bs_popcnt(v) };
+        }
+        self.fill_count_of_bs_by(v, |word| word.count_ones() as u64)
+    }
+
+    #[cfg(test)]
+    pub(super) fn fill_count_of_bs_portable(&self, v: u32) -> u64 {
+        self.fill_count_of_bs_by(v, |word| word.count_ones() as u64)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "popcnt")]
+    unsafe fn fill_count_of_bs_popcnt(&self, v: u32) -> u64 {
+        self.fill_count_of_bs_by(v, |word| std::arch::x86_64::_popcnt64(word as i64) as u64)
+    }
+
+    #[inline(always)]
+    fn fill_count_of_bs_by(&self, v: u32, popcount: impl Fn(u64) -> u64 + Copy) -> u64 {
         let vi = v as usize;
         let w = self.bitset_words;
         let vb = vi * w;
         let vbs = &self.bitset[vb..vb + w];
-        let k: u64 = vbs.iter().map(|x| x.count_ones() as u64).sum();
+        let k = self.bitset_degree[vi] as u64;
         if k < 2 {
             return 0;
         }
         let total_pairs = k * (k - 1) / 2;
 
-        // Sparse path: k(k-1)/2 < k·w (i.e. k ≤ 2w) means iterating pairs
-        // directly beats a dense row scan per neighbour.
-        if k < (2 * w) as u64 {
-            let mut nbrs: [u32; 256] = [0; 256];
-            let klen = k as usize;
-            if klen <= nbrs.len() {
-                let mut idx = 0;
-                for (j, &v_word) in vbs.iter().enumerate() {
-                    let mut word = v_word;
-                    while word != 0 {
-                        let lsb = word.trailing_zeros() as usize;
-                        nbrs[idx] = (j * 64 + lsb) as u32;
-                        idx += 1;
-                        word &= word - 1;
-                    }
-                }
-                let mut edges = 0u64;
-                for i in 0..klen {
-                    let u = nbrs[i] as usize;
-                    let ub = u * w;
-                    for &other in &nbrs[i + 1..klen] {
-                        let x = other as usize;
-                        let bit = (self.bitset[ub + (x >> 6)] >> (x & 63)) & 1;
-                        edges += bit;
-                    }
-                }
-                return total_pairs - edges;
-            }
+        // Hardware popcount makes dense scans win sooner. Keep the portable
+        // path's earlier break-even for targets where each word costs more.
+        let sparse_threshold = if self.hardware_popcount { w } else { 2 * w };
+        let klen = k as usize;
+        if k < sparse_threshold as u64 && klen <= 256 {
+            return self.fill_count_of_bs_sparse(vbs, klen, w, total_pairs);
         }
 
         // Dense fallback: O(k · w).
-        let mut doubled = 0u64;
+        let mut edges = 0u64;
         for j in 0..w {
             let mut word = vbs[j];
             while word != 0 {
@@ -572,12 +733,37 @@ impl EliminationGraph {
                 let u = j * 64 + lsb;
                 let ub = u * w;
                 let ubs = &self.bitset[ub..ub + w];
-                for l in 0..w {
-                    doubled += (ubs[l] & vbs[l]).count_ones() as u64;
-                }
+                word &= word - 1;
+                edges += popcount(ubs[j] & word);
+                edges += intersection_popcount_by(&ubs[j + 1..], &vbs[j + 1..], popcount);
+            }
+        }
+        total_pairs - edges
+    }
+
+    #[inline(never)]
+    fn fill_count_of_bs_sparse(&self, vbs: &[u64], klen: usize, w: usize, total_pairs: u64) -> u64 {
+        let mut nbrs = [0u32; 256];
+        let mut idx = 0;
+        for (j, &v_word) in vbs.iter().enumerate() {
+            let mut word = v_word;
+            while word != 0 {
+                let lsb = word.trailing_zeros() as usize;
+                nbrs[idx] = (j * 64 + lsb) as u32;
+                idx += 1;
                 word &= word - 1;
             }
         }
-        total_pairs - doubled / 2
+        let mut edges = 0u64;
+        for i in 0..klen {
+            let u = nbrs[i] as usize;
+            let ub = u * w;
+            for &other in &nbrs[i + 1..klen] {
+                let x = other as usize;
+                let bit = (self.bitset[ub + (x >> 6)] >> (x & 63)) & 1;
+                edges += bit;
+            }
+        }
+        total_pairs - edges
     }
 }

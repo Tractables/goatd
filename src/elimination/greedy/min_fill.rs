@@ -184,6 +184,7 @@ impl ElimPolicy for MinFill<'_> {
     }
 
     fn eliminate_with_fill(&mut self, graph: &mut EliminationGraph, v: u32, nbrs: &[u32]) {
+        self.affected.prepare_inside(graph, v, nbrs);
         graph.eliminate_with_nbrs_record_fill(v, nbrs, &mut self.fill_edges);
     }
 

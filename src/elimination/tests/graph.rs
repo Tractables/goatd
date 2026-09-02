@@ -73,6 +73,66 @@ fn fill_count_is_the_edges_missing_among_the_neighbours() {
 }
 
 #[test]
+fn bitset_difference_counts_only_left_neighbours() {
+    let graph = EliminationGraph::from_edges(4, &[(0, 1), (0, 2), (0, 3), (1, 2)]);
+    assert!(graph.bitset_words > 0);
+    assert_eq!(graph.bitset_difference_count(0, 1), 2);
+    assert_eq!(graph.bitset_difference_count(1, 0), 1);
+}
+
+#[test]
+fn bitset_intersection_count_handles_four_word_chunks_and_tail() {
+    let left = [
+        0xffff,
+        u64::MAX,
+        0,
+        0xf0f0,
+        1,
+        1 << 63,
+        0xaaaa,
+        0x0f0f,
+        0b1100,
+    ];
+    let right = [
+        0x00ff,
+        0x5555_5555_5555_5555,
+        u64::MAX,
+        0x3333,
+        1,
+        1 << 63,
+        0x5555,
+        0x00ff,
+        0b1010,
+    ];
+
+    assert_eq!(intersection_popcount(&left, &right), 51);
+}
+
+#[test]
+fn dense_fill_count_handles_a_partial_final_word() {
+    let mut edges = Vec::new();
+    for vertex in 1..=130 {
+        edges.push((0, vertex));
+    }
+    for vertex in 1..130 {
+        edges.push((vertex, vertex + 1));
+    }
+    for left in 131..171 {
+        for right in (left + 1)..171 {
+            edges.push((left, right));
+        }
+    }
+
+    let graph = EliminationGraph::from_edges(300, &edges);
+    assert_eq!(graph.bitset_words, 5);
+    assert_eq!(graph.fill_count_of_bs(0), 8_256);
+    assert_eq!(
+        graph.fill_count_of_bs(0),
+        graph.fill_count_of_bs_portable(0)
+    );
+}
+
+#[test]
 fn promote_bitset_from_sparse_graph() {
     let n = 200u32;
     let edges: Vec<(u32, u32)> = (0..n - 1).map(|v| (v, v + 1)).collect();
@@ -81,6 +141,8 @@ fn promote_bitset_from_sparse_graph() {
     assert!(!g.should_promote_bitset(), "sparse density below threshold");
     g.promote_bitset();
     assert!(g.bitset_words > 0, "bitset populated after promotion");
+    assert_eq!(g.degree(0), 1);
+    assert_eq!(g.degree(100), 2);
     for v in 0..n - 1 {
         assert!(g.contains_edge(v, v + 1));
         assert!(g.contains_edge(v + 1, v));
@@ -121,4 +183,30 @@ fn eliminating_a_vertex_replaces_its_edges_with_the_fill_edge() {
     assert!(!g.active[1]);
     assert_eq!(g.num_active, 2);
     assert_eq!(g.num_edges, 1);
+}
+
+#[test]
+fn cached_bitset_degrees_follow_fill_and_removal() {
+    let mut graph = EliminationGraph::from_edges(4, &[(0, 1), (0, 2), (0, 3), (1, 2)]);
+    assert!(graph.bitset_words > 0);
+    graph.add_edge(2, 3);
+    assert_bitset_degrees(&graph);
+
+    graph.eliminate(0);
+    assert_bitset_degrees(&graph);
+
+    let neighbours = graph.live_neighbours(1);
+    graph.remove_without_fill_nbrs(1, &neighbours);
+    assert_bitset_degrees(&graph);
+}
+
+fn assert_bitset_degrees(graph: &EliminationGraph) {
+    for vertex in 0..graph.len() {
+        let start = vertex * graph.bitset_words;
+        let actual = graph.bitset[start..start + graph.bitset_words]
+            .iter()
+            .map(|word| word.count_ones() as usize)
+            .sum::<usize>();
+        assert_eq!(graph.degree(vertex as u32), actual, "vertex {vertex}");
+    }
 }
