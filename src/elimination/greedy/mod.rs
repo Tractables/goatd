@@ -344,7 +344,18 @@ impl Hasher for PriorityHasher {
     }
 }
 
-type PriorityBuckets = HashMap<u64, Bucket, BuildHasherDefault<PriorityHasher>>;
+type PriorityHashMap = HashMap<u64, Bucket, BuildHasherDefault<PriorityHasher>>;
+
+const MAX_DENSE_PRIORITY_KEY: usize = (1 << 16) - 1;
+
+#[derive(Clone)]
+enum PriorityBuckets {
+    Dense {
+        slots: Vec<Option<Bucket>>,
+        max_key: usize,
+    },
+    Hashed(PriorityHashMap),
+}
 
 #[derive(Clone, Copy)]
 struct BucketPosition {
@@ -378,8 +389,18 @@ pub(super) struct BucketMap<'a> {
 
 impl<'a> BucketMap<'a> {
     fn with_weights(weights: &'a [u32], uniform_mass: Option<u64>) -> Self {
+        // Most fill-based priorities stay close to the vertex count. Direct
+        // slots avoid hashing there; a cap bounds their allocation before a
+        // large score switches the map to hashed storage.
+        let max_dense_key = weights
+            .len()
+            .saturating_mul(4)
+            .clamp(256, MAX_DENSE_PRIORITY_KEY);
         BucketMap {
-            buckets: PriorityBuckets::default(),
+            buckets: PriorityBuckets::Dense {
+                slots: Vec::new(),
+                max_key: max_dense_key,
+            },
             minimum_key: None,
             minimum_dirty: false,
             spare_vertices: Vec::new(),
@@ -390,15 +411,43 @@ impl<'a> BucketMap<'a> {
     }
 
     fn insert(&mut self, v: u32, key: u64) {
-        let bucket = match self.buckets.entry(key) {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => {
-                self.minimum_key = Some(self.minimum_key.map_or(key, |minimum| minimum.min(key)));
-                entry.insert(Bucket {
-                    vertices: self.spare_vertices.pop().unwrap_or_default(),
-                    sampling_mass: 0,
-                })
+        let dense_key = usize::try_from(key).ok();
+        let promote = matches!(
+            &self.buckets,
+            PriorityBuckets::Dense { max_key, .. }
+                if dense_key.is_none_or(|key| key > *max_key)
+        );
+        if promote {
+            self.promote_buckets_to_hash();
+        }
+
+        let bucket = match &mut self.buckets {
+            PriorityBuckets::Dense { slots, .. } => {
+                let key_index = dense_key.expect("dense priority key");
+                if key_index >= slots.len() {
+                    slots.resize_with(key_index + 1, || None);
+                }
+                if slots[key_index].is_none() {
+                    self.minimum_key =
+                        Some(self.minimum_key.map_or(key, |minimum| minimum.min(key)));
+                    slots[key_index] = Some(Bucket {
+                        vertices: self.spare_vertices.pop().unwrap_or_default(),
+                        sampling_mass: 0,
+                    });
+                }
+                slots[key_index].as_mut().expect("inserted priority bucket")
             }
+            PriorityBuckets::Hashed(buckets) => match buckets.entry(key) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    self.minimum_key =
+                        Some(self.minimum_key.map_or(key, |minimum| minimum.min(key)));
+                    entry.insert(Bucket {
+                        vertices: self.spare_vertices.pop().unwrap_or_default(),
+                        sampling_mass: 0,
+                    })
+                }
+            },
         };
         let idx = bucket.vertices.len();
         bucket.vertices.push(v);
@@ -418,30 +467,68 @@ impl<'a> BucketMap<'a> {
 
     #[inline]
     fn remove_at(&mut self, v: u32, position: BucketPosition) {
-        let mut entry = match self.buckets.entry(position.key) {
-            Entry::Occupied(entry) => entry,
-            Entry::Vacant(_) => panic!("bucket missing"),
-        };
-        let bucket = entry.get_mut();
-        if self.uniform_mass.is_none() {
-            bucket.sampling_mass -= sampling_mass(self.weights[v as usize]);
+        match &mut self.buckets {
+            PriorityBuckets::Dense { slots, .. } => {
+                let key = usize::try_from(position.key).expect("dense priority key");
+                let bucket = slots[key].as_mut().expect("bucket missing");
+                if Self::remove_from_bucket(
+                    bucket,
+                    &mut self.position,
+                    self.weights,
+                    self.uniform_mass,
+                    v,
+                    position,
+                ) {
+                    let bucket = slots[key].take().expect("bucket missing");
+                    self.spare_vertices.push(bucket.vertices);
+                    self.minimum_dirty |= self.minimum_key == Some(position.key);
+                }
+            }
+            PriorityBuckets::Hashed(buckets) => {
+                let mut entry = match buckets.entry(position.key) {
+                    Entry::Occupied(entry) => entry,
+                    Entry::Vacant(_) => panic!("bucket missing"),
+                };
+                let bucket = entry.get_mut();
+                if Self::remove_from_bucket(
+                    bucket,
+                    &mut self.position,
+                    self.weights,
+                    self.uniform_mass,
+                    v,
+                    position,
+                ) {
+                    let (_, bucket) = entry.remove_entry();
+                    self.spare_vertices.push(bucket.vertices);
+                    self.minimum_dirty |= self.minimum_key == Some(position.key);
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn remove_from_bucket(
+        bucket: &mut Bucket,
+        positions: &mut [BucketPosition],
+        weights: &[u32],
+        uniform_mass: Option<u64>,
+        v: u32,
+        position: BucketPosition,
+    ) -> bool {
+        if uniform_mass.is_none() {
+            bucket.sampling_mass -= sampling_mass(weights[v as usize]);
         }
         let last_idx = bucket.vertices.len() - 1;
         if position.index != last_idx {
             let moved = bucket.vertices[last_idx];
             bucket.vertices[position.index] = moved;
-            self.position[moved as usize] = BucketPosition {
+            positions[moved as usize] = BucketPosition {
                 key: position.key,
                 index: position.index,
             };
         }
         bucket.vertices.pop();
-        let empty = bucket.vertices.is_empty();
-        if empty {
-            let (_, bucket) = entry.remove_entry();
-            self.spare_vertices.push(bucket.vertices);
-            self.minimum_dirty |= self.minimum_key == Some(position.key);
-        }
+        bucket.vertices.is_empty()
     }
 
     fn update(&mut self, v: u32, new_key: u64) {
@@ -458,11 +545,24 @@ impl<'a> BucketMap<'a> {
 
     fn min_bucket(&mut self) -> Option<(u64, &[u32], u64)> {
         if self.minimum_dirty {
-            self.minimum_key = self.buckets.keys().copied().min();
+            self.minimum_key = match &self.buckets {
+                PriorityBuckets::Dense { slots, .. } => {
+                    let start = self
+                        .minimum_key
+                        .and_then(|key| usize::try_from(key).ok())
+                        .unwrap_or(0)
+                        .min(slots.len());
+                    slots[start..]
+                        .iter()
+                        .position(Option::is_some)
+                        .map(|offset| (start + offset) as u64)
+                }
+                PriorityBuckets::Hashed(buckets) => buckets.keys().copied().min(),
+            };
             self.minimum_dirty = false;
         }
         self.minimum_key.map(|key| {
-            let bucket = self.buckets.get(&key).expect("minimum bucket missing");
+            let bucket = self.bucket(key).expect("minimum bucket missing");
             let mass = self.uniform_mass.map_or(bucket.sampling_mass, |mass| {
                 mass * bucket.vertices.len() as u64
             });
@@ -473,6 +573,33 @@ impl<'a> BucketMap<'a> {
     fn key_of(&self, v: u32) -> Option<u64> {
         let position = self.position[v as usize];
         (!position.is_vacant()).then_some(position.key)
+    }
+
+    fn bucket(&self, key: u64) -> Option<&Bucket> {
+        match &self.buckets {
+            PriorityBuckets::Dense { slots, .. } => usize::try_from(key)
+                .ok()
+                .and_then(|key| slots.get(key))
+                .and_then(Option::as_ref),
+            PriorityBuckets::Hashed(buckets) => buckets.get(&key),
+        }
+    }
+
+    fn promote_buckets_to_hash(&mut self) {
+        let PriorityBuckets::Dense { slots, .. } = std::mem::replace(
+            &mut self.buckets,
+            PriorityBuckets::Hashed(PriorityHashMap::default()),
+        ) else {
+            return;
+        };
+        let PriorityBuckets::Hashed(buckets) = &mut self.buckets else {
+            unreachable!();
+        };
+        for (key, bucket) in slots.into_iter().enumerate() {
+            if let Some(bucket) = bucket {
+                buckets.insert(key as u64, bucket);
+            }
+        }
     }
 }
 

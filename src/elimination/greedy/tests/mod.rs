@@ -71,7 +71,7 @@ fn uniform_priority_buckets_derive_mass_from_their_length() {
     buckets.insert(0, 3);
     buckets.insert(1, 3);
 
-    assert_eq!(buckets.buckets.get(&3).unwrap().sampling_mass, 0);
+    assert_eq!(buckets.bucket(3).unwrap().sampling_mass, 0);
     assert_eq!(buckets.min_bucket().unwrap().2, 2 * mass);
     buckets.remove_vertex(0);
     assert_eq!(buckets.min_bucket().unwrap().2, mass);
@@ -104,6 +104,22 @@ fn priority_buckets_recompute_an_emptied_minimum() {
 }
 
 #[test]
+fn priority_buckets_preserve_entries_when_falling_back_to_hashing() {
+    let weights = [1, 1];
+    let mut buckets = super::BucketMap::with_weights(&weights, Some(super::sampling_mass(1)));
+
+    buckets.insert(0, 3);
+    buckets.insert(1, u64::MAX);
+    assert!(matches!(buckets.buckets, super::PriorityBuckets::Hashed(_)));
+    assert_eq!(buckets.min_bucket().unwrap().0, 3);
+
+    buckets.remove_vertex(0);
+    let (key, vertices, _) = buckets.min_bucket().unwrap();
+    assert_eq!(key, u64::MAX);
+    assert_eq!(vertices, &[1]);
+}
+
+#[test]
 fn bucket_positions_use_less_space_than_the_optional_tuple() {
     assert!(
         std::mem::size_of::<super::BucketPosition>() < std::mem::size_of::<Option<(u64, usize)>>()
@@ -116,16 +132,13 @@ fn empty_priority_buckets_reuse_their_vertex_storage() {
     let mut buckets = super::BucketMap::with_weights(&weights, Some(super::sampling_mass(1)));
 
     buckets.insert(0, 3);
-    let capacity = buckets.buckets.get(&3).unwrap().vertices.capacity();
+    let capacity = buckets.bucket(3).unwrap().vertices.capacity();
     buckets.remove_vertex(0);
     assert_eq!(buckets.spare_vertices.len(), 1);
 
     buckets.insert(0, 7);
     assert!(buckets.spare_vertices.is_empty());
-    assert_eq!(
-        buckets.buckets.get(&7).unwrap().vertices.capacity(),
-        capacity
-    );
+    assert_eq!(buckets.bucket(7).unwrap().vertices.capacity(), capacity);
 }
 
 #[test]
