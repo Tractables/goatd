@@ -118,11 +118,6 @@ goatd has no accompanying paper, so cite the software:
 }
 ```
 
-Name the version you ran. [CITATION.cff](CITATION.cff) holds the same metadata
-for GitHub's "Cite this repository" button, which generates a `@software`
-entry; the entry above is `@misc` because the `plain` and `apalike` styles have
-no URL field and print such an entry without its link.
-
 ## Licence
 
 Apache-2.0. Vendored code and modifications are recorded in
