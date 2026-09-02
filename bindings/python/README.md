@@ -1,7 +1,28 @@
 # goatd for Python
 
+<p align="center">
+  <a href="https://github.com/Tractables/goatd"><img
+     src="https://raw.githubusercontent.com/Tractables/goatd/main/docs/logo.png"
+     alt="goatd logo" width="280"></a>
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/goatd/"><img
+     src="https://img.shields.io/pypi/v/goatd.svg" alt="PyPI"></a>
+  <a href="https://pypi.org/project/goatd/"><img
+     src="https://img.shields.io/pypi/pyversions/goatd.svg" alt="Python versions"></a>
+  <a href="https://github.com/Tractables/goatd/actions/workflows/wheels.yml"><img
+     src="https://github.com/Tractables/goatd/actions/workflows/wheels.yml/badge.svg"
+     alt="Wheels"></a>
+  <a href="https://github.com/Tractables/goatd/blob/main/LICENSE"><img
+     src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"
+     alt="License: Apache-2.0"></a>
+</p>
+
 Python bindings for [goatd](https://github.com/Tractables/goatd), built with
 [PyO3](https://pyo3.rs) and [maturin](https://www.maturin.rs).
+
+## Install
 
 ```sh
 pip install goatd
@@ -10,6 +31,8 @@ pip install goatd
 Wheels cover CPython 3.10 and later on Linux x86-64, macOS arm64 and Windows
 x64. Anywhere else, pip builds from the source distribution, which needs a
 Rust toolchain and a C++20 compiler.
+
+## Use
 
 ```python
 import goatd
@@ -23,6 +46,8 @@ td.edges            # [(0, 1), (1, 2), (2, 3)] — pairs of positions in td.bags
 td.validate(graph)  # raises goatd.Error if td does not decompose graph
 print(td.to_td())   # PACE .td text
 ```
+
+## Options and formats
 
 `decompose` takes the solver's knobs under the solver's names: `order` is one
 of `minfill`, `mindegree`, `nested-dissection`, `flowcutter` and `portfolio`;
@@ -39,11 +64,10 @@ line's `--budget`.
 goatd is single-threaded. The interpreter lock is released for the whole of a
 solve, so a caller can decompose several graphs at once from Python threads.
 
-## Building
+## Building from source
 
-The extension builds against the published `goatd` crate rather than the
-checkout around it, so it needs a Rust toolchain, a C++20 compiler for the
-vendored FlowCutter, and maturin.
+The extension builds the goatd sources in the repository, so it needs a Rust
+toolchain, a C++20 compiler for the vendored FlowCutter, and maturin.
 
 PEP 639 resolves `license-files` against the directory holding
 `pyproject.toml` and forbids `..`, so the two notice files are copied in from
