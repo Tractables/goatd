@@ -62,12 +62,22 @@ fn extra_sample<'a>(
 
     debug_assert!(diverse_runs <= config::DIVERSE_SAMPLING_RUNS);
     if index < diverse_runs {
-        let degree_coefficient = config::DIVERSE_DEGREE_COEFFICIENTS[index as usize];
+        let initial_runs = config::DIVERSE_INITIAL_COEFFICIENTS.len() as u64;
+        let (degree_coefficient, score_seed_index) = if index < initial_runs {
+            (config::DIVERSE_INITIAL_COEFFICIENTS[index as usize], 0)
+        } else {
+            let replay_index = index - initial_runs;
+            let replay_runs = config::DIVERSE_REPLAY_COEFFICIENTS.len() as u64;
+            (
+                config::DIVERSE_REPLAY_COEFFICIENTS[(replay_index % replay_runs) as usize],
+                1 + replay_index / replay_runs,
+            )
+        };
         let order = Order::FillDegreeSampled {
             weights,
             degree_coefficient,
         };
-        return Some((order, sample_seed(base_seed, 0)));
+        return Some((order, sample_seed(base_seed, score_seed_index)));
     }
 
     let ordinary_index = index - diverse_runs;

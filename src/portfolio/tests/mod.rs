@@ -63,7 +63,7 @@ fn a_ten_second_outer_window_with_output_headroom_raises_the_sampling_cap() {
 
     assert_eq!(config.soft_budget, Some(budget));
     assert_eq!(config.sampling_runs, 1_000);
-    assert_eq!(config.diverse_sampling_runs, 9);
+    assert_eq!(config.diverse_sampling_runs, 46);
     assert_eq!(config.flowcutter_budget, Some(budget));
 }
 
@@ -76,17 +76,17 @@ fn an_explicit_hard_budget_does_not_change_the_soft_schedule() {
     assert_eq!(config.soft_budget, Some(soft));
     assert_eq!(config.hard_budget, Some(hard));
     assert_eq!(config.sampling_runs, 1_000);
-    assert_eq!(config.diverse_sampling_runs, 9);
+    assert_eq!(config.diverse_sampling_runs, 46);
     assert_eq!(config.flowcutter_budget, Some(soft));
 }
 
 #[test]
 fn diverse_samples_precede_the_complete_ordinary_schedule() {
     let weights = [1; 3];
-    let expected_coefficients = [1, -1, -2, -3, -4, -5, -8, -7, -16];
+    let expected_coefficients = [1, -1, -2, -3, -4, -5, -8, -7, -16, -32];
 
     for (index, expected) in expected_coefficients.into_iter().enumerate() {
-        let (order, _) = extra_sample(0, false, 1_000, 9, index as u64, &weights).unwrap();
+        let (order, _) = extra_sample(0, false, 1_000, 46, index as u64, &weights).unwrap();
         let Order::FillDegreeSampled {
             degree_coefficient, ..
         } = order
@@ -96,33 +96,50 @@ fn diverse_samples_precede_the_complete_ordinary_schedule() {
         assert_eq!(degree_coefficient, expected);
     }
     assert!(matches!(
-        extra_sample(0, false, 1_000, 9, 9, &weights),
+        extra_sample(0, false, 1_000, 46, 46, &weights),
         Some((Order::MinFillSampled { .. }, _))
     ));
     assert!(matches!(
-        extra_sample(0, false, 1_000, 9, 1_008, &weights),
+        extra_sample(0, false, 1_000, 46, 1_045, &weights),
         Some((Order::MinFillSampled { .. }, _))
     ));
-    assert!(extra_sample(0, false, 1_000, 9, 1_009, &weights).is_none());
+    assert!(extra_sample(0, false, 1_000, 46, 1_046, &weights).is_none());
     assert!(matches!(
-        extra_sample(0, true, 1_000, 9, 999, &weights),
+        extra_sample(0, true, 1_000, 46, 999, &weights),
         Some((Order::MinDegreeSampled { .. }, _))
     ));
-    assert!(extra_sample(0, true, 1_000, 9, 1_000, &weights).is_none());
+    assert!(extra_sample(0, true, 1_000, 46, 1_000, &weights).is_none());
 }
 
 #[test]
 fn diverse_samples_do_not_shift_the_ordinary_seed_stream() {
     let base_seed = 17;
     let weights = [1; 3];
+    let replay_coefficients = [-3, -5, -8, -16];
 
-    for index in 0..9 {
-        let (_, diverse_seed) = extra_sample(base_seed, false, 1_000, 9, index, &weights).unwrap();
+    for index in 0..10 {
+        let (_, diverse_seed) = extra_sample(base_seed, false, 1_000, 46, index, &weights).unwrap();
         assert_eq!(diverse_seed, sample_seed(base_seed, 0));
     }
-    let (_, first_ordinary_seed) = extra_sample(base_seed, false, 1_000, 9, 9, &weights).unwrap();
+    for replay_seed_index in 1u64..=9 {
+        for (coefficient_index, expected_coefficient) in replay_coefficients.into_iter().enumerate()
+        {
+            let index = 10 + (replay_seed_index - 1) * 4 + coefficient_index as u64;
+            let (order, diverse_seed) =
+                extra_sample(base_seed, false, 1_000, 46, index, &weights).unwrap();
+            let Order::FillDegreeSampled {
+                degree_coefficient, ..
+            } = order
+            else {
+                panic!("replayed diverse sample did not use a fill-degree order");
+            };
+            assert_eq!(degree_coefficient, expected_coefficient);
+            assert_eq!(diverse_seed, sample_seed(base_seed, replay_seed_index));
+        }
+    }
+    let (_, first_ordinary_seed) = extra_sample(base_seed, false, 1_000, 46, 46, &weights).unwrap();
     let (_, last_ordinary_seed) =
-        extra_sample(base_seed, false, 1_000, 9, 1_008, &weights).unwrap();
+        extra_sample(base_seed, false, 1_000, 46, 1_045, &weights).unwrap();
 
     assert_eq!(first_ordinary_seed, sample_seed(base_seed, 0));
     assert_eq!(last_ordinary_seed, sample_seed(base_seed, 999));
