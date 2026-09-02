@@ -80,6 +80,25 @@ impl Graph {
     }
 }
 
+fn push_decimal(buffer: &mut Vec<u8>, mut value: usize) {
+    let start = buffer.len();
+    loop {
+        buffer.push(b'0' + (value % 10) as u8);
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    buffer[start..].reverse();
+}
+
+fn write_line(out: &mut impl Write, buffer: &mut Vec<u8>) -> io::Result<()> {
+    buffer.push(b'\n');
+    out.write_all(buffer)?;
+    buffer.clear();
+    Ok(())
+}
+
 impl TreeDecomposition {
     /// Write this decomposition in PACE `.td` format.
     ///
@@ -90,9 +109,13 @@ impl TreeDecomposition {
     ///
     /// Returns an I/O error from `out`.
     pub fn write_td(&self, mut out: impl Write) -> io::Result<()> {
+        let mut line = Vec::with_capacity(128);
         if self.bags.is_empty() {
-            writeln!(out, "s td 1 0 {}", self.num_vertices)?;
-            writeln!(out, "b 1")?;
+            line.extend_from_slice(b"s td 1 0 ");
+            push_decimal(&mut line, self.num_vertices as usize);
+            write_line(&mut out, &mut line)?;
+            line.extend_from_slice(b"b 1");
+            write_line(&mut out, &mut line)?;
             return Ok(());
         }
         let max_bag = self
@@ -101,24 +124,29 @@ impl TreeDecomposition {
             .map(|b| b.vertices.len())
             .max()
             .unwrap_or(0);
-        writeln!(
-            out,
-            "s td {} {} {}",
-            self.bags.len(),
-            max_bag,
-            self.num_vertices
-        )?;
+        line.extend_from_slice(b"s td ");
+        push_decimal(&mut line, self.bags.len());
+        line.push(b' ');
+        push_decimal(&mut line, max_bag);
+        line.push(b' ');
+        push_decimal(&mut line, self.num_vertices as usize);
+        write_line(&mut out, &mut line)?;
         for (bag_id, bag) in self.bags.iter().enumerate() {
-            write!(out, "b {}", bag_id + 1)?;
+            line.extend_from_slice(b"b ");
+            push_decimal(&mut line, bag_id + 1);
             for &v in &bag.vertices {
-                write!(out, " {}", v + 1)?;
+                line.push(b' ');
+                push_decimal(&mut line, v as usize + 1);
             }
-            writeln!(out)?;
+            write_line(&mut out, &mut line)?;
         }
         for (i, nbs) in self.adj.iter().enumerate() {
             for &j in nbs {
                 if i < j {
-                    writeln!(out, "{} {}", i + 1, j + 1)?;
+                    push_decimal(&mut line, i + 1);
+                    line.push(b' ');
+                    push_decimal(&mut line, j + 1);
+                    write_line(&mut out, &mut line)?;
                 }
             }
         }
@@ -141,7 +169,10 @@ impl TreeDecomposition {
             }
         }
         for roots in component_roots.windows(2) {
-            writeln!(out, "{} {}", roots[0] + 1, roots[1] + 1)?;
+            push_decimal(&mut line, roots[0] + 1);
+            line.push(b' ');
+            push_decimal(&mut line, roots[1] + 1);
+            write_line(&mut out, &mut line)?;
         }
         Ok(())
     }

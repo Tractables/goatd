@@ -1,6 +1,26 @@
 //! PACE text: what a `.gr` and a `.td` parse to, and what a rejection names.
 
+use std::io::{self, Write};
+
 use goatd::{Graph, TreeDecomposition};
+
+#[derive(Default)]
+struct WriteCounter {
+    bytes: Vec<u8>,
+    calls: usize,
+}
+
+impl Write for WriteCounter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.calls += 1;
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 #[test]
 fn a_gr_file_parses_to_a_canonical_graph_and_writes_back_the_same() {
@@ -101,6 +121,23 @@ fn a_td_can_be_written_directly_to_an_io_writer() {
     td.write_td(&mut written).expect("write the decomposition");
 
     assert_eq!(written, expected.as_bytes());
+}
+
+#[test]
+fn td_output_is_batched_by_line() {
+    let expected = "s td 2 2 3\nb 1 1 2\nb 2 2 3\n1 2\n";
+    let td = TreeDecomposition::from_td(expected).expect("a well-formed .td");
+    let mut written = WriteCounter::default();
+
+    td.write_td(&mut written).expect("write the decomposition");
+
+    assert_eq!(written.bytes, expected.as_bytes());
+    assert!(
+        written.calls <= expected.lines().count(),
+        "{} writes for {} lines",
+        written.calls,
+        expected.lines().count(),
+    );
 }
 
 #[test]
