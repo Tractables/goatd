@@ -203,7 +203,9 @@ fn the_settling_test_ignores_a_rotated_frame() {
     // one round to the next when two eigenvalues are close.
     let coords: [f32; 8] = [0.0, 1.0, 2.0, -1.0, -0.5, 0.25, 1.5, 3.0];
     let turned: Vec<f32> = coords
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .flat_map(|row| [-row[1], row[0]])
         .collect();
     let starts: [usize; 5] = [0, 1, 3, 5, 6];
