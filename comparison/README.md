@@ -21,6 +21,10 @@ Serve this directory with any static file server. For example:
 python3 -m http.server 8000
 ```
 
+Without a browser on the host, `scripts/render-comparison.sh <name> [light|dark]`
+(from the repository root) writes `tmp/render/<name>.png` with headless
+Chrome, in either colour scheme.
+
 The page loads `results.json` by default. Load the synthetic interface fixture
 explicitly when developing the view:
 

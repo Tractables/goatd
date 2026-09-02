@@ -4,6 +4,7 @@ const numberFormat = new Intl.NumberFormat("en");
 const profileDeltas = BenchmarkPresentation.profileDeltas;
 const profileStyles = {
   "goatd-portfolio": { color: "#2070a8", dash: "" },
+  "goatd-portfolio-main-9d9bf84": { color: "#2070a8", dash: "" },
   "goatd-portfolio-refined": { color: "#005587", dash: "8 3" },
   "flowcutter-pace17": { color: "#6b7b8a", dash: "" },
   "htd-default": { color: "#009e73", dash: "9 4" },
