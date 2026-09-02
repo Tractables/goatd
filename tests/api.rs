@@ -123,25 +123,10 @@ fn sampled_constructions_check_the_weight_count() {
     assert!(
         decompose(
             &graph,
-            Order::DegreePlusFillSampled { weights: &weights },
-            0,
-            None,
-        )
-        .is_err()
-    );
-    assert!(
-        decompose(
-            &graph,
-            Order::FillMinusDoubleDegreeSampled { weights: &weights },
-            0,
-            None,
-        )
-        .is_err()
-    );
-    assert!(
-        decompose(
-            &graph,
-            Order::SparsestSubgraphSampled { weights: &weights },
+            Order::FillDegreeSampled {
+                weights: &weights,
+                degree_coefficient: -16,
+            },
             0,
             None,
         )

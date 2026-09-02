@@ -9,7 +9,8 @@ pub(super) const MAX_SAMPLING_RUNS: u64 = 100;
 
 /// Larger budgeted runs keep exploring after the short-run sample cap.
 const EXTENDED_SAMPLING_RUNS: u64 = 1_000;
-pub(super) const DIVERSE_SAMPLING_RUNS: u64 = 3;
+pub(super) const DIVERSE_DEGREE_COEFFICIENTS: [i8; 9] = [1, -1, -2, -3, -4, -5, -8, -7, -16];
+pub(super) const DIVERSE_SAMPLING_RUNS: u64 = DIVERSE_DEGREE_COEFFICIENTS.len() as u64;
 // A 4.75 s soft budget reaches the two-stage hard deadline at 9.5 s, leaving
 // output headroom under a ten-second process limit.
 const EXTENDED_SAMPLING_MIN_SOFT_BUDGET: Duration = Duration::from_millis(4_750);

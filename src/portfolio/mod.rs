@@ -62,11 +62,10 @@ fn extra_sample<'a>(
 
     debug_assert!(diverse_runs <= config::DIVERSE_SAMPLING_RUNS);
     if index < diverse_runs {
-        let order = match index {
-            0 => Order::DegreePlusFillSampled { weights },
-            1 => Order::SparsestSubgraphSampled { weights },
-            2 => Order::FillMinusDoubleDegreeSampled { weights },
-            _ => unreachable!("there are only three diverse sampled orders"),
+        let degree_coefficient = config::DIVERSE_DEGREE_COEFFICIENTS[index as usize];
+        let order = Order::FillDegreeSampled {
+            weights,
+            degree_coefficient,
         };
         return Some((order, sample_seed(base_seed, 0)));
     }
@@ -249,8 +248,8 @@ fn run_portfolio(
     // base portfolio returns in tens of ms. Falls back to sampled min-degree on
     // large residuals, matching the main loop's skip rule. A started extra
     // sample stops at the soft deadline so it cannot consume the trailing
-    // FlowCutter and output interval. On extended small/medium runs, two
-    // diverse scores precede the complete ordinary min-fill seed sequence.
+    // FlowCutter and output interval. On extended small/medium runs, diverse
+    // fill-degree scores precede the complete ordinary min-fill seed sequence.
     let max_samples = config.sampling_runs;
     let diverse_samples = if large_residual {
         0

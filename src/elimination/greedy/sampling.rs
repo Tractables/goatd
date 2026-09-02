@@ -19,23 +19,22 @@ use crate::rng::{SEED_OFFSET, Xorshift64};
 #[derive(Clone, Copy)]
 enum FillPriority {
     Fill,
-    DegreePlusFill,
-    SparsestSubgraph,
-    FillMinusDoubleDegree,
+    FillDegree(i8),
 }
 
 impl FillPriority {
     fn key(self, fill: u64, degree: u64, vertex_count: u64) -> u64 {
         match self {
             Self::Fill => fill,
-            Self::DegreePlusFill => fill.saturating_add(degree),
-            Self::SparsestSubgraph => {
-                debug_assert!(degree <= vertex_count);
-                fill + vertex_count - degree
+            Self::FillDegree(degree_coefficient) if degree_coefficient >= 0 => {
+                fill.saturating_add(degree.saturating_mul(degree_coefficient as u64))
             }
-            Self::FillMinusDoubleDegree => {
+            Self::FillDegree(degree_coefficient) => {
                 debug_assert!(degree <= vertex_count);
-                fill.saturating_add((vertex_count - degree).saturating_mul(2))
+                fill.saturating_add(
+                    (vertex_count - degree)
+                        .saturating_mul(u64::from(degree_coefficient.unsigned_abs())),
+                )
             }
         }
     }
@@ -93,15 +92,16 @@ pub(crate) fn eliminate_sampled_min_fill(
     )
 }
 
-/// Degree-plus-fill elimination with weighted sampling from the complete
-/// minimum-score tie set.
-pub(crate) fn eliminate_sampled_degree_plus_fill(
+/// Fill-plus-coefficient-times-degree elimination with weighted sampling from
+/// the complete minimum-score tie set.
+pub(crate) fn eliminate_sampled_fill_degree(
     graph: &mut EliminationGraph,
     weights: &[u32],
     seed: u64,
     sink: ElimSink<'_>,
     stop: ElimStop,
     initial_fill: Option<&[u64]>,
+    degree_coefficient: i8,
 ) -> ElimExit {
     eliminate_sampled_fill_based(
         graph,
@@ -110,49 +110,7 @@ pub(crate) fn eliminate_sampled_degree_plus_fill(
         sink,
         stop,
         initial_fill,
-        FillPriority::DegreePlusFill,
-    )
-}
-
-/// Fill-minus-degree elimination with weighted sampling from the complete
-/// minimum-score tie set.
-pub(crate) fn eliminate_sampled_sparsest_subgraph(
-    graph: &mut EliminationGraph,
-    weights: &[u32],
-    seed: u64,
-    sink: ElimSink<'_>,
-    stop: ElimStop,
-    initial_fill: Option<&[u64]>,
-) -> ElimExit {
-    eliminate_sampled_fill_based(
-        graph,
-        weights,
-        seed,
-        sink,
-        stop,
-        initial_fill,
-        FillPriority::SparsestSubgraph,
-    )
-}
-
-/// Fill-minus-double-degree elimination with weighted sampling from the
-/// complete minimum-score tie set.
-pub(crate) fn eliminate_sampled_fill_minus_double_degree(
-    graph: &mut EliminationGraph,
-    weights: &[u32],
-    seed: u64,
-    sink: ElimSink<'_>,
-    stop: ElimStop,
-    initial_fill: Option<&[u64]>,
-) -> ElimExit {
-    eliminate_sampled_fill_based(
-        graph,
-        weights,
-        seed,
-        sink,
-        stop,
-        initial_fill,
-        FillPriority::FillMinusDoubleDegree,
+        FillPriority::FillDegree(degree_coefficient),
     )
 }
 

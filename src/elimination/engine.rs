@@ -7,9 +7,8 @@ use super::build_td::build_td_from_ranked_bags;
 use super::execution::{self, ElimExit, ElimSteps};
 use super::graph::EliminationGraph;
 use super::greedy::{
-    self, eliminate_min_degree, eliminate_min_fill, eliminate_sampled_degree_plus_fill,
-    eliminate_sampled_fill_minus_double_degree, eliminate_sampled_min_degree,
-    eliminate_sampled_min_fill, eliminate_sampled_sparsest_subgraph,
+    self, eliminate_min_degree, eliminate_min_fill, eliminate_sampled_fill_degree,
+    eliminate_sampled_min_degree, eliminate_sampled_min_fill,
 };
 use super::nested_dissection::eliminate_nested_dissection;
 use super::preprocess::{Reduced, preprocess};
@@ -202,7 +201,10 @@ fn run_elimination_raw(
                 ..spec.stop
             },
         ),
-        Order::DegreePlusFillSampled { weights } => eliminate_sampled_degree_plus_fill(
+        Order::FillDegreeSampled {
+            weights,
+            degree_coefficient,
+        } => eliminate_sampled_fill_degree(
             &mut g,
             weights,
             spec.seed,
@@ -212,31 +214,8 @@ fn run_elimination_raw(
                 ..spec.stop
             },
             initial_fill,
+            degree_coefficient,
         ),
-        Order::SparsestSubgraphSampled { weights } => eliminate_sampled_sparsest_subgraph(
-            &mut g,
-            weights,
-            spec.seed,
-            steps.sink(),
-            ElimStop {
-                soft_deadline: None,
-                ..spec.stop
-            },
-            initial_fill,
-        ),
-        Order::FillMinusDoubleDegreeSampled { weights } => {
-            eliminate_sampled_fill_minus_double_degree(
-                &mut g,
-                weights,
-                spec.seed,
-                steps.sink(),
-                ElimStop {
-                    soft_deadline: None,
-                    ..spec.stop
-                },
-                initial_fill,
-            )
-        }
         Order::NestedDissection => {
             eliminate_nested_dissection(&mut g, salt, spec.seed, steps.sink(), spec.stop)
         }

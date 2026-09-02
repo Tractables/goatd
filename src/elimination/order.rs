@@ -26,23 +26,13 @@ pub enum Order<'a> {
         /// Per-vertex weights, one entry per input graph vertex.
         weights: &'a [u32],
     },
-    /// Degree plus fill with weighted sampling from the full minimum-score tie
-    /// set.
-    DegreePlusFillSampled {
+    /// Fill plus `degree_coefficient * degree`, with weighted sampling from
+    /// the full minimum-score tie set.
+    FillDegreeSampled {
         /// Per-vertex weights, one entry per input graph vertex.
         weights: &'a [u32],
-    },
-    /// Fill minus degree with weighted sampling from the full minimum-score
-    /// tie set.
-    SparsestSubgraphSampled {
-        /// Per-vertex weights, one entry per input graph vertex.
-        weights: &'a [u32],
-    },
-    /// Fill minus twice the degree with weighted sampling from the full
-    /// minimum-score tie set.
-    FillMinusDoubleDegreeSampled {
-        /// Per-vertex weights, one entry per input graph vertex.
-        weights: &'a [u32],
+        /// Signed coefficient of the current vertex degree.
+        degree_coefficient: i8,
     },
 }
 
@@ -52,9 +42,7 @@ impl<'a> Order<'a> {
         match self {
             Order::MinFillSampled { weights }
             | Order::MinDegreeSampled { weights }
-            | Order::DegreePlusFillSampled { weights }
-            | Order::SparsestSubgraphSampled { weights }
-            | Order::FillMinusDoubleDegreeSampled { weights } => Some(weights),
+            | Order::FillDegreeSampled { weights, .. } => Some(weights),
             Order::MinFill | Order::MinDegree | Order::NestedDissection => None,
         }
     }
@@ -67,11 +55,12 @@ impl<'a> Order<'a> {
             Order::NestedDissection => Order::NestedDissection,
             Order::MinFillSampled { .. } => Order::MinFillSampled { weights },
             Order::MinDegreeSampled { .. } => Order::MinDegreeSampled { weights },
-            Order::DegreePlusFillSampled { .. } => Order::DegreePlusFillSampled { weights },
-            Order::SparsestSubgraphSampled { .. } => Order::SparsestSubgraphSampled { weights },
-            Order::FillMinusDoubleDegreeSampled { .. } => {
-                Order::FillMinusDoubleDegreeSampled { weights }
-            }
+            Order::FillDegreeSampled {
+                degree_coefficient, ..
+            } => Order::FillDegreeSampled {
+                weights,
+                degree_coefficient,
+            },
         }
     }
 
@@ -79,10 +68,7 @@ impl<'a> Order<'a> {
     pub(super) fn uses_initial_fill_cache(self) -> bool {
         matches!(
             self,
-            Order::MinFillSampled { .. }
-                | Order::DegreePlusFillSampled { .. }
-                | Order::SparsestSubgraphSampled { .. }
-                | Order::FillMinusDoubleDegreeSampled { .. }
+            Order::MinFillSampled { .. } | Order::FillDegreeSampled { .. }
         )
     }
 }
