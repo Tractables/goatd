@@ -42,8 +42,8 @@ impl ElimEntry for DegEntry {
     }
 }
 
-/// Greedy min-degree: rank by current degree, break ties by salt. This is the
-/// degree lookup is cheap enough to update every changed neighbour after an
+/// Greedy min-degree: rank by current degree, break ties by salt. The degree
+/// lookup is cheap enough to update every changed neighbour after an
 /// elimination. Old snapshots remain in the heap and are discarded when they
 /// surface.
 struct MinDegree<'a> {
