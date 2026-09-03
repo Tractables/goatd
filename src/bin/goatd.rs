@@ -70,6 +70,10 @@ options:
   --no-hedge            portfolio only: run every candidate once, on uniform
                         weights, instead of repeating the candidates that read
                         weights on a ranking the portfolio computes itself
+  --capped-restarts     portfolio only: stop the ordinary restarts at their
+                        count instead of drawing seeds until the soft
+                        deadline. Needs --budget: with no deadline the count is
+                        what stops them anyway
   --trace               portfolio only: write one line per candidate and one
                         for the winner to stderr as they complete
   --steps <n>           flowcutter only: a step budget in place of a clock,
@@ -127,6 +131,7 @@ struct Args {
     hedge_random: Option<usize>,
     hedge_reserve: Option<f64>,
     no_hedge: bool,
+    capped_restarts: bool,
     trace: bool,
     steps: Option<u64>,
     refine: bool,
@@ -183,6 +188,7 @@ fn parse_args(argv: &[String]) -> Args {
     let mut hedge_random = None;
     let mut hedge_reserve = None;
     let mut no_hedge = false;
+    let mut capped_restarts = false;
     let mut trace = false;
     let mut steps = None;
     let mut refine = false;
@@ -264,6 +270,7 @@ fn parse_args(argv: &[String]) -> Args {
                 hedge_reserve = Some(fraction);
             }
             "--no-hedge" => no_hedge = true,
+            "--capped-restarts" => capped_restarts = true,
             "--trace" => trace = true,
             "--steps" => {
                 let n = number(&mut i, arg);
@@ -372,6 +379,17 @@ fn parse_args(argv: &[String]) -> Args {
     if no_hedge {
         needs("--no-hedge", order == Method::Portfolio, "portfolio");
     }
+    // The count is what stops the restarts of a run with no deadline, so the
+    // flag decides nothing there.
+    if capped_restarts {
+        needs("--capped-restarts", order == Method::Portfolio, "portfolio");
+        if budget.is_none() {
+            usage_error(
+                "--capped-restarts requires --budget: with no deadline the restarts stop at \
+                 their count anyway",
+            );
+        }
+    }
     if trace {
         needs("--trace", order == Method::Portfolio, "portfolio");
     }
@@ -389,6 +407,7 @@ fn parse_args(argv: &[String]) -> Args {
         hedge_random,
         hedge_reserve,
         no_hedge,
+        capped_restarts,
         trace,
         steps,
         refine,
@@ -474,6 +493,9 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             }
             if let Some(fraction) = args.hedge_reserve {
                 config = config.with_hedge_reserve(fraction);
+            }
+            if args.capped_restarts {
+                config = config.with_restarts_to_deadline(false);
             }
             let mut winner = None;
             let mut report = |candidate: CandidateTrace| {

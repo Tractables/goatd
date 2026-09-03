@@ -126,7 +126,8 @@ struct Schedule<'a> {
     base_seed: u64,
     /// A residual too large for the expensive orders: sampled min-degree only.
     large_residual: bool,
-    /// Ordinary restarts on offer.
+    /// Ordinary restarts on offer: the configured count, or `u64::MAX` where
+    /// the soft deadline ends them instead of the count.
     ordinary_runs: u64,
     /// Diverse candidates in one pass.
     diverse_runs: u64,
@@ -713,7 +714,17 @@ fn run_portfolio(
     // A hedge adds one weighted stage per weighting between the two — the fixed
     // orders that read weights and the diverse pass again — and leaves the
     // restarts where they were.
-    let max_samples = config.sampling_runs;
+    //
+    // The sampling count caps how many seeds are drawn, not the clock, so a
+    // graph whose candidates are quick can finish the schedule with budget
+    // left. Configured to, the restarts carry on from the next seed of the
+    // same sequence and the soft deadline ends them. Without a soft deadline
+    // there is nothing else to stop at, so the count stands.
+    let ordinary_runs = if config.restarts_to_deadline && soft_deadline.is_some() {
+        u64::MAX
+    } else {
+        config.sampling_runs
+    };
     let diverse_samples = if large_residual {
         0
     } else {
@@ -722,7 +733,7 @@ fn run_portfolio(
     let schedule = Schedule {
         base_seed: seed,
         large_residual,
-        ordinary_runs: max_samples,
+        ordinary_runs,
         diverse_runs: diverse_samples,
         modified: &modified,
         fixed_runs,

@@ -34,9 +34,14 @@ candidate puts each unfinished residual component in one bag and attaches the
 partial elimination bags to it. This completion is linear in the residual
 size. Later candidates can stop without completion because a valid candidate
 already exists. `PortfolioConfig::standard_with_budget`, which the CLI uses for
-a budgeted standard portfolio, keeps the 100-extra-sample cap below a
-4.75-second soft budget. At or above that budget it permits up to 1,000 extra
-samples. An extra sample that reaches the soft deadline stops there; the
+a budgeted standard portfolio, offers 100 extra samples below a 4.75-second
+soft budget and 1,000 at or above it, and in either case draws seeds on past
+that count until the soft deadline: the count caps how many seeds are drawn,
+not the clock, and a graph whose candidates are quick would otherwise finish
+the schedule with budget unspent. `PortfolioConfig::with_restarts_to_deadline`
+turned off stops the restarts at the count, which is what `standard()` and
+`sampled_min_fill()` do; a run with no soft deadline stops at the count either
+way. An extra sample that reaches the soft deadline stops there; the
 remaining hard-budget interval is reserved for a trailing FlowCutter
 candidate. By default, a 4.75-second soft budget has a 9.5-second hard
 deadline. Callers that need more time to write the result can set an earlier

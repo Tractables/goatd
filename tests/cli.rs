@@ -331,6 +331,14 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--hedge-reserve", "such as 0.5"],
         ),
         (
+            &["--capped-restarts"],
+            &["--capped-restarts", "minfill", "portfolio"],
+        ),
+        (
+            &["--order", "portfolio", "--capped-restarts"],
+            &["--capped-restarts", "--budget"],
+        ),
+        (
             &["--order", "flowcutter", "--trace"],
             &["--trace", "flowcutter", "portfolio"],
         ),
@@ -622,6 +630,9 @@ fn hedge_dims_runs_one_weighted_stage_per_dimension() {
 
 #[test]
 fn hedge_random_runs_one_stage_per_draw_and_costs_what_the_rankings_cost() {
+    // Under a budget the restarts run to the deadline and two runs draw
+    // different counts; capped, both stop at the count and the candidate
+    // lists compare.
     let random = goatd(
         &[
             "-",
@@ -629,6 +640,7 @@ fn hedge_random_runs_one_stage_per_draw_and_costs_what_the_rankings_cost() {
             "portfolio",
             "--budget",
             "500",
+            "--capped-restarts",
             "--trace",
             "--hedge-random",
             "2",
@@ -642,6 +654,7 @@ fn hedge_random_runs_one_stage_per_draw_and_costs_what_the_rankings_cost() {
             "portfolio",
             "--budget",
             "500",
+            "--capped-restarts",
             "--trace",
             "--hedge-dims",
             "1,2",
@@ -784,6 +797,8 @@ fn the_reserve_applies_to_the_default_series_without_a_dimension_flag() {
 
 #[test]
 fn a_reserve_that_holds_the_stages_runs_all_of_them() {
+    // Capped restarts, so the two runs' candidate lists compare; see
+    // hedge_random_runs_one_stage_per_draw_and_costs_what_the_rankings_cost.
     let reserved = goatd(
         &[
             "-",
@@ -791,6 +806,7 @@ fn a_reserve_that_holds_the_stages_runs_all_of_them() {
             "portfolio",
             "--budget",
             "500",
+            "--capped-restarts",
             "--trace",
             "--hedge-dims",
             "1,2,3",
@@ -806,6 +822,7 @@ fn a_reserve_that_holds_the_stages_runs_all_of_them() {
             "portfolio",
             "--budget",
             "500",
+            "--capped-restarts",
             "--trace",
             "--hedge-dims",
             "1,2,3",
