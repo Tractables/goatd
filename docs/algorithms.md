@@ -43,7 +43,11 @@ a budgeted standard portfolio, keeps the 100-extra-sample cap below a
 4.75-second soft budget. At or above that budget it permits up to 1,000 extra
 samples. An extra sample that reaches the soft deadline stops there; the
 remaining hard-budget interval is reserved for a trailing FlowCutter
-candidate. By default, a 4.75-second soft budget has a 9.5-second hard
+candidate. That candidate is skipped when the interval is too short to seed
+it, and also when the graph is large enough that the backend's setup and
+first restart alone outlast the interval: the backend tests its deadline
+between restarts, so on such a graph it would return well after the hard
+deadline. The estimate uses the work-unit model in *Flow-based separators*. By default, a 4.75-second soft budget has a 9.5-second hard
 deadline. Callers that need more time to write the result can set an earlier
 hard budget independently without changing the soft schedule. Both standard
 configurations hedge, which adds the candidates described under *The hedge*.

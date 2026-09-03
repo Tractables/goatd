@@ -303,6 +303,21 @@ fn flowcutter_candidate(
     if timeout < Duration::from_millis(MIN_FLOWCUTTER_CANDIDATE_MS) {
         return Ok(None);
     }
+    // Skip windows too small for this graph. The backend tests its deadline
+    // between restarts, so a graph whose setup and first restart already
+    // outlast the window cannot be stopped inside it: the run comes back long
+    // after the portfolio's hard deadline with a result the caller has no time
+    // left to write. Measured at a 4.75-second window: 6.8 seconds on a graph
+    // of 79,000 vertices and 175,000 edges, 115 seconds on one of 92,000 and
+    // 1.08 million. The estimate is the same work-unit model the metered path
+    // charges the backend with.
+    let first_restart = crate::flowcutter::first_restart_units(
+        u64::from(graph.num_vertices),
+        graph.edges.len() as u64,
+    );
+    if Duration::from_millis(crate::meter::milliseconds_for_units(first_restart)) > timeout {
+        return Ok(None);
+    }
     match flowcutter_decompose(
         graph,
         Budget::timed(

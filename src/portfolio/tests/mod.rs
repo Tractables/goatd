@@ -466,3 +466,34 @@ fn a_candidate_stopped_at_the_soft_cutoff_does_not_end_the_portfolio() {
         "the trailing FlowCutter slot still has the rest of the hard budget: {seen:?}"
     );
 }
+
+/// A ring with two chords per vertex: cheap to build, and sparse enough that
+/// its size rather than its density is what makes FlowCutter slow on it.
+fn ring_with_chords(vertices: u32) -> Graph {
+    let mut edges = Vec::with_capacity(3 * vertices as usize);
+    for vertex in 0..vertices {
+        edges.push((vertex, (vertex + 1) % vertices));
+        edges.push((vertex, (vertex + 7) % vertices));
+        edges.push((vertex, (vertex + 53) % vertices));
+    }
+    Graph::new(vertices, edges)
+}
+
+#[test]
+fn the_flowcutter_slot_declines_a_graph_it_could_not_stop_on() {
+    // A 20x20 grid needs a few milliseconds of setup and a restart, so even a
+    // 200-millisecond window is enough for it.
+    let small = grid(20);
+    let candidate = super::flowcutter_candidate(&small, Duration::from_millis(200), None).unwrap();
+    assert!(candidate.is_some(), "a small graph fits a short window");
+
+    // 60,000 vertices and 180,000 edges put setup and one restart at about
+    // nine seconds, and the backend cannot stop before finishing that restart.
+    let large = ring_with_chords(60_000);
+    let candidate =
+        super::flowcutter_candidate(&large, Duration::from_millis(4_750), None).unwrap();
+    assert!(
+        candidate.is_none(),
+        "a graph whose first restart outlasts the window is declined"
+    );
+}
