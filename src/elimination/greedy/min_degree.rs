@@ -43,10 +43,9 @@ impl ElimEntry for DegEntry {
 }
 
 /// Greedy min-degree: rank by current degree, break ties by salt. This is the
-/// skeleton's plainest instance — it takes every default, including owing its
-/// neighbours nothing when a vertex is eliminated. The stale-snapshot guard
-/// corrects an out-of-date entry when it surfaces, which keeps the heap at
-/// O(n) entries instead of accumulating one per degree change.
+/// degree lookup is cheap enough to update every changed neighbour after an
+/// elimination. Old snapshots remain in the heap and are discarded when they
+/// surface.
 struct MinDegree<'a> {
     heap: BinaryHeap<DegEntry>,
     salt: &'a [u32],
@@ -90,7 +89,7 @@ impl ElimPolicy for MinDegree<'_> {
         _: Option<Instant>,
         _: bool,
     ) -> AfterElim {
-        if self.update_order_ties && !cheap_mode {
+        if !cheap_mode {
             for &vertex in nbrs {
                 if graph.active[vertex as usize] {
                     self.push(graph, vertex, graph.degree(vertex) as u64);
@@ -158,6 +157,6 @@ mod tests {
     fn update_order_ties_prefer_a_recently_exposed_leaf() {
         let order = elimination_order(true);
 
-        assert_eq!(order, [3, 4, 1, 0, 2]);
+        assert_eq!(order, [3, 4, 1, 2, 0]);
     }
 }
