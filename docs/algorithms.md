@@ -77,7 +77,10 @@ Islet and twig elimination run to a fixed point first. This removes forest
 components without introducing a width-2 series bag. The pass then scans the
 series, simplicial, and almost-simplicial rules in that order and starts again
 if any rule fired. Series and simplicial eliminations raise the running lower
-bound used to admit the almost-simplicial rule.
+bound used to admit the almost-simplicial rule. Under a budget the pass stops
+at the soft deadline and hands the rest of the graph to the elimination order;
+the rules it has applied by then stand, and the ones it has not are the
+order's to do.
 
 The recorded bags form the beginning of the elimination sequence. A solver
 continues on the residual graph, then the decomposition builder attaches these

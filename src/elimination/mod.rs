@@ -73,7 +73,7 @@ pub fn decompose(
         )));
     }
     let deadlines = crate::deadline::two_stage(crate::meter::now(), soft_budget, "elimination")?;
-    let mut prebuilt = engine::prebuild(graph);
+    let mut prebuilt = engine::prebuild(graph, deadlines.soft);
     let run = engine::run_order_prebuilt(
         &mut prebuilt,
         engine::RunSpec {

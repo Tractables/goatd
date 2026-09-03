@@ -57,7 +57,7 @@ fn disjoint_grids(side: u32) -> crate::Graph {
 }
 
 fn complete_at_immediate_deadline(graph: &crate::Graph) -> crate::TreeDecomposition {
-    let mut prebuilt = prebuild(graph);
+    let mut prebuilt = prebuild(graph, None);
     let epoch = std::time::Instant::now();
     let _meter = crate::meter::arm(epoch);
     let run = run_order_prebuilt(
@@ -89,7 +89,7 @@ pub(super) fn run_order(
     seed: u64,
 ) -> crate::TreeDecomposition {
     let graph = EliminationGraph::from_edges(num_vertices, edges);
-    let reduced = preprocess(graph);
+    let reduced = preprocess(graph, None);
     let components = find_connected_components(&reduced.graph);
     match run_order_on_reduced(
         reduced,
@@ -115,7 +115,7 @@ pub(super) fn run_order(
 #[test]
 fn partial_eliminations_are_never_returned_as_decompositions() {
     let graph = complete_bipartite(40);
-    let mut prebuilt = prebuild(&graph);
+    let mut prebuilt = prebuild(&graph, None);
     let epoch = std::time::Instant::now();
     let _meter = crate::meter::arm(epoch);
 
@@ -178,7 +178,7 @@ fn a_soft_cutoff_leaves_the_components_after_it_their_own_orders() {
     // grid still has the whole hard deadline, and the vertices from 900 up are
     // exactly that second grid.
     let graph = disjoint_grids(30);
-    let mut prebuilt = prebuild(&graph);
+    let mut prebuilt = prebuild(&graph, None);
     let epoch = std::time::Instant::now();
     let _meter = crate::meter::arm(epoch);
     let run = run_order_prebuilt(

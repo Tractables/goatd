@@ -17,8 +17,47 @@
 //! a valid decomposition of the original graph. The widest recorded bag
 //! captures the width contributed by removed vertices.
 
-use super::execution::ElimSteps;
+use std::time::Instant;
+
+use super::execution::{DeadlinePacer, ElimSteps};
 use super::graph::EliminationGraph;
+use crate::deadline::expired;
+
+/// The clock preprocessing runs against.
+///
+/// The rules are fixed-point scans over the whole graph and the two clique
+/// tests are the expensive part of them, so on a dense residual one pass can
+/// take seconds. Reduction is optional — whatever it has not done, the
+/// elimination that follows does — so it stops when the caller's soft cutoff
+/// arrives and hands the rest of the graph on.
+pub(crate) struct PreprocessStop {
+    deadline: Option<Instant>,
+    pacer: DeadlinePacer,
+    stopped: bool,
+}
+
+impl PreprocessStop {
+    pub(crate) fn new(deadline: Option<Instant>) -> Self {
+        Self {
+            deadline,
+            pacer: DeadlinePacer::new(),
+            stopped: false,
+        }
+    }
+
+    /// Whether the cutoff has arrived, asked at most once per millisecond of
+    /// charged work.
+    #[inline]
+    fn reached(&mut self) -> bool {
+        if self.stopped {
+            return true;
+        }
+        if self.deadline.is_some() && self.pacer.due() && expired(self.deadline) {
+            self.stopped = true;
+        }
+        self.stopped
+    }
+}
 
 /// Output of preprocessing. `Clone` so a single preprocess result can be
 /// reused across multiple orders in the portfolio — preprocessing is
@@ -32,7 +71,12 @@ pub(crate) struct Reduced {
     pub prefix: ElimSteps,
 }
 
-pub(crate) fn preprocess(mut graph: EliminationGraph) -> Reduced {
+pub(crate) fn preprocess(graph: EliminationGraph, deadline: Option<Instant>) -> Reduced {
+    let mut stop = PreprocessStop::new(deadline);
+    preprocess_with_stop(graph, &mut stop)
+}
+
+fn preprocess_with_stop(mut graph: EliminationGraph, stop: &mut PreprocessStop) -> Reduced {
     let mut prefix = ElimSteps::default();
     // Running lower bound on tw(G), maintained across simplicial/series
     // eliminations; gates the almost-simplicial rule below.
@@ -45,12 +89,22 @@ pub(crate) fn preprocess(mut graph: EliminationGraph) -> Reduced {
         // Reaching minimum degree two also establishes that any non-empty
         // residual component is not a forest before the series rule runs.
         let mut fired = peel_low_degree(&mut graph, &mut prefix);
-        fired |= eliminate_series_vertices(&mut graph, &mut prefix, &mut treewidth_lower_bound);
-        fired |= eliminate_simplicial_vertices(&mut graph, &mut prefix, &mut treewidth_lower_bound);
         fired |=
-            eliminate_almost_simplicial_vertices(&mut graph, &mut prefix, treewidth_lower_bound);
+            eliminate_series_vertices(&mut graph, &mut prefix, &mut treewidth_lower_bound, stop);
+        fired |= eliminate_simplicial_vertices(
+            &mut graph,
+            &mut prefix,
+            &mut treewidth_lower_bound,
+            stop,
+        );
+        fired |= eliminate_almost_simplicial_vertices(
+            &mut graph,
+            &mut prefix,
+            treewidth_lower_bound,
+            stop,
+        );
 
-        if !fired {
+        if !fired || stop.reached() {
             break;
         }
     }
@@ -78,11 +132,15 @@ fn eliminate_series_vertices(
     graph: &mut EliminationGraph,
     prefix: &mut ElimSteps,
     treewidth_lower_bound: &mut usize,
+    stop: &mut PreprocessStop,
 ) -> bool {
     let mut fired = false;
     for vertex in 0..graph.len() as u32 {
         if !graph.active[vertex as usize] || graph.degree(vertex) != 2 {
             continue;
+        }
+        if stop.reached() {
+            return fired;
         }
         let neighbours = graph.live_neighbours(vertex);
         if !graph.contains_edge(neighbours[0], neighbours[1]) {
@@ -98,9 +156,13 @@ fn eliminate_simplicial_vertices(
     graph: &mut EliminationGraph,
     prefix: &mut ElimSteps,
     treewidth_lower_bound: &mut usize,
+    stop: &mut PreprocessStop,
 ) -> bool {
     let mut fired = false;
     for vertex in 0..graph.len() as u32 {
+        if graph.active[vertex as usize] && graph.degree(vertex) >= 2 && stop.reached() {
+            return fired;
+        }
         if graph.active[vertex as usize] && graph.degree(vertex) >= 2 && graph.is_simplicial(vertex)
         {
             let degree = eliminate_and_record(graph, prefix, vertex);
@@ -116,6 +178,7 @@ fn eliminate_almost_simplicial_vertices(
     graph: &mut EliminationGraph,
     prefix: &mut ElimSteps,
     treewidth_lower_bound: usize,
+    stop: &mut PreprocessStop,
 ) -> bool {
     if treewidth_lower_bound < 2 {
         return false;
@@ -129,6 +192,9 @@ fn eliminate_almost_simplicial_vertices(
         let degree = graph.degree(vertex);
         if degree < 2 || degree > treewidth_lower_bound {
             continue;
+        }
+        if stop.reached() {
+            return fired;
         }
         let Some((left, right)) = graph.almost_simplicial_nonedge(vertex) else {
             continue;
