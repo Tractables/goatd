@@ -74,6 +74,15 @@ options:
                         count instead of drawing seeds until the soft
                         deadline. Needs --budget: with no deadline the count is
                         what stops them anyway
+  --expensive-orders-up-to <n>
+                        portfolio only: the largest residual, in vertices left
+                        after preprocessing, that still runs min-fill, nested
+                        dissection, the diverse pass and the hedge (default
+                        10000). Above it the portfolio keeps only its
+                        min-degree candidates and its restarts are sampled
+                        min-degree. Raising it hands larger graphs the whole
+                        schedule; the orders it lets back in still stop at the
+                        soft deadline
   --trace               portfolio only: write one line per candidate and one
                         for the winner to stderr as they complete
   --steps <n>           flowcutter only: a step budget in place of a clock,
@@ -132,6 +141,7 @@ struct Args {
     hedge_reserve: Option<f64>,
     no_hedge: bool,
     capped_restarts: bool,
+    expensive_orders_up_to: Option<usize>,
     trace: bool,
     steps: Option<u64>,
     refine: bool,
@@ -189,6 +199,7 @@ fn parse_args(argv: &[String]) -> Args {
     let mut hedge_reserve = None;
     let mut no_hedge = false;
     let mut capped_restarts = false;
+    let mut expensive_orders_up_to = None;
     let mut trace = false;
     let mut steps = None;
     let mut refine = false;
@@ -271,6 +282,10 @@ fn parse_args(argv: &[String]) -> Args {
             }
             "--no-hedge" => no_hedge = true,
             "--capped-restarts" => capped_restarts = true,
+            "--expensive-orders-up-to" => {
+                let vertices = number(&mut i, arg);
+                expensive_orders_up_to = Some(usize::try_from(vertices).unwrap_or(usize::MAX));
+            }
             "--trace" => trace = true,
             "--steps" => {
                 let n = number(&mut i, arg);
@@ -390,6 +405,13 @@ fn parse_args(argv: &[String]) -> Args {
             );
         }
     }
+    if expensive_orders_up_to.is_some() {
+        needs(
+            "--expensive-orders-up-to",
+            order == Method::Portfolio,
+            "portfolio",
+        );
+    }
     if trace {
         needs("--trace", order == Method::Portfolio, "portfolio");
     }
@@ -408,6 +430,7 @@ fn parse_args(argv: &[String]) -> Args {
         hedge_reserve,
         no_hedge,
         capped_restarts,
+        expensive_orders_up_to,
         trace,
         steps,
         refine,
@@ -496,6 +519,9 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             }
             if args.capped_restarts {
                 config = config.with_restarts_to_deadline(false);
+            }
+            if let Some(vertices) = args.expensive_orders_up_to {
+                config = config.with_expensive_orders_up_to(vertices);
             }
             let mut winner = None;
             let mut report = |candidate: CandidateTrace| {

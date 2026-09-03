@@ -59,6 +59,11 @@ const DEFAULT_HEDGE: Hedge = Hedge::eccentricity();
 /// series, whatever this says.
 const DEFAULT_HEDGE_RESERVE: f64 = 0.5;
 
+/// Residuals larger than this run only min-degree candidates: the other orders
+/// can overrun a short portfolio budget at that scale.
+/// [`PortfolioConfig::with_expensive_orders_up_to`] moves the line.
+const DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS: usize = 10_000;
+
 /// Where one weighted stage takes its sampling weights from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -261,6 +266,7 @@ pub struct PortfolioConfig {
     pub(super) hedge: Hedge,
     pub(super) hedge_reserve: f64,
     pub(super) restarts_to_deadline: bool,
+    pub(super) expensive_orders_up_to: usize,
 }
 
 /// Two configurations are equal when they ask for the same run, the reserve
@@ -276,6 +282,7 @@ impl PartialEq for PortfolioConfig {
             && self.hedge == other.hedge
             && self.hedge_reserve.to_bits() == other.hedge_reserve.to_bits()
             && self.restarts_to_deadline == other.restarts_to_deadline
+            && self.expensive_orders_up_to == other.expensive_orders_up_to
     }
 }
 
@@ -296,6 +303,7 @@ impl PortfolioConfig {
             hedge: Hedge::Off,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: false,
+            expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
         }
     }
 
@@ -372,6 +380,7 @@ impl PortfolioConfig {
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: false,
+            expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
         }
     }
 
@@ -409,6 +418,7 @@ impl PortfolioConfig {
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: true,
+            expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
         }
     }
 
@@ -450,6 +460,24 @@ impl PortfolioConfig {
     /// leave it off.
     pub fn with_restarts_to_deadline(mut self, enabled: bool) -> Self {
         self.restarts_to_deadline = enabled;
+        self
+    }
+
+    /// The largest residual the expensive orders still run on, in vertices left
+    /// after preprocessing.
+    ///
+    /// Above it the portfolio keeps only its min-degree candidates: the initial
+    /// list drops min-fill and nested dissection after the first candidate, the
+    /// diverse pass and the hedge do not run, and the ordinary restarts are
+    /// sampled min-degree. At or below it the graph takes the whole schedule.
+    /// The default is 10,000, which is where min-fill and nested dissection
+    /// began to overrun a short budget.
+    ///
+    /// Raising this does not change what stops a candidate: the orders it lets
+    /// back in still stop at the soft deadline and the engine completes what is
+    /// left of the residual.
+    pub fn with_expensive_orders_up_to(mut self, vertices: usize) -> Self {
+        self.expensive_orders_up_to = vertices;
         self
     }
 }

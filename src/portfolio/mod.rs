@@ -44,10 +44,6 @@ const HEDGE_RANDOM_SEED_OFFSET: u64 = 6151;
 const HEDGE_RANDOM_SEED_STRIDE: u64 = 104_729;
 pub(crate) const SECOND_CANDIDATE_SEED_OFFSET: u64 = 42;
 
-/// Residuals above this size run only min-degree candidates after the first;
-/// the other orders can overrun a short portfolio budget at this scale.
-const MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS: usize = 10_000;
-
 fn is_min_degree_variant(order: Order<'_>) -> bool {
     matches!(order, Order::MinDegree | Order::MinDegreeSampled { .. })
 }
@@ -607,7 +603,9 @@ fn run_portfolio(
     let hard_deadline = deadlines.hard;
     let mut prebuilt = engine::prebuild(graph, soft_deadline);
     let mut original = None;
-    let large_residual = prebuilt.num_active() > MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS;
+    // Every skip the size rule makes reads this one flag, so a raised limit
+    // hands the graph the whole schedule and nothing else has to be told.
+    let large_residual = prebuilt.num_active() > config.expensive_orders_up_to;
     let cells: [OnceCell<Vec<u32>>; MAX_HEDGE_PASSES] = std::array::from_fn(|_| OnceCell::new());
     // A large residual runs sampled min-degree restarts whatever is set, so
     // there is nothing there for a hedge to run against. Each stage's weights

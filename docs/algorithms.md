@@ -21,7 +21,10 @@ The inexpensive order runs first so a valid candidate exists early. Later
 runs receive the best width already found and stop when a bag is too wide to
 win. With time left, the portfolio tries sampled fill/degree scores followed
 by further sampled min-fill seeds; on a very large residual it uses sampled
-min-degree and skips the expensive fixed orders instead. Initial fill counts
+min-degree and skips the expensive fixed orders instead. A residual counts as
+very large above 10,000 vertices left after preprocessing;
+`PortfolioConfig::with_expensive_orders_up_to` moves that line, and a graph at
+or below it takes the whole schedule. Initial fill counts
 are computed only when a fill-based order first runs, then reused across the
 remaining scores and seeds. The best-only path contracts bags
 contained in an adjacent bag in each candidate that can still win, then
