@@ -350,7 +350,8 @@ fn elimination_stop(
 struct InitialCandidate<'a> {
     order: Order<'a>,
     seed: u64,
-    vertex_id_ties: bool,
+    preprocess: bool,
+    update_order_ties: bool,
 }
 
 /// Builds a run's candidate list for a seed, given the weight vector.
@@ -371,32 +372,38 @@ fn standard_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandidate<'_>>
         InitialCandidate {
             order: Order::MinDegreeSampled { weights },
             seed: base_seed,
-            vertex_id_ties: false,
+            preprocess: true,
+            update_order_ties: false,
         },
         InitialCandidate {
             order: Order::NestedDissection,
             seed: base_seed,
-            vertex_id_ties: false,
+            preprocess: true,
+            update_order_ties: false,
         },
         InitialCandidate {
             order: Order::MinFillSampled { weights },
             seed: base_seed,
-            vertex_id_ties: false,
+            preprocess: true,
+            update_order_ties: false,
         },
         InitialCandidate {
             order: Order::MinDegreeSampled { weights },
             seed: second_seed,
-            vertex_id_ties: false,
+            preprocess: true,
+            update_order_ties: false,
         },
         InitialCandidate {
             order: Order::NestedDissection,
             seed: second_seed,
-            vertex_id_ties: false,
+            preprocess: true,
+            update_order_ties: false,
         },
         InitialCandidate {
             order: Order::MinDegree,
             seed: base_seed,
-            vertex_id_ties: true,
+            preprocess: false,
+            update_order_ties: true,
         },
     ]
 }
@@ -412,7 +419,8 @@ fn sampled_min_fill_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandid
     vec![InitialCandidate {
         order: Order::MinFillSampled { weights },
         seed: base_seed,
-        vertex_id_ties: false,
+        preprocess: true,
+        update_order_ties: false,
     }]
 }
 
@@ -443,6 +451,7 @@ fn run_portfolio(
     let soft_deadline = deadlines.soft;
     let hard_deadline = deadlines.hard;
     let mut prebuilt = engine::prebuild(graph);
+    let mut original = None;
     let large_residual = prebuilt.num_active() > MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS;
     let ranking = OnceCell::new();
     let modified = match config.hedge {
@@ -500,12 +509,17 @@ fn run_portfolio(
         // residual would be wasted work: its wide decomposition would lose on
         // width and total bag size to the existing winner.
         let complete_on_deadline = candidates.is_empty();
+        let candidate_graph = if candidate.preprocess {
+            &mut prebuilt
+        } else {
+            original.get_or_insert_with(|| engine::prebuild_original(graph))
+        };
         let run = engine::run_order_prebuilt(
-            &mut prebuilt,
+            candidate_graph,
             engine::RunSpec {
                 order,
                 seed: candidate.seed,
-                vertex_id_ties: candidate.vertex_id_ties,
+                update_order_ties: candidate.update_order_ties,
                 stop: elimination_stop(
                     EliminationPhase::Initial,
                     soft_deadline,
@@ -580,7 +594,7 @@ fn run_portfolio(
             engine::RunSpec {
                 order: candidate.order,
                 seed: candidate.seed,
-                vertex_id_ties: false,
+                update_order_ties: false,
                 stop: elimination_stop(
                     EliminationPhase::ExtraSampling,
                     soft_deadline,
