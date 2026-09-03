@@ -98,7 +98,7 @@ fn restarts(graph: &Graph, config: PortfolioConfig) -> (Vec<(u64, Pass)>, usize)
     let mut samples = Vec::new();
     let mut modified = 0;
     decompose_traced(graph, &weight, 0, config, &mut |candidate| {
-        if candidate.pass == Pass::Modified {
+        if matches!(candidate.pass, Pass::Modified { .. }) {
             modified += 1;
         }
         if candidate.stage == Stage::Sample {
@@ -124,6 +124,60 @@ fn the_default_portfolio_hedges_and_leaves_the_restarts_alone() {
         assert_eq!(left.1, Pass::Plain, "restart {index} is not plain");
         assert_eq!(right.1, Pass::Only, "restart {index} of an unhedged run");
     }
+}
+
+#[test]
+fn a_budgeted_portfolio_draws_restart_seeds_until_the_soft_deadline() {
+    let graph = grid(6);
+    let to_deadline = PortfolioConfig::standard_with_budget(Duration::from_millis(300))
+        .with_hedge(Hedge::Off)
+        .with_sampling_runs(3);
+    let capped = to_deadline.with_restarts_to_deadline(false);
+
+    let (capped_runs, _) = restarts(&graph, capped);
+    let (extended, _) = restarts(&graph, to_deadline);
+
+    assert_eq!(capped_runs.len(), 3, "capped, the count stops the restarts");
+    assert!(
+        extended.len() > capped_runs.len(),
+        "the deadline ran {} restarts, the count {}",
+        extended.len(),
+        capped_runs.len()
+    );
+    // The extra restarts carry on from the next seed of the same sequence.
+    for (index, (left, right)) in capped_runs.iter().zip(&extended).enumerate() {
+        assert_eq!(left.0, right.0, "restart {index} runs another seed");
+    }
+}
+
+#[test]
+fn the_restarts_stop_at_their_count_without_a_deadline_to_run_to() {
+    let graph = grid(6);
+    let config = PortfolioConfig::standard()
+        .with_hedge(Hedge::Off)
+        .with_sampling_runs(3)
+        .with_restarts_to_deadline(true);
+
+    let (samples, _) = restarts(&graph, config);
+
+    assert_eq!(samples.len(), 3, "no deadline, so the count stops them");
+}
+
+#[test]
+fn a_soft_budget_on_the_standard_portfolio_keeps_the_restart_count() {
+    let graph = grid(6);
+    let config = PortfolioConfig::standard()
+        .with_hedge(Hedge::Off)
+        .with_soft_budget(Duration::from_millis(300))
+        .with_sampling_runs(3);
+
+    let (samples, _) = restarts(&graph, config);
+
+    assert_eq!(
+        samples.len(),
+        3,
+        "standard() leaves the restarts at their count under a deadline"
+    );
 }
 
 #[test]

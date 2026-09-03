@@ -15,7 +15,7 @@ mod trace;
 #[cfg(test)]
 mod tests;
 
-use crate::deadline::expired;
+use crate::deadline::{expired, remaining};
 use crate::decomposition;
 use crate::elimination::Order;
 use crate::elimination::engine;
@@ -26,7 +26,10 @@ use crate::{Error, Graph, TreeDecomposition};
 use candidates::{CandidateSet, ScheduleStop};
 use config::MIN_FLOWCUTTER_CANDIDATE_MS;
 
-pub use config::{Hedge, MAX_DIVERSE_SAMPLING_RUNS, PortfolioConfig};
+pub use config::{
+    DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, HedgeWeights, MAX_DIVERSE_SAMPLING_RUNS,
+    MAX_HEDGE_PASSES, PortfolioConfig,
+};
 pub use trace::{CandidateOutcome, CandidateTrace, Pass, Stage};
 
 /// Exit early if FlowCutter hasn't improved treewidth for this long. Caps
@@ -35,6 +38,10 @@ const FLOWCUTTER_CANDIDATE_PATIENCE: Duration = Duration::from_millis(500);
 const FLOWCUTTER_CANDIDATE_ITERATIONS: u32 = 50;
 const SAMPLE_SEED_OFFSET: u64 = 100;
 const SAMPLE_SEED_STRIDE: u64 = 7919;
+/// Separates a random hedge weighting from the run's other draws.
+const HEDGE_RANDOM_SEED_OFFSET: u64 = 6151;
+/// Separates one random hedge weighting from the next.
+const HEDGE_RANDOM_SEED_STRIDE: u64 = 104_729;
 pub(crate) const SECOND_CANDIDATE_SEED_OFFSET: u64 = 42;
 
 /// Residuals above this size run only min-degree candidates after the first;
@@ -49,34 +56,66 @@ fn sample_seed(base_seed: u64, sample_index: u64) -> u64 {
     base_seed.wrapping_add(SAMPLE_SEED_OFFSET + sample_index.wrapping_mul(SAMPLE_SEED_STRIDE))
 }
 
-/// The sampling weights the hedge's second pass runs on: the vertices ranked
-/// by eccentricity, most peripheral first. The ranking is placed the first
-/// time a candidate asks for it, which is after the plain diverse pass, so a
-/// run that ends inside the plain pass never pays for the placement.
+/// The seed the `stream`-th random hedge weighting is drawn from:
+/// `base_seed + 6151 + stream * 104729`. The offset is not a multiple of the
+/// ordinary sampling stride, so no weighting lands on a restart's seed, and the
+/// weights come off a stream of their own inside
+/// [`random_weights`](crate::embedding::random_weights), so the elimination
+/// draws are untouched.
+fn hedge_random_seed(base_seed: u64, stream: u64) -> u64 {
+    base_seed
+        .wrapping_add(HEDGE_RANDOM_SEED_OFFSET)
+        .wrapping_add(stream.wrapping_mul(HEDGE_RANDOM_SEED_STRIDE))
+}
+
+/// The sampling weights one weighted stage runs on. They are derived the first
+/// time a candidate of that stage asks for them, which is after the plain
+/// diverse pass, so a run that never reaches the stage never pays for them.
 #[derive(Clone, Copy)]
-struct ModifiedWeights<'a> {
-    cell: &'a OnceCell<Vec<u32>>,
-    graph: &'a Graph,
-    dim: usize,
-    rounds: usize,
-    seed: u64,
-    soft_deadline: Option<Instant>,
+enum ModifiedWeights<'a> {
+    /// The vertices placed and ranked by eccentricity, most peripheral first.
+    Ranked {
+        cell: &'a OnceCell<Vec<u32>>,
+        graph: &'a Graph,
+        dim: usize,
+        rounds: usize,
+        seed: u64,
+        soft_deadline: Option<Instant>,
+    },
+    /// Uniform weights from `seed`, drawn on first use into `cell`.
+    Random {
+        cell: &'a OnceCell<Vec<u32>>,
+        count: usize,
+        seed: u64,
+    },
 }
 
 impl<'a> ModifiedWeights<'a> {
     fn get(self) -> &'a [u32] {
-        self.cell.get_or_init(|| {
-            Embedding::compute(
-                self.graph,
-                self.dim,
-                self.seed,
-                self.rounds,
-                embedding::DEFAULT_PATIENCE,
-                embedding::DEFAULT_TOLERANCE,
-                &mut || expired(self.soft_deadline),
-            )
-            .rank_weights(true)
-        })
+        match self {
+            ModifiedWeights::Ranked {
+                cell,
+                graph,
+                dim,
+                rounds,
+                seed,
+                soft_deadline,
+            } => cell.get_or_init(|| {
+                Embedding::compute(
+                    graph,
+                    dim,
+                    seed,
+                    rounds,
+                    embedding::DEFAULT_PATIENCE,
+                    embedding::DEFAULT_TOLERANCE,
+                    &mut || expired(soft_deadline),
+                )
+                .rank_weights(true)
+            }),
+            ModifiedWeights::Random { cell, count, seed } => {
+                cell.get_or_init(|| embedding::random_weights(count, seed))
+            }
+        }
     }
 }
 
@@ -87,15 +126,16 @@ struct Schedule<'a> {
     base_seed: u64,
     /// A residual too large for the expensive orders: sampled min-degree only.
     large_residual: bool,
-    /// Ordinary restarts on offer.
+    /// Ordinary restarts on offer: the configured count, or `u64::MAX` where
+    /// the soft deadline ends them instead of the count.
     ordinary_runs: u64,
     /// Diverse candidates in one pass.
     diverse_runs: u64,
-    /// The weights the hedge's second pass runs on, or `None` when nothing is
-    /// hedged.
-    modified: Option<ModifiedWeights<'a>>,
-    /// How many fixed orders the hedge repeats, zero when nothing repeats
-    /// them.
+    /// One entry per weighted stage, in the order the stages run. Empty when
+    /// nothing is hedged.
+    modified: &'a [ModifiedWeights<'a>],
+    /// How many fixed orders each weighted stage repeats, zero when nothing
+    /// repeats them.
     fixed_runs: u64,
     /// Builds the fixed orders, for the repeats.
     initial_orders: InitialOrderBuilder,
@@ -106,29 +146,39 @@ struct Schedule<'a> {
 impl<'a> Schedule<'a> {
     /// Whether the portfolio's own candidates run against modified ones.
     fn hedged(self) -> bool {
-        self.modified.is_some()
+        !self.modified.is_empty()
     }
 
-    /// The weights of the modified pass.
+    /// How many weighted stages run, one per weighting. Zero when nothing is
+    /// hedged.
+    fn modified_stages(self) -> u64 {
+        self.modified.len() as u64
+    }
+
+    /// The weights of the `stage`-th weighted stage.
     ///
     /// # Panics
     ///
-    /// Panics when nothing is hedged, which leaves no modified candidate to
-    /// ask.
-    fn modified_weights(self) -> &'a [u32] {
+    /// Panics when the schedule has no such stage, which leaves no modified
+    /// candidate to ask.
+    fn modified_weights(self, stage: u64) -> &'a [u32] {
         self.modified
-            .expect("a modified candidate runs only under a hedge")
+            .get(stage as usize)
+            .expect("a modified candidate runs only under a hedge that has its stage")
             .get()
     }
 
-    /// Diverse candidates in all: two passes when the weights are hedged.
-    fn diverse_total(self) -> u64 {
-        self.diverse_runs * if self.hedged() { 2 } else { 1 }
+    /// Candidates in one weighted stage: the fixed orders that read the
+    /// weights, then the diverse pass again.
+    fn stage_length(self) -> u64 {
+        self.fixed_runs.saturating_add(self.diverse_runs)
     }
 
-    /// Candidates before the ordinary restarts.
+    /// Candidates before the ordinary restarts: the plain diverse pass, then
+    /// one weighted stage per weighting.
     fn passes_total(self) -> u64 {
-        self.diverse_total().saturating_add(self.fixed_runs)
+        self.diverse_runs
+            .saturating_add(self.stage_length().saturating_mul(self.modified_stages()))
     }
 
     /// Candidates the sampling phase has to offer.
@@ -136,18 +186,20 @@ impl<'a> Schedule<'a> {
         self.passes_total().saturating_add(self.ordinary_runs)
     }
 
-    /// Which pass a candidate belongs to.
-    fn pass(self, plain: bool) -> Pass {
+    /// Which pass a candidate belongs to, `stage` counting the weighted stages
+    /// from zero.
+    fn pass(self, plain: bool, stage: u64) -> Pass {
         match (self.hedged(), plain) {
             (false, _) => Pass::Only,
             (true, true) => Pass::Plain,
-            (true, false) => Pass::Modified,
+            (true, false) => Pass::Modified { index: stage as u8 },
         }
     }
 
-    /// The `index`-th fixed order that reads weights, on the modified ones.
-    fn weighted_fixed(self, index: u64) -> Option<(Order<'a>, u64)> {
-        (self.initial_orders)(self.base_seed, self.modified_weights())
+    /// The `index`-th fixed order that reads weights, on the `stage`-th
+    /// weighted stage's weights.
+    fn weighted_fixed(self, index: u64, stage: u64) -> Option<(Order<'a>, u64)> {
+        (self.initial_orders)(self.base_seed, self.modified_weights(stage))
             .into_iter()
             .filter(|candidate| reads_weights(candidate.order))
             .nth(index as usize)
@@ -155,13 +207,13 @@ impl<'a> Schedule<'a> {
     }
 
     /// The `index`-th candidate of one diverse pass, on the caller's weights
-    /// when `plain` and on the modified ones otherwise.
-    fn diverse_sample(self, index: u64, plain: bool) -> Option<Sample<'a>> {
+    /// when `plain` and on the `stage`-th weighted stage's otherwise.
+    fn diverse_sample(self, index: u64, plain: bool, stage: u64) -> Option<Sample<'a>> {
         let (degree_coefficient, seed_index) = Self::diverse_candidate(index);
         let weights = if plain {
             self.weights
         } else {
-            self.modified_weights()
+            self.modified_weights(stage)
         };
         sample_at(
             Order::FillDegreeSampled {
@@ -169,7 +221,7 @@ impl<'a> Schedule<'a> {
                 degree_coefficient,
             },
             sample_seed(self.base_seed, seed_index),
-            self.pass(plain),
+            self.pass(plain, stage),
             EliminationPhase::ExtraSampling,
         )
     }
@@ -187,6 +239,86 @@ impl<'a> Schedule<'a> {
             config::DIVERSE_REPLAY_COEFFICIENTS[(replay_index % replay_runs) as usize],
             1 + replay_index / replay_runs,
         )
+    }
+}
+
+/// How much of the budget the hedge's weighted stages may spend, and how much
+/// of it they have spent.
+///
+/// Each stage is as many candidates as the plain diverse pass, taken from the
+/// restarts, so a schedule of several can leave a graph whose plain pass nearly
+/// filled the budget with no restarts at all. The plain pass is the portfolio's
+/// own measurement of what one stage costs: the same fixed orders and the same
+/// diverse candidates, on other weights. So the stages get a fraction of what
+/// the soft budget had left when the plain pass ended, and stop when one more
+/// of them would not fit in it.
+///
+/// The first stage is outside the rule. A hedge runs one weighted stage
+/// whatever the budget, so the rule decides how many stages come after it, not
+/// whether the hedge happens at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StageBudget {
+    /// What the plain pass cost: preprocessing, the fixed orders and the plain
+    /// diverse pass.
+    plain: Duration,
+    /// What the stages may spend between them. Unbounded without a soft budget,
+    /// where nothing is being taken from anything.
+    allowance: Duration,
+    /// What the stages that have run cost between them.
+    spent: Duration,
+    /// What the last stage that ran cost.
+    last: Option<Duration>,
+}
+
+impl StageBudget {
+    /// The stages' share of the budget, decided once the plain pass has both
+    /// cost `plain` and left `left` of the soft budget.
+    ///
+    /// `left` is `None` for a run with no soft budget. The share is then
+    /// unbounded and every stage of the series runs: the rule exists to leave
+    /// the restarts their time, and a run with no deadline is taking that time
+    /// from nothing. It also keeps such a run's schedule independent of how
+    /// long any candidate took.
+    fn new(plain: Duration, left: Option<Duration>, reserve: f64) -> Self {
+        Self {
+            plain,
+            allowance: left.map_or(Duration::MAX, |left| left.mul_f64(reserve)),
+            spent: Duration::ZERO,
+            last: None,
+        }
+    }
+
+    /// What one more stage is projected to cost. The plain pass is the first
+    /// model for it; a stage that has run is a better one, and never the worse
+    /// of the two, since the incumbent width bounds the candidates of every
+    /// stage after the first.
+    fn projected(&self) -> Duration {
+        match self.last {
+            Some(last) => last.min(self.plain),
+            None => self.plain,
+        }
+    }
+
+    /// Whether one more stage fits in what is left of the stages' share. The
+    /// first stage is not asked: a hedge runs one weighted stage on any budget,
+    /// and nothing has been charged before it, which is what `last` says here.
+    fn fits(&self) -> bool {
+        self.last.is_none() || self.spent.saturating_add(self.projected()) <= self.allowance
+    }
+
+    /// Record a stage that ran and cost `cost`.
+    fn charge(&mut self, cost: Duration) {
+        self.spent = self.spent.saturating_add(cost);
+        self.last = Some(cost);
+    }
+
+    /// What the rule refused a stage on.
+    fn refusal(&self) -> CandidateOutcome {
+        CandidateOutcome::StageSkipped {
+            projected: self.projected(),
+            spent: self.spent,
+            allowance: self.allowance,
+        }
     }
 }
 
@@ -236,19 +368,27 @@ fn extra_sample(schedule: Schedule<'_>, index: u64) -> Option<Sample<'_>> {
     // The first diverse pass is the one a portfolio without the hedge runs:
     // the caller's weights and the same seeds.
     if index < schedule.diverse_runs {
-        return schedule.diverse_sample(index, true);
+        return schedule.diverse_sample(index, true, 0);
     }
-    if schedule.hedged() {
-        // Then the fixed orders that read the weights, on the ranking this
+    let stage_length = schedule.stage_length();
+    if schedule.hedged() && stage_length > 0 {
+        // Then one weighted stage per weighting, in the series' order: the
+        // fixed orders that read the weights, on that stage's ranking this
         // time, and then the diverse pass again on it.
         let after_plain = index - schedule.diverse_runs;
-        if after_plain < schedule.fixed_runs {
-            let (order, seed) = schedule.weighted_fixed(after_plain)?;
-            return sample_at(order, seed, Pass::Modified, EliminationPhase::Initial);
-        }
-        let after_fixed = after_plain - schedule.fixed_runs;
-        if after_fixed < schedule.diverse_runs {
-            return schedule.diverse_sample(after_fixed, false);
+        if after_plain < stage_length.saturating_mul(schedule.modified_stages()) {
+            let stage_index = after_plain / stage_length;
+            let within = after_plain % stage_length;
+            if within < schedule.fixed_runs {
+                let (order, seed) = schedule.weighted_fixed(within, stage_index)?;
+                return sample_at(
+                    order,
+                    seed,
+                    schedule.pass(false, stage_index),
+                    EliminationPhase::Initial,
+                );
+            }
+            return schedule.diverse_sample(within - schedule.fixed_runs, false, stage_index);
         }
     }
 
@@ -263,7 +403,7 @@ fn extra_sample(schedule: Schedule<'_>, index: u64) -> Option<Sample<'_>> {
             weights: schedule.weights,
         },
         sample_seed(base_seed, ordinary_index),
-        schedule.pass(true),
+        schedule.pass(true, 0),
         EliminationPhase::ExtraSampling,
     )
 }
@@ -448,7 +588,8 @@ fn sampled_min_fill_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandid
 ///
 /// `weights` has one entry per vertex and is what the sampling orders draw tie
 /// sets with. Every candidate and every sampled order shares it unless the
-/// portfolio hedges, which runs a second pass on weights of its own.
+/// portfolio hedges, which runs a weighted stage per weighting on weights of
+/// its own.
 fn run_portfolio(
     graph: &Graph,
     weights: &[u32],
@@ -467,25 +608,37 @@ fn run_portfolio(
     let mut prebuilt = engine::prebuild(graph, soft_deadline);
     let mut original = None;
     let large_residual = prebuilt.num_active() > MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS;
-    let ranking = OnceCell::new();
-    let modified = match config.hedge {
-        Hedge::Off => None,
-        // A large residual runs sampled min-degree restarts whatever is set,
-        // so there is nothing there for a hedge to run against.
-        Hedge::EccentricityPasses { .. } if large_residual => None,
-        Hedge::EccentricityPasses { dim, rounds } => Some(ModifiedWeights {
-            cell: &ranking,
-            graph,
-            dim,
-            rounds,
-            seed,
-            soft_deadline,
-        }),
+    let cells: [OnceCell<Vec<u32>>; MAX_HEDGE_PASSES] = std::array::from_fn(|_| OnceCell::new());
+    // A large residual runs sampled min-degree restarts whatever is set, so
+    // there is nothing there for a hedge to run against. Each stage's weights
+    // are derived when its first candidate asks for them.
+    let modified: Vec<ModifiedWeights<'_>> = match config.hedge.series() {
+        Some(series) if !large_residual => series
+            .weights()
+            .iter()
+            .zip(&cells)
+            .map(|(entry, cell)| match *entry {
+                HedgeWeights::Eccentricity { dim, rounds } => ModifiedWeights::Ranked {
+                    cell,
+                    graph,
+                    dim,
+                    rounds,
+                    seed,
+                    soft_deadline,
+                },
+                HedgeWeights::Random { stream } => ModifiedWeights::Random {
+                    cell,
+                    count: graph.num_vertices() as usize,
+                    seed: hedge_random_seed(seed, stream),
+                },
+            })
+            .collect(),
+        _ => Vec::new(),
     };
-    // The hedge repeats the fixed orders that read weights after the plain
-    // diverse pass. Which orders those are does not depend on the weights, so
-    // the count is known before a ranking is placed.
-    let fixed_runs = if modified.is_some() {
+    // Every weighted stage repeats the fixed orders that read weights after the
+    // plain diverse pass. Which orders those are does not depend on the
+    // weights, so the count is known before a ranking is placed.
+    let fixed_runs = if !modified.is_empty() {
         initial_orders(seed, weights)
             .iter()
             .filter(|candidate| reads_weights(candidate.order))
@@ -557,8 +710,14 @@ fn run_portfolio(
             // cutoff stopped it. Either way the portfolio still holds whatever
             // is left of the hard deadline, so only the clock decides.
             ScheduleStop::Continue => match outcome {
+                // Nothing usable from this candidate, but the portfolio is
+                // still inside its budget.
                 CandidateOutcome::WidthAborted => false,
-                _ => expired(hard_deadline),
+                // Only the sampling phase has stages to skip.
+                CandidateOutcome::StageSkipped { .. } => false,
+                CandidateOutcome::Produced { .. } | CandidateOutcome::DeadlineReached => {
+                    expired(hard_deadline)
+                }
             },
         };
         if hard_deadline_tripped {
@@ -574,9 +733,20 @@ fn run_portfolio(
     // sample stops at the soft deadline so it cannot consume the trailing
     // FlowCutter and output interval. On extended small/medium runs, diverse
     // fill-degree scores precede the complete ordinary min-fill seed sequence.
-    // A hedge adds the weighted fixed orders and a second diverse pass between
-    // the two, and leaves the restarts where they were.
-    let max_samples = config.sampling_runs;
+    // A hedge adds one weighted stage per weighting between the two — the fixed
+    // orders that read weights and the diverse pass again — and leaves the
+    // restarts where they were.
+    //
+    // The sampling count caps how many seeds are drawn, not the clock, so a
+    // graph whose candidates are quick can finish the schedule with budget
+    // left. Configured to, the restarts carry on from the next seed of the
+    // same sequence and the soft deadline ends them. Without a soft deadline
+    // there is nothing else to stop at, so the count stands.
+    let ordinary_runs = if config.restarts_to_deadline && soft_deadline.is_some() {
+        u64::MAX
+    } else {
+        config.sampling_runs
+    };
     let diverse_samples = if large_residual {
         0
     } else {
@@ -585,14 +755,24 @@ fn run_portfolio(
     let schedule = Schedule {
         base_seed: seed,
         large_residual,
-        ordinary_runs: max_samples,
+        ordinary_runs,
         diverse_runs: diverse_samples,
-        modified,
+        modified: &modified,
         fixed_runs,
         initial_orders: order_builder,
         weights,
     };
     let total_samples = schedule.total();
+    // Where the weighted stages sit in the sample sequence, and how long one of
+    // them is. A schedule with no stage leaves this empty.
+    let stage_length = schedule.stage_length();
+    let stages_start = schedule.diverse_runs;
+    let stages_end = schedule.passes_total();
+    let stage_count = schedule.modified_stages();
+    // Decided at the end of the plain pass, from what that pass cost and what
+    // the soft budget has left.
+    let mut stage_budget: Option<StageBudget> = None;
+    let mut stage_started = Duration::ZERO;
     let mut sample_index: u64 = 0;
     // Normally the soft deadline fires first; the portfolio hard-deadline
     // check also prevents another sample after an initial candidate used the
@@ -602,6 +782,41 @@ fn run_portfolio(
         && !expired(soft_deadline)
         && !expired(hard_deadline)
     {
+        // At the front of a weighted stage, charge the one that just ended and
+        // ask whether one more fits; the first stage runs whatever the answer.
+        // Nothing after a refusal fits either — the projection never grows and
+        // the spend never falls — so the refusal takes every stage that is left
+        // and the restarts start here.
+        if stage_length > 0
+            && (stages_start..stages_end).contains(&sample_index)
+            && (sample_index - stages_start).is_multiple_of(stage_length)
+        {
+            let elapsed = crate::meter::now().saturating_duration_since(started);
+            let stage_index = (sample_index - stages_start) / stage_length;
+            let budget = stage_budget.get_or_insert_with(|| {
+                StageBudget::new(elapsed, soft_deadline.map(remaining), config.hedge_reserve)
+            });
+            if stage_index > 0 {
+                budget.charge(elapsed.saturating_sub(stage_started));
+            }
+            if !budget.fits() {
+                let outcome = budget.refusal();
+                for skipped in stage_index..stage_count {
+                    trace(CandidateTrace {
+                        stage: Stage::WeightedStage,
+                        seed,
+                        pass: Pass::Modified {
+                            index: skipped as u8,
+                        },
+                        outcome,
+                        elapsed,
+                    });
+                }
+                sample_index = stages_end;
+                continue;
+            }
+            stage_started = elapsed;
+        }
         let candidate = extra_sample(schedule, sample_index)
             .expect("sample index is below the configured total");
         // Extra sampling only runs after the fixed candidates, so at least one prior
@@ -634,7 +849,12 @@ fn run_portfolio(
             CandidateOutcome::DeadlineReached => break,
             // A width-aborted seed keeps sampling: another seed
             // explores a different elimination order.
-            CandidateOutcome::Produced { .. } | CandidateOutcome::WidthAborted => {
+            //
+            // A skipped stage is reported by the rule above and never comes
+            // back from a candidate.
+            CandidateOutcome::Produced { .. }
+            | CandidateOutcome::WidthAborted
+            | CandidateOutcome::StageSkipped { .. } => {
                 sample_index += 1;
             }
         }
