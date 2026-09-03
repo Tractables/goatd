@@ -128,20 +128,36 @@ mod tests {
     use super::*;
     use crate::elimination::execution::ElimSteps;
 
-    #[test]
-    fn update_order_ties_prefer_a_recently_exposed_leaf() {
+    fn elimination_order(update_order_ties: bool) -> Vec<u32> {
         let mut graph = EliminationGraph::from_edges(5, &[(0, 1), (0, 2), (0, 4), (1, 2), (3, 4)]);
         let salt = vec![0; 5];
         let mut steps = ElimSteps::default();
-
-        let exit = eliminate_min_degree(&mut graph, &salt, true, steps.sink(), ElimStop::default());
-
+        let exit = eliminate_min_degree(
+            &mut graph,
+            &salt,
+            update_order_ties,
+            steps.sink(),
+            ElimStop::default(),
+        );
         assert_eq!(exit, ElimExit::Complete);
-        let order: Vec<u32> = steps
+        steps
             .rank_pairs
             .into_iter()
             .map(|(vertex, _)| vertex)
-            .collect();
+            .collect()
+    }
+
+    #[test]
+    fn min_degree_requeues_a_neighbour_whose_degree_decreased() {
+        let order = elimination_order(false);
+
+        assert_eq!(&order[..2], [3, 4]);
+    }
+
+    #[test]
+    fn update_order_ties_prefer_a_recently_exposed_leaf() {
+        let order = elimination_order(true);
+
         assert_eq!(order, [3, 4, 1, 0, 2]);
     }
 }
