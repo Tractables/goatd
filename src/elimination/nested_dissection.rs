@@ -17,7 +17,7 @@ use std::time::Instant;
 use rustc_hash::FxHashSet;
 
 use super::execution::{
-    DEADLINE_CHECK_STRIDE, ElimExit, ElimSink, ElimSteps, ElimStop, exceeds_width_bound,
+    Cutoff, DEADLINE_CHECK_STRIDE, ElimExit, ElimSink, ElimSteps, ElimStop, exceeds_width_bound,
 };
 use super::graph::EliminationGraph;
 use super::greedy::eliminate_min_fill;
@@ -108,7 +108,7 @@ pub(super) fn eliminate_nested_dissection(
         if deadline_check >= DEADLINE_CHECK_STRIDE {
             deadline_check = 0;
             if expired(stop.hard_deadline) {
-                return ElimExit::DeadlineReached;
+                return ElimExit::DeadlineReached(Cutoff::Hard);
             }
         }
         neighbours.clear();

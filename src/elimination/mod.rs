@@ -91,8 +91,8 @@ pub fn decompose(
     );
     match run {
         engine::OrderRun::Completed(decomposition)
-        | engine::OrderRun::CompletedAtDeadline(decomposition) => Ok(decomposition),
-        engine::OrderRun::DeadlineAborted | engine::OrderRun::WidthAborted => {
+        | engine::OrderRun::CompletedAtDeadline(_, decomposition) => Ok(decomposition),
+        engine::OrderRun::DeadlineAborted(_) | engine::OrderRun::WidthAborted => {
             unreachable!("a deadline-completing, unbounded run must produce a decomposition")
         }
     }

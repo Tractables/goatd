@@ -23,7 +23,7 @@ use crate::elimination::execution::ElimStop;
 use crate::embedding::{self, Embedding};
 use crate::flowcutter::{Budget, decompose as flowcutter_decompose};
 use crate::{Error, Graph, TreeDecomposition};
-use candidates::CandidateSet;
+use candidates::{CandidateSet, ScheduleStop};
 use config::MIN_FLOWCUTTER_CANDIDATE_MS;
 
 pub use config::{Hedge, MAX_DIVERSE_SAMPLING_RUNS, PortfolioConfig};
@@ -528,7 +528,7 @@ fn run_portfolio(
                 complete_on_deadline,
             },
         );
-        let outcome = candidates.record_elimination(run);
+        let (outcome, stop) = candidates.record_elimination(run);
         trace(CandidateTrace {
             stage: stage_of(order, EliminationPhase::Initial),
             seed: candidate.seed,
@@ -536,12 +536,15 @@ fn run_portfolio(
             outcome,
             elapsed: crate::meter::now().saturating_duration_since(started),
         });
-        hard_deadline_tripped = match outcome {
-            CandidateOutcome::DeadlineReached => true,
-            // Nothing usable from this candidate, but the portfolio is still inside
-            // its budget.
-            CandidateOutcome::WidthAborted => false,
-            CandidateOutcome::Produced { .. } => expired(hard_deadline),
+        hard_deadline_tripped = match stop {
+            ScheduleStop::HardDeadline => true,
+            // Either the candidate finished inside its budget or the soft
+            // cutoff stopped it. Either way the portfolio still holds whatever
+            // is left of the hard deadline, so only the clock decides.
+            ScheduleStop::Continue => match outcome {
+                CandidateOutcome::WidthAborted => false,
+                _ => expired(hard_deadline),
+            },
         };
         if hard_deadline_tripped {
             break;
@@ -603,7 +606,7 @@ fn run_portfolio(
                 complete_on_deadline: false,
             },
         );
-        let outcome = candidates.record_elimination(run);
+        let (outcome, _) = candidates.record_elimination(run);
         trace(CandidateTrace {
             stage: candidate.stage,
             seed: candidate.seed,

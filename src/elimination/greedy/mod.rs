@@ -8,7 +8,9 @@ use std::collections::{BinaryHeap, HashMap, hash_map::Entry};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::time::Instant;
 
-use super::execution::{DEADLINE_CHECK_STRIDE, ElimExit, ElimSink, ElimStop, exceeds_width_bound};
+use super::execution::{
+    Cutoff, DEADLINE_CHECK_STRIDE, ElimExit, ElimSink, ElimStop, exceeds_width_bound,
+};
 use super::graph::EliminationGraph;
 use crate::rng::Xorshift64;
 

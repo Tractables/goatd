@@ -8,7 +8,7 @@
 
 use crate::elimination::Order;
 use crate::elimination::engine::*;
-use crate::elimination::execution::ElimStop;
+use crate::elimination::execution::{Cutoff, ElimStop};
 use crate::elimination::graph::EliminationGraph;
 use crate::elimination::preprocess::preprocess;
 
@@ -53,7 +53,7 @@ fn complete_at_immediate_deadline(graph: &crate::Graph) -> crate::TreeDecomposit
             complete_on_deadline: true,
         },
     );
-    let OrderRun::CompletedAtDeadline(decomposition) = run else {
+    let OrderRun::CompletedAtDeadline(_, decomposition) = run else {
         panic!("deadline completion must return its completed decomposition");
     };
     decomposition
@@ -83,7 +83,9 @@ pub(super) fn run_order(
         },
     ) {
         OrderRun::Completed(decomposition) => decomposition,
-        OrderRun::CompletedAtDeadline(_) | OrderRun::DeadlineAborted | OrderRun::WidthAborted => {
+        OrderRun::CompletedAtDeadline(..)
+        | OrderRun::DeadlineAborted(_)
+        | OrderRun::WidthAborted => {
             unreachable!("an unbounded run has no cutoff")
         }
     }
@@ -113,8 +115,11 @@ fn partial_eliminations_are_never_returned_as_decompositions() {
         )
     };
 
-    assert!(matches!(at_deadline(false), OrderRun::DeadlineAborted));
-    let OrderRun::CompletedAtDeadline(decomposition) = at_deadline(true) else {
+    assert!(matches!(
+        at_deadline(false),
+        OrderRun::DeadlineAborted(Cutoff::Hard)
+    ));
+    let OrderRun::CompletedAtDeadline(Cutoff::Hard, decomposition) = at_deadline(true) else {
         panic!("deadline completion must return its completed decomposition");
     };
     decomposition.validate(&graph).unwrap();

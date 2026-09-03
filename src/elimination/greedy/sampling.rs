@@ -172,7 +172,7 @@ fn eliminate_sampled_fill_based(
         if check_counter >= DEADLINE_CHECK_STRIDE {
             check_counter = 0;
             if expired(hard_deadline) {
-                return ElimExit::DeadlineReached;
+                return ElimExit::DeadlineReached(Cutoff::Hard);
             }
             if graph.should_promote_bitset() {
                 graph.promote_bitset();
@@ -233,12 +233,12 @@ fn eliminate_sampled_fill_based(
             affected.prepare_inside(graph, v, &live_nbrs);
             graph.eliminate_with_nbrs_record_fill(v, &live_nbrs, &mut fill_edges);
             if !affected.collect_deltas(graph, &live_nbrs, &fill_edges, hard_deadline) {
-                return ElimExit::DeadlineReached;
+                return ElimExit::DeadlineReached(Cutoff::Hard);
             }
             while let Some((u, delta)) = affected.pop_delta() {
                 if expired(hard_deadline) {
                     affected.clear();
-                    return ElimExit::DeadlineReached;
+                    return ElimExit::DeadlineReached(Cutoff::Hard);
                 }
                 let old_fill = fills.as_ref().map_or_else(
                     || {
@@ -260,7 +260,7 @@ fn eliminate_sampled_fill_based(
             }
             for &u in &live_nbrs {
                 if expired(hard_deadline) {
-                    return ElimExit::DeadlineReached;
+                    return ElimExit::DeadlineReached(Cutoff::Hard);
                 }
                 if graph.active[u as usize] {
                     let new_fill = scratch.fill_count_of(graph, u);
@@ -325,7 +325,7 @@ pub(crate) fn eliminate_sampled_min_degree(
         if check_counter >= DEADLINE_CHECK_STRIDE {
             check_counter = 0;
             if expired(hard_deadline) {
-                return ElimExit::DeadlineReached;
+                return ElimExit::DeadlineReached(Cutoff::Hard);
             }
         }
 

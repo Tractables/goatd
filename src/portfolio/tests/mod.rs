@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 
 use super::candidates::CandidateSet;
 use super::config::{MAX_DIVERSE_SAMPLING_RUNS, validate};
-use super::{EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig, Sample, Schedule};
-use super::{Stage, elimination_stop, extra_sample, sample_seed};
+use super::{CandidateOutcome, EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig};
+use super::{Sample, Schedule, Stage, elimination_stop, extra_sample, sample_seed};
 use crate::elimination::Order;
 use crate::{Graph, TreeDecomposition};
 
@@ -414,4 +414,55 @@ fn an_extra_sample_stops_at_the_soft_deadline() {
     assert_eq!(stop.soft_deadline, Some(soft_deadline));
     assert_eq!(stop.hard_deadline, Some(soft_deadline));
     assert_eq!(stop.width_bound, Some(17));
+}
+
+/// The `side × side` grid, vertex `row * side + column`.
+fn grid(side: u32) -> Graph {
+    let mut edges = Vec::new();
+    for row in 0..side {
+        for column in 0..side {
+            let vertex = row * side + column;
+            if column + 1 < side {
+                edges.push((vertex, vertex + 1));
+            }
+            if row + 1 < side {
+                edges.push((vertex, vertex + side));
+            }
+        }
+    }
+    Graph::new(side * side, edges)
+}
+
+#[test]
+fn a_candidate_stopped_at_the_soft_cutoff_does_not_end_the_portfolio() {
+    // 900 vertices keeps the residual above CHEAP_MODE_MAX_ACTIVE, so the
+    // deterministic min-degree candidate stops at the soft cutoff and the
+    // engine completes what is left as one bag.
+    let graph = grid(30);
+    let weights = vec![0u32; graph.num_vertices() as usize];
+    let config = PortfolioConfig::standard()
+        .with_soft_budget(Duration::from_nanos(1))
+        .with_hard_budget(Duration::from_secs(30))
+        .with_flowcutter(Duration::from_secs(2))
+        .with_hedge(Hedge::Off);
+
+    let mut seen: Vec<(Stage, CandidateOutcome)> = Vec::new();
+    let decomposition = super::decompose_traced(&graph, &weights, 0, config, &mut |candidate| {
+        seen.push((candidate.stage, candidate.outcome));
+    })
+    .unwrap();
+
+    decomposition.validate(&graph).unwrap();
+    let (stage, outcome) = *seen
+        .first()
+        .expect("the portfolio runs its first candidate");
+    assert_eq!(stage, Stage::MinDegree);
+    assert!(
+        matches!(outcome, CandidateOutcome::Produced { .. }),
+        "the soft cutoff left a decomposition behind, so the candidate produced one: {outcome:?}"
+    );
+    assert!(
+        seen.iter().any(|(stage, _)| *stage == Stage::FlowCutter),
+        "the trailing FlowCutter slot still has the rest of the hard budget: {seen:?}"
+    );
 }

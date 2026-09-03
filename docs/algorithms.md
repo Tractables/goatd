@@ -29,11 +29,16 @@ minimizes `(treewidth, total bag size)`. `sampled_min_fill_candidates` exposes
 the smaller variant used by callers that want to apply their own ranking.
 
 A soft budget, measured from before preprocessing, stops the portfolio from
-starting further candidates and samples. At the hard budget, the first
-candidate puts each unfinished residual component in one bag and attaches the
-partial elimination bags to it. This completion is linear in the residual
-size. Later candidates can stop without completion because a valid candidate
-already exists. `PortfolioConfig::standard_with_budget`, which the CLI uses for
+starting further candidates and samples. A candidate stopped by either budget
+puts each unfinished residual component in one bag and attaches the partial
+elimination bags to it, as long as it is the first candidate. This completion
+is linear in the residual size. Later candidates can stop without completion
+because a valid candidate already exists. Only the hard budget ends the
+portfolio: the deterministic min-degree and min-fill orders return at the soft
+budget when the residual is still large, because cheap-mode elimination at
+that scale can overshoot the hard budget by seconds, and what they return is a
+complete decomposition that the trailing FlowCutter candidate still runs
+after. `PortfolioConfig::standard_with_budget`, which the CLI uses for
 a budgeted standard portfolio, keeps the 100-extra-sample cap below a
 4.75-second soft budget. At or above that budget it permits up to 1,000 extra
 samples. An extra sample that reaches the soft deadline stops there; the

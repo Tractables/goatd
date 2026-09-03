@@ -19,7 +19,7 @@ use std::collections::BinaryHeap;
 use std::time::Instant;
 
 use super::{
-    CHEAP_MODE_MAX_ACTIVE, DEADLINE_CHECK_STRIDE, ElimEntry, ElimExit, ElimSink, ElimStop,
+    CHEAP_MODE_MAX_ACTIVE, Cutoff, DEADLINE_CHECK_STRIDE, ElimEntry, ElimExit, ElimSink, ElimStop,
     EliminationGraph, exceeds_width_bound, take_bag,
 };
 use crate::deadline::expired;
@@ -206,7 +206,7 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
     let mut cheap_mode = match policy.seed(graph, soft_deadline, hard_deadline) {
         Seeded::Ready => false,
         Seeded::CheapMode => true,
-        Seeded::Bailed => return ElimExit::DeadlineReached,
+        Seeded::Bailed => return ElimExit::DeadlineReached(Cutoff::Hard),
     };
 
     let mut nbrs_buf = Vec::new();
@@ -231,21 +231,21 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
             // the hard deadline — checked every pop, because a single cheap
             // elimination on a dense residual can still take a while.
             if expired(hard_deadline) {
-                return ElimExit::DeadlineReached;
+                return ElimExit::DeadlineReached(Cutoff::Hard);
             }
         } else {
             check_counter += 1;
             if check_counter >= DEADLINE_CHECK_STRIDE {
                 check_counter = 0;
                 if expired(hard_deadline) {
-                    return ElimExit::DeadlineReached;
+                    return ElimExit::DeadlineReached(Cutoff::Hard);
                 }
                 if P::CHEAP_MODE && expired(soft_deadline) {
                     // On a large residual even a cheap elimination can
                     // overshoot the hard deadline by seconds, so stop at the
                     // soft cutoff and let the engine complete the residual.
                     if graph.num_active > CHEAP_MODE_MAX_ACTIVE {
-                        return ElimExit::DeadlineReached;
+                        return ElimExit::DeadlineReached(Cutoff::Soft);
                     }
                     cheap_mode = true;
                 }
@@ -308,7 +308,10 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
                     cheap_mode = true;
                 }
             }
-            AfterElim::Bail => return ElimExit::DeadlineReached,
+            // The residual is too large to finish even in cheap mode, and it
+            // is the soft cutoff that has passed: the engine completes what is
+            // left and the portfolio keeps its remaining hard-deadline time.
+            AfterElim::Bail => return ElimExit::DeadlineReached(Cutoff::Soft),
         }
     }
     ElimExit::Complete

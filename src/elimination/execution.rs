@@ -19,11 +19,23 @@ pub(crate) struct ElimStop {
     pub(crate) width_bound: Option<u32>,
 }
 
+/// Which of the two cutoffs stopped a run.
+///
+/// The distinction is the caller's, not the core's: a core that stops at the
+/// soft cutoff has spent the construction budget it was given, while the
+/// portfolio around it still has hard-deadline time for another candidate. A
+/// core that stops at the hard cutoff leaves no time for anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cutoff {
+    Soft,
+    Hard,
+}
+
 /// How an elimination run ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ElimExit {
     Complete,
-    DeadlineReached,
+    DeadlineReached(Cutoff),
     WidthLimitExceeded,
 }
 

@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 use super::Order;
 use super::build_td::build_td_from_ranked_bags;
-use super::execution::{self, ElimExit, ElimSteps};
+use super::execution::{self, Cutoff, ElimExit, ElimSteps};
 use super::graph::EliminationGraph;
 use super::greedy::{
     self, eliminate_min_degree, eliminate_min_fill, eliminate_sampled_fill_degree,
@@ -19,14 +19,16 @@ use super::execution::ElimStop;
 
 /// The usable result of one `(order, seed)` run.
 ///
-/// Partial bags never cross this boundary as a [`TreeDecomposition`]. A hard
+/// Partial bags never cross this boundary as a [`TreeDecomposition`]. A
 /// deadline can either complete them with a residual path construction or
 /// report `DeadlineAborted`, depending on the caller's
-/// `complete_on_deadline` setting.
+/// `complete_on_deadline` setting. Both carry which cutoff stopped the run,
+/// because a run stopped at the soft cutoff leaves the caller's remaining
+/// hard-deadline time to spend and one stopped at the hard cutoff does not.
 pub(crate) enum OrderRun {
     Completed(TreeDecomposition),
-    CompletedAtDeadline(TreeDecomposition),
-    DeadlineAborted,
+    CompletedAtDeadline(Cutoff, TreeDecomposition),
+    DeadlineAborted(Cutoff),
     WidthAborted,
 }
 
@@ -240,7 +242,7 @@ fn run_elimination_raw(
         }
     };
 
-    let residual = if spec.complete_on_deadline && exit == ElimExit::DeadlineReached {
+    let residual = if spec.complete_on_deadline && matches!(exit, ElimExit::DeadlineReached(_)) {
         execution::active_vertices(&g)
     } else {
         Vec::new()
@@ -328,15 +330,15 @@ fn run_order_per_component(
         );
         match comp_exit {
             ElimExit::WidthLimitExceeded => return OrderRun::WidthAborted,
-            ElimExit::DeadlineReached if !spec.complete_on_deadline => {
-                return OrderRun::DeadlineAborted;
+            ElimExit::DeadlineReached(cutoff) if !spec.complete_on_deadline => {
+                return OrderRun::DeadlineAborted(cutoff);
             }
-            ElimExit::Complete | ElimExit::DeadlineReached => {
+            ElimExit::Complete | ElimExit::DeadlineReached(_) => {
                 comp_steps.append_reindexed(comp, &mut all_bags, &mut global_rank);
             }
         }
 
-        if comp_exit == ElimExit::DeadlineReached {
+        if matches!(comp_exit, ElimExit::DeadlineReached(_)) {
             append_residual_bag(
                 comp_residual
                     .into_iter()
@@ -429,10 +431,10 @@ fn finish(
 ) -> OrderRun {
     match exit {
         ElimExit::Complete => OrderRun::Completed(build_td_from_ranked_bags(bags, &rank)),
-        ElimExit::DeadlineReached if complete_on_deadline => {
-            OrderRun::CompletedAtDeadline(build_td_from_ranked_bags(bags, &rank))
+        ElimExit::DeadlineReached(cutoff) if complete_on_deadline => {
+            OrderRun::CompletedAtDeadline(cutoff, build_td_from_ranked_bags(bags, &rank))
         }
-        ElimExit::DeadlineReached => OrderRun::DeadlineAborted,
+        ElimExit::DeadlineReached(cutoff) => OrderRun::DeadlineAborted(cutoff),
         ElimExit::WidthLimitExceeded => OrderRun::WidthAborted,
     }
 }
