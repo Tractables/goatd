@@ -260,6 +260,7 @@ pub struct PortfolioConfig {
     pub(super) flowcutter_budget: Option<Duration>,
     pub(super) hedge: Hedge,
     pub(super) hedge_reserve: f64,
+    pub(super) restarts_to_deadline: bool,
 }
 
 /// Two configurations are equal when they ask for the same run, the reserve
@@ -274,6 +275,7 @@ impl PartialEq for PortfolioConfig {
             && self.flowcutter_budget == other.flowcutter_budget
             && self.hedge == other.hedge
             && self.hedge_reserve.to_bits() == other.hedge_reserve.to_bits()
+            && self.restarts_to_deadline == other.restarts_to_deadline
     }
 }
 
@@ -281,7 +283,9 @@ impl Eq for PortfolioConfig {}
 
 impl PortfolioConfig {
     /// Defaults for the sampled-min-fill candidate set: a 1 s soft deadline
-    /// and up to 100 further seeds.
+    /// and up to 100 further seeds. The deadline cuts the seeds short and the
+    /// count stops them; every candidate is returned, so the count is also
+    /// how many there can be.
     pub fn sampled_min_fill() -> Self {
         Self {
             soft_budget: Some(Duration::from_millis(SAMPLED_MIN_FILL_TIMEOUT_MS)),
@@ -291,6 +295,7 @@ impl PortfolioConfig {
             flowcutter_budget: None,
             hedge: Hedge::Off,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
+            restarts_to_deadline: false,
         }
     }
 
@@ -320,6 +325,11 @@ impl PortfolioConfig {
 
     /// Set the maximum number of ordinary sampled min-fill orders. Large
     /// residuals use sampled min-degree in their place.
+    ///
+    /// The count stops the restarts of a run with no soft deadline, and of
+    /// one with [`PortfolioConfig::with_restarts_to_deadline`] off. Under a
+    /// soft deadline with it on, the restarts run on past the count and the
+    /// deadline stops them.
     pub fn with_sampling_runs(mut self, runs: u64) -> Self {
         self.sampling_runs = runs;
         self
@@ -348,6 +358,10 @@ impl PortfolioConfig {
     /// weights, since without a deadline the diverse pass does not run, so the
     /// whole series costs a handful of deterministic eliminations and the
     /// schedule does not depend on how long any of them took.
+    ///
+    /// A soft budget added with [`PortfolioConfig::with_soft_budget`] cuts the
+    /// restarts short but does not extend them: the count stops them unless
+    /// [`PortfolioConfig::with_restarts_to_deadline`] is turned on.
     pub fn standard() -> Self {
         Self {
             soft_budget: None,
@@ -357,6 +371,7 @@ impl PortfolioConfig {
             flowcutter_budget: None,
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
+            restarts_to_deadline: false,
         }
     }
 
@@ -368,6 +383,12 @@ impl PortfolioConfig {
     /// as long as half of what the plain pass left holds another; what does not
     /// fit stays with the ordinary restarts. [`PortfolioConfig::with_hedge_reserve`]
     /// changes that fraction.
+    ///
+    /// The ordinary restarts run until the soft deadline: the sampling count
+    /// caps how many seeds are drawn, not the clock, and a graph whose
+    /// candidates are quick would otherwise finish the schedule with budget
+    /// unspent. [`PortfolioConfig::with_restarts_to_deadline`] turned off
+    /// stops them at the count instead.
     pub fn standard_with_budget(budget: Duration) -> Self {
         let extended = budget >= EXTENDED_SAMPLING_MIN_SOFT_BUDGET;
         let sampling_runs = if extended {
@@ -387,6 +408,7 @@ impl PortfolioConfig {
             flowcutter_budget: extended.then_some(budget),
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
+            restarts_to_deadline: true,
         }
     }
 
@@ -412,6 +434,22 @@ impl PortfolioConfig {
     /// Without a soft budget nothing binds and every stage runs.
     pub fn with_hedge_reserve(mut self, fraction: f64) -> Self {
         self.hedge_reserve = fraction;
+        self
+    }
+
+    /// Whether the ordinary restarts keep drawing seeds past their count
+    /// while the soft deadline has time left.
+    ///
+    /// On, the restarts carry on from the next seed of the same sequence and
+    /// the soft deadline ends them; the count set by
+    /// [`PortfolioConfig::with_sampling_runs`] does not. Off, the restarts stop
+    /// at the count or the deadline, whichever comes first. A run with no soft
+    /// deadline stops at the count either way, since there is nothing else to
+    /// stop at. [`PortfolioConfig::standard_with_budget`] turns this on;
+    /// [`PortfolioConfig::standard`] and [`PortfolioConfig::sampled_min_fill`]
+    /// leave it off.
+    pub fn with_restarts_to_deadline(mut self, enabled: bool) -> Self {
+        self.restarts_to_deadline = enabled;
         self
     }
 }

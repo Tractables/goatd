@@ -42,9 +42,14 @@ budget when the residual is still large, because cheap-mode elimination at
 that scale can overshoot the hard budget by seconds, and what they return is a
 complete decomposition that the trailing FlowCutter candidate still runs
 after. `PortfolioConfig::standard_with_budget`, which the CLI uses for
-a budgeted standard portfolio, keeps the 100-extra-sample cap below a
-4.75-second soft budget. At or above that budget it permits up to 1,000 extra
-samples. An extra sample that reaches the soft deadline stops there; the
+a budgeted standard portfolio, offers 100 extra samples below a 4.75-second
+soft budget and 1,000 at or above it, and in either case draws seeds on past
+that count until the soft deadline: the count caps how many seeds are drawn,
+not the clock, and a graph whose candidates are quick would otherwise finish
+the schedule with budget unspent. `PortfolioConfig::with_restarts_to_deadline`
+turned off stops the restarts at the count, which is what `standard()` and
+`sampled_min_fill()` do; a run with no soft deadline stops at the count either
+way. An extra sample that reaches the soft deadline stops there; the
 remaining hard-budget interval is reserved for a trailing FlowCutter
 candidate. That candidate is skipped when the interval is too short to seed
 it, and also when the graph is large enough that the backend's setup and

@@ -109,6 +109,7 @@ fn a_short_standard_budget_keeps_the_fast_sampling_cap() {
     assert_eq!(config.sampling_runs, 100);
     assert_eq!(config.diverse_sampling_runs, 0);
     assert_eq!(config.flowcutter_budget, None);
+    assert!(config.restarts_to_deadline);
 }
 
 #[test]
@@ -120,6 +121,23 @@ fn a_ten_second_outer_window_with_output_headroom_raises_the_sampling_cap() {
     assert_eq!(config.sampling_runs, 1_000);
     assert_eq!(config.diverse_sampling_runs, 46);
     assert_eq!(config.flowcutter_budget, Some(budget));
+    assert!(config.restarts_to_deadline);
+}
+
+#[test]
+fn only_the_budgeted_standard_portfolio_runs_its_restarts_to_the_deadline() {
+    assert!(!PortfolioConfig::standard().restarts_to_deadline);
+    assert!(!PortfolioConfig::sampled_min_fill().restarts_to_deadline);
+    assert!(
+        PortfolioConfig::standard()
+            .with_restarts_to_deadline(true)
+            .restarts_to_deadline
+    );
+    assert!(
+        !PortfolioConfig::standard_with_budget(Duration::from_millis(4_750))
+            .with_restarts_to_deadline(false)
+            .restarts_to_deadline
+    );
 }
 
 #[test]
