@@ -898,6 +898,74 @@ impl EliminationGraph {
         }
     }
 
+    /// The one edge missing from `v`'s neighbourhood, if exactly one is.
+    ///
+    /// `None` when the neighbourhood is already a clique and when two or more
+    /// edges are missing, which is what the almost-simplicial rule needs: it
+    /// fires only on the single-missing-edge case, and the pair is then unique.
+    ///
+    /// The bitset path counts, for each u ∈ N(v), how many of v's other
+    /// neighbours u is not adjacent to. The sum over N(v) counts every missing
+    /// edge twice, so the scan can stop as soon as it passes two, and the two
+    /// vertices contributing one each are the endpoints. That is O(k · words)
+    /// against the O(k²) membership tests of the pairwise scan, and on a
+    /// residual of a few thousand vertices with degrees in the thousands the
+    /// difference is seconds.
+    pub(super) fn almost_simplicial_nonedge(&self, v: u32) -> Option<(u32, u32)> {
+        if self.bitset_words == 0 {
+            let neighbours = &self.adj[v as usize];
+            let mut missing: Option<(u32, u32)> = None;
+            for i in 0..neighbours.len() {
+                for j in (i + 1)..neighbours.len() {
+                    if !self.contains_edge(neighbours[i], neighbours[j]) {
+                        if missing.is_some() {
+                            return None;
+                        }
+                        missing = Some((neighbours[i], neighbours[j]));
+                    }
+                }
+            }
+            return missing;
+        }
+
+        let w = self.bitset_words;
+        let vb = v as usize * w;
+        let mut endpoints: [u32; 2] = [0, 0];
+        let mut found = 0usize;
+        let mut total = 0u64;
+        let mut neighbours_scanned = 0u64;
+        for j in 0..w {
+            let mut bits = self.bitset[vb + j];
+            while bits != 0 {
+                let u = (j * 64 + bits.trailing_zeros() as usize) as u32;
+                bits &= bits - 1;
+                neighbours_scanned += 1;
+                // u itself is in N(v) and not in N(u), so one of the counted
+                // bits is always u.
+                let missing_at_u = self.bitset_difference_count(v, u) - 1;
+                total += missing_at_u;
+                if total > 2 {
+                    crate::meter::charge(neighbours_scanned * w as u64);
+                    return None;
+                }
+                if missing_at_u == 1 {
+                    if found == 2 {
+                        crate::meter::charge(neighbours_scanned * w as u64);
+                        return None;
+                    }
+                    endpoints[found] = u;
+                    found += 1;
+                }
+            }
+        }
+        crate::meter::charge(neighbours_scanned * w as u64);
+        if total == 2 && found == 2 {
+            Some((endpoints[0], endpoints[1]))
+        } else {
+            None
+        }
+    }
+
     /// Fill count of `v` via bitset intersection: for each u ∈ N(v),
     /// popcount(bitset[u] & bitset[v]) counts N(v) members adjacent to u;
     /// summed and halved gives edges within N(v). O(k · words) vs

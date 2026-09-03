@@ -394,3 +394,30 @@ fn the_canonical_build_orders_a_hub_row_the_way_the_edge_list_does() {
     let expected: Vec<u32> = (0..hub).chain(hub + 1..n).collect();
     assert_eq!(graph.adj[hub as usize], expected);
 }
+
+#[test]
+fn the_bitset_almost_simplicial_test_agrees_with_the_pairwise_scan() {
+    // K5 with (1, 2) removed: vertex 0's neighbourhood misses exactly that
+    // edge. Removing a second edge leaves two missing and no answer.
+    let mut edges = Vec::new();
+    for u in 0u32..5 {
+        for v in u + 1..5 {
+            edges.push((u, v));
+        }
+    }
+    let one_missing: Vec<(u32, u32)> = edges.iter().copied().filter(|&e| e != (1, 2)).collect();
+    let graph = EliminationGraph::from_edges(5, &one_missing);
+    assert!(graph.bitset_words > 0);
+    assert_eq!(graph.almost_simplicial_nonedge(0), Some((1, 2)));
+
+    let two_missing: Vec<(u32, u32)> = one_missing
+        .iter()
+        .copied()
+        .filter(|&e| e != (3, 4))
+        .collect();
+    let graph = EliminationGraph::from_edges(5, &two_missing);
+    assert_eq!(graph.almost_simplicial_nonedge(0), None);
+
+    let complete = EliminationGraph::from_edges(5, &edges);
+    assert_eq!(complete.almost_simplicial_nonedge(0), None);
+}

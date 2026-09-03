@@ -130,7 +130,7 @@ fn eliminate_almost_simplicial_vertices(
         if degree < 2 || degree > treewidth_lower_bound {
             continue;
         }
-        let Some((left, right)) = almost_simplicial_nonedge(graph, vertex) else {
+        let Some((left, right)) = graph.almost_simplicial_nonedge(vertex) else {
             continue;
         };
         graph.add_edge(left, right);
@@ -170,23 +170,4 @@ fn peel_low_degree(graph: &mut EliminationGraph, prefix: &mut ElimSteps) -> bool
         }
         fired_any = true;
     }
-}
-
-/// If v's live neighbourhood is a clique except for exactly one missing edge,
-/// return that edge `(a, b)`. Otherwise return `None` (either simplicial,
-/// caught by the simplicial pass earlier, or ≥ 2 missing edges).
-fn almost_simplicial_nonedge(graph: &EliminationGraph, v: u32) -> Option<(u32, u32)> {
-    let nbrs = graph.live_neighbours(v);
-    let mut miss: Option<(u32, u32)> = None;
-    for i in 0..nbrs.len() {
-        for j in (i + 1)..nbrs.len() {
-            if !graph.contains_edge(nbrs[i], nbrs[j]) {
-                if miss.is_some() {
-                    return None;
-                }
-                miss = Some((nbrs[i], nbrs[j]));
-            }
-        }
-    }
-    miss
 }
