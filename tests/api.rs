@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use goatd::elimination::{Order, decompose};
 use goatd::embedding::{DEFAULT_MAX_ROUNDS, DEFAULT_PATIENCE, DEFAULT_TOLERANCE, Embedding};
-use goatd::portfolio::{Hedge, PortfolioConfig, candidates};
+use goatd::portfolio::{Hedge, HedgeSeries, PortfolioConfig, candidates};
 use goatd::{Graph, TreeDecomposition};
 
 #[test]
@@ -178,7 +178,7 @@ fn a_portfolio_hedge_that_could_never_be_placed_is_rejected() {
     let graph = Graph::new(3, [(0, 1), (1, 2)]);
     let weights = [1; 3];
     let too_many_dimensions =
-        PortfolioConfig::standard().with_hedge(Hedge::EccentricityPasses { dim: 9, rounds: 8 });
+        PortfolioConfig::standard().with_hedge(Hedge::Passes(HedgeSeries::eccentricity_dims(&[9])));
 
     assert!(candidates(&graph, &weights, 0, too_many_dimensions).is_err());
     assert!(

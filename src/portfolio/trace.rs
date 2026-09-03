@@ -27,6 +27,8 @@ pub enum Stage {
     Sample,
     /// The trailing FlowCutter candidate.
     FlowCutter,
+    /// A hedge's weighted stage as a whole, rather than one of its candidates.
+    WeightedStage,
 }
 
 impl fmt::Display for Stage {
@@ -40,6 +42,7 @@ impl fmt::Display for Stage {
             }
             Stage::Sample => formatter.write_str("sample"),
             Stage::FlowCutter => formatter.write_str("flowcutter"),
+            Stage::WeightedStage => formatter.write_str("weighted-stage"),
         }
     }
 }
@@ -52,8 +55,13 @@ pub enum Pass {
     Only,
     /// The portfolio's own candidate, run on the caller's weights.
     Plain,
-    /// The same candidate on the weights the hedge ranked.
-    Modified,
+    /// The same candidate on the weights of one of the hedge's stages.
+    Modified {
+        /// Which weighted stage it belongs to, counting from zero in the order
+        /// the hedge's weightings run. A hedge of one weighting only ever
+        /// reports 0.
+        index: u8,
+    },
 }
 
 /// What one candidate left behind.
@@ -74,6 +82,19 @@ pub enum CandidateOutcome {
     /// The hard deadline was reached, with or without a completed residual.
     /// No later candidate starts.
     DeadlineReached,
+    /// A weighted stage the budget rule did not start: what one more stage was
+    /// projected to cost did not fit in what the stages may spend, so the
+    /// restarts keep the time. Reported once per stage left unrun, against
+    /// [`Stage::WeightedStage`].
+    StageSkipped {
+        /// What one more stage was projected to cost.
+        projected: Duration,
+        /// What the stages that ran have spent between them.
+        spent: Duration,
+        /// What the stages may spend between them: the reserve fraction of what
+        /// the soft budget had left when the plain pass finished.
+        allowance: Duration,
+    },
 }
 
 /// One candidate the portfolio ran.

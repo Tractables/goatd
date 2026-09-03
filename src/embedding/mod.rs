@@ -47,6 +47,11 @@ const JACOBI_TOLERANCE: f64 = 1e-18;
 /// jittered instead of rescaled.
 const FLAT_AXIS_DEVIATION: f64 = 1e-6;
 
+/// Odd constant [`random_weights`] adds to its seed, so its stream is not the
+/// one a placement at the same seed draws from. Changing it reshuffles every
+/// random weight vector.
+const RANDOM_WEIGHT_OFFSET: u64 = 0x2545_F491_4F6C_DD1D;
+
 /// Where a run of rounds stops.
 #[derive(Clone, Copy)]
 struct Budget {
@@ -201,6 +206,19 @@ impl Embedding {
         }
         weights
     }
+}
+
+/// `count` tie weights drawn uniformly at random from `seed`.
+///
+/// The control for the tie weights that mean something: it perturbs the tie
+/// sets by as much as they do while carrying no information about the graph, so
+/// a gain that survives here came from the perturbation and not the signal.
+///
+/// The stream starts at its own offset, so a run that also places an embedding
+/// from the same seed draws different numbers here.
+pub(crate) fn random_weights(count: usize, seed: u64) -> Vec<u32> {
+    let mut rng = Xorshift64::from_state(seed.wrapping_add(RANDOM_WEIGHT_OFFSET));
+    (0..count).map(|_| rng.next_u32()).collect()
 }
 
 /// Move every vertex halfway toward the mean of its neighbours and whiten the

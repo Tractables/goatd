@@ -141,13 +141,46 @@ the second set is free, and where the budget binds, the second set costs later
 candidates rather than displacing the first. The incumbent width bound and the
 deadlines apply to every candidate of both sets.
 
-`PortfolioConfig::standard` and `standard_with_budget` hedge on a ranking in
-three dimensions. The placement runs when the first candidate that reads it
-asks for it, after the plain diverse pass, so a run that ends inside the plain
-pass never pays for it; it is charged to the construction meter and stops at
-the soft deadline. A residual too large for the expensive orders runs sampled
-min-degree, as it does without a hedge, and there is nothing there to hedge.
-`with_hedge(Hedge::Off)` runs the schedule without any of it.
+`PortfolioConfig::standard` and `standard_with_budget` hedge on eccentricity
+rankings in the dimensions of `portfolio::DEFAULT_HEDGE_DIMS`, which is
+`[3, 1, 2, 4, 8, 5, 6, 7]` — every dimension the embedding has, since the
+budget rule stops the series where there is no time for another stage. Each
+placement runs when the first candidate that reads it asks
+for it, after the plain diverse pass, so a run that ends inside the plain pass
+never pays for any of them; a placement is charged to the construction meter
+and stops at the soft deadline. A residual too large for the expensive orders
+runs sampled min-degree, as it does without a hedge, and there is nothing there
+to hedge. `with_hedge(Hedge::Off)` runs the schedule without any of it.
+
+`Hedge::Passes` carries a `HedgeSeries`: one weighted stage per weighting, in
+the order the series gives them, each stage being the fixed orders that read
+weights and the diverse pass again. A series of one runs exactly what is
+described above. Which graphs a weighting improves is close to arbitrary and
+two weightings improve mostly different ones, so several stages collect more of
+them; the incumbent width bounds the candidates of every stage after the first.
+Three leads the default series because on its own it is the dimension that
+helps most, and a budget that has room for one stage should spend it there.
+`HedgeSeries::eccentricity_dims` takes one dimension per stage and
+`HedgeSeries::random` runs the same schedule on weights drawn at random, the
+control for a series that means something.
+
+A stage is as many candidates as the diverse pass and it takes them from the
+restarts, so several stages can leave a graph whose plain pass nearly filled
+the budget with no restarts at all. The plain pass is the portfolio's own
+measurement of what a stage costs — the same orders on other weights — so the
+stages get `PortfolioConfig::with_hedge_reserve` of what the soft budget had
+left when the plain pass ended, half of it by default, and one more stage
+starts only while what the stages have spent plus that measurement fits in the
+share. The first stage is outside the rule: a hedge runs one weighted stage on
+any budget, and the reserve decides how many follow it. A stage that has run
+replaces the measurement when it was cheaper, since the incumbent bounds the
+stages after the first. A refused stage refuses the ones behind it, the
+restarts start where they always start. A run with no soft budget bounds no
+stage and runs the whole series: the rule exists to leave the restarts their
+time, and there is no deadline to take it from, which also keeps such a run's
+schedule independent of how long any candidate took. Without a deadline the
+diverse pass does not run either, so a stage there is only the fixed orders
+that read weights. The trace reports each stage left unrun.
 
 ## Attributing a result
 
