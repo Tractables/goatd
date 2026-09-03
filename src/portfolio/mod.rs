@@ -61,9 +61,9 @@ enum Residual {
     /// Past the size the expensive orders are trusted at, but inside the limit
     /// the caller raised with
     /// [`PortfolioConfig::with_expensive_orders_up_to`]. The expensive initial
-    /// orders run, on the soft deadline rather than the whole window; the
-    /// diverse pass and the hedge do not; and the restarts follow whichever of
-    /// min-fill and min-degree finished.
+    /// orders run, each on half the time the soft deadline has left rather than
+    /// on the whole window; the diverse pass and the hedge do not; and the
+    /// restarts follow whichever of min-fill and min-degree finished.
     Admitted,
     /// Past the caller's limit: min-degree candidates and sampled min-degree
     /// restarts, nothing else.
@@ -158,7 +158,7 @@ struct Schedule<'a> {
     /// The ordinary restarts run sampled min-degree in place of sampled
     /// min-fill. Set where min-fill has no prospect of finishing: a residual
     /// past the caller's size limit, or one where the initial min-fill did not
-    /// come back inside the soft deadline.
+    /// come back inside its cutoff.
     min_degree_restarts: bool,
     /// Ordinary restarts on offer: the configured count, or `u64::MAX` where
     /// the soft deadline ends them instead of the count.
@@ -451,7 +451,7 @@ fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
         (Order::MinDegree | Order::MinDegreeSampled { .. }, _) => Stage::MinDegree,
         (
             Order::MinFill | Order::MinFillSampled { .. },
-            EliminationPhase::Initial | EliminationPhase::AdmittedInitial,
+            EliminationPhase::Initial | EliminationPhase::AdmittedInitial(_),
         ) => Stage::MinFill,
         (Order::MinFill | Order::MinFillSampled { .. }, EliminationPhase::ExtraSampling) => {
             Stage::Sample
@@ -515,19 +515,36 @@ fn flowcutter_candidate(
 enum EliminationPhase {
     Initial,
     /// An expensive initial order on a residual the caller's raised limit
-    /// admitted.
-    AdmittedInitial,
+    /// admitted, carrying the instant it runs to.
+    AdmittedInitial(Option<Instant>),
     ExtraSampling,
+}
+
+/// The cutoff an expensive order on an admitted residual runs to: half the time
+/// the soft deadline has left when the order starts.
+///
+/// Each order gives back at least what it does not use, so however many of them
+/// run, the restarts still start with time in hand. With no soft deadline there
+/// is nothing to halve and the order runs to the portfolio's hard deadline, as
+/// it does below the band.
+fn admitted_cutoff(
+    soft_deadline: Option<Instant>,
+    hard_deadline: Option<Instant>,
+) -> Option<Instant> {
+    let Some(soft) = soft_deadline else {
+        return hard_deadline;
+    };
+    Some(crate::meter::now() + remaining(soft) / 2)
 }
 
 /// Initial candidates may use the complete two-stage window so the first one
 /// can always return a decomposition. Extra samples stop at the soft deadline;
 /// the rest of the hard window belongs to FlowCutter.
 ///
-/// An expensive order on an admitted residual stops at the soft deadline too.
-/// At that size it often cannot finish, and on the whole window it returns
-/// nothing and leaves no time for the restarts either; stopped at the soft
-/// cutoff it gives the rest of the window back.
+/// An expensive order on an admitted residual stops at a cutoff of its own,
+/// half the time the soft deadline had left when it started. At that size it
+/// often cannot finish, and given the whole window it returns nothing and
+/// leaves no time for the restarts either.
 fn elimination_stop(
     phase: EliminationPhase,
     soft_deadline: Option<Instant>,
@@ -538,7 +555,8 @@ fn elimination_stop(
         soft_deadline,
         hard_deadline: match phase {
             EliminationPhase::Initial => hard_deadline,
-            EliminationPhase::AdmittedInitial | EliminationPhase::ExtraSampling => soft_deadline,
+            EliminationPhase::AdmittedInitial(cutoff) => cutoff,
+            EliminationPhase::ExtraSampling => soft_deadline,
         },
         width_bound,
     }
@@ -720,11 +738,13 @@ fn run_portfolio(
         if i > 0 && residual == Residual::Large && expensive {
             continue;
         }
-        // An admitted residual runs the expensive orders on the soft deadline.
-        // The min-degree candidates keep the window they have on any residual,
-        // since one of them has to come back with a decomposition.
+        // An admitted residual gives each expensive order half the time the
+        // soft deadline has left, so whatever it does with that time the
+        // restarts still get a share of the budget. The min-degree candidates
+        // keep the window they have on any residual, since one of them has to
+        // come back with a decomposition.
         let phase = if residual == Residual::Admitted && expensive {
-            EliminationPhase::AdmittedInitial
+            EliminationPhase::AdmittedInitial(admitted_cutoff(soft_deadline, hard_deadline))
         } else {
             EliminationPhase::Initial
         };
@@ -755,7 +775,7 @@ fn run_portfolio(
         );
         let (outcome, stop) = candidates.record_elimination(run);
         // What the restarts of an admitted residual follow: a min-fill order
-        // that came back with a decomposition ran inside the soft deadline, so
+        // that came back with a decomposition finished inside its cutoff, so
         // sampled min-fill has a prospect of finishing too.
         if is_min_fill_variant(order) && matches!(outcome, CandidateOutcome::Produced { .. }) {
             min_fill_finished = true;
@@ -767,12 +787,19 @@ fn run_portfolio(
             outcome,
             elapsed: crate::meter::now().saturating_duration_since(started),
         });
+        // An expensive order on an admitted residual runs to a cutoff of its
+        // own, and the engine reports reaching that the same way it reports the
+        // portfolio's hard deadline. Reaching it says nothing about how much of
+        // the portfolio's budget is left, so read the clock instead of taking
+        // the candidate's word and stopping the run.
+        let own_cutoff = matches!(phase, EliminationPhase::AdmittedInitial(_));
         hard_deadline_tripped = match stop {
-            ScheduleStop::HardDeadline => true,
-            // Either the candidate finished inside its budget or the soft
-            // cutoff stopped it. Either way the portfolio still holds whatever
-            // is left of the hard deadline, so only the clock decides.
-            ScheduleStop::Continue => match outcome {
+            ScheduleStop::HardDeadline if !own_cutoff => true,
+            // Either the candidate finished inside its budget, or it was
+            // stopped by a cutoff that was not the portfolio's. Either way the
+            // portfolio still holds whatever is left of the hard deadline, so
+            // only the clock decides.
+            ScheduleStop::HardDeadline | ScheduleStop::Continue => match outcome {
                 // Nothing usable from this candidate, but the portfolio is
                 // still inside its budget.
                 CandidateOutcome::WidthAborted => false,

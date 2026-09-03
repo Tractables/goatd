@@ -24,10 +24,11 @@ by further sampled min-fill seeds; on a very large residual it uses sampled
 min-degree and skips the expensive fixed orders instead. A residual counts as
 very large above 10,000 vertices left after preprocessing.
 `PortfolioConfig::with_expensive_orders_up_to` raises that number and opens a
-band between the two: there min-fill and nested dissection run but stop at the
-soft deadline, the diverse pass, the hedge and the trailing FlowCutter
-candidate stay off, and the restarts follow min-fill when an initial min-fill
-produced a decomposition and min-degree when none did. Initial fill counts
+band between the two: there min-fill and nested dissection run but each stops
+at half the time the soft deadline has left when it starts, so the restarts
+always keep a share of the budget; the diverse pass, the hedge and the trailing
+FlowCutter candidate stay off; and the restarts follow min-fill when an initial
+min-fill produced a decomposition and min-degree when none did. Initial fill counts
 are computed only when a fill-based order first runs, then reused across the
 remaining scores and seeds. The best-only path contracts bags
 contained in an adjacent bag in each candidate that can still win, then

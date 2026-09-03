@@ -773,12 +773,28 @@ fn the_size_rule_admits_a_residual_only_between_the_default_and_the_limit() {
 }
 
 #[test]
-fn an_expensive_initial_order_on_an_admitted_residual_stops_at_the_soft_deadline() {
-    let soft_deadline = Instant::now() + Duration::from_secs(1);
+fn an_expensive_initial_order_on_an_admitted_residual_stops_at_half_the_budget_left() {
+    let before = crate::meter::now();
+    let soft_deadline = before + Duration::from_secs(1);
     let hard_deadline = soft_deadline + Duration::from_secs(1);
 
+    // Half of what the soft deadline has left, so the restarts keep the rest.
+    let cutoff = super::admitted_cutoff(Some(soft_deadline), Some(hard_deadline))
+        .expect("a soft deadline gives a cutoff");
+    let allowed = cutoff.saturating_duration_since(before);
+    assert!(
+        allowed >= Duration::from_millis(450) && allowed <= Duration::from_millis(500),
+        "half of a one-second window, got {allowed:?}"
+    );
+    // With no soft deadline there is nothing to halve, so the order runs to the
+    // portfolio's hard deadline as it would below the band.
+    assert_eq!(
+        super::admitted_cutoff(None, Some(hard_deadline)),
+        Some(hard_deadline)
+    );
+
     let admitted = elimination_stop(
-        EliminationPhase::AdmittedInitial,
+        EliminationPhase::AdmittedInitial(Some(cutoff)),
         Some(soft_deadline),
         Some(hard_deadline),
         Some(17),
@@ -790,9 +806,8 @@ fn an_expensive_initial_order_on_an_admitted_residual_stops_at_the_soft_deadline
         Some(17),
     );
 
-    // Min-fill on an admitted residual has the soft deadline as its cutoff, so
-    // an order that cannot finish gives the rest of the window back.
-    assert_eq!(admitted.hard_deadline, Some(soft_deadline));
+    // The order runs to its own cutoff, under the incumbent width bound.
+    assert_eq!(admitted.hard_deadline, Some(cutoff));
     assert_eq!(admitted.soft_deadline, Some(soft_deadline));
     assert_eq!(admitted.width_bound, Some(17));
     // A residual inside the default limit keeps the whole window.
@@ -802,7 +817,7 @@ fn an_expensive_initial_order_on_an_admitted_residual_stops_at_the_soft_deadline
     let weights = [1; 4];
     let order = Order::MinFillSampled { weights: &weights };
     assert_eq!(
-        super::stage_of(order, EliminationPhase::AdmittedInitial),
+        super::stage_of(order, EliminationPhase::AdmittedInitial(Some(cutoff))),
         Stage::MinFill
     );
     assert_eq!(

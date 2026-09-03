@@ -477,9 +477,11 @@ impl PortfolioConfig {
     /// Raising it opens a band between 10,000 and the new number where the
     /// expensive orders run again, on terms that suit the size:
     ///
-    /// - min-fill and nested dissection stop at the soft deadline rather than
-    ///   the whole window, with the incumbent width cutoff as everywhere else,
-    ///   so an order that cannot finish gives the rest of the window back;
+    /// - min-fill and nested dissection each run to half the time the soft
+    ///   deadline has left when they start, rather than to the whole window,
+    ///   with the incumbent width cutoff as everywhere else. An order that
+    ///   cannot finish gives the rest back, and the restarts always start with
+    ///   time in hand however many of these orders ran;
     /// - the diverse pass and the hedge stay off, as they are above the band;
     /// - the restarts are sampled min-fill when an initial min-fill produced a
     ///   decomposition and sampled min-degree when none did, and stop at the
