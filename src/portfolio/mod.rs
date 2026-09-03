@@ -363,12 +363,17 @@ enum CandidateRetention {
     BestOnly,
 }
 
-/// The standard portfolio's fixed candidates. Vertex-order min-degree is last
-/// so a short budget can stop after the existing schedule without paying for
-/// it.
+/// The standard portfolio's fixed candidates. Vertex-order min-degree runs
+/// first so it supplies a deterministic incumbent before the sampled orders.
 fn standard_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandidate<'_>> {
     let second_seed = base_seed.wrapping_add(SECOND_CANDIDATE_SEED_OFFSET);
     vec![
+        InitialCandidate {
+            order: Order::MinDegree,
+            seed: base_seed,
+            preprocess: false,
+            update_order_ties: true,
+        },
         InitialCandidate {
             order: Order::MinDegreeSampled { weights },
             seed: base_seed,
@@ -398,12 +403,6 @@ fn standard_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandidate<'_>>
             seed: second_seed,
             preprocess: true,
             update_order_ties: false,
-        },
-        InitialCandidate {
-            order: Order::MinDegree,
-            seed: base_seed,
-            preprocess: false,
-            update_order_ties: true,
         },
     ]
 }
