@@ -118,7 +118,11 @@ fn the_standard_portfolio_appends_vertex_order_minimum_degree() {
     let candidates = super::standard_orders(0, &weights);
 
     assert_eq!(candidates.len(), 6);
-    assert!(candidates[..5].iter().all(|candidate| !candidate.vertex_id_ties));
+    assert!(
+        candidates[..5]
+            .iter()
+            .all(|candidate| !candidate.vertex_id_ties)
+    );
     let candidate = candidates[5];
     assert_eq!(candidate.order, Order::MinDegree);
     assert!(candidate.vertex_id_ties);
@@ -293,7 +297,8 @@ fn the_hedge_leaves_every_restart_on_the_unmodified_sequence() {
     // are the plain pass.
     let fixed: Vec<(Order<'_>, u64)> = super::standard_orders(base_seed, &ranked)
         .into_iter()
-        .filter(|(order, _)| super::reads_weights(*order))
+        .filter(|candidate| super::reads_weights(candidate.order))
+        .map(|candidate| (candidate.order, candidate.seed))
         .collect();
     assert_eq!(fixed.len(), 3, "nested dissection reads no weights");
     let cell = OnceCell::new();

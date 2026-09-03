@@ -76,6 +76,8 @@ pub(crate) struct RunSpec<'a> {
     pub(crate) order: Order<'a>,
     /// Selects the RNG stream for salt and tie-set sampling.
     pub(crate) seed: u64,
+    /// Break deterministic-order ties by vertex id instead of seeded salt.
+    pub(crate) vertex_id_ties: bool,
     /// When the elimination must stop — handed to the core whole.
     pub(crate) stop: ElimStop,
     /// Whether a deadline stop must still leave a complete TD behind.
@@ -344,9 +346,13 @@ pub(super) fn run_order_on_reduced(
     spec: RunSpec<'_>,
 ) -> OrderRun {
     let n = reduced.graph.len();
-    // `+ SEED_OFFSET` avoids xorshift64's zero fixed point.
-    let mut rng = Xorshift64::from_state(spec.seed.wrapping_add(SEED_OFFSET));
-    let salt: Vec<u32> = (0..n).map(|_| rng.next_u32()).collect();
+    let salt: Vec<u32> = if spec.vertex_id_ties {
+        (0..n as u32).collect()
+    } else {
+        // `+ SEED_OFFSET` avoids xorshift64's zero fixed point.
+        let mut rng = Xorshift64::from_state(spec.seed.wrapping_add(SEED_OFFSET));
+        (0..n).map(|_| rng.next_u32()).collect()
+    };
 
     // Solve each connected component independently. Components arise
     // naturally after preprocessing removes low-degree vertices.
