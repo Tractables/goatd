@@ -27,7 +27,9 @@ portfolio runs several constructions and keeps the narrowest result:
 - **portfolio search** — safe reductions, several seeds and construction
   methods, then optional separator refinement;
 - **greedy elimination** — min-fill and min-degree, with deterministic or
-  weighted-sampling tie breaking;
+  weighted-sampling tie breaking. Repeated min-fill runs sample from a band
+  just above the minimum score, so different seeds reach different orders on
+  graphs where the minimum is held by one vertex at a time;
 - **nested dissection** — recursive multilevel bisection, with each separator
   eliminated after its two sides;
 - **flow-based separation** — balanced cuts for constructing and refining

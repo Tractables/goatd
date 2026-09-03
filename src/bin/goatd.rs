@@ -76,9 +76,10 @@ options:
                         what stops them anyway
   --sample-band <eps>   portfolio only: the ordinary restarts draw from every
                         vertex whose elimination adds at most eps fill edges
-                        more than the best, instead of only from the vertices
-                        tied at the minimum (default 0). The other candidates
-                        keep their exact minimum
+                        more than the best. 0 draws only from the vertices
+                        tied at the minimum; the library's own band is the
+                        default. The other candidates keep their exact
+                        minimum
   --sample-band-alternate
                         portfolio only: alternate the ordinary restarts
                         between the exact minimum and --sample-band, an even

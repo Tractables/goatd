@@ -59,6 +59,14 @@ const DEFAULT_HEDGE: Hedge = Hedge::eccentricity();
 /// series, whatever this says.
 const DEFAULT_HEDGE_RESERVE: f64 = 0.5;
 
+/// How far above the minimum fill the ordinary restarts draw their tie set, in
+/// fill edges. Drawing only from the vertices tied at the minimum leaves a
+/// restart nothing to choose between on a graph where that set holds one
+/// vertex at every step, so every seed replays one order; a band lets the
+/// seeds separate. [`PortfolioConfig::with_sample_band`] with 0 restores the
+/// exact minimum.
+const DEFAULT_SAMPLE_BAND: u64 = 3;
+
 /// Where one weighted stage takes its sampling weights from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -300,7 +308,7 @@ impl PortfolioConfig {
             hedge: Hedge::Off,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: false,
-            sample_band: 0,
+            sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
         }
     }
@@ -378,7 +386,7 @@ impl PortfolioConfig {
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: false,
-            sample_band: 0,
+            sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
         }
     }
@@ -417,7 +425,7 @@ impl PortfolioConfig {
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: true,
-            sample_band: 0,
+            sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
         }
     }
@@ -469,9 +477,9 @@ impl PortfolioConfig {
     /// The restarts eliminate a vertex of minimum fill and break the tie at
     /// random. A band of `k` puts every vertex whose elimination adds at most
     /// `k` fill edges more than the best into the same draw, so seeds that
-    /// would return the same order can separate. The default 0 is the exact
-    /// minimum. Only the restarts read it: the other candidates each run their
-    /// own score's minimum.
+    /// would return the same order can separate. Every configuration starts
+    /// from the same default band; 0 is the exact minimum. Only the restarts
+    /// read it: the other candidates each run their own score's minimum.
     pub fn with_sample_band(mut self, band: u64) -> Self {
         self.sample_band = band;
         self

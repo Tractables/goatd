@@ -116,11 +116,12 @@ fill and degree, a sampled order can minimize
 supply one weight per vertex; uniform weights give uniform sampling. Each
 score remains exact while the orders explore different elimination paths.
 
-`PortfolioConfig::with_sample_band` widens what the ordinary restarts draw
-from: with a band of `k` a restart draws from every vertex whose fill is at
-most `k` above the smallest, instead of only from the vertices tied at the
-minimum. It is 0 by default, and only the restarts read it — the other
-candidates each run their own score's exact minimum.
+The ordinary restarts draw from a band rather than from the minimum alone: a
+restart's tie set is every vertex whose fill is at most a fixed number above
+the smallest, so seeds still separate on a graph where one vertex holds the
+minimum at every step. `PortfolioConfig::with_sample_band` sets the width and 0
+returns the exact minimum. Only the restarts read it — the other candidates
+each run their own score's exact minimum.
 `PortfolioConfig::with_sample_band_alternate` splits the restarts between the
 two: an even-numbered restart draws from the exact minimum and an odd-numbered
 one from the band, on the same seed sequence either way, so the schedule keeps

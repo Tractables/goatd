@@ -190,6 +190,7 @@ fn a_soft_cutoff_leaves_the_components_after_it_their_own_orders() {
         RunSpec {
             order: Order::MinDegree,
             seed: 0,
+            sample_band: 0,
             update_order_ties: false,
             stop: ElimStop {
                 soft_deadline: Some(epoch),
