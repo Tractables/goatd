@@ -40,6 +40,8 @@
 #include "flow-cutter-pace17/src/min_max.hpp"
 #include "flow-cutter-pace17/src/heap.hpp"
 
+#include <functional>
+
 #include "IFlowCutter.hpp"
 #include "TreeDecomposition.hpp"
 #include "time_mem.hpp"
@@ -159,8 +161,8 @@ protected:
   using std::priority_queue<T, Container, Compare>::comp;
 };
 
-template<class Tail, class Head, class ComputeSeparator, class OnNewMP>
-void compute_multilevel_partition(const Tail&tail, const Head&head, const ComputeSeparator&compute_separator, int smallest_known_treewidth, const OnNewMP&on_new_multilevel_partition){
+template<class Tail, class Head, class ComputeSeparator, class OnNewMP, class ShouldStop>
+void compute_multilevel_partition(const Tail&tail, const Head&head, const ComputeSeparator&compute_separator, int smallest_known_treewidth, const OnNewMP&on_new_multilevel_partition, const ShouldStop&should_stop){
 
   const int node_count = tail.image_count();
   const int arc_count = tail.preimage_count();
@@ -183,6 +185,14 @@ void compute_multilevel_partition(const Tail&tail, const Head&head, const Comput
   int max_open_bag_size = node_count;
 
   auto check_if_better = [&]{
+    // goatd: past the caller's deadline, do not start another decomposition
+    // build. Each one is a pass over the whole graph, they come once per
+    // improvement, and the loop is about to return the best one it already
+    // holds. The predicate is false until a first decomposition exists, so
+    // this never leaves the caller empty-handed.
+    if(should_stop())
+      return;
+
     int current_tree_width = std::max(max_closed_bag_size, max_open_bag_size);
 
     if(current_tree_width < smallest_known_treewidth){
@@ -208,6 +218,14 @@ void compute_multilevel_partition(const Tail&tail, const Head&head, const Comput
   in_child_cell.fill(false);
 
   while(!open_cells.empty()){
+
+    // goatd: the caller's deadline is tested here, once per cell, and not only
+    // between whole restarts. One restart on a graph of tens of thousands of
+    // nodes runs for seconds, so a deadline that passed inside one used to be
+    // answered only when it finished. Returning here keeps every partition
+    // already handed to on_new_multilevel_partition.
+    if(should_stop())
+      return;
 
     #ifdef SLOW_DEBUG
 
@@ -724,6 +742,12 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
       && best_bag_size < std::numeric_limits<int>::max()
       && std::chrono::steady_clock::now() >= deadline;
   };
+  // goatd: the same predicate as a callable the separator search can hold, so
+  // a cut being computed when the deadline passes is abandoned rather than
+  // finished. Its address goes into the flow-cutter config below and must
+  // outlive every search started from it, which it does: it is declared here,
+  // outside the try.
+  const std::function<bool()> stop_search = deadline_fired;
 
   try{
     {
@@ -768,7 +792,8 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
           config.min_small_side_size = 0.1;
           config.max_cut_size = 500;
           config.separator_selection = flow_cutter::Config::SeparatorSelection::edge_first;
-          compute_multilevel_partition(tail, head, flow_cutter::ComputeSeparator(config), best_bag_size, on_new_multilevel_partition);
+          config.should_stop = &stop_search;
+          compute_multilevel_partition(tail, head, flow_cutter::ComputeSeparator(config), best_bag_size, on_new_multilevel_partition, deadline_fired);
         }
 
         int64_t steps = conf_steps;
@@ -826,6 +851,7 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
           config.random_seed = rand_gen();
           config.max_cut_size = 10000;
           config.separator_selection = flow_cutter::Config::SeparatorSelection::node_min_expansion;
+          config.should_stop = &stop_search;
 
           for(int i=2; i < conf_iters && steps > 0;++i){
             // Wall-clock timeout check (only once we have a TD to return).
@@ -873,7 +899,7 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
             case 0: config.min_small_side_size = 0.0; break;
             }
 
-            compute_multilevel_partition(tail, head, flow_cutter::ComputeSeparator(config), best_bag_size, on_new_multilevel_partition);
+            compute_multilevel_partition(tail, head, flow_cutter::ComputeSeparator(config), best_bag_size, on_new_multilevel_partition, deadline_fired);
 
             if ((i % 100 == 0 && i > 0) || steps < next_step_print) {
               if (verb) {

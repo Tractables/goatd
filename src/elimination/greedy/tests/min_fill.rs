@@ -1,4 +1,4 @@
-use crate::elimination::execution::{ElimSink, ElimStop};
+use crate::elimination::execution::{Cutoff, ElimExit, ElimSink, ElimStop};
 use crate::elimination::graph::EliminationGraph;
 use crate::elimination::greedy::min_fill::*;
 use crate::elimination::greedy::sampling::{
@@ -151,4 +151,53 @@ fn sampled_fill_degree_selects_a_minimum_score() {
     for degree_coefficient in [1, -1, -2, -16] {
         assert_sampled_fill_degree_minimizes_score(degree_coefficient);
     }
+}
+
+/// Four hubs and `leaves` vertices of degree three, each leaf joined to three
+/// of the four hubs. Scoring one leaf reads all three hub rows, so a vertex of
+/// degree three costs as much as tens of thousands of ordinary ones — the shape
+/// an incidence graph's clause and variable vertices have.
+fn hub_graph(leaves: u32) -> (u32, Vec<(u32, u32)>) {
+    let hubs = 4;
+    let edges = (0..leaves)
+        .flat_map(|leaf| {
+            let vertex = hubs + leaf;
+            let skipped = leaf % hubs;
+            (0..hubs)
+                .filter(move |hub| *hub != skipped)
+                .map(move |hub| (hub, vertex))
+        })
+        .collect();
+    (hubs + leaves, edges)
+}
+
+#[test]
+fn the_seeding_scan_stops_within_a_millisecond_of_the_hard_deadline() {
+    let (n, edges) = hub_graph(20_000);
+    let mut graph = EliminationGraph::from_edges(n, &edges);
+    let salt = vec![0u32; n as usize];
+    let mut bags = Vec::new();
+    let mut rank = Vec::new();
+    let sink = ElimSink::new(&mut bags, &mut rank, 0);
+
+    let epoch = std::time::Instant::now();
+    let _meter = crate::meter::arm(epoch);
+    let deadline = epoch + std::time::Duration::from_millis(1);
+    let exit = eliminate_min_fill(
+        &mut graph,
+        &salt,
+        sink,
+        ElimStop {
+            soft_deadline: None,
+            hard_deadline: Some(deadline),
+            width_bound: None,
+        },
+    );
+
+    assert_eq!(exit, ElimExit::DeadlineReached(Cutoff::Hard));
+    let overrun = crate::meter::now().saturating_duration_since(deadline);
+    assert!(
+        overrun <= std::time::Duration::from_millis(1),
+        "the seeding scan ran {overrun:?} past the hard deadline",
+    );
 }

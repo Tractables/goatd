@@ -4,8 +4,53 @@ use std::time::Instant;
 
 use super::graph::EliminationGraph;
 
-/// Number of inexpensive loop iterations between deadline reads.
-pub(super) const DEADLINE_CHECK_STRIDE: u32 = 64;
+/// Ceiling on the number of loop iterations between deadline reads, for a loop
+/// whose work the meter is not charged for.
+const DEADLINE_CHECK_STRIDE: u32 = 64;
+
+/// Work that may pass between deadline reads, in the units the meter charges:
+/// one millisecond's worth at the meter's rate.
+const DEADLINE_CHECK_UNITS: u64 = crate::meter::UNITS_PER_MS;
+
+/// Decides when a loop should read the deadline, from the work charged since
+/// the last read.
+///
+/// A count of iterations is the wrong interval where one iteration can cost as
+/// much as thousands of others: scoring one vertex of a dense residual for
+/// min-fill runs into milliseconds, and 64 of those carried runs seconds past
+/// their hard deadline. The work every operation charges [`crate::meter`] is
+/// already the library's own measure of cost, so the pacer asks for the clock
+/// once a millisecond's worth of it has been charged. The iteration count stays
+/// as a ceiling, so a loop that charges nothing still reads the clock as often
+/// as it used to.
+pub(super) struct DeadlinePacer {
+    steps: u32,
+    mark: u64,
+}
+
+impl DeadlinePacer {
+    pub(super) fn new() -> Self {
+        Self {
+            steps: 0,
+            mark: crate::meter::units_spent(),
+        }
+    }
+
+    /// Count one iteration and report whether the deadline should be read.
+    #[inline]
+    pub(super) fn due(&mut self) -> bool {
+        self.steps += 1;
+        let spent = crate::meter::units_spent();
+        if self.steps >= DEADLINE_CHECK_STRIDE
+            || spent.saturating_sub(self.mark) >= DEADLINE_CHECK_UNITS
+        {
+            self.steps = 0;
+            self.mark = spent;
+            return true;
+        }
+        false
+    }
+}
 
 /// Conditions that can change or stop an elimination run.
 ///

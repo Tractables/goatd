@@ -17,7 +17,7 @@ use std::time::Instant;
 use rustc_hash::FxHashSet;
 
 use super::execution::{
-    Cutoff, DEADLINE_CHECK_STRIDE, ElimExit, ElimSink, ElimSteps, ElimStop, exceeds_width_bound,
+    Cutoff, DeadlinePacer, ElimExit, ElimSink, ElimSteps, ElimStop, exceeds_width_bound,
 };
 use super::graph::EliminationGraph;
 use super::greedy::eliminate_min_fill;
@@ -99,17 +99,13 @@ pub(super) fn eliminate_nested_dissection(
         0,
     );
 
-    let mut deadline_check = 0u32;
+    let mut pacer = DeadlinePacer::new();
     for vertex in order {
         if !graph.active[vertex as usize] {
             continue;
         }
-        deadline_check += 1;
-        if deadline_check >= DEADLINE_CHECK_STRIDE {
-            deadline_check = 0;
-            if expired(stop.hard_deadline) {
-                return ElimExit::DeadlineReached(Cutoff::Hard);
-            }
+        if pacer.due() && expired(stop.hard_deadline) {
+            return ElimExit::DeadlineReached(Cutoff::Hard);
         }
         neighbours.clear();
         graph.collect_live_nbrs_into(vertex, &mut neighbours);

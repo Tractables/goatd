@@ -48,9 +48,13 @@ samples. An extra sample that reaches the soft deadline stops there; the
 remaining hard-budget interval is reserved for a trailing FlowCutter
 candidate. That candidate is skipped when the interval is too short to seed
 it, and also when the graph is large enough that the backend's setup and
-first restart alone outlast the interval: the backend tests its deadline
-between restarts, so on such a graph it would return well after the hard
-deadline. The estimate uses the work-unit model in *Flow-based separators*. By default, a 4.75-second soft budget has a 9.5-second hard
+first restart alone outlast the interval: the setup pass runs to the end
+whatever the clock says, so on such a graph the run would return well after
+the hard deadline. The estimate uses the work-unit model in *Flow-based
+separators*. Once the search is under way the backend does test the deadline
+inside it — between the restarts, between the cells of one partition, and
+between the augmentations of one cut — and a search stopped that way returns
+the best decomposition it has already recorded. By default, a 4.75-second soft budget has a 9.5-second hard
 deadline. Callers that need more time to write the result can set an earlier
 hard budget independently without changing the soft schedule. Both standard
 configurations hedge, which adds the candidates described under *The hedge*.
@@ -242,6 +246,13 @@ adapter boundary.
 
 `TreeDecomposition::validate` checks bag contents, the bag forest, vertex and edge
 coverage, and the running intersection property.
+
+Elimination reads the clock on the work it has charged rather than on the
+iterations it has run: once a millisecond's worth of charged work has passed,
+or 64 iterations, whichever comes first. A count alone is the wrong interval
+where iterations differ in cost by orders of magnitude — one min-fill score on
+a dense residual takes milliseconds, and 64 of them used to carry a run seconds
+past its hard deadline.
 
 Seeded, step-budgeted runs are reproducible. Machine speed and load can change
 where a wall-clock budget stops. While a caller holds the guard returned by

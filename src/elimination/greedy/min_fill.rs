@@ -80,14 +80,16 @@ fn scan_fill(
     deadline: Option<Instant>,
     hard_deadline: Option<Instant>,
 ) -> Seeded {
-    let mut init_check = 0u32;
+    let mut pacer = DeadlinePacer::new();
     for (v, slot) in fill_count.iter_mut().enumerate() {
         if !graph.active[v] {
             continue;
         }
-        init_check += 1;
-        if init_check >= DEADLINE_CHECK_STRIDE {
-            init_check = 0;
+        *slot = scratch.fill_count_of(graph, v as u32);
+        // Paced by what the scores have cost, not by how many were taken: one
+        // score on a dense residual runs into milliseconds, and 64 of them used
+        // to carry the scan seconds past the hard deadline.
+        if pacer.due() {
             if expired(hard_deadline) {
                 return Seeded::Bailed;
             }
@@ -95,7 +97,6 @@ fn scan_fill(
                 return Seeded::CheapMode;
             }
         }
-        *slot = scratch.fill_count_of(graph, v as u32);
     }
     Seeded::Ready
 }

@@ -19,7 +19,7 @@ use std::collections::BinaryHeap;
 use std::time::Instant;
 
 use super::{
-    CHEAP_MODE_MAX_ACTIVE, Cutoff, DEADLINE_CHECK_STRIDE, ElimEntry, ElimExit, ElimSink, ElimStop,
+    CHEAP_MODE_MAX_ACTIVE, Cutoff, DeadlinePacer, ElimEntry, ElimExit, ElimSink, ElimStop,
     EliminationGraph, exceeds_width_bound, take_bag,
 };
 use crate::deadline::expired;
@@ -210,7 +210,7 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
     };
 
     let mut nbrs_buf = Vec::new();
-    let mut check_counter = 0u32;
+    let mut pacer = DeadlinePacer::new();
     // A clique residual stays a clique as vertices are removed from it, so
     // this only needs to latch true once — that is what lets the tail drain
     // skip all scoring work on the giant-clique endgame.
@@ -233,28 +233,24 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
             if expired(hard_deadline) {
                 return ElimExit::DeadlineReached(Cutoff::Hard);
             }
-        } else {
-            check_counter += 1;
-            if check_counter >= DEADLINE_CHECK_STRIDE {
-                check_counter = 0;
-                if expired(hard_deadline) {
-                    return ElimExit::DeadlineReached(Cutoff::Hard);
+        } else if pacer.due() {
+            if expired(hard_deadline) {
+                return ElimExit::DeadlineReached(Cutoff::Hard);
+            }
+            if P::CHEAP_MODE && expired(soft_deadline) {
+                // On a large residual even a cheap elimination can
+                // overshoot the hard deadline by seconds, so stop at the
+                // soft cutoff and let the engine complete the residual.
+                if graph.num_active > CHEAP_MODE_MAX_ACTIVE {
+                    return ElimExit::DeadlineReached(Cutoff::Soft);
                 }
-                if P::CHEAP_MODE && expired(soft_deadline) {
-                    // On a large residual even a cheap elimination can
-                    // overshoot the hard deadline by seconds, so stop at the
-                    // soft cutoff and let the engine complete the residual.
-                    if graph.num_active > CHEAP_MODE_MAX_ACTIVE {
-                        return ElimExit::DeadlineReached(Cutoff::Soft);
-                    }
-                    cheap_mode = true;
-                }
-                // Fill edges can push an initially sparse graph past the
-                // density break-even mid-elimination, turning scoring into
-                // the hotspot.
-                if P::MAINTAIN_BITSET && graph.should_promote_bitset() {
-                    graph.promote_bitset();
-                }
+                cheap_mode = true;
+            }
+            // Fill edges can push an initially sparse graph past the
+            // density break-even mid-elimination, turning scoring into
+            // the hotspot.
+            if P::MAINTAIN_BITSET && graph.should_promote_bitset() {
+                graph.promote_bitset();
             }
         }
 
