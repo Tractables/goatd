@@ -28,7 +28,16 @@ const SAMPLED_MIN_FILL_TIMEOUT_MS: u64 = 1000;
 
 pub(super) const MIN_FLOWCUTTER_CANDIDATE_MS: u64 = 50;
 
-/// Dimensions the hedge places the vertices in.
+/// Dimensions the hedge places the vertices in, one weighted stage each, in
+/// this order. Which graphs a dimension improves is close to arbitrary and two
+/// dimensions improve mostly different ones, so a hedge that runs several
+/// collects more of them. Three leads because on its own it is the dimension
+/// that helps most: under a budget that fits one stage, that is the one to
+/// spend it on.
+pub const DEFAULT_HEDGE_DIMS: [usize; 4] = [3, 1, 2, 4];
+
+/// Dimensions the hedge places the vertices in when a caller asks for the
+/// standard weighting without saying how many.
 const DEFAULT_HEDGE_DIM: usize = 3;
 
 /// Weighted stages one hedge can run. A series of eccentricity rankings has one
@@ -43,6 +52,9 @@ const DEFAULT_HEDGE: Hedge = Hedge::eccentricity();
 /// the first may spend between them. Half: a stage costs about what the plain
 /// pass cost, so on a budget that fits several the stages run, and on one where
 /// the plain pass nearly filled the budget the restarts keep it.
+///
+/// A run with no soft budget has nothing to protect and runs every stage of the
+/// series, whatever this says.
 const DEFAULT_HEDGE_RESERVE: f64 = 0.5;
 
 /// Where one weighted stage takes its sampling weights from.
@@ -146,10 +158,23 @@ impl HedgeSeries {
 
     /// One eccentricity weighting per dimension, in the order given, each under
     /// the standard round cap.
-    pub fn eccentricity_dims(dims: &[usize]) -> Self {
-        dims.iter().fold(Self::default(), |series, &dim| {
-            series.then(HedgeWeights::eccentricity_at(dim))
-        })
+    pub const fn eccentricity_dims(dims: &[usize]) -> Self {
+        let mut series = Self {
+            weights: [HedgeWeights::eccentricity(); MAX_HEDGE_PASSES],
+            len: 0,
+            overflow: false,
+        };
+        let mut index = 0;
+        while index < dims.len() {
+            if index < MAX_HEDGE_PASSES {
+                series.weights[index] = HedgeWeights::eccentricity_at(dims[index]);
+                series.len += 1;
+            } else {
+                series.overflow = true;
+            }
+            index += 1;
+        }
+        series
     }
 
     /// `stages` weightings of random weights, on streams 0, 1, … — the control
@@ -204,10 +229,12 @@ pub enum Hedge {
 }
 
 impl Hedge {
-    /// The hedge the standard portfolio runs: one stage, on a ranking in three
-    /// dimensions under the embedding's default round cap.
+    /// The hedge the standard portfolio runs: one stage per dimension of
+    /// [`DEFAULT_HEDGE_DIMS`], each ranking under the embedding's default round
+    /// cap. Three comes first because it is the single dimension that helps
+    /// most, and a run that only has room for one stage should spend it there.
     pub const fn eccentricity() -> Self {
-        Hedge::Passes(HedgeSeries::of(HedgeWeights::eccentricity()))
+        Hedge::Passes(HedgeSeries::eccentricity_dims(&DEFAULT_HEDGE_DIMS))
     }
 
     /// The weightings the weighted stages run, or `None` when nothing is
@@ -312,6 +339,13 @@ impl PortfolioConfig {
 
     /// Defaults for the standard candidate set: no deadline, up to 100 extra
     /// seeds, no FlowCutter candidate, and the eccentricity hedge.
+    ///
+    /// With no deadline the hedge runs every stage of its series: the reserve
+    /// exists to leave the restarts their time, and here there is no budget to
+    /// take that time from. A stage is then only the fixed orders that read
+    /// weights, since without a deadline the diverse pass does not run, so the
+    /// whole series costs a handful of deterministic eliminations and the
+    /// schedule does not depend on how long any of them took.
     pub fn standard() -> Self {
         Self {
             soft_budget: None,
@@ -327,6 +361,11 @@ impl PortfolioConfig {
     /// Standard candidates under a soft wall-clock budget, with sampling
     /// effort and the trailing FlowCutter slot scaled for the corresponding
     /// hard window.
+    ///
+    /// The hedge runs its first weighted stage on any budget and one more for
+    /// as long as half of what the plain pass left holds another; what does not
+    /// fit stays with the ordinary restarts. [`PortfolioConfig::with_hedge_reserve`]
+    /// changes that fraction.
     pub fn standard_with_budget(budget: Duration) -> Self {
         let extended = budget >= EXTENDED_SAMPLING_MIN_SOFT_BUDGET;
         let sampling_runs = if extended {

@@ -13,8 +13,8 @@ use goatd::elimination::{Order, decompose as eliminate};
 use goatd::embedding::MAX_DIM;
 use goatd::flowcutter::{Budget, decompose as flowcutter};
 use goatd::portfolio::{
-    CandidateOutcome, CandidateTrace, Hedge, HedgeSeries, MAX_HEDGE_PASSES, Pass, PortfolioConfig,
-    decompose_traced as portfolio,
+    CandidateOutcome, CandidateTrace, DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, MAX_HEDGE_PASSES,
+    Pass, PortfolioConfig, decompose_traced as portfolio,
 };
 use goatd::{Graph, TreeDecomposition};
 
@@ -49,22 +49,23 @@ options:
   --hedge-dims <list>   portfolio only: run the hedge's weighted stage once per
                         dimension of a comma-separated list, in the order
                         given, each on a ranking from its own placement, such
-                        as 1,2,3. Dimensions run 1 to 8 and no dimension
-                        repeats; one dimension is the default hedge placed in
-                        that dimension. The restarts stay plain and the
-                        incumbent width bounds the stages that follow. Not with
-                        --hedge-random or --no-hedge
+                        as 1,2,3, in place of the default 3,1,2,4. Dimensions
+                        run 1 to 8 and no dimension repeats. The restarts stay
+                        plain and the incumbent width bounds the stages that
+                        follow. Not with --hedge-random or --no-hedge
   --hedge-random <k>    portfolio only: k weighted stages on random weights
                         instead, the control for --hedge-dims. Each stage draws
                         from a seed of its own, --seed + 6151 + i * 104729 for
                         stage i. Same restrictions as --hedge-dims
-  --hedge-reserve <f>   with --hedge-dims or --hedge-random asking for two or
-                        more stages: the share of the budget left after the
-                        plain pass those stages may spend between them,
-                        0 < f <= 1 (default 0.5). The rest is kept for the
-                        ordinary restarts: a stage costs about what the plain
-                        pass cost, and the portfolio runs one more only while
-                        that fits. The first stage runs on any budget
+  --hedge-reserve <f>   portfolio only: the share of the budget left after the
+                        plain pass the hedge's weighted stages may spend
+                        between them, 0 < f <= 1 (default 0.5). The rest is
+                        kept for the ordinary restarts: a stage costs about
+                        what the plain pass cost, and the portfolio runs one
+                        more only while that fits. The first stage runs on any
+                        budget, so this needs a series of two or more stages —
+                        the default one, or --hedge-dims or --hedge-random
+                        asking for that many
   --no-hedge            portfolio only: run every candidate once, on uniform
                         weights, instead of repeating the candidates that read
                         weights on a ranking the portfolio computes itself
@@ -350,14 +351,15 @@ fn parse_args(argv: &[String]) -> Args {
         }
     }
     // The reserve decides how many stages follow the first, so it says nothing
-    // where there is no second stage to refuse.
+    // where there is no second stage to refuse. With neither flag the series is
+    // the portfolio's own, which has more than one stage.
     if hedge_reserve.is_some() {
         needs("--hedge-reserve", order == Method::Portfolio, "portfolio");
         let stages = hedge_dims
             .as_ref()
             .map(Vec::len)
             .or(hedge_random)
-            .unwrap_or(0);
+            .unwrap_or(DEFAULT_HEDGE_DIMS.len());
         if stages < 2 {
             usage_error(
                 "--hedge-reserve decides how many weighted stages run after the first, and \

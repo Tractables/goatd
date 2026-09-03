@@ -276,10 +276,6 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--hedge-reserve", "portfolio"],
         ),
         (
-            &["--order", "portfolio", "--hedge-reserve", "0.5"],
-            &["--hedge-reserve", "--hedge-dims", "--hedge-random"],
-        ),
-        (
             &[
                 "--order",
                 "portfolio",
@@ -437,8 +433,9 @@ fn the_default_portfolio_hedges_and_no_hedge_turns_that_off() {
     }
     assert_eq!(
         modified,
-        ["min-degree", "min-fill", "min-degree"],
-        "the fixed orders that read weights run again on the ranked ones: {err}"
+        ["min-degree", "min-fill", "min-degree"].repeat(4),
+        "each of the four default stages runs the fixed orders that read \
+         weights again on its own ranking: {err}"
     );
 
     let out = goatd(
@@ -509,13 +506,50 @@ fn restart_seeds(out: &Output) -> Vec<String> {
 }
 
 #[test]
-fn one_dimension_in_hedge_dims_is_the_hedge_that_runs_that_dimension() {
-    // A series of one weighting is the hedge that runs that weighting, so
-    // --hedge-dims 3 has to be the default hedge candidate for candidate.
+fn hedge_dims_spelling_the_default_series_runs_the_default_hedge() {
+    // --hedge-dims replaces the series the portfolio would have run, so
+    // spelling out the default dimensions has to be the default candidate for
+    // candidate.
     let default = goatd(
         &["-", "--order", "portfolio", "--seed", "7", "--trace"],
         Some(&grid_gr()),
     );
+    let spelled = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--seed",
+            "7",
+            "--trace",
+            "--hedge-dims",
+            "3,1,2,4",
+        ],
+        Some(&grid_gr()),
+    );
+
+    assert!(default.status.success(), "{}", stderr_of(&default));
+    assert!(spelled.status.success(), "{}", stderr_of(&spelled));
+    assert!(!spelled.stdout.is_empty(), "no decomposition on stdout");
+    assert_eq!(default.stdout, spelled.stdout);
+    assert_eq!(trace_candidates(&default), trace_candidates(&spelled));
+    for index in 0..4 {
+        assert_eq!(
+            modified_stages(&default, index),
+            ["min-degree", "min-fill", "min-degree"],
+            "stage {index} of the default series: {}",
+            stderr_of(&default)
+        );
+    }
+    assert!(
+        modified_stages(&default, 4).is_empty(),
+        "the default series is four stages: {}",
+        stderr_of(&default)
+    );
+}
+
+#[test]
+fn one_dimension_in_hedge_dims_runs_that_dimension_and_nothing_else() {
     let three = goatd(
         &[
             "-",
@@ -530,13 +564,10 @@ fn one_dimension_in_hedge_dims_is_the_hedge_that_runs_that_dimension() {
         Some(&grid_gr()),
     );
 
-    assert!(default.status.success(), "{}", stderr_of(&default));
     assert!(three.status.success(), "{}", stderr_of(&three));
-    assert!(!three.stdout.is_empty(), "no decomposition on stdout");
-    assert_eq!(default.stdout, three.stdout);
-    assert_eq!(trace_candidates(&default), trace_candidates(&three));
-    assert!(
-        !modified_stages(&three, 0).is_empty(),
+    assert_eq!(
+        modified_stages(&three, 0),
+        ["min-degree", "min-fill", "min-degree"],
         "one dimension runs its weighted stage: {}",
         stderr_of(&three)
     );
@@ -720,6 +751,35 @@ fn a_reserve_the_stages_cannot_fit_in_leaves_the_budget_to_the_restarts() {
         "the restarts left the sequence a portfolio without a hedge runs: \
          {seeds:?} against {plain:?}",
     );
+}
+
+#[test]
+fn the_reserve_applies_to_the_default_series_without_a_dimension_flag() {
+    // The default series has four stages, so the reserve has stages to refuse
+    // and the flag is accepted on its own.
+    let reserved = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            "500",
+            "--trace",
+            "--hedge-reserve",
+            "1.0",
+        ],
+        Some(&grid_gr()),
+    );
+
+    assert!(reserved.status.success(), "{}", stderr_of(&reserved));
+    for index in 0..4 {
+        assert_eq!(
+            modified_stages(&reserved, index),
+            ["min-degree", "min-fill", "min-degree"],
+            "stage {index} of the default series: {}",
+            stderr_of(&reserved)
+        );
+    }
 }
 
 #[test]

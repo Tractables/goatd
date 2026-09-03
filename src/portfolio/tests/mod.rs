@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use super::candidates::CandidateSet;
 use super::config::{MAX_DIVERSE_SAMPLING_RUNS, validate};
-use super::{CandidateOutcome, HedgeSeries, HedgeWeights, StageBudget};
+use super::{CandidateOutcome, DEFAULT_HEDGE_DIMS, HedgeSeries, HedgeWeights, StageBudget};
 use super::{EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig, Sample, Schedule};
 use super::{Stage, elimination_stop, extra_sample, hedge_random_seed, sample_seed};
 use crate::elimination::Order;
@@ -163,16 +163,20 @@ fn an_explicit_hard_budget_does_not_change_the_soft_schedule() {
 
 #[test]
 fn every_standard_portfolio_hedges_by_default() {
-    let hedge = Hedge::Passes(HedgeSeries::of(HedgeWeights::Eccentricity {
-        dim: 3,
-        rounds: 1_000,
-    }));
+    let stage = |dim| HedgeWeights::Eccentricity { dim, rounds: 1_000 };
+    let hedge = Hedge::Passes(
+        HedgeSeries::of(stage(3))
+            .then(stage(1))
+            .then(stage(2))
+            .then(stage(4)),
+    );
 
+    assert_eq!(DEFAULT_HEDGE_DIMS, [3, 1, 2, 4]);
     assert_eq!(Hedge::eccentricity(), hedge);
     assert_eq!(
-        Hedge::Passes(HedgeSeries::eccentricity_dims(&[3])),
+        Hedge::Passes(HedgeSeries::eccentricity_dims(&DEFAULT_HEDGE_DIMS)),
         hedge,
-        "a series of one dimension is the hedge that runs that dimension"
+        "the default hedge is one eccentricity stage per default dimension"
     );
     assert_eq!(PortfolioConfig::standard().hedge, hedge);
     assert_eq!(
@@ -630,6 +634,18 @@ fn a_plain_pass_that_nearly_filled_the_budget_runs_the_first_stage_and_no_more()
             allowance: Duration::from_millis(9_400),
         },
     );
+}
+
+#[test]
+fn without_a_soft_budget_every_stage_of_the_series_runs() {
+    // No soft budget, so there is no restart time the stages could take, and an
+    // expensive plain pass says nothing about how many of them run.
+    let mut budget = StageBudget::new(Duration::from_secs(600), None, 0.5);
+
+    for stage in 0..super::MAX_HEDGE_PASSES {
+        assert!(budget.fits(), "stage {stage} of the series must run");
+        budget.charge(Duration::from_secs(600));
+    }
 }
 
 #[test]

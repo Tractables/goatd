@@ -27,7 +27,8 @@ use candidates::CandidateSet;
 use config::MIN_FLOWCUTTER_CANDIDATE_MS;
 
 pub use config::{
-    Hedge, HedgeSeries, HedgeWeights, MAX_DIVERSE_SAMPLING_RUNS, MAX_HEDGE_PASSES, PortfolioConfig,
+    DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, HedgeWeights, MAX_DIVERSE_SAMPLING_RUNS,
+    MAX_HEDGE_PASSES, PortfolioConfig,
 };
 pub use trace::{CandidateOutcome, CandidateTrace, Pass, Stage};
 
@@ -269,8 +270,13 @@ struct StageBudget {
 
 impl StageBudget {
     /// The stages' share of the budget, decided once the plain pass has both
-    /// cost `plain` and left `left` of the soft budget. `left` is `None` for a
-    /// run with no soft budget, which bounds no stage.
+    /// cost `plain` and left `left` of the soft budget.
+    ///
+    /// `left` is `None` for a run with no soft budget. The share is then
+    /// unbounded and every stage of the series runs: the rule exists to leave
+    /// the restarts their time, and a run with no deadline is taking that time
+    /// from nothing. It also keeps such a run's schedule independent of how
+    /// long any candidate took.
     fn new(plain: Duration, left: Option<Duration>, reserve: f64) -> Self {
         Self {
             plain,
