@@ -284,3 +284,113 @@ fn removing_the_hub_clears_its_row_and_its_index() {
         assert_eq!(graph.degree(spoke), 0);
     }
 }
+
+/// `canonical` with every edge immediately repeated twice more, one of the
+/// copies reversed, so the general path has to deduplicate a list whose first
+/// occurrences are still in sorted order and self-loops have to be dropped.
+fn with_duplicates(canonical: &[(u32, u32)]) -> Vec<(u32, u32)> {
+    let mut edges = Vec::new();
+    for &edge in canonical {
+        edges.push(edge);
+        edges.push((edge.1, edge.0));
+        edges.push((edge.0, edge.0));
+        edges.push(edge);
+    }
+    edges
+}
+
+/// The ring on `0..n`, in canonical order.
+fn ring(n: u32) -> Vec<(u32, u32)> {
+    let mut edges: Vec<(u32, u32)> = (0..n)
+        .map(|v| {
+            let w = (v + 1) % n;
+            if v < w { (v, w) } else { (w, v) }
+        })
+        .collect();
+    edges.sort_unstable();
+    edges
+}
+
+/// The ring on `0..n` plus a hub `n` adjacent to every ring vertex, in
+/// canonical order. The hub's row is long enough to carry a membership map.
+fn wheel(n: u32) -> Vec<(u32, u32)> {
+    let mut edges = ring(n);
+    edges.extend((0..n).map(|v| (v, n)));
+    edges.sort_unstable();
+    edges
+}
+
+/// The complete graph on `0..n`, in canonical order, which `from_edges` keeps
+/// as a bitset.
+fn clique(n: u32) -> Vec<(u32, u32)> {
+    let mut edges = Vec::new();
+    for u in 0..n {
+        for v in u + 1..n {
+            edges.push((u, v));
+        }
+    }
+    edges
+}
+
+#[test]
+fn the_canonical_build_agrees_with_the_deduplicating_one() {
+    let cases = [
+        ("ring 8", 8u32, ring(8)),
+        ("ring 600", 600, ring(600)),
+        ("wheel 600", 601, wheel(600)),
+        ("clique 40", 40, clique(40)),
+    ];
+    for (name, n, canonical) in cases {
+        let repeated = with_duplicates(&canonical);
+        assert_eq!(crate::graph::canonical_edges(repeated.clone()), canonical);
+
+        let from_canonical = EliminationGraph::from_edges(n, &canonical);
+        let from_repeated = EliminationGraph::from_edges(n, &repeated);
+
+        assert_eq!(from_canonical.num_edges, canonical.len(), "{name}");
+        assert_eq!(from_canonical.num_edges, from_repeated.num_edges, "{name}");
+        assert_eq!(
+            from_canonical.bitset_words, from_repeated.bitset_words,
+            "{name}"
+        );
+        assert_eq!(from_canonical.bitset, from_repeated.bitset, "{name}");
+        for v in 0..n {
+            assert_eq!(
+                from_canonical.adj[v as usize], from_repeated.adj[v as usize],
+                "{name}, row {v}"
+            );
+            assert_eq!(
+                from_canonical.row_is_indexed(v),
+                from_repeated.row_is_indexed(v),
+                "{name}, row {v}"
+            );
+            assert_eq!(
+                from_canonical.degree(v),
+                from_repeated.degree(v),
+                "{name}, row {v}"
+            );
+        }
+    }
+    assert!(EliminationGraph::from_edges(601, &wheel(600)).row_is_indexed(600));
+    assert!(EliminationGraph::from_edges(40, &clique(40)).bitset_words > 0);
+}
+
+#[test]
+fn the_canonical_build_orders_a_hub_row_the_way_the_edge_list_does() {
+    // A hub long enough to carry a membership map, so the fast path has to
+    // build one and to leave the row in the order the sorted list implies:
+    // the neighbours below the hub first, then those above it.
+    let hub = 300u32;
+    let n = 601u32;
+    let mut edges: Vec<(u32, u32)> = (0..n)
+        .filter(|&v| v != hub)
+        .map(|v| (v.min(hub), v.max(hub)))
+        .collect();
+    edges.sort_unstable();
+
+    let graph = EliminationGraph::from_edges(n, &edges);
+
+    assert!(graph.row_is_indexed(hub));
+    let expected: Vec<u32> = (0..hub).chain(hub + 1..n).collect();
+    assert_eq!(graph.adj[hub as usize], expected);
+}
