@@ -32,7 +32,10 @@ A soft budget, measured from before preprocessing, stops the portfolio from
 starting further candidates and samples. A candidate stopped by either budget
 puts each unfinished residual component in one bag and attaches the partial
 elimination bags to it, as long as it is the first candidate. This completion
-is linear in the residual size. Later candidates can stop without completion
+is linear in the residual size. At the soft budget it applies only to the
+component the candidate was working on: the components after it have the rest
+of the hard budget and get their own orders, against the hard deadline alone,
+and fall back to one bag each when it passes. Later candidates can stop without completion
 because a valid candidate already exists. Only the hard budget ends the
 portfolio: the deterministic min-degree and min-fill orders return at the soft
 budget when the residual is still large, because cheap-mode elimination at
