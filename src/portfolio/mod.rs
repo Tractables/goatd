@@ -686,6 +686,9 @@ fn run_portfolio(
             engine::RunSpec {
                 order,
                 seed: candidate.seed,
+                // Only the restarts draw from a band; see the sampling phase
+                // below.
+                sample_band: 0,
                 update_order_ties: candidate.update_order_ties,
                 stop: elimination_stop(
                     EliminationPhase::Initial,
@@ -826,6 +829,16 @@ fn run_portfolio(
             engine::RunSpec {
                 order: candidate.order,
                 seed: candidate.seed,
+                // The band is the ordinary restarts' setting alone. The plain
+                // diverse pass and the weighted stages differ from each other
+                // by their score and their weights, and each one is meant to
+                // run that score's own minimum; the restarts are the candidates
+                // that repeat one score over seeds, so they are where a wider
+                // tie set changes what the seeds can reach.
+                sample_band: match candidate.stage {
+                    Stage::Sample => config.sample_band,
+                    _ => 0,
+                },
                 update_order_ties: false,
                 stop: elimination_stop(
                     EliminationPhase::ExtraSampling,

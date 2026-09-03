@@ -116,6 +116,12 @@ fill and degree, a sampled order can minimize
 supply one weight per vertex; uniform weights give uniform sampling. Each
 score remains exact while the orders explore different elimination paths.
 
+`PortfolioConfig::with_sample_band` widens what the ordinary restarts draw
+from: with a band of `k` a restart draws from every vertex whose fill is at
+most `k` above the smallest, instead of only from the vertices tied at the
+minimum. It is 0 by default, and only the restarts read it — the other
+candidates each run their own score's exact minimum.
+
 These choices extend the standard greedy heuristics with shared reductions,
 incremental scoring, explicit weighted ties, incumbent-width pruning, and
 budget-aware completion.

@@ -74,6 +74,11 @@ options:
                         count instead of drawing seeds until the soft
                         deadline. Needs --budget: with no deadline the count is
                         what stops them anyway
+  --sample-band <eps>   portfolio only: the ordinary restarts draw from every
+                        vertex whose elimination adds at most eps fill edges
+                        more than the best, instead of only from the vertices
+                        tied at the minimum (default 0). The other candidates
+                        keep their exact minimum
   --trace               portfolio only: write one line per candidate and one
                         for the winner to stderr as they complete
   --steps <n>           flowcutter only: a step budget in place of a clock,
@@ -132,6 +137,7 @@ struct Args {
     hedge_reserve: Option<f64>,
     no_hedge: bool,
     capped_restarts: bool,
+    sample_band: Option<u64>,
     trace: bool,
     steps: Option<u64>,
     refine: bool,
@@ -189,6 +195,7 @@ fn parse_args(argv: &[String]) -> Args {
     let mut hedge_reserve = None;
     let mut no_hedge = false;
     let mut capped_restarts = false;
+    let mut sample_band = None;
     let mut trace = false;
     let mut steps = None;
     let mut refine = false;
@@ -271,6 +278,7 @@ fn parse_args(argv: &[String]) -> Args {
             }
             "--no-hedge" => no_hedge = true,
             "--capped-restarts" => capped_restarts = true,
+            "--sample-band" => sample_band = Some(number(&mut i, arg)),
             "--trace" => trace = true,
             "--steps" => {
                 let n = number(&mut i, arg);
@@ -390,6 +398,9 @@ fn parse_args(argv: &[String]) -> Args {
             );
         }
     }
+    if sample_band.is_some() {
+        needs("--sample-band", order == Method::Portfolio, "portfolio");
+    }
     if trace {
         needs("--trace", order == Method::Portfolio, "portfolio");
     }
@@ -408,6 +419,7 @@ fn parse_args(argv: &[String]) -> Args {
         hedge_reserve,
         no_hedge,
         capped_restarts,
+        sample_band,
         trace,
         steps,
         refine,
@@ -496,6 +508,9 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             }
             if args.capped_restarts {
                 config = config.with_restarts_to_deadline(false);
+            }
+            if let Some(band) = args.sample_band {
+                config = config.with_sample_band(band);
             }
             let mut winner = None;
             let mut report = |candidate: CandidateTrace| {
