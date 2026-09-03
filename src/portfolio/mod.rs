@@ -738,6 +738,20 @@ fn run_portfolio(
         if i > 0 && residual == Residual::Large && expensive {
             continue;
         }
+        // Nested dissection reads its deadline between levels, and its
+        // bisection of one level on a graph of a million edges takes seconds
+        // on its own, so a cutoff does not bound it. An admitted residual does
+        // not run it; the slot is traced so a reader can see it was given up.
+        if residual == Residual::Admitted && matches!(order, Order::NestedDissection) {
+            trace(CandidateTrace {
+                stage: Stage::NestedDissection,
+                seed: candidate.seed,
+                pass: Pass::Only,
+                outcome: CandidateOutcome::NotStarted,
+                elapsed: crate::meter::now().saturating_duration_since(started),
+            });
+            continue;
+        }
         // An admitted residual gives each expensive order half the time the
         // soft deadline has left, so whatever it does with that time the
         // restarts still get a share of the budget. The min-degree candidates
