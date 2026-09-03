@@ -48,6 +48,41 @@ fn is_min_degree_variant(order: Order<'_>) -> bool {
     matches!(order, Order::MinDegree | Order::MinDegreeSampled { .. })
 }
 
+fn is_min_fill_variant(order: Order<'_>) -> bool {
+    matches!(order, Order::MinFill | Order::MinFillSampled { .. })
+}
+
+/// How the residual left after preprocessing stands against the size rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Residual {
+    /// Small enough for the whole schedule: every initial order, the diverse
+    /// pass, the hedge, and sampled min-fill restarts.
+    Ordinary,
+    /// Past the size the expensive orders are trusted at, but inside the limit
+    /// the caller raised with
+    /// [`PortfolioConfig::with_expensive_orders_up_to`]. The expensive initial
+    /// orders run, on the soft deadline rather than the whole window; the
+    /// diverse pass and the hedge do not; and the restarts follow whichever of
+    /// min-fill and min-degree finished.
+    Admitted,
+    /// Past the caller's limit: min-degree candidates and sampled min-degree
+    /// restarts, nothing else.
+    Large,
+}
+
+impl Residual {
+    /// Where `active` vertices leave a run whose limit is `limit`.
+    fn classify(active: usize, limit: usize) -> Self {
+        if active > limit {
+            Residual::Large
+        } else if active > config::DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS {
+            Residual::Admitted
+        } else {
+            Residual::Ordinary
+        }
+    }
+}
+
 fn sample_seed(base_seed: u64, sample_index: u64) -> u64 {
     base_seed.wrapping_add(SAMPLE_SEED_OFFSET + sample_index.wrapping_mul(SAMPLE_SEED_STRIDE))
 }
@@ -120,8 +155,11 @@ impl<'a> ModifiedWeights<'a> {
 #[derive(Clone, Copy)]
 struct Schedule<'a> {
     base_seed: u64,
-    /// A residual too large for the expensive orders: sampled min-degree only.
-    large_residual: bool,
+    /// The ordinary restarts run sampled min-degree in place of sampled
+    /// min-fill. Set where min-fill has no prospect of finishing: a residual
+    /// past the caller's size limit, or one where the initial min-fill did not
+    /// come back inside the soft deadline.
+    min_degree_restarts: bool,
     /// Ordinary restarts on offer: the configured count, or `u64::MAX` where
     /// the soft deadline ends them instead of the count.
     ordinary_runs: u64,
@@ -344,8 +382,9 @@ fn sample_at(
 
 fn extra_sample(schedule: Schedule<'_>, index: u64) -> Option<Sample<'_>> {
     let base_seed = schedule.base_seed;
-    if schedule.large_residual {
-        // A large residual runs sampled min-degree whatever else is set, so
+    if schedule.min_degree_restarts {
+        // These runs are the whole sampling phase: a residual that falls back
+        // to min-degree runs neither the diverse pass nor a weighted stage, so
         // there is nothing here for a hedge to run against.
         if index >= schedule.ordinary_runs {
             return None;
@@ -410,9 +449,10 @@ fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
     match (order, phase) {
         (Order::NestedDissection, _) => Stage::NestedDissection,
         (Order::MinDegree | Order::MinDegreeSampled { .. }, _) => Stage::MinDegree,
-        (Order::MinFill | Order::MinFillSampled { .. }, EliminationPhase::Initial) => {
-            Stage::MinFill
-        }
+        (
+            Order::MinFill | Order::MinFillSampled { .. },
+            EliminationPhase::Initial | EliminationPhase::AdmittedInitial,
+        ) => Stage::MinFill,
         (Order::MinFill | Order::MinFillSampled { .. }, EliminationPhase::ExtraSampling) => {
             Stage::Sample
         }
@@ -471,15 +511,23 @@ fn flowcutter_candidate(
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum EliminationPhase {
     Initial,
+    /// An expensive initial order on a residual the caller's raised limit
+    /// admitted.
+    AdmittedInitial,
     ExtraSampling,
 }
 
 /// Initial candidates may use the complete two-stage window so the first one
 /// can always return a decomposition. Extra samples stop at the soft deadline;
 /// the rest of the hard window belongs to FlowCutter.
+///
+/// An expensive order on an admitted residual stops at the soft deadline too.
+/// At that size it often cannot finish, and on the whole window it returns
+/// nothing and leaves no time for the restarts either; stopped at the soft
+/// cutoff it gives the rest of the window back.
 fn elimination_stop(
     phase: EliminationPhase,
     soft_deadline: Option<Instant>,
@@ -490,7 +538,7 @@ fn elimination_stop(
         soft_deadline,
         hard_deadline: match phase {
             EliminationPhase::Initial => hard_deadline,
-            EliminationPhase::ExtraSampling => soft_deadline,
+            EliminationPhase::AdmittedInitial | EliminationPhase::ExtraSampling => soft_deadline,
         },
         width_bound,
     }
@@ -574,8 +622,9 @@ fn sampled_min_fill_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandid
     }]
 }
 
-/// Run a portfolio: large-residual skips, then extra sampled orders with the
-/// remaining budget, then the trailing FlowCutter candidate where configured.
+/// Run a portfolio: the initial orders the residual's size allows, then extra
+/// sampled orders with the remaining budget, then the trailing FlowCutter
+/// candidate where configured.
 ///
 /// At least one candidate always carries a decomposition: the first is exempt from both
 /// between-candidate skips, runs with no `width_bound` (so it cannot abort on
@@ -603,15 +652,14 @@ fn run_portfolio(
     let hard_deadline = deadlines.hard;
     let mut prebuilt = engine::prebuild(graph, soft_deadline);
     let mut original = None;
-    // Every skip the size rule makes reads this one flag, so a raised limit
-    // hands the graph the whole schedule and nothing else has to be told.
-    let large_residual = prebuilt.num_active() > config.expensive_orders_up_to;
+    let residual = Residual::classify(prebuilt.num_active(), config.expensive_orders_up_to);
     let cells: [OnceCell<Vec<u32>>; MAX_HEDGE_PASSES] = std::array::from_fn(|_| OnceCell::new());
-    // A large residual runs sampled min-degree restarts whatever is set, so
-    // there is nothing there for a hedge to run against. Each stage's weights
-    // are derived when its first candidate asks for them.
+    // Only an ordinary residual hedges. A larger one runs restarts and nothing
+    // else, so there is nothing there for a weighted stage to run against, and
+    // the ranking it would place is work the restarts would rather have. Each
+    // stage's weights are derived when its first candidate asks for them.
     let modified: Vec<ModifiedWeights<'_>> = match config.hedge.series() {
-        Some(series) if !large_residual => series
+        Some(series) if residual == Residual::Ordinary => series
             .weights()
             .iter()
             .zip(&cells)
@@ -655,6 +703,8 @@ fn run_portfolio(
     // Set after any candidate reaches the hard deadline, or when it expires
     // between candidates. Later runs would stop at the same point.
     let mut hard_deadline_tripped = false;
+    // Set by an initial min-fill order that produced a decomposition.
+    let mut min_fill_finished = false;
 
     for (i, candidate) in initial_orders.iter().copied().enumerate() {
         let order = candidate.order;
@@ -664,11 +714,20 @@ fn run_portfolio(
         if i > 0 && expired(soft_deadline) {
             break;
         }
-        // On large residuals, only min-degree variants reliably complete;
+        // Past the caller's limit, only min-degree variants reliably complete;
         // nested dissection and min-fill can overrun a short budget.
-        if i > 0 && large_residual && !is_min_degree_variant(order) {
+        let expensive = !is_min_degree_variant(order);
+        if i > 0 && residual == Residual::Large && expensive {
             continue;
         }
+        // An admitted residual runs the expensive orders on the soft deadline.
+        // The min-degree candidates keep the window they have on any residual,
+        // since one of them has to come back with a decomposition.
+        let phase = if residual == Residual::Admitted && expensive {
+            EliminationPhase::AdmittedInitial
+        } else {
+            EliminationPhase::Initial
+        };
         // Complete the residual only while no candidate has produced a usable
         // decomposition yet. Once one has, completing a later candidate's
         // residual would be wasted work: its wide decomposition would lose on
@@ -686,7 +745,7 @@ fn run_portfolio(
                 seed: candidate.seed,
                 update_order_ties: candidate.update_order_ties,
                 stop: elimination_stop(
-                    EliminationPhase::Initial,
+                    phase,
                     soft_deadline,
                     hard_deadline,
                     candidates.best_width(),
@@ -695,8 +754,14 @@ fn run_portfolio(
             },
         );
         let (outcome, stop) = candidates.record_elimination(run);
+        // What the restarts of an admitted residual follow: a min-fill order
+        // that came back with a decomposition ran inside the soft deadline, so
+        // sampled min-fill has a prospect of finishing too.
+        if is_min_fill_variant(order) && matches!(outcome, CandidateOutcome::Produced { .. }) {
+            min_fill_finished = true;
+        }
         trace(CandidateTrace {
-            stage: stage_of(order, EliminationPhase::Initial),
+            stage: stage_of(order, phase),
             seed: candidate.seed,
             pass: Pass::Only,
             outcome,
@@ -711,8 +776,9 @@ fn run_portfolio(
                 // Nothing usable from this candidate, but the portfolio is
                 // still inside its budget.
                 CandidateOutcome::WidthAborted => false,
-                // Only the sampling phase has stages to skip.
-                CandidateOutcome::StageSkipped { .. } => false,
+                // Only the sampling phase has stages to skip, and only the
+                // trailing FlowCutter slot reports an unstarted candidate.
+                CandidateOutcome::StageSkipped { .. } | CandidateOutcome::NotStarted => false,
                 CandidateOutcome::Produced { .. } | CandidateOutcome::DeadlineReached => {
                     expired(hard_deadline)
                 }
@@ -726,8 +792,10 @@ fn run_portfolio(
     // order with any remaining budget. Measured ≥79% of min-fill pops have
     // ≥2 tied candidates, so different seeds explore different
     // elimination orders and can lower width on small/medium graphs where the
-    // base portfolio returns in tens of ms. Falls back to sampled min-degree on
-    // large residuals, matching the main loop's skip rule. A started extra
+    // base portfolio returns in tens of ms. Falls back to sampled min-degree
+    // where min-fill has no prospect of finishing: past the caller's size limit,
+    // matching the main loop's skip rule, and on an admitted residual whose
+    // initial min-fill did not come back. A started extra
     // sample stops at the soft deadline so it cannot consume the trailing
     // FlowCutter and output interval. On extended small/medium runs, diverse
     // fill-degree scores precede the complete ordinary min-fill seed sequence.
@@ -745,14 +813,23 @@ fn run_portfolio(
     } else {
         config.sampling_runs
     };
-    let diverse_samples = if large_residual {
-        0
-    } else {
+    let diverse_samples = if residual == Residual::Ordinary {
         config.diverse_sampling_runs
+    } else {
+        0
+    };
+    // Sampled min-fill restarts are worth drawing only where min-fill can
+    // finish: below the size rule, or on an admitted residual where the
+    // initial min-fill did finish. Everywhere else they fall back to sampled
+    // min-degree, which is what a residual past the limit has always run.
+    let min_degree_restarts = match residual {
+        Residual::Ordinary => false,
+        Residual::Admitted => !min_fill_finished,
+        Residual::Large => true,
     };
     let schedule = Schedule {
         base_seed: seed,
-        large_residual,
+        min_degree_restarts,
         ordinary_runs,
         diverse_runs: diverse_samples,
         modified: &modified,
@@ -850,8 +927,12 @@ fn run_portfolio(
             //
             // A skipped stage is reported by the rule above and never comes
             // back from a candidate.
+            //
+            // A candidate that ran has a result, so it never reports
+            // `NotStarted`; only the trailing FlowCutter slot does.
             CandidateOutcome::Produced { .. }
             | CandidateOutcome::WidthAborted
+            | CandidateOutcome::NotStarted
             | CandidateOutcome::StageSkipped { .. } => {
                 sample_index += 1;
             }
@@ -863,7 +944,21 @@ fn run_portfolio(
     // contract, `hard_deadline` = 2×`soft_deadline`, leaving up to
     // `soft_deadline` of slack here. FlowCutter already returns a complete
     // decomposition, so no separator-refinement pass is applied to it.
-    if let Some(configured_budget) = config
+    //
+    // An admitted residual does not get one. The backend tests its deadline
+    // between restarts, and a graph this size can spend longer in a single
+    // restart than the window has left, which takes the hard deadline with it
+    // and loses the decomposition the portfolio already holds. The size guard
+    // here only measures the first restart, so it does not catch that.
+    if residual == Residual::Admitted && config.flowcutter_budget.is_some() {
+        trace(CandidateTrace {
+            stage: Stage::FlowCutter,
+            seed,
+            pass: Pass::Only,
+            outcome: CandidateOutcome::NotStarted,
+            elapsed: crate::meter::now().saturating_duration_since(started),
+        });
+    } else if let Some(configured_budget) = config
         .flowcutter_budget
         .filter(|_| !hard_deadline_tripped && !expired(hard_deadline))
         && let Some(decomposition) = flowcutter_candidate(graph, configured_budget, hard_deadline)?

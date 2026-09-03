@@ -76,13 +76,14 @@ options:
                         what stops them anyway
   --expensive-orders-up-to <n>
                         portfolio only: the largest residual, in vertices left
-                        after preprocessing, that still runs min-fill, nested
-                        dissection, the diverse pass and the hedge (default
-                        10000). Above it the portfolio keeps only its
-                        min-degree candidates and its restarts are sampled
-                        min-degree. Raising it hands larger graphs the whole
-                        schedule; the orders it lets back in still stop at the
-                        soft deadline
+                        after preprocessing, that still runs min-fill and
+                        nested dissection (default 10000). Above the default
+                        and at or below this, those orders run but stop at the
+                        soft deadline, the diverse pass and the hedge stay off,
+                        the restarts follow min-fill if the initial min-fill
+                        finished and min-degree if it did not, and there is no
+                        trailing FlowCutter candidate. Above this the portfolio
+                        keeps only its min-degree candidates, as it always has
   --trace               portfolio only: write one line per candidate and one
                         for the winner to stderr as they complete
   --steps <n>           flowcutter only: a step budget in place of a clock,
@@ -566,6 +567,7 @@ fn print_candidate(candidate: &CandidateTrace) {
         } => line.push_str(&format!(" width={width} bags={total_bag_size}")),
         CandidateOutcome::WidthAborted => line.push_str(" outcome=aborted"),
         CandidateOutcome::DeadlineReached => line.push_str(" outcome=deadline"),
+        CandidateOutcome::NotStarted => line.push_str(" outcome=not-started"),
         CandidateOutcome::StageSkipped {
             projected,
             spent,

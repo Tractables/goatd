@@ -62,7 +62,7 @@ const DEFAULT_HEDGE_RESERVE: f64 = 0.5;
 /// Residuals larger than this run only min-degree candidates: the other orders
 /// can overrun a short portfolio budget at that scale.
 /// [`PortfolioConfig::with_expensive_orders_up_to`] moves the line.
-const DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS: usize = 10_000;
+pub(super) const DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS: usize = 10_000;
 
 /// Where one weighted stage takes its sampling weights from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -218,8 +218,8 @@ impl HedgeSeries {
 /// against the candidates the portfolio would have run anyway, and keeping the
 /// narrower result, costs the time of the extra candidates and nothing else.
 ///
-/// A residual too large for the expensive orders runs sampled min-degree
-/// restarts whatever is set here, so a hedge does not reach it.
+/// A residual past the size the expensive orders run at runs restarts and
+/// nothing else, whatever is set here, so a hedge does not reach it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Hedge {
@@ -308,8 +308,9 @@ impl PortfolioConfig {
     }
 
     /// Request one trailing FlowCutter candidate with the given budget. It is
-    /// skipped when the graph exceeds the backend's size limit or less than
-    /// 50 ms remains in the portfolio's hard budget.
+    /// skipped when the graph exceeds the backend's size limit, when less than
+    /// 50 ms remains in the portfolio's hard budget, and on a residual admitted
+    /// by [`PortfolioConfig::with_expensive_orders_up_to`].
     pub fn with_flowcutter(mut self, budget: Duration) -> Self {
         self.flowcutter_budget = Some(budget);
         self
@@ -464,18 +465,30 @@ impl PortfolioConfig {
     }
 
     /// The largest residual the expensive orders still run on, in vertices left
-    /// after preprocessing.
+    /// after preprocessing. The default is 10,000, which is where min-fill and
+    /// nested dissection began to overrun a short budget.
     ///
-    /// Above it the portfolio keeps only its min-degree candidates: the initial
-    /// list drops min-fill and nested dissection after the first candidate, the
-    /// diverse pass and the hedge do not run, and the ordinary restarts are
-    /// sampled min-degree. At or below it the graph takes the whole schedule.
-    /// The default is 10,000, which is where min-fill and nested dissection
-    /// began to overrun a short budget.
+    /// Above this the portfolio keeps only its min-degree candidates: the
+    /// initial list drops min-fill and nested dissection after the first
+    /// candidate, the diverse pass and the hedge do not run, and the ordinary
+    /// restarts are sampled min-degree. That is what a residual over 10,000
+    /// gets without this call.
     ///
-    /// Raising this does not change what stops a candidate: the orders it lets
-    /// back in still stop at the soft deadline and the engine completes what is
-    /// left of the residual.
+    /// Raising it opens a band between 10,000 and the new number where the
+    /// expensive orders run again, on terms that suit the size:
+    ///
+    /// - min-fill and nested dissection stop at the soft deadline rather than
+    ///   the whole window, with the incumbent width cutoff as everywhere else,
+    ///   so an order that cannot finish gives the rest of the window back;
+    /// - the diverse pass and the hedge stay off, as they are above the band;
+    /// - the restarts are sampled min-fill when an initial min-fill produced a
+    ///   decomposition and sampled min-degree when none did, and stop at the
+    ///   soft deadline either way;
+    /// - the trailing FlowCutter candidate does not run, since at that size one
+    ///   of its restarts can outlast the window it is given.
+    ///
+    /// Lowering it below 10,000 leaves no band, and every residual over the
+    /// number runs min-degree only.
     pub fn with_expensive_orders_up_to(mut self, vertices: usize) -> Self {
         self.expensive_orders_up_to = vertices;
         self
