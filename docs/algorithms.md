@@ -190,7 +190,10 @@ refine sequence, including V-cycles. For a proposed bisection, goatd builds the
 bipartite graph of crossing edges and computes a minimum vertex cover using
 augmenting-path matching. By König's theorem this is the smallest separator
 obtained by covering those crossing edges, and it is never larger than taking
-all boundary vertices from the smaller side.
+all boundary vertices from the smaller side. Small subgraphs, and a level whose
+bisection leaves nothing to recurse on, are ordered by min-fill; under a budget
+that min-fill runs against the hard deadline too, and the vertices it has not
+reached follow in a fixed order.
 
 The same multilevel graph bisector is public on its own. A separate public
 hypergraph bisector minimizes cut hyperedges, with FM and flow-based

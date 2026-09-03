@@ -145,7 +145,7 @@ pub(super) fn nested_dissection_order(
         return salt_sorted;
     }
     if n <= params.base_case_size || depth >= MAX_RECURSION_DEPTH {
-        return base_min_fill_order(active, edges, salt);
+        return base_min_fill_order(active, edges, params);
     }
 
     // Relabel active into dense 0..n so multilevel bisection and separator
@@ -163,7 +163,7 @@ pub(super) fn nested_dissection_order(
 
     // Degenerate partition — nothing to recurse on. Fall back to local min-fill.
     if sep.side_a.is_empty() || sep.side_b.is_empty() || sep.separator.len() >= n {
-        return base_min_fill_order(active, edges, salt);
+        return base_min_fill_order(active, edges, params);
     }
 
     let side_a_global = local_to_global(&sep.side_a, active);
@@ -189,23 +189,46 @@ pub(super) fn nested_dissection_order(
 
 /// Min-fill on the induced subgraph of `active`, returning the resulting order
 /// translated back to global IDs.
-fn base_min_fill_order(active: &[u32], edges: &[(u32, u32)], salt: &[u32]) -> Vec<u32> {
+///
+/// The min-fill runs against the hard deadline. A degenerate bisection sends a
+/// whole level here, and on a dense subgraph of a few thousand vertices an
+/// unbounded min-fill takes tens of seconds; when the deadline stops it, the
+/// vertices it did not reach follow in salt order, the same fallback a level
+/// that finds the deadline already passed returns.
+fn base_min_fill_order(
+    active: &[u32],
+    edges: &[(u32, u32)],
+    params: &NestedDissectionParams<'_>,
+) -> Vec<u32> {
+    let salt = params.salt;
     let n = active.len();
     let local_edges = local_edges_for(active, edges);
     let mut local_graph = EliminationGraph::from_edges(n as u32, &local_edges);
     let local_salt: Vec<u32> = active.iter().map(|&v| salt[v as usize]).collect();
     let mut steps = ElimSteps::default();
-    eliminate_min_fill(
+    let exit = eliminate_min_fill(
         &mut local_graph,
         &local_salt,
         steps.sink(),
-        ElimStop::default(),
+        ElimStop {
+            hard_deadline: params.hard_deadline,
+            ..ElimStop::default()
+        },
     );
-    steps
+    let mut order: Vec<u32> = steps
         .rank_pairs
         .into_iter()
         .map(|(l, _)| active[l as usize])
-        .collect()
+        .collect();
+    if exit != ElimExit::Complete {
+        let mut rest: Vec<u32> = (0..n)
+            .filter(|&local| local_graph.active[local])
+            .map(|local| active[local])
+            .collect();
+        rest.sort_by_key(|&v| salt[v as usize]);
+        order.extend(rest);
+    }
+    order
 }
 
 /// Translate `edges` (global IDs) into dense 0..n local IDs where position `i`
