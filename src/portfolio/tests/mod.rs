@@ -113,6 +113,18 @@ fn a_ten_second_outer_window_with_output_headroom_raises_the_sampling_cap() {
 }
 
 #[test]
+fn the_standard_portfolio_appends_vertex_order_minimum_degree() {
+    let weights = [1; 3];
+    let candidates = super::standard_orders(0, &weights);
+
+    assert_eq!(candidates.len(), 6);
+    assert!(candidates[..5].iter().all(|candidate| !candidate.vertex_id_ties));
+    let candidate = candidates[5];
+    assert_eq!(candidate.order, Order::MinDegree);
+    assert!(candidate.vertex_id_ties);
+}
+
+#[test]
 fn diverse_orders_can_be_taken_without_the_flowcutter_slot() {
     let budget = Duration::from_millis(4_750);
     let config = PortfolioConfig::standard()
