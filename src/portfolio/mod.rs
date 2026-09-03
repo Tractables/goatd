@@ -119,6 +119,31 @@ impl<'a> ModifiedWeights<'a> {
     }
 }
 
+/// How wide a tie set the ordinary restarts draw from, and whether every
+/// second restart drops back to the exact minimum.
+#[derive(Clone, Copy, Default)]
+struct SampleBand {
+    /// How far above the minimum fill the tie set reaches, in fill edges.
+    width: u64,
+    /// Alternate between the exact minimum and `width`, restart by restart.
+    alternate: bool,
+}
+
+impl SampleBand {
+    /// The band the `index`-th ordinary restart draws from. Alternating, the
+    /// even restarts draw from the exact minimum, which is the candidate a
+    /// portfolio without a band runs at that seed, and the odd ones from the
+    /// band; so the restarts keep both draws instead of trading one for the
+    /// other.
+    fn at(self, index: u64) -> u64 {
+        if self.alternate && index.is_multiple_of(2) {
+            0
+        } else {
+            self.width
+        }
+    }
+}
+
 /// Everything the sampling phase draws a candidate from. The phase asks for
 /// index 0, 1, 2, … and stops at the first `None`.
 #[derive(Clone, Copy)]
@@ -141,6 +166,8 @@ struct Schedule<'a> {
     initial_orders: InitialOrderBuilder,
     /// The sampling weights every plain candidate draws with: the caller's.
     weights: &'a [u32],
+    /// The band the ordinary restarts draw their tie set from.
+    band: SampleBand,
 }
 
 impl<'a> Schedule<'a> {
@@ -329,6 +356,9 @@ struct Sample<'a> {
     seed: u64,
     pass: Pass,
     stage: Stage,
+    /// How far above the minimum score this candidate's tie set reaches. Only
+    /// the ordinary restarts ever carry a band.
+    band: u64,
 }
 
 /// One sample, labelled as `phase` labels its order.
@@ -343,6 +373,7 @@ fn sample_at(
         seed,
         pass,
         stage: stage_of(order, phase),
+        band: 0,
     })
 }
 
@@ -398,14 +429,16 @@ fn extra_sample(schedule: Schedule<'_>, index: u64) -> Option<Sample<'_>> {
     }
     // Nothing is given up here: the restarts are the whole sequence a
     // portfolio without the hedge runs, seed for seed.
-    sample_at(
+    let mut restart = sample_at(
         Order::MinFillSampled {
             weights: schedule.weights,
         },
         sample_seed(base_seed, ordinary_index),
         schedule.pass(true, 0),
         EliminationPhase::ExtraSampling,
-    )
+    )?;
+    restart.band = schedule.band.at(ordinary_index);
+    Some(restart)
 }
 
 /// The label for `order` in `phase`. A sampled min-fill order is a restart in
@@ -764,6 +797,10 @@ fn run_portfolio(
         fixed_runs,
         initial_orders: order_builder,
         weights,
+        band: SampleBand {
+            width: config.sample_band,
+            alternate: config.sample_band_alternate,
+        },
     };
     let total_samples = schedule.total();
     // Where the weighted stages sit in the sample sequence, and how long one of
@@ -829,16 +866,7 @@ fn run_portfolio(
             engine::RunSpec {
                 order: candidate.order,
                 seed: candidate.seed,
-                // The band is the ordinary restarts' setting alone. The plain
-                // diverse pass and the weighted stages differ from each other
-                // by their score and their weights, and each one is meant to
-                // run that score's own minimum; the restarts are the candidates
-                // that repeat one score over seeds, so they are where a wider
-                // tie set changes what the seeds can reach.
-                sample_band: match candidate.stage {
-                    Stage::Sample => config.sample_band,
-                    _ => 0,
-                },
+                sample_band: candidate.band,
                 update_order_ties: false,
                 stop: elimination_stop(
                     EliminationPhase::ExtraSampling,

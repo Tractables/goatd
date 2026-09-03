@@ -262,6 +262,7 @@ pub struct PortfolioConfig {
     pub(super) hedge_reserve: f64,
     pub(super) restarts_to_deadline: bool,
     pub(super) sample_band: u64,
+    pub(super) sample_band_alternate: bool,
 }
 
 /// Two configurations are equal when they ask for the same run, the reserve
@@ -278,6 +279,7 @@ impl PartialEq for PortfolioConfig {
             && self.hedge_reserve.to_bits() == other.hedge_reserve.to_bits()
             && self.restarts_to_deadline == other.restarts_to_deadline
             && self.sample_band == other.sample_band
+            && self.sample_band_alternate == other.sample_band_alternate
     }
 }
 
@@ -299,6 +301,7 @@ impl PortfolioConfig {
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: false,
             sample_band: 0,
+            sample_band_alternate: false,
         }
     }
 
@@ -376,6 +379,7 @@ impl PortfolioConfig {
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: false,
             sample_band: 0,
+            sample_band_alternate: false,
         }
     }
 
@@ -414,6 +418,7 @@ impl PortfolioConfig {
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: true,
             sample_band: 0,
+            sample_band_alternate: false,
         }
     }
 
@@ -469,6 +474,19 @@ impl PortfolioConfig {
     /// own score's minimum.
     pub fn with_sample_band(mut self, band: u64) -> Self {
         self.sample_band = band;
+        self
+    }
+
+    /// Alternate the ordinary restarts between the exact minimum and the band
+    /// set by [`PortfolioConfig::with_sample_band`].
+    ///
+    /// On, an even-numbered restart draws from the vertices tied at the
+    /// minimum and an odd-numbered one from the band. The seeds are the same
+    /// sequence either way, so the even restarts are the candidates a
+    /// portfolio with no band runs, seed for seed, and the odd ones are what
+    /// the band adds. Off, every restart draws from the band.
+    pub fn with_sample_band_alternate(mut self, alternate: bool) -> Self {
+        self.sample_band_alternate = alternate;
         self
     }
 }
