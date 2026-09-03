@@ -143,7 +143,9 @@ deadlines apply to every candidate of both sets.
 
 `PortfolioConfig::standard` and `standard_with_budget` hedge on eccentricity
 rankings in the dimensions of `portfolio::DEFAULT_HEDGE_DIMS`, which is
-`[3, 1, 2, 4]`. Each placement runs when the first candidate that reads it asks
+`[3, 1, 2, 4, 8, 5, 6, 7]` — every dimension the embedding has, since the
+budget rule stops the series where there is no time for another stage. Each
+placement runs when the first candidate that reads it asks
 for it, after the plain diverse pass, so a run that ends inside the plain pass
 never pays for any of them; a placement is charged to the construction meter
 and stops at the soft deadline. A residual too large for the expensive orders

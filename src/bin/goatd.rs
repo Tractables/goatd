@@ -49,10 +49,11 @@ options:
   --hedge-dims <list>   portfolio only: run the hedge's weighted stage once per
                         dimension of a comma-separated list, in the order
                         given, each on a ranking from its own placement, such
-                        as 1,2,3, in place of the default 3,1,2,4. Dimensions
-                        run 1 to 8 and no dimension repeats. The restarts stay
-                        plain and the incumbent width bounds the stages that
-                        follow. Not with --hedge-random or --no-hedge
+                        as 1,2,3, in place of the default 3,1,2,4,8,5,6,7.
+                        Dimensions run 1 to 8 and no dimension repeats. The
+                        restarts stay plain and the incumbent width bounds the
+                        stages that follow. Not with --hedge-random or
+                        --no-hedge
   --hedge-random <k>    portfolio only: k weighted stages on random weights
                         instead, the control for --hedge-dims. Each stage draws
                         from a seed of its own, --seed + 6151 + i * 104729 for

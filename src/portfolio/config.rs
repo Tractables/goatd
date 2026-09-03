@@ -33,8 +33,10 @@ pub(super) const MIN_FLOWCUTTER_CANDIDATE_MS: u64 = 50;
 /// dimensions improve mostly different ones, so a hedge that runs several
 /// collects more of them. Three leads because on its own it is the dimension
 /// that helps most: under a budget that fits one stage, that is the one to
-/// spend it on.
-pub const DEFAULT_HEDGE_DIMS: [usize; 4] = [3, 1, 2, 4];
+/// spend it on. The series runs every dimension the embedding has, since the
+/// budget rule stops it where there is no time for another stage and most
+/// graphs finish the earlier stages with time to spare.
+pub const DEFAULT_HEDGE_DIMS: [usize; 8] = [3, 1, 2, 4, 8, 5, 6, 7];
 
 /// Dimensions the hedge places the vertices in when a caller asks for the
 /// standard weighting without saying how many.

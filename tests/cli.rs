@@ -433,8 +433,8 @@ fn the_default_portfolio_hedges_and_no_hedge_turns_that_off() {
     }
     assert_eq!(
         modified,
-        ["min-degree", "min-fill", "min-degree"].repeat(4),
-        "each of the four default stages runs the fixed orders that read \
+        ["min-degree", "min-fill", "min-degree"].repeat(8),
+        "each of the eight default stages runs the fixed orders that read \
          weights again on its own ranking: {err}"
     );
 
@@ -523,7 +523,7 @@ fn hedge_dims_spelling_the_default_series_runs_the_default_hedge() {
             "7",
             "--trace",
             "--hedge-dims",
-            "3,1,2,4",
+            "3,1,2,4,8,5,6,7",
         ],
         Some(&grid_gr()),
     );
@@ -533,7 +533,7 @@ fn hedge_dims_spelling_the_default_series_runs_the_default_hedge() {
     assert!(!spelled.stdout.is_empty(), "no decomposition on stdout");
     assert_eq!(default.stdout, spelled.stdout);
     assert_eq!(trace_candidates(&default), trace_candidates(&spelled));
-    for index in 0..4 {
+    for index in 0..8 {
         assert_eq!(
             modified_stages(&default, index),
             ["min-degree", "min-fill", "min-degree"],
@@ -542,8 +542,8 @@ fn hedge_dims_spelling_the_default_series_runs_the_default_hedge() {
         );
     }
     assert!(
-        modified_stages(&default, 4).is_empty(),
-        "the default series is four stages: {}",
+        modified_stages(&default, 8).is_empty(),
+        "the default series is eight stages: {}",
         stderr_of(&default)
     );
 }
@@ -755,7 +755,7 @@ fn a_reserve_the_stages_cannot_fit_in_leaves_the_budget_to_the_restarts() {
 
 #[test]
 fn the_reserve_applies_to_the_default_series_without_a_dimension_flag() {
-    // The default series has four stages, so the reserve has stages to refuse
+    // The default series has eight stages, so the reserve has stages to refuse
     // and the flag is accepted on its own.
     let reserved = goatd(
         &[
@@ -772,7 +772,7 @@ fn the_reserve_applies_to_the_default_series_without_a_dimension_flag() {
     );
 
     assert!(reserved.status.success(), "{}", stderr_of(&reserved));
-    for index in 0..4 {
+    for index in 0..8 {
         assert_eq!(
             modified_stages(&reserved, index),
             ["min-degree", "min-fill", "min-degree"],

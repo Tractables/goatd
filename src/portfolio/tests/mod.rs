@@ -185,10 +185,14 @@ fn every_standard_portfolio_hedges_by_default() {
         HedgeSeries::of(stage(3))
             .then(stage(1))
             .then(stage(2))
-            .then(stage(4)),
+            .then(stage(4))
+            .then(stage(8))
+            .then(stage(5))
+            .then(stage(6))
+            .then(stage(7)),
     );
 
-    assert_eq!(DEFAULT_HEDGE_DIMS, [3, 1, 2, 4]);
+    assert_eq!(DEFAULT_HEDGE_DIMS, [3, 1, 2, 4, 8, 5, 6, 7]);
     assert_eq!(Hedge::eccentricity(), hedge);
     assert_eq!(
         Hedge::Passes(HedgeSeries::eccentricity_dims(&DEFAULT_HEDGE_DIMS)),
@@ -658,7 +662,10 @@ fn a_plain_pass_that_nearly_filled_the_budget_runs_the_first_stage_and_no_more()
 #[test]
 fn without_a_soft_budget_every_stage_of_the_series_runs() {
     // No soft budget, so there is no restart time the stages could take, and an
-    // expensive plain pass says nothing about how many of them run.
+    // expensive plain pass says nothing about how many of them run. All eight
+    // stages of the default series run, and that stays cheap: without a
+    // deadline the diverse pass does not run either, so a stage there is the
+    // fixed orders that read weights and nothing else.
     let mut budget = StageBudget::new(Duration::from_secs(600), None, 0.5);
 
     for stage in 0..super::MAX_HEDGE_PASSES {
