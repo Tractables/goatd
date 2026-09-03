@@ -84,14 +84,14 @@ seconds on one CPU.
 
 | Solver | Nontrivial | Exact best | Within +1 | Within +4 |
 | --- | ---: | ---: | ---: | ---: |
-| goatd portfolio | **9,329 (99.1%)** | **8,722 (92.7%)** | **9,089 (96.6%)** | **9,189 (97.6%)** |
-| Jdrasil heuristic | 9,095 (96.6%) | 1,294 (13.7%) | 2,689 (28.6%) | 5,602 (59.5%) |
-| Tamaki PACE 2017 | 8,240 (87.5%) | 825 (8.8%) | 1,458 (15.5%) | 3,431 (36.4%) |
-| HTD | 9,139 (97.1%) | 328 (3.5%) | 474 (5.0%) | 2,002 (21.3%) |
-| FlowCutter PACE 2017 | 9,115 (96.8%) | 321 (3.4%) | 496 (5.3%) | 2,221 (23.6%) |
-| NetworkX min-degree | 8,999 (95.6%) | 138 (1.5%) | 153 (1.6%) | 243 (2.6%) |
-| NetworkX min-fill | 8,279 (88.0%) | 66 (0.7%) | 195 (2.1%) | 1,600 (17.0%) |
-| Arboretum heuristic | 5,549 (59.0%) | 38 (0.4%) | 130 (1.4%) | 1,035 (11.0%) |
+| goatd portfolio | **9,339 (99.2%)** | **8,724 (92.7%)** | **9,092 (96.6%)** | **9,192 (97.7%)** |
+| Jdrasil heuristic | 9,095 (96.6%) | 1,282 (13.6%) | 2,676 (28.4%) | 5,600 (59.5%) |
+| Tamaki PACE 2017 | 8,240 (87.5%) | 824 (8.8%) | 1,460 (15.5%) | 3,431 (36.4%) |
+| HTD | 9,139 (97.1%) | 328 (3.5%) | 473 (5.0%) | 1,996 (21.2%) |
+| FlowCutter PACE 2017 | 9,115 (96.8%) | 319 (3.4%) | 496 (5.3%) | 2,217 (23.6%) |
+| NetworkX min-degree | 8,999 (95.6%) | 138 (1.5%) | 153 (1.6%) | 242 (2.6%) |
+| NetworkX min-fill | 8,279 (88.0%) | 65 (0.7%) | 195 (2.1%) | 1,598 (17.0%) |
+| Arboretum heuristic | 5,549 (59.0%) | 37 (0.4%) | 128 (1.4%) | 1,036 (11.0%) |
 
 Every decomposition is checked by the same validator. The default selection
 omits graphs where pinned NetworkX min-degree returns a validated width below
