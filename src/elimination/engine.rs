@@ -47,7 +47,18 @@ pub(crate) struct Prebuilt {
 /// across every order in a portfolio.
 pub(crate) fn prebuild(input: &crate::Graph) -> Prebuilt {
     let graph = EliminationGraph::from_edges(input.num_vertices, &input.edges);
-    let reduced = preprocess(graph);
+    finish_prebuild(preprocess(graph))
+}
+
+/// Build the elimination representation without applying reduction rules.
+pub(crate) fn prebuild_original(input: &crate::Graph) -> Prebuilt {
+    finish_prebuild(Reduced {
+        graph: EliminationGraph::from_edges(input.num_vertices, &input.edges),
+        prefix: ElimSteps::default(),
+    })
+}
+
+fn finish_prebuild(reduced: Reduced) -> Prebuilt {
     let components = find_connected_components(&reduced.graph);
     Prebuilt {
         reduced,
@@ -76,6 +87,8 @@ pub(crate) struct RunSpec<'a> {
     pub(crate) order: Order<'a>,
     /// Selects the RNG stream for salt and tie-set sampling.
     pub(crate) seed: u64,
+    /// Break min-degree ties by the order in which scores were updated.
+    pub(crate) update_order_ties: bool,
     /// When the elimination must stop — handed to the core whole.
     pub(crate) stop: ElimStop,
     /// Whether a deadline stop must still leave a complete TD behind.
@@ -179,7 +192,13 @@ fn run_elimination_raw(
 
     let exit = match spec.order {
         Order::MinFill => eliminate_min_fill(&mut g, salt, steps.sink(), spec.stop),
-        Order::MinDegree => eliminate_min_degree(&mut g, salt, steps.sink(), spec.stop),
+        Order::MinDegree => eliminate_min_degree(
+            &mut g,
+            salt,
+            spec.update_order_ties,
+            steps.sink(),
+            spec.stop,
+        ),
         Order::MinFillSampled { weights } => eliminate_sampled_min_fill(
             &mut g,
             weights,
@@ -344,7 +363,9 @@ pub(super) fn run_order_on_reduced(
     spec: RunSpec<'_>,
 ) -> OrderRun {
     let n = reduced.graph.len();
-    // `+ SEED_OFFSET` avoids xorshift64's zero fixed point.
+    // `+ SEED_OFFSET` avoids xorshift64's zero fixed point. The update-order
+    // min-degree variant does not read the salt, but keeping allocation here
+    // avoids another representation in component remapping.
     let mut rng = Xorshift64::from_state(spec.seed.wrapping_add(SEED_OFFSET));
     let salt: Vec<u32> = (0..n).map(|_| rng.next_u32()).collect();
 

@@ -79,6 +79,7 @@ pub fn decompose(
         engine::RunSpec {
             order,
             seed,
+            update_order_ties: false,
             stop: ElimStop {
                 soft_deadline: deadlines.soft,
                 hard_deadline: deadlines.hard,

@@ -149,8 +149,9 @@ impl<'a> Schedule<'a> {
     fn weighted_fixed(self, index: u64) -> Option<(Order<'a>, u64)> {
         (self.initial_orders)(self.base_seed, self.modified_weights())
             .into_iter()
-            .filter(|(order, _)| reads_weights(*order))
+            .filter(|candidate| reads_weights(candidate.order))
             .nth(index as usize)
+            .map(|candidate| (candidate.order, candidate.seed))
     }
 
     /// The `index`-th candidate of one diverse pass, on the caller's weights
@@ -344,8 +345,17 @@ fn elimination_stop(
     }
 }
 
+/// One candidate before the restart phase.
+#[derive(Clone, Copy)]
+struct InitialCandidate<'a> {
+    order: Order<'a>,
+    seed: u64,
+    preprocess: bool,
+    update_order_ties: bool,
+}
+
 /// Builds a run's candidate list for a seed, given the weight vector.
-type InitialOrderBuilder = for<'w> fn(u64, &'w [u32]) -> Vec<(Order<'w>, u64)>;
+type InitialOrderBuilder = for<'w> fn(u64, &'w [u32]) -> Vec<InitialCandidate<'w>>;
 
 #[derive(Clone, Copy)]
 enum CandidateRetention {
@@ -353,16 +363,47 @@ enum CandidateRetention {
     BestOnly,
 }
 
-/// The five fixed candidates at the front of the standard portfolio, ordered
-/// by the cost of one elimination step.
-fn standard_orders(base_seed: u64, weights: &[u32]) -> Vec<(Order<'_>, u64)> {
+/// The standard portfolio's fixed candidates. Vertex-order min-degree runs
+/// first so it supplies a deterministic incumbent before the sampled orders.
+fn standard_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandidate<'_>> {
     let second_seed = base_seed.wrapping_add(SECOND_CANDIDATE_SEED_OFFSET);
     vec![
-        (Order::MinDegreeSampled { weights }, base_seed),
-        (Order::NestedDissection, base_seed),
-        (Order::MinFillSampled { weights }, base_seed),
-        (Order::MinDegreeSampled { weights }, second_seed),
-        (Order::NestedDissection, second_seed),
+        InitialCandidate {
+            order: Order::MinDegree,
+            seed: base_seed,
+            preprocess: false,
+            update_order_ties: true,
+        },
+        InitialCandidate {
+            order: Order::MinDegreeSampled { weights },
+            seed: base_seed,
+            preprocess: true,
+            update_order_ties: false,
+        },
+        InitialCandidate {
+            order: Order::NestedDissection,
+            seed: base_seed,
+            preprocess: true,
+            update_order_ties: false,
+        },
+        InitialCandidate {
+            order: Order::MinFillSampled { weights },
+            seed: base_seed,
+            preprocess: true,
+            update_order_ties: false,
+        },
+        InitialCandidate {
+            order: Order::MinDegreeSampled { weights },
+            seed: second_seed,
+            preprocess: true,
+            update_order_ties: false,
+        },
+        InitialCandidate {
+            order: Order::NestedDissection,
+            seed: second_seed,
+            preprocess: true,
+            update_order_ties: false,
+        },
     ]
 }
 
@@ -373,8 +414,13 @@ fn reads_weights(order: Order<'_>) -> bool {
 }
 
 /// The fixed candidate at the front of the sampled-min-fill portfolio.
-fn sampled_min_fill_orders(base_seed: u64, weights: &[u32]) -> Vec<(Order<'_>, u64)> {
-    vec![(Order::MinFillSampled { weights }, base_seed)]
+fn sampled_min_fill_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandidate<'_>> {
+    vec![InitialCandidate {
+        order: Order::MinFillSampled { weights },
+        seed: base_seed,
+        preprocess: true,
+        update_order_ties: false,
+    }]
 }
 
 /// Run a portfolio: large-residual skips, then extra sampled orders with the
@@ -404,6 +450,7 @@ fn run_portfolio(
     let soft_deadline = deadlines.soft;
     let hard_deadline = deadlines.hard;
     let mut prebuilt = engine::prebuild(graph);
+    let mut original = None;
     let large_residual = prebuilt.num_active() > MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS;
     let ranking = OnceCell::new();
     let modified = match config.hedge {
@@ -426,7 +473,7 @@ fn run_portfolio(
     let fixed_runs = if modified.is_some() {
         initial_orders(seed, weights)
             .iter()
-            .filter(|(order, _)| reads_weights(*order))
+            .filter(|candidate| reads_weights(candidate.order))
             .count() as u64
     } else {
         0
@@ -443,7 +490,8 @@ fn run_portfolio(
     // between candidates. Later runs would stop at the same point.
     let mut hard_deadline_tripped = false;
 
-    for (i, (order, candidate_seed)) in initial_orders.iter().copied().enumerate() {
+    for (i, candidate) in initial_orders.iter().copied().enumerate() {
+        let order = candidate.order;
         // Honour the deadline between orders (when set), but always run
         // order 0 so we return something even on huge graphs that would
         // otherwise time out inside the first order.
@@ -460,11 +508,17 @@ fn run_portfolio(
         // residual would be wasted work: its wide decomposition would lose on
         // width and total bag size to the existing winner.
         let complete_on_deadline = candidates.is_empty();
+        let candidate_graph = if candidate.preprocess {
+            &mut prebuilt
+        } else {
+            original.get_or_insert_with(|| engine::prebuild_original(graph))
+        };
         let run = engine::run_order_prebuilt(
-            &mut prebuilt,
+            candidate_graph,
             engine::RunSpec {
                 order,
-                seed: candidate_seed,
+                seed: candidate.seed,
+                update_order_ties: candidate.update_order_ties,
                 stop: elimination_stop(
                     EliminationPhase::Initial,
                     soft_deadline,
@@ -477,7 +531,7 @@ fn run_portfolio(
         let outcome = candidates.record_elimination(run);
         trace(CandidateTrace {
             stage: stage_of(order, EliminationPhase::Initial),
-            seed: candidate_seed,
+            seed: candidate.seed,
             pass: Pass::Only,
             outcome,
             elapsed: crate::meter::now().saturating_duration_since(started),
@@ -539,6 +593,7 @@ fn run_portfolio(
             engine::RunSpec {
                 order: candidate.order,
                 seed: candidate.seed,
+                update_order_ties: false,
                 stop: elimination_stop(
                     EliminationPhase::ExtraSampling,
                     soft_deadline,

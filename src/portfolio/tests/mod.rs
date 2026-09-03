@@ -113,6 +113,23 @@ fn a_ten_second_outer_window_with_output_headroom_raises_the_sampling_cap() {
 }
 
 #[test]
+fn the_standard_portfolio_starts_with_update_order_minimum_degree() {
+    let weights = [1; 3];
+    let candidates = super::standard_orders(0, &weights);
+
+    assert_eq!(candidates.len(), 6);
+    let candidate = candidates[0];
+    assert_eq!(candidate.order, Order::MinDegree);
+    assert!(!candidate.preprocess);
+    assert!(candidate.update_order_ties);
+    assert!(
+        candidates[1..]
+            .iter()
+            .all(|candidate| candidate.preprocess && !candidate.update_order_ties)
+    );
+}
+
+#[test]
 fn diverse_orders_can_be_taken_without_the_flowcutter_slot() {
     let budget = Duration::from_millis(4_750);
     let config = PortfolioConfig::standard()
@@ -281,7 +298,8 @@ fn the_hedge_leaves_every_restart_on_the_unmodified_sequence() {
     // are the plain pass.
     let fixed: Vec<(Order<'_>, u64)> = super::standard_orders(base_seed, &ranked)
         .into_iter()
-        .filter(|(order, _)| super::reads_weights(*order))
+        .filter(|candidate| super::reads_weights(candidate.order))
+        .map(|candidate| (candidate.order, candidate.seed))
         .collect();
     assert_eq!(fixed.len(), 3, "nested dissection reads no weights");
     let cell = OnceCell::new();
