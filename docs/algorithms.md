@@ -6,14 +6,16 @@ implementation or from the upstream code.
 
 ## Portfolio
 
-`portfolio::candidates` shares one graph build and one preprocessing pass
-across five elimination runs:
+`portfolio::candidates` starts with deterministic min-degree on the original
+graph, then shares one graph build and one preprocessing pass across five
+elimination runs:
 
-1. sampled min-degree;
-2. nested dissection;
-3. sampled min-fill;
-4. sampled min-degree with a second seed;
-5. nested dissection with a second seed.
+1. deterministic min-degree on the original graph;
+2. sampled min-degree;
+3. nested dissection;
+4. sampled min-fill;
+5. sampled min-degree with a second seed;
+6. nested dissection with a second seed.
 
 The inexpensive order runs first so a valid candidate exists early. Later
 runs receive the best width already found and stop when a bag is too wide to
@@ -66,8 +68,9 @@ continues on the residual graph, then the decomposition builder attaches these
 prefix bags in reverse elimination order. The graph keeps its original vertex
 ids; removed vertices are marked inactive rather than renumbered.
 
-The portfolio performs this work once. Its elimination candidates share the
+The portfolio performs this work once. Five elimination candidates share the
 reduced graph and prefix, then compute their own order for the residual graph.
+The initial deterministic min-degree candidate uses the original graph.
 
 ## Min-fill and min-degree
 
@@ -77,8 +80,13 @@ neighbors are rescored. Dense neighborhoods use bitsets; sparse neighborhoods
 use a stamped marker array. Min-degree uses the same elimination and bag
 construction path with a cheaper degree key.
 
-The deterministic forms use a seeded per-vertex salt after the primary keys.
-The sampled forms instead draw from the complete minimum-key tie set. Besides
+Minimum-degree heap entries are refreshed for every affected neighbour after
+an elimination, including when its degree decreases. The portfolio's initial
+form breaks equal-degree ties by heap insertion order; the standalone form
+uses the caller's seeded salt.
+
+The salted deterministic forms use a seeded per-vertex value after the primary
+key. The sampled forms instead draw from the complete minimum-key tie set. Besides
 fill and degree, a sampled order can minimize
 `fill + degree_coefficient * degree` for a signed coefficient. A caller may
 supply one weight per vertex; uniform weights give uniform sampling. Each
