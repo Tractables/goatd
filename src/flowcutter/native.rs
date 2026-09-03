@@ -301,6 +301,15 @@ pub(crate) fn iteration_work_units(vertices: u64, edges: u64) -> u64 {
         .saturating_mul(vertices.isqrt())
 }
 
+/// Work the backend does before it first looks at its deadline: the setup pass
+/// plus one restart. The timed loop tests the clock between restarts, so a
+/// window shorter than this cannot stop the run inside it.
+pub(crate) fn first_restart_units(vertices: u64, edges: u64) -> u64 {
+    SETUP_UNITS_PER_ELEMENT
+        .saturating_mul(graph_elements(vertices, edges))
+        .saturating_add(iteration_work_units(vertices, edges))
+}
+
 fn charge_build(vertices: u64, edges: u64, iterations_done: i64, greedy_touches: i64) {
     if !crate::meter::is_armed() {
         return;

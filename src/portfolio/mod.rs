@@ -23,7 +23,7 @@ use crate::elimination::execution::ElimStop;
 use crate::embedding::{self, Embedding};
 use crate::flowcutter::{Budget, decompose as flowcutter_decompose};
 use crate::{Error, Graph, TreeDecomposition};
-use candidates::CandidateSet;
+use candidates::{CandidateSet, ScheduleStop};
 use config::MIN_FLOWCUTTER_CANDIDATE_MS;
 
 pub use config::{
@@ -442,6 +442,21 @@ fn flowcutter_candidate(
     if timeout < Duration::from_millis(MIN_FLOWCUTTER_CANDIDATE_MS) {
         return Ok(None);
     }
+    // Skip windows too small for this graph. The backend tests its deadline
+    // between restarts, so a graph whose setup and first restart already
+    // outlast the window cannot be stopped inside it: the run comes back long
+    // after the portfolio's hard deadline with a result the caller has no time
+    // left to write. Measured at a 4.75-second window: 6.8 seconds on a graph
+    // of 79,000 vertices and 175,000 edges, 115 seconds on one of 92,000 and
+    // 1.08 million. The estimate is the same work-unit model the metered path
+    // charges the backend with.
+    let first_restart = crate::flowcutter::first_restart_units(
+        u64::from(graph.num_vertices),
+        graph.edges.len() as u64,
+    );
+    if Duration::from_millis(crate::meter::milliseconds_for_units(first_restart)) > timeout {
+        return Ok(None);
+    }
     match flowcutter_decompose(
         graph,
         Budget::timed(
@@ -680,7 +695,7 @@ fn run_portfolio(
                 complete_on_deadline,
             },
         );
-        let outcome = candidates.record_elimination(run);
+        let (outcome, stop) = candidates.record_elimination(run);
         trace(CandidateTrace {
             stage: stage_of(order, EliminationPhase::Initial),
             seed: candidate.seed,
@@ -688,14 +703,21 @@ fn run_portfolio(
             outcome,
             elapsed: crate::meter::now().saturating_duration_since(started),
         });
-        hard_deadline_tripped = match outcome {
-            CandidateOutcome::DeadlineReached => true,
-            // Nothing usable from this candidate, but the portfolio is still inside
-            // its budget.
-            CandidateOutcome::WidthAborted => false,
-            CandidateOutcome::Produced { .. } => expired(hard_deadline),
-            // Only the sampling phase has stages to skip.
-            CandidateOutcome::StageSkipped { .. } => false,
+        hard_deadline_tripped = match stop {
+            ScheduleStop::HardDeadline => true,
+            // Either the candidate finished inside its budget or the soft
+            // cutoff stopped it. Either way the portfolio still holds whatever
+            // is left of the hard deadline, so only the clock decides.
+            ScheduleStop::Continue => match outcome {
+                // Nothing usable from this candidate, but the portfolio is
+                // still inside its budget.
+                CandidateOutcome::WidthAborted => false,
+                // Only the sampling phase has stages to skip.
+                CandidateOutcome::StageSkipped { .. } => false,
+                CandidateOutcome::Produced { .. } | CandidateOutcome::DeadlineReached => {
+                    expired(hard_deadline)
+                }
+            },
         };
         if hard_deadline_tripped {
             break;
@@ -803,7 +825,7 @@ fn run_portfolio(
                 complete_on_deadline: false,
             },
         );
-        let outcome = candidates.record_elimination(run);
+        let (outcome, _) = candidates.record_elimination(run);
         trace(CandidateTrace {
             stage: candidate.stage,
             seed: candidate.seed,

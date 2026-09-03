@@ -210,3 +210,77 @@ fn assert_bitset_degrees(graph: &EliminationGraph) {
         assert_eq!(graph.degree(vertex as u32), actual, "vertex {vertex}");
     }
 }
+
+/// A star whose centre is well past `ROW_INDEX_THRESH`, on a vertex count
+/// above `BITSET_THRESH` so the graph stays in sparse mode.
+fn hub_graph(spokes: u32) -> EliminationGraph {
+    let edges: Vec<(u32, u32)> = (1..=spokes).map(|spoke| (0, spoke)).collect();
+    EliminationGraph::from_edges(20_000, &edges)
+}
+
+#[test]
+fn a_long_row_is_indexed_and_a_short_one_is_not() {
+    let graph = hub_graph(ROW_INDEX_THRESH as u32 + 100);
+    assert!(graph.row_is_indexed(0));
+    assert!(!graph.row_is_indexed(1));
+
+    let graph = hub_graph(ROW_INDEX_THRESH as u32 - 100);
+    assert!(!graph.row_is_indexed(0));
+}
+
+#[test]
+fn an_indexed_row_dedups_repeated_input_edges() {
+    let spokes = ROW_INDEX_THRESH as u32 + 100;
+    let mut edges: Vec<(u32, u32)> = (1..=spokes).map(|spoke| (0, spoke)).collect();
+    edges.extend((1..=spokes).map(|spoke| (spoke, 0)));
+    edges.extend((1..=spokes).map(|spoke| (0, spoke)));
+    let graph = EliminationGraph::from_edges(20_000, &edges);
+
+    assert!(graph.row_is_indexed(0));
+    assert_eq!(graph.degree(0), spokes as usize);
+    assert_eq!(graph.num_edges, spokes as usize);
+    for spoke in 1..=spokes {
+        assert_eq!(graph.degree(spoke), 1);
+        assert!(graph.contains_edge(0, spoke) && graph.contains_edge(spoke, 0));
+    }
+    assert!(!graph.contains_edge(0, spokes + 1));
+}
+
+#[test]
+fn eliminating_beside_an_indexed_row_leaves_the_row_a_scan_would() {
+    let spokes = ROW_INDEX_THRESH as u32 + 100;
+    let mut graph = hub_graph(spokes);
+    // Give spoke 1 a second neighbour, so eliminating it fills an edge from
+    // the hub to that neighbour.
+    graph.add_edge(1, spokes + 1);
+    assert!(graph.row_is_indexed(0));
+
+    let neighbours = graph.live_neighbours(1);
+    graph.eliminate_with_nbrs(1, &neighbours);
+
+    // The scan-and-`swap_remove` this replaces takes spoke 1 out of position 0
+    // by moving the last spoke into it, then appends the fill neighbour.
+    let mut expected: Vec<u32> = vec![spokes];
+    expected.extend(2..spokes);
+    expected.push(spokes + 1);
+    assert_eq!(graph.adj[0], expected);
+    assert!(graph.contains_edge(0, spokes + 1));
+    assert!(!graph.contains_edge(0, 1));
+    assert!(graph.is_simplicial(spokes + 1));
+}
+
+#[test]
+fn removing_the_hub_clears_its_row_and_its_index() {
+    let spokes = ROW_INDEX_THRESH as u32 + 100;
+    let mut graph = hub_graph(spokes);
+    let neighbours = graph.live_neighbours(0);
+
+    graph.remove_without_fill_nbrs(0, &neighbours);
+
+    assert!(!graph.row_is_indexed(0));
+    assert_eq!(graph.degree(0), 0);
+    assert_eq!(graph.num_edges, 0);
+    for spoke in 1..=spokes {
+        assert_eq!(graph.degree(spoke), 0);
+    }
+}

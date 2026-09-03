@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 use super::Order;
 use super::build_td::build_td_from_ranked_bags;
-use super::execution::{self, ElimExit, ElimSteps};
+use super::execution::{self, Cutoff, ElimExit, ElimSteps};
 use super::graph::EliminationGraph;
 use super::greedy::{
     self, eliminate_min_degree, eliminate_min_fill, eliminate_sampled_fill_degree,
@@ -19,14 +19,16 @@ use super::execution::ElimStop;
 
 /// The usable result of one `(order, seed)` run.
 ///
-/// Partial bags never cross this boundary as a [`TreeDecomposition`]. A hard
+/// Partial bags never cross this boundary as a [`TreeDecomposition`]. A
 /// deadline can either complete them with a residual path construction or
 /// report `DeadlineAborted`, depending on the caller's
-/// `complete_on_deadline` setting.
+/// `complete_on_deadline` setting. Both carry which cutoff stopped the run,
+/// because a run stopped at the soft cutoff leaves the caller's remaining
+/// hard-deadline time to spend and one stopped at the hard cutoff does not.
 pub(crate) enum OrderRun {
     Completed(TreeDecomposition),
-    CompletedAtDeadline(TreeDecomposition),
-    DeadlineAborted,
+    CompletedAtDeadline(Cutoff, TreeDecomposition),
+    DeadlineAborted(Cutoff),
     WidthAborted,
 }
 
@@ -240,7 +242,7 @@ fn run_elimination_raw(
         }
     };
 
-    let residual = if spec.complete_on_deadline && exit == ElimExit::DeadlineReached {
+    let residual = if spec.complete_on_deadline && matches!(exit, ElimExit::DeadlineReached(_)) {
         execution::active_vertices(&g)
     } else {
         Vec::new()
@@ -275,6 +277,10 @@ fn run_order_per_component(
 
     let mut nbrs_buf: Vec<u32> = Vec::new();
     let mut local_of = vec![u32::MAX; n];
+    // Components after a soft-cutoff stop run against the hard deadline alone,
+    // so this changes once and applies to every later component.
+    let mut stop = spec.stop;
+    let mut soft_cutoff_passed = false;
     for (comp_idx, comp) in components.iter().enumerate() {
         let comp_n = comp.len() as u32;
         for (i, &v) in comp.iter().enumerate() {
@@ -317,6 +323,7 @@ fn run_order_per_component(
                 Some(weights) => spec.order.with_tie_weights(weights),
                 None => spec.order,
             },
+            stop,
             ..spec
         };
 
@@ -328,15 +335,15 @@ fn run_order_per_component(
         );
         match comp_exit {
             ElimExit::WidthLimitExceeded => return OrderRun::WidthAborted,
-            ElimExit::DeadlineReached if !spec.complete_on_deadline => {
-                return OrderRun::DeadlineAborted;
+            ElimExit::DeadlineReached(cutoff) if !spec.complete_on_deadline => {
+                return OrderRun::DeadlineAborted(cutoff);
             }
-            ElimExit::Complete | ElimExit::DeadlineReached => {
+            ElimExit::Complete | ElimExit::DeadlineReached(_) => {
                 comp_steps.append_reindexed(comp, &mut all_bags, &mut global_rank);
             }
         }
 
-        if comp_exit == ElimExit::DeadlineReached {
+        if matches!(comp_exit, ElimExit::DeadlineReached(_)) {
             append_residual_bag(
                 comp_residual
                     .into_iter()
@@ -344,8 +351,20 @@ fn run_order_per_component(
                 &mut all_bags,
                 &mut global_rank,
             );
-            // Put every untouched component in one bag instead of starting
-            // another heuristic after the hard deadline.
+            // The soft cutoff is the construction budget, not the end of the
+            // run: the components after this one still have the hard deadline
+            // to be decomposed in, and one bag each is what they fall back to
+            // when it passes. Their orders run against the hard deadline
+            // alone, since the soft one has gone.
+            if comp_exit == ElimExit::DeadlineReached(Cutoff::Soft) {
+                soft_cutoff_passed = true;
+                stop = ElimStop {
+                    soft_deadline: None,
+                    ..stop
+                };
+                continue;
+            }
+            // After the hard cutoff there is no time to start another order.
             for remaining in &components[(comp_idx + 1)..] {
                 append_residual_bag(remaining.iter().copied(), &mut all_bags, &mut global_rank);
             }
@@ -353,7 +372,14 @@ fn run_order_per_component(
         }
     }
 
-    finish(all_bags, global_rank, ElimExit::Complete, false)
+    // A run that bagged one component's residual on the way through stopped at
+    // a deadline, whatever the components after it managed.
+    let exit = if soft_cutoff_passed {
+        ElimExit::DeadlineReached(Cutoff::Soft)
+    } else {
+        ElimExit::Complete
+    };
+    finish(all_bags, global_rank, exit, spec.complete_on_deadline)
 }
 
 pub(super) fn run_order_on_reduced(
@@ -429,10 +455,10 @@ fn finish(
 ) -> OrderRun {
     match exit {
         ElimExit::Complete => OrderRun::Completed(build_td_from_ranked_bags(bags, &rank)),
-        ElimExit::DeadlineReached if complete_on_deadline => {
-            OrderRun::CompletedAtDeadline(build_td_from_ranked_bags(bags, &rank))
+        ElimExit::DeadlineReached(cutoff) if complete_on_deadline => {
+            OrderRun::CompletedAtDeadline(cutoff, build_td_from_ranked_bags(bags, &rank))
         }
-        ElimExit::DeadlineReached => OrderRun::DeadlineAborted,
+        ElimExit::DeadlineReached(cutoff) => OrderRun::DeadlineAborted(cutoff),
         ElimExit::WidthLimitExceeded => OrderRun::WidthAborted,
     }
 }

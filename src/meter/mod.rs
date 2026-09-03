@@ -1,9 +1,10 @@
 //! A work-based clock for repeatable budget decisions.
 //!
-//! Normally [`now`] is the wall clock and [`charge`] does nothing. While the
-//! guard returned by [`arm`] is alive, algorithms charge graph work and `now`
-//! advances by those charges instead. A fixed budget then stops after the same
-//! work for a given graph and seed, independent of machine load.
+//! Normally [`now`] is the wall clock. While the guard returned by [`arm`] is
+//! alive it advances by charged graph work instead, so a fixed budget stops
+//! after the same work for a given graph and seed, independent of machine
+//! load. [`charge`] counts either way: the library also uses the count to
+//! decide how often a loop should read the clock.
 //!
 //! The meter is thread-local and may be nested. Callers that perform graph work
 //! around goatd can charge it to the same budget with [`charge`].
@@ -51,12 +52,15 @@ pub fn is_armed() -> bool {
     EPOCH.with(Cell::get).is_some()
 }
 
-/// Charge construction work. Does nothing when the meter is not armed.
+/// Charge construction work.
+///
+/// Counted whether or not the meter is armed: [`now`] reads the count only
+/// while armed, but the library paces its deadline reads by it either way, so
+/// a loop whose iterations differ in cost by orders of magnitude can ask for
+/// the clock on the work it has done rather than on the iterations it has run.
 #[inline]
 pub fn charge(units: u64) {
-    if is_armed() {
-        SPENT.with(|m| m.set(m.get().saturating_add(units)));
-    }
+    SPENT.with(|m| m.set(m.get().saturating_add(units)));
 }
 
 /// Units charged on this thread so far.

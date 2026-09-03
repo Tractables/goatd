@@ -23,6 +23,11 @@ namespace flow_cutter{
 			auto out_arc = invert_sorted_id_id_func(tail);
 			auto back_arc = compute_back_arc_permutation(tail, head);
 
+			// goatd: true once the caller's deadline has passed. The loops
+			// below test it only where they already hold a cut, so a search
+			// stopped this way still returns a separator.
+			auto stop_now = [&]{ return config.should_stop && (*config.should_stop)(); };
+
 			std::vector<int>separator;
 
 			if(node_count <= 2){
@@ -89,6 +94,9 @@ namespace flow_cutter{
 								break;
 						}
 
+						if(!separator.empty() && stop_now())
+							break;
+
 						double potential_best_next_score = (double)(cut_size+1)/(double)(expanded_graph::expanded_node_count(node_count)/2);
 						if(potential_best_next_score >= best_score)
 							break;
@@ -134,6 +142,9 @@ namespace flow_cutter{
 								break;
 						}
 
+						if(!best_cut.empty() && stop_now())
+							break;
+
 						double potential_best_next_score = (double)(cut_size+1)/(double)(expanded_graph::expanded_node_count(node_count)/2);
 						if(potential_best_next_score >= best_score)
 							break;
@@ -162,7 +173,7 @@ namespace flow_cutter{
 
 					auto cutter = make_simple_cutter(graph, config);
 					cutter.init(select_random_source_target_pairs(node_count, config.cutter_count, config.random_seed), config.random_seed);
-					while(cutter.get_current_smaller_cut_side_size() < config.min_small_side_size * node_count && (int)cutter.get_current_cut().size() <= config.max_cut_size)
+					while(cutter.get_current_smaller_cut_side_size() < config.min_small_side_size * node_count && (int)cutter.get_current_cut().size() <= config.max_cut_size && !stop_now())
 						if(!cutter.advance())
 							break;
 
@@ -186,7 +197,7 @@ namespace flow_cutter{
 					auto pairs = select_random_source_target_pairs(node_count, config.cutter_count, config.random_seed);
 
 					cutter.init(expanded_graph::expand_source_target_pair_list(pairs), config.random_seed);
-					while(cutter.get_current_smaller_cut_side_size() < config.min_small_side_size * expanded_graph::expanded_node_count(node_count) && (int)cutter.get_current_cut().size() <= config.max_cut_size)
+					while(cutter.get_current_smaller_cut_side_size() < config.min_small_side_size * expanded_graph::expanded_node_count(node_count) && (int)cutter.get_current_cut().size() <= config.max_cut_size && !stop_now())
 						if(!cutter.advance())
 							break;
 

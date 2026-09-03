@@ -29,16 +29,32 @@ minimizes `(treewidth, total bag size)`. `sampled_min_fill_candidates` exposes
 the smaller variant used by callers that want to apply their own ranking.
 
 A soft budget, measured from before preprocessing, stops the portfolio from
-starting further candidates and samples. At the hard budget, the first
-candidate puts each unfinished residual component in one bag and attaches the
-partial elimination bags to it. This completion is linear in the residual
-size. Later candidates can stop without completion because a valid candidate
-already exists. `PortfolioConfig::standard_with_budget`, which the CLI uses for
+starting further candidates and samples. A candidate stopped by either budget
+puts each unfinished residual component in one bag and attaches the partial
+elimination bags to it, as long as it is the first candidate. This completion
+is linear in the residual size. At the soft budget it applies only to the
+component the candidate was working on: the components after it have the rest
+of the hard budget and get their own orders, against the hard deadline alone,
+and fall back to one bag each when it passes. Later candidates can stop without completion
+because a valid candidate already exists. Only the hard budget ends the
+portfolio: the deterministic min-degree and min-fill orders return at the soft
+budget when the residual is still large, because cheap-mode elimination at
+that scale can overshoot the hard budget by seconds, and what they return is a
+complete decomposition that the trailing FlowCutter candidate still runs
+after. `PortfolioConfig::standard_with_budget`, which the CLI uses for
 a budgeted standard portfolio, keeps the 100-extra-sample cap below a
 4.75-second soft budget. At or above that budget it permits up to 1,000 extra
 samples. An extra sample that reaches the soft deadline stops there; the
 remaining hard-budget interval is reserved for a trailing FlowCutter
-candidate. By default, a 4.75-second soft budget has a 9.5-second hard
+candidate. That candidate is skipped when the interval is too short to seed
+it, and also when the graph is large enough that the backend's setup and
+first restart alone outlast the interval: the setup pass runs to the end
+whatever the clock says, so on such a graph the run would return well after
+the hard deadline. The estimate uses the work-unit model in *Flow-based
+separators*. Once the search is under way the backend does test the deadline
+inside it — between the restarts, between the cells of one partition, and
+between the augmentations of one cut — and a search stopped that way returns
+the best decomposition it has already recorded. By default, a 4.75-second soft budget has a 9.5-second hard
 deadline. Callers that need more time to write the result can set an earlier
 hard budget independently without changing the soft schedule. Both standard
 configurations hedge, which adds the candidates described under *The hedge*.
@@ -263,6 +279,13 @@ adapter boundary.
 
 `TreeDecomposition::validate` checks bag contents, the bag forest, vertex and edge
 coverage, and the running intersection property.
+
+Elimination reads the clock on the work it has charged rather than on the
+iterations it has run: once a millisecond's worth of charged work has passed,
+or 64 iterations, whichever comes first. A count alone is the wrong interval
+where iterations differ in cost by orders of magnitude — one min-fill score on
+a dense residual takes milliseconds, and 64 of them used to carry a run seconds
+past its hard deadline.
 
 Seeded, step-budgeted runs are reproducible. Machine speed and load can change
 where a wall-clock budget stops. While a caller holds the guard returned by

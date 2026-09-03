@@ -222,3 +222,37 @@ fn a_standalone_budget_is_the_one_the_command_line_built() {
         Budget::timed(Duration::from_millis(200), patience, 100_000)
     );
 }
+
+/// A `side` by `side` grid: sparse, and big enough that one FlowCutter restart
+/// on it takes far longer than the timeout below.
+fn grid_graph(side: u32) -> Graph {
+    let vertex = |row: u32, column: u32| row * side + column;
+    let mut edges = Vec::new();
+    for row in 0..side {
+        for column in 0..side {
+            if row + 1 < side {
+                edges.push((vertex(row, column), vertex(row + 1, column)));
+            }
+            if column + 1 < side {
+                edges.push((vertex(row, column), vertex(row, column + 1)));
+            }
+        }
+    }
+    Graph::new(side * side, edges)
+}
+
+#[test]
+fn a_timeout_stops_a_separator_search_that_is_already_running() {
+    let graph = grid_graph(250);
+    let timeout = Duration::from_millis(50);
+
+    let start = Instant::now();
+    let decomposition = decompose(&graph, Budget::timed(timeout, None, 100_000)).unwrap();
+    let elapsed = start.elapsed();
+
+    decomposition.validate(&graph).unwrap();
+    assert!(
+        elapsed < Duration::from_millis(1_500),
+        "a {timeout:?} budget returned after {elapsed:?}",
+    );
+}

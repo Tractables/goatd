@@ -742,3 +742,85 @@ fn an_extra_sample_stops_at_the_soft_deadline() {
     assert_eq!(stop.hard_deadline, Some(soft_deadline));
     assert_eq!(stop.width_bound, Some(17));
 }
+
+/// The `side × side` grid, vertex `row * side + column`.
+fn grid(side: u32) -> Graph {
+    let mut edges = Vec::new();
+    for row in 0..side {
+        for column in 0..side {
+            let vertex = row * side + column;
+            if column + 1 < side {
+                edges.push((vertex, vertex + 1));
+            }
+            if row + 1 < side {
+                edges.push((vertex, vertex + side));
+            }
+        }
+    }
+    Graph::new(side * side, edges)
+}
+
+#[test]
+fn a_candidate_stopped_at_the_soft_cutoff_does_not_end_the_portfolio() {
+    // 900 vertices keeps the residual above CHEAP_MODE_MAX_ACTIVE, so the
+    // deterministic min-degree candidate stops at the soft cutoff and the
+    // engine completes what is left as one bag.
+    let graph = grid(30);
+    let weights = vec![0u32; graph.num_vertices() as usize];
+    let config = PortfolioConfig::standard()
+        .with_soft_budget(Duration::from_nanos(1))
+        .with_hard_budget(Duration::from_secs(30))
+        .with_flowcutter(Duration::from_secs(2))
+        .with_hedge(Hedge::Off);
+
+    let mut seen: Vec<(Stage, CandidateOutcome)> = Vec::new();
+    let decomposition = super::decompose_traced(&graph, &weights, 0, config, &mut |candidate| {
+        seen.push((candidate.stage, candidate.outcome));
+    })
+    .unwrap();
+
+    decomposition.validate(&graph).unwrap();
+    let (stage, outcome) = *seen
+        .first()
+        .expect("the portfolio runs its first candidate");
+    assert_eq!(stage, Stage::MinDegree);
+    assert!(
+        matches!(outcome, CandidateOutcome::Produced { .. }),
+        "the soft cutoff left a decomposition behind, so the candidate produced one: {outcome:?}"
+    );
+    assert!(
+        seen.iter().any(|(stage, _)| *stage == Stage::FlowCutter),
+        "the trailing FlowCutter slot still has the rest of the hard budget: {seen:?}"
+    );
+}
+
+/// A ring with two chords per vertex: cheap to build, and sparse enough that
+/// its size rather than its density is what makes FlowCutter slow on it.
+fn ring_with_chords(vertices: u32) -> Graph {
+    let mut edges = Vec::with_capacity(3 * vertices as usize);
+    for vertex in 0..vertices {
+        edges.push((vertex, (vertex + 1) % vertices));
+        edges.push((vertex, (vertex + 7) % vertices));
+        edges.push((vertex, (vertex + 53) % vertices));
+    }
+    Graph::new(vertices, edges)
+}
+
+#[test]
+fn the_flowcutter_slot_declines_a_graph_it_could_not_stop_on() {
+    // A 20x20 grid needs a few milliseconds of setup and a restart, so even a
+    // 200-millisecond window is enough for it.
+    let small = grid(20);
+    let candidate = super::flowcutter_candidate(&small, Duration::from_millis(200), None).unwrap();
+    assert!(candidate.is_some(), "a small graph fits a short window");
+
+    // 60,000 vertices and 180,000 edges put setup and one restart at about
+    // nine seconds, and the backend cannot stop before finishing that restart.
+    let large = ring_with_chords(60_000);
+    let candidate =
+        super::flowcutter_candidate(&large, Duration::from_millis(4_750), None).unwrap();
+    assert!(
+        candidate.is_none(),
+        "a graph whose first restart outlasts the window is declined"
+    );
+}
