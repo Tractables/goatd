@@ -44,6 +44,7 @@ fn complete_at_immediate_deadline(graph: &crate::Graph) -> crate::TreeDecomposit
         RunSpec {
             order: Order::MinDegree,
             seed: 0,
+            update_order_ties: false,
             stop: ElimStop {
                 soft_deadline: None,
                 hard_deadline: Some(epoch),
@@ -76,6 +77,7 @@ pub(super) fn run_order(
         RunSpec {
             order,
             seed,
+            update_order_ties: false,
             stop: ElimStop::default(),
             complete_on_deadline: false,
         },
@@ -100,6 +102,7 @@ fn partial_eliminations_are_never_returned_as_decompositions() {
             RunSpec {
                 order: Order::MinDegree,
                 seed: 0,
+                update_order_ties: false,
                 stop: ElimStop {
                     soft_deadline: None,
                     hard_deadline: Some(epoch),
@@ -121,6 +124,7 @@ fn partial_eliminations_are_never_returned_as_decompositions() {
         RunSpec {
             order: Order::MinDegree,
             seed: 0,
+            update_order_ties: false,
             stop: ElimStop {
                 soft_deadline: None,
                 hard_deadline: None,
