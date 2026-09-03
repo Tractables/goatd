@@ -234,6 +234,106 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--hard-budget", "--budget", "at least"],
         ),
         (&["--no-hedge"], &["--no-hedge", "minfill", "portfolio"]),
+        (&["--hedge-dims", "1,2"], &["--hedge-dims", "portfolio"]),
+        (
+            &["--order", "portfolio", "--hedge-dims", "1,9"],
+            &["--hedge-dims", "1..=8"],
+        ),
+        (
+            &["--order", "portfolio", "--hedge-dims", "2,2"],
+            &["--hedge-dims", "twice"],
+        ),
+        (
+            &["--order", "portfolio", "--hedge-dims", ""],
+            &["--hedge-dims", "1..=8"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--hedge-dims",
+                "1,2",
+                "--hedge-random",
+                "2",
+            ],
+            &["--hedge-dims", "--hedge-random", "give one"],
+        ),
+        (
+            &["--order", "portfolio", "--no-hedge", "--hedge-dims", "1,2"],
+            &["--hedge-dims", "--no-hedge", "give one"],
+        ),
+        (&["--hedge-random", "2"], &["--hedge-random", "portfolio"]),
+        (
+            &["--order", "portfolio", "--hedge-random", "9"],
+            &["--hedge-random", "1..=8"],
+        ),
+        (
+            &["--order", "portfolio", "--no-hedge", "--hedge-random", "2"],
+            &["--hedge-random", "--no-hedge", "give one"],
+        ),
+        (
+            &["--hedge-reserve", "0.5"],
+            &["--hedge-reserve", "portfolio"],
+        ),
+        (
+            &["--order", "portfolio", "--hedge-reserve", "0.5"],
+            &["--hedge-reserve", "--hedge-dims", "--hedge-random"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--hedge-dims",
+                "3",
+                "--hedge-reserve",
+                "0.5",
+            ],
+            &["--hedge-reserve", "after the first", "two or more stages"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--hedge-random",
+                "1",
+                "--hedge-reserve",
+                "0.5",
+            ],
+            &["--hedge-reserve", "two or more stages"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--hedge-dims",
+                "1,2",
+                "--hedge-reserve",
+                "0",
+            ],
+            &["--hedge-reserve", "0 < f <= 1"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--hedge-random",
+                "2",
+                "--hedge-reserve",
+                "1.5",
+            ],
+            &["--hedge-reserve", "0 < f <= 1"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--hedge-dims",
+                "1,2",
+                "--hedge-reserve",
+                "half",
+            ],
+            &["--hedge-reserve", "such as 0.5"],
+        ),
         (
             &["--order", "flowcutter", "--trace"],
             &["--trace", "flowcutter", "portfolio"],
@@ -360,6 +460,319 @@ fn the_default_portfolio_hedges_and_no_hedge_turns_that_off() {
     assert!(
         !err.contains(" pass="),
         "one pass, so no pass to name: {err}"
+    );
+}
+
+/// The trace lines of a run, without the times, so two runs' candidates can be
+/// compared.
+fn trace_candidates(out: &Output) -> Vec<String> {
+    stderr_of(out)
+        .lines()
+        .filter(|line| line.starts_with("c trace"))
+        .map(|line| {
+            line.split(' ')
+                .filter(|field| !field.starts_with("ms="))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect()
+}
+
+/// The stage names of the candidates of weighted stage `index`, in order.
+fn modified_stages(out: &Output, index: usize) -> Vec<String> {
+    let label = if index == 0 {
+        " pass=modified ".to_string()
+    } else {
+        format!(" pass=modified:{index} ")
+    };
+    stderr_of(out)
+        .lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix("c trace candidate=")?;
+            let (stage, tail) = rest.split_once(' ')?;
+            format!(" {tail} ")
+                .contains(&label)
+                .then(|| stage.to_string())
+        })
+        .collect()
+}
+
+/// The seeds of the ordinary restarts, in the order they ran.
+fn restart_seeds(out: &Output) -> Vec<String> {
+    stderr_of(out)
+        .lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix("c trace candidate=sample seed=")?;
+            Some(rest.split(' ').next()?.to_string())
+        })
+        .collect()
+}
+
+#[test]
+fn one_dimension_in_hedge_dims_is_the_hedge_that_runs_that_dimension() {
+    // A series of one weighting is the hedge that runs that weighting, so
+    // --hedge-dims 3 has to be the default hedge candidate for candidate.
+    let default = goatd(
+        &["-", "--order", "portfolio", "--seed", "7", "--trace"],
+        Some(&grid_gr()),
+    );
+    let three = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--seed",
+            "7",
+            "--trace",
+            "--hedge-dims",
+            "3",
+        ],
+        Some(&grid_gr()),
+    );
+
+    assert!(default.status.success(), "{}", stderr_of(&default));
+    assert!(three.status.success(), "{}", stderr_of(&three));
+    assert!(!three.stdout.is_empty(), "no decomposition on stdout");
+    assert_eq!(default.stdout, three.stdout);
+    assert_eq!(trace_candidates(&default), trace_candidates(&three));
+    assert!(
+        !modified_stages(&three, 0).is_empty(),
+        "one dimension runs its weighted stage: {}",
+        stderr_of(&three)
+    );
+    assert!(
+        modified_stages(&three, 1).is_empty(),
+        "one dimension is one weighted stage: {}",
+        stderr_of(&three)
+    );
+}
+
+#[test]
+fn hedge_dims_runs_one_weighted_stage_per_dimension() {
+    let out = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            "500",
+            "--trace",
+            "--hedge-dims",
+            "1,2,3",
+        ],
+        Some(&grid_gr()),
+    );
+
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let err = stderr_of(&out);
+    // Every stage repeats the fixed orders that read weights, and the restarts
+    // stay plain whatever the stages do.
+    for index in 0..3 {
+        assert_eq!(
+            modified_stages(&out, index),
+            ["min-degree", "min-fill", "min-degree"],
+            "stage {index} of the series: {err}"
+        );
+    }
+    assert!(
+        modified_stages(&out, 3).is_empty(),
+        "three dimensions are three stages: {err}"
+    );
+    for line in err.lines() {
+        let Some(rest) = line.strip_prefix("c trace candidate=sample ") else {
+            continue;
+        };
+        assert!(
+            rest.contains(" pass=plain"),
+            "a restart went modified: {line}"
+        );
+    }
+}
+
+#[test]
+fn hedge_random_runs_one_stage_per_draw_and_costs_what_the_rankings_cost() {
+    let random = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            "500",
+            "--trace",
+            "--hedge-random",
+            "2",
+        ],
+        Some(&grid_gr()),
+    );
+    let ranked = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            "500",
+            "--trace",
+            "--hedge-dims",
+            "1,2",
+        ],
+        Some(&grid_gr()),
+    );
+
+    assert!(random.status.success(), "{}", stderr_of(&random));
+    assert!(ranked.status.success(), "{}", stderr_of(&ranked));
+    for index in 0..2 {
+        assert_eq!(
+            modified_stages(&random, index),
+            ["min-degree", "min-fill", "min-degree"],
+            "stage {index} of the control: {}",
+            stderr_of(&random)
+        );
+    }
+    assert!(
+        modified_stages(&random, 2).is_empty(),
+        "two draws are two stages: {}",
+        stderr_of(&random)
+    );
+    assert_eq!(
+        trace_candidates(&random).len(),
+        trace_candidates(&ranked).len(),
+        "the control runs as many candidates as the rankings do",
+    );
+}
+
+#[test]
+fn a_reserve_the_stages_cannot_fit_in_leaves_the_budget_to_the_restarts() {
+    // A reserve of a billionth of what the plain pass left is less than any
+    // stage costs, so the rule refuses every stage after the first.
+    let reserved = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            "500",
+            "--trace",
+            "--hedge-dims",
+            "1,2,3",
+            "--hedge-reserve",
+            "0.000000001",
+        ],
+        Some(&grid_gr()),
+    );
+    let unhedged = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            "500",
+            "--trace",
+            "--no-hedge",
+        ],
+        Some(&grid_gr()),
+    );
+
+    assert!(reserved.status.success(), "{}", stderr_of(&reserved));
+    assert!(unhedged.status.success(), "{}", stderr_of(&unhedged));
+    let err = stderr_of(&reserved);
+    let skipped: Vec<&str> = err
+        .lines()
+        .filter(|line| line.starts_with("c trace candidate=weighted-stage "))
+        .collect();
+
+    // One line per stage left unrun, each naming its stage and the numbers the
+    // rule read. The first stage is not one of them: it runs on any reserve.
+    assert_eq!(skipped.len(), 2, "one line per stage left unrun: {err}");
+    for (index, line) in skipped.iter().enumerate() {
+        let pass = format!(" pass=modified:{} ", index + 1);
+        assert!(
+            format!("{line} ").contains(&pass),
+            "the line names its stage: {line}"
+        );
+        assert!(
+            line.contains(" outcome=skipped projected=")
+                && line.contains(" spent=")
+                && line.contains(" allowance="),
+            "the line carries the numbers the rule read: {line}"
+        );
+    }
+    assert_eq!(
+        modified_stages(&reserved, 0),
+        ["min-degree", "min-fill", "min-degree"],
+        "the first stage ran its candidates: {err}"
+    );
+    for index in 1..3 {
+        assert!(
+            modified_stages(&reserved, index)
+                .iter()
+                .all(|stage| stage == "weighted-stage"),
+            "a refused stage ran a candidate: {err}"
+        );
+    }
+
+    // What the refused stages did not take, the restarts get: the seeds a
+    // portfolio that hedges nothing runs, from the start and in order.
+    let seeds = restart_seeds(&reserved);
+    assert!(!seeds.is_empty(), "no restart ran: {err}");
+    let plain = restart_seeds(&unhedged);
+    assert!(
+        plain.starts_with(&seeds),
+        "the restarts left the sequence a portfolio without a hedge runs: \
+         {seeds:?} against {plain:?}",
+    );
+}
+
+#[test]
+fn a_reserve_that_holds_the_stages_runs_all_of_them() {
+    let reserved = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            "500",
+            "--trace",
+            "--hedge-dims",
+            "1,2,3",
+            "--hedge-reserve",
+            "1.0",
+        ],
+        Some(&grid_gr()),
+    );
+    let default = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            "500",
+            "--trace",
+            "--hedge-dims",
+            "1,2,3",
+        ],
+        Some(&grid_gr()),
+    );
+
+    assert!(reserved.status.success(), "{}", stderr_of(&reserved));
+    for index in 0..3 {
+        assert_eq!(
+            modified_stages(&reserved, index),
+            ["min-degree", "min-fill", "min-degree"],
+            "stage {index} ran under the whole reserve: {}",
+            stderr_of(&reserved)
+        );
+    }
+    assert!(
+        !stderr_of(&reserved).contains("outcome=skipped"),
+        "nothing was refused: {}",
+        stderr_of(&reserved)
+    );
+    // On a graph whose passes cost nothing, the default reserve runs the same
+    // candidates as the whole of it.
+    assert_eq!(
+        trace_candidates(&reserved),
+        trace_candidates(&default),
+        "the default reserve holds three stages on a graph this size",
     );
 }
 

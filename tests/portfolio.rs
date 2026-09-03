@@ -98,7 +98,7 @@ fn restarts(graph: &Graph, config: PortfolioConfig) -> (Vec<(u64, Pass)>, usize)
     let mut samples = Vec::new();
     let mut modified = 0;
     decompose_traced(graph, &weight, 0, config, &mut |candidate| {
-        if candidate.pass == Pass::Modified {
+        if matches!(candidate.pass, Pass::Modified { .. }) {
             modified += 1;
         }
         if candidate.stage == Stage::Sample {

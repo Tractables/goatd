@@ -10,9 +10,11 @@ use std::time::{Duration, Instant};
 
 use goatd::decomposition::refine_with_flowcutter;
 use goatd::elimination::{Order, decompose as eliminate};
+use goatd::embedding::MAX_DIM;
 use goatd::flowcutter::{Budget, decompose as flowcutter};
 use goatd::portfolio::{
-    CandidateOutcome, CandidateTrace, Hedge, Pass, PortfolioConfig, decompose_traced as portfolio,
+    CandidateOutcome, CandidateTrace, Hedge, HedgeSeries, MAX_HEDGE_PASSES, Pass, PortfolioConfig,
+    decompose_traced as portfolio,
 };
 use goatd::{Graph, TreeDecomposition};
 
@@ -44,6 +46,25 @@ options:
                         FlowCutter slot, and the refinement's deadline
   --hard-budget <ms>    portfolio only: hard wall-clock cutoff; defaults to
                         twice --budget
+  --hedge-dims <list>   portfolio only: run the hedge's weighted stage once per
+                        dimension of a comma-separated list, in the order
+                        given, each on a ranking from its own placement, such
+                        as 1,2,3. Dimensions run 1 to 8 and no dimension
+                        repeats; one dimension is the default hedge placed in
+                        that dimension. The restarts stay plain and the
+                        incumbent width bounds the stages that follow. Not with
+                        --hedge-random or --no-hedge
+  --hedge-random <k>    portfolio only: k weighted stages on random weights
+                        instead, the control for --hedge-dims. Each stage draws
+                        from a seed of its own, --seed + 6151 + i * 104729 for
+                        stage i. Same restrictions as --hedge-dims
+  --hedge-reserve <f>   with --hedge-dims or --hedge-random asking for two or
+                        more stages: the share of the budget left after the
+                        plain pass those stages may spend between them,
+                        0 < f <= 1 (default 0.5). The rest is kept for the
+                        ordinary restarts: a stage costs about what the plain
+                        pass cost, and the portfolio runs one more only while
+                        that fits. The first stage runs on any budget
   --no-hedge            portfolio only: run every candidate once, on uniform
                         weights, instead of repeating the candidates that read
                         weights on a ranking the portfolio computes itself
@@ -100,6 +121,9 @@ struct Args {
     weights: Option<String>,
     budget: Option<Duration>,
     hard_budget: Option<Duration>,
+    hedge_dims: Option<Vec<usize>>,
+    hedge_random: Option<usize>,
+    hedge_reserve: Option<f64>,
     no_hedge: bool,
     trace: bool,
     steps: Option<u64>,
@@ -116,6 +140,34 @@ fn fail(msg: &str) -> ! {
     exit(1)
 }
 
+/// Read a comma-separated dimension list such as `1,2,3`: one to
+/// [`MAX_HEDGE_PASSES`] dimensions in `1..=MAX_DIM`, none of them repeated.
+fn parse_hedge_dims(text: &str) -> Vec<usize> {
+    let mut dims = Vec::new();
+    for field in text.split(',') {
+        let dim: usize = field.trim().parse().unwrap_or_else(|_| {
+            usage_error(&format!(
+                "--hedge-dims wants dimensions in 1..={MAX_DIM} separated by commas, not {text:?}"
+            ))
+        });
+        if dim == 0 || dim > MAX_DIM {
+            usage_error(&format!("--hedge-dims wants dimensions in 1..={MAX_DIM}"));
+        }
+        if dims.contains(&dim) {
+            usage_error(&format!(
+                "--hedge-dims runs dimension {dim} twice, which is the same stage twice"
+            ));
+        }
+        dims.push(dim);
+    }
+    if dims.is_empty() || dims.len() > MAX_HEDGE_PASSES {
+        usage_error(&format!(
+            "--hedge-dims wants one to {MAX_HEDGE_PASSES} dimensions"
+        ));
+    }
+    dims
+}
+
 fn parse_args(argv: &[String]) -> Args {
     let mut input: Option<String> = None;
     let mut out = None;
@@ -125,6 +177,9 @@ fn parse_args(argv: &[String]) -> Args {
     let mut weights = None;
     let mut budget = None;
     let mut hard_budget = None;
+    let mut hedge_dims: Option<Vec<usize>> = None;
+    let mut hedge_random = None;
+    let mut hedge_reserve = None;
     let mut no_hedge = false;
     let mut trace = false;
     let mut steps = None;
@@ -180,6 +235,31 @@ fn parse_args(argv: &[String]) -> Args {
                     usage_error("--hard-budget wants a positive millisecond count");
                 }
                 hard_budget = Some(Duration::from_millis(milliseconds));
+            }
+            "--hedge-dims" => {
+                let list = value(&mut i, arg);
+                hedge_dims = Some(parse_hedge_dims(&list));
+            }
+            "--hedge-random" => {
+                let stages = number(&mut i, arg);
+                if stages == 0 || stages > MAX_HEDGE_PASSES as u64 {
+                    usage_error(&format!(
+                        "--hedge-random wants a stage count in 1..={MAX_HEDGE_PASSES}"
+                    ));
+                }
+                hedge_random = Some(stages as usize);
+            }
+            "--hedge-reserve" => {
+                let text = value(&mut i, arg);
+                let fraction: f64 = text.parse().unwrap_or_else(|_| {
+                    usage_error(&format!(
+                        "--hedge-reserve wants a fraction in 0 < f <= 1, such as 0.5, not {text:?}"
+                    ))
+                });
+                if !fraction.is_finite() || fraction <= 0.0 || fraction > 1.0 {
+                    usage_error("--hedge-reserve wants a fraction in 0 < f <= 1");
+                }
+                hedge_reserve = Some(fraction);
             }
             "--no-hedge" => no_hedge = true,
             "--trace" => trace = true,
@@ -249,6 +329,43 @@ fn parse_args(argv: &[String]) -> Args {
             usage_error("--hard-budget must be at least --budget");
         }
     }
+    // --hedge-dims and --hedge-random both say what the hedge's weighted stages
+    // run, so each is refused beside anything else that says it.
+    if let Some(flag) = hedge_dims
+        .is_some()
+        .then_some("--hedge-dims")
+        .or(hedge_random.is_some().then_some("--hedge-random"))
+    {
+        needs(flag, order == Method::Portfolio, "portfolio");
+        if hedge_dims.is_some() && hedge_random.is_some() {
+            usage_error(
+                "--hedge-dims and --hedge-random each say what the hedge's weighted stages \
+                 run; give one",
+            );
+        }
+        if no_hedge {
+            usage_error(&format!(
+                "{flag} asks for weighted stages and --no-hedge runs none; give one"
+            ));
+        }
+    }
+    // The reserve decides how many stages follow the first, so it says nothing
+    // where there is no second stage to refuse.
+    if hedge_reserve.is_some() {
+        needs("--hedge-reserve", order == Method::Portfolio, "portfolio");
+        let stages = hedge_dims
+            .as_ref()
+            .map(Vec::len)
+            .or(hedge_random)
+            .unwrap_or(0);
+        if stages < 2 {
+            usage_error(
+                "--hedge-reserve decides how many weighted stages run after the first, and \
+                 the first runs on any budget; give --hedge-dims or --hedge-random with two \
+                 or more stages",
+            );
+        }
+    }
     if no_hedge {
         needs("--no-hedge", order == Method::Portfolio, "portfolio");
     }
@@ -265,6 +382,9 @@ fn parse_args(argv: &[String]) -> Args {
         weights,
         budget,
         hard_budget,
+        hedge_dims,
+        hedge_random,
+        hedge_reserve,
         no_hedge,
         trace,
         steps,
@@ -343,6 +463,15 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             if args.no_hedge {
                 config = config.with_hedge(Hedge::Off);
             }
+            if let Some(dims) = &args.hedge_dims {
+                config = config.with_hedge(Hedge::Passes(HedgeSeries::eccentricity_dims(dims)));
+            }
+            if let Some(stages) = args.hedge_random {
+                config = config.with_hedge(Hedge::Passes(HedgeSeries::random(stages)));
+            }
+            if let Some(fraction) = args.hedge_reserve {
+                config = config.with_hedge_reserve(fraction);
+            }
             let mut winner = None;
             let mut report = |candidate: CandidateTrace| {
                 if args.trace {
@@ -373,7 +502,10 @@ fn print_candidate(candidate: &CandidateTrace) {
     match candidate.pass {
         Pass::Only => {}
         Pass::Plain => line.push_str(" pass=plain"),
-        Pass::Modified => line.push_str(" pass=modified"),
+        // A hedge of one weighting reports every modified candidate as stage 0,
+        // so only a series says which stage a candidate came from.
+        Pass::Modified { index: 0 } => line.push_str(" pass=modified"),
+        Pass::Modified { index } => line.push_str(&format!(" pass=modified:{index}")),
     }
     match candidate.outcome {
         CandidateOutcome::Produced {
@@ -383,6 +515,16 @@ fn print_candidate(candidate: &CandidateTrace) {
         } => line.push_str(&format!(" width={width} bags={total_bag_size}")),
         CandidateOutcome::WidthAborted => line.push_str(" outcome=aborted"),
         CandidateOutcome::DeadlineReached => line.push_str(" outcome=deadline"),
+        CandidateOutcome::StageSkipped {
+            projected,
+            spent,
+            allowance,
+        } => line.push_str(&format!(
+            " outcome=skipped projected={}ms spent={}ms allowance={}ms",
+            projected.as_millis(),
+            spent.as_millis(),
+            allowance.as_millis()
+        )),
     }
     eprintln!("{line} ms={}", candidate.elapsed.as_millis());
 }

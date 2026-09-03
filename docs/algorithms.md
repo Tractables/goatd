@@ -141,6 +141,31 @@ the soft deadline. A residual too large for the expensive orders runs sampled
 min-degree, as it does without a hedge, and there is nothing there to hedge.
 `with_hedge(Hedge::Off)` runs the schedule without any of it.
 
+`Hedge::Passes` carries a `HedgeSeries`: one weighted stage per weighting, in
+the order the series gives them, each stage being the fixed orders that read
+weights and the diverse pass again. The default is a series of one, an
+eccentricity ranking in three dimensions, and a series of one runs exactly what
+is described above. Which graphs a weighting improves is close to arbitrary and
+two weightings improve mostly different ones, so several stages collect more of
+them; the incumbent width bounds the candidates of every stage after the first.
+`HedgeSeries::eccentricity_dims` takes one dimension per stage and
+`HedgeSeries::random` runs the same schedule on weights drawn at random, the
+control for a series that means something.
+
+A stage is as many candidates as the diverse pass and it takes them from the
+restarts, so several stages can leave a graph whose plain pass nearly filled
+the budget with no restarts at all. The plain pass is the portfolio's own
+measurement of what a stage costs — the same orders on other weights — so the
+stages get `PortfolioConfig::with_hedge_reserve` of what the soft budget had
+left when the plain pass ended, half of it by default, and one more stage
+starts only while what the stages have spent plus that measurement fits in the
+share. The first stage is outside the rule: a hedge runs one weighted stage on
+any budget, and the reserve decides how many follow it. A stage that has run
+replaces the measurement when it was cheaper, since the incumbent bounds the
+stages after the first. A refused stage refuses the ones behind it, the
+restarts start where they always start, and a run with no soft budget bounds no
+stage. The trace reports each stage left unrun.
+
 ## Attributing a result
 
 `portfolio::decompose_traced` reports each candidate to a caller-supplied sink
