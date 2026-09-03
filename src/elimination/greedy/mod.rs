@@ -8,7 +8,7 @@ use std::collections::{BinaryHeap, HashMap, hash_map::Entry};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::time::Instant;
 
-use super::execution::{DEADLINE_CHECK_STRIDE, ElimExit, ElimSink, ElimStop, exceeds_width_bound};
+use super::execution::{Cutoff, DeadlinePacer, ElimExit, ElimSink, ElimStop, exceeds_width_bound};
 use super::graph::EliminationGraph;
 use crate::rng::Xorshift64;
 
@@ -99,17 +99,17 @@ impl FillScratch {
         let k = nbrs_v.len();
         // The marker scan below is O(k + Σ deg(u) for u ∈ N(v)), and is charged
         // as that rather than as `k`: a lazy fill recompute on a dense residual
-        // is one of the two places a min-fill candidate spends its budget, the other
-        // being `EliminationGraph::eliminate_with_nbrs`. The summation is guarded because
-        // computing it is itself a pass over the same rows, and off the meter
-        // nothing would read the result.
-        if crate::meter::is_armed() {
-            let sigma: u64 = nbrs_v
-                .iter()
-                .map(|&u| graph.adj[u as usize].len() as u64)
-                .sum();
-            crate::meter::charge(k as u64 + sigma);
-        }
+        // is one of the two places a min-fill candidate spends its budget, the
+        // other being `EliminationGraph::eliminate_with_nbrs`. The summation
+        // reads k row lengths, not the rows, so it is charged on every run and
+        // not only under the meter: the seeding scan paces its deadline reads
+        // by this figure, and on a graph whose degrees are as uneven as an
+        // incidence graph's nothing cheaper stands in for it.
+        let sigma: u64 = nbrs_v
+            .iter()
+            .map(|&u| graph.adj[u as usize].len() as u64)
+            .sum();
+        crate::meter::charge(k as u64 + sigma);
         if k < 2 {
             return 0;
         }

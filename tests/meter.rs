@@ -5,11 +5,15 @@ use goatd::meter::{
 };
 
 #[test]
-fn an_unarmed_meter_records_nothing() {
+fn an_unarmed_meter_counts_work_but_keeps_the_wall_clock() {
     assert!(!is_armed());
     let before = units_spent();
     charge(1_000_000);
-    assert_eq!(units_spent(), before);
+    assert_eq!(units_spent(), before + 1_000_000);
+
+    let start = Instant::now();
+    charge(UNITS_PER_MS * 10_000);
+    assert!(now().saturating_duration_since(start) < Duration::from_secs(1));
 }
 
 #[test]

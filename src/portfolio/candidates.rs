@@ -1,8 +1,21 @@
 use crate::TreeDecomposition;
 use crate::decomposition::SubsumedBagCompaction;
 use crate::elimination::engine::OrderRun;
+use crate::elimination::execution::Cutoff;
 
 use super::trace::CandidateOutcome;
+
+/// Whether the portfolio may start another candidate after this one.
+///
+/// A candidate that stopped at the soft cutoff has spent the construction
+/// budget, not the portfolio's whole window: the schedule carries on and the
+/// trailing FlowCutter slot still runs. Only the hard cutoff ends the
+/// portfolio.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ScheduleStop {
+    Continue,
+    HardDeadline,
+}
 
 /// Produced decompositions and the incumbent width handed to later
 /// elimination candidates.
@@ -77,15 +90,35 @@ impl CandidateSet {
         }
     }
 
-    pub(super) fn record_elimination(&mut self, run: OrderRun) -> CandidateOutcome {
+    /// Record what a candidate returned, and say whether the schedule goes on.
+    ///
+    /// A soft-cutoff stop that completed its residual is reported as a
+    /// produced decomposition, because that is what it is: the width and total
+    /// bag size are the ones the portfolio now holds. Only the hard cutoff
+    /// ends the schedule.
+    pub(super) fn record_elimination(&mut self, run: OrderRun) -> (CandidateOutcome, ScheduleStop) {
         match run {
-            OrderRun::Completed(decomposition) => self.push(decomposition),
-            OrderRun::CompletedAtDeadline(decomposition) => {
-                self.push(decomposition);
-                CandidateOutcome::DeadlineReached
+            OrderRun::Completed(decomposition) => {
+                (self.push(decomposition), ScheduleStop::Continue)
             }
-            OrderRun::DeadlineAborted => CandidateOutcome::DeadlineReached,
-            OrderRun::WidthAborted => CandidateOutcome::WidthAborted,
+            OrderRun::CompletedAtDeadline(Cutoff::Soft, decomposition) => {
+                (self.push(decomposition), ScheduleStop::Continue)
+            }
+            OrderRun::CompletedAtDeadline(Cutoff::Hard, decomposition) => {
+                self.push(decomposition);
+                (
+                    CandidateOutcome::DeadlineReached,
+                    ScheduleStop::HardDeadline,
+                )
+            }
+            OrderRun::DeadlineAborted(Cutoff::Soft) => {
+                (CandidateOutcome::DeadlineReached, ScheduleStop::Continue)
+            }
+            OrderRun::DeadlineAborted(Cutoff::Hard) => (
+                CandidateOutcome::DeadlineReached,
+                ScheduleStop::HardDeadline,
+            ),
+            OrderRun::WidthAborted => (CandidateOutcome::WidthAborted, ScheduleStop::Continue),
         }
     }
 

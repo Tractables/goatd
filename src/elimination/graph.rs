@@ -9,10 +9,34 @@
 //! Dense, small graphs additionally maintain a flat bitset adjacency
 //! alongside the Vec; most methods below have a bitset-mode and a
 //! sparse-mode path.
+//!
+//! A row that grows past [`ROW_INDEX_THRESH`] additionally carries a map from
+//! neighbour to its position in that row. Scanning such a row is what made
+//! eliminating a vertex next to a hub cost the hub's degree rather than the
+//! eliminated vertex's own; the map answers both "is `u` here" and "where is
+//! `u`" without the scan. Short rows keep the plain Vec, which is what the
+//! cache-friendliness argument above is about.
+
+use rustc_hash::FxHashMap;
 
 /// Maximum graph size for which full bitset adjacency is maintained.
 /// At n = 16384: 16384 * 256 words * 8 bytes = 32 MB per graph.
 const BITSET_THRESH: usize = 16384;
+
+/// Row length at which a membership map starts being maintained. Below it the
+/// linear scan wins: a few hundred contiguous `u32`s are a handful of cache
+/// lines, while the map costs a hash and a random probe per lookup.
+pub(super) const ROW_INDEX_THRESH: usize = 256;
+
+/// Build the membership map of one adjacency row.
+fn build_row_index(row: &[u32], slot: &mut Option<Box<FxHashMap<u32, u32>>>) {
+    let mut index: FxHashMap<u32, u32> = FxHashMap::default();
+    index.reserve(row.len());
+    for (position, &neighbour) in row.iter().enumerate() {
+        index.insert(neighbour, position as u32);
+    }
+    *slot = Some(Box::new(index));
+}
 
 fn hardware_popcount_available() -> bool {
     #[cfg(target_arch = "x86_64")]
@@ -106,6 +130,10 @@ fn difference_popcount_by(
 #[derive(Clone)]
 pub(super) struct EliminationGraph {
     pub(super) adj: Vec<Vec<u32>>,
+    /// Position of each neighbour within `adj[v]`, for the rows long enough to
+    /// be worth one. `None` for a short row, and for every row once the graph
+    /// is in bitset mode, where `adj` stops being maintained.
+    row_index: Vec<Option<Box<FxHashMap<u32, u32>>>>,
     pub(super) active: Vec<bool>,
     pub(super) num_active: usize,
     /// Count of undirected edges among active vertices. Enables O(1)
@@ -133,6 +161,7 @@ impl EliminationGraph {
     pub(super) fn new(n: usize) -> Self {
         EliminationGraph {
             adj: vec![Vec::new(); n],
+            row_index: (0..n).map(|_| None).collect(),
             active: vec![true; n],
             num_active: n,
             num_edges: 0,
@@ -145,6 +174,72 @@ impl EliminationGraph {
         }
     }
 
+    /// Whether `neighbour` is in `vertex`'s adjacency row. Sparse mode only.
+    #[inline]
+    fn row_contains(&self, vertex: u32, neighbour: u32) -> bool {
+        match &self.row_index[vertex as usize] {
+            Some(index) => index.contains_key(&neighbour),
+            None => self.adj[vertex as usize].contains(&neighbour),
+        }
+    }
+
+    /// Append `neighbour` to `vertex`'s row, keeping its map in step and
+    /// building one if the row has just grown long enough to want it. Sparse
+    /// mode only.
+    #[inline]
+    fn row_push(&mut self, vertex: u32, neighbour: u32) {
+        let vertex = vertex as usize;
+        let position = self.adj[vertex].len();
+        self.adj[vertex].push(neighbour);
+        if let Some(index) = self.row_index[vertex].as_deref_mut() {
+            index.insert(neighbour, position as u32);
+            return;
+        }
+        if position + 1 >= ROW_INDEX_THRESH {
+            build_row_index(&self.adj[vertex], &mut self.row_index[vertex]);
+        }
+    }
+
+    /// Remove `neighbour` from `vertex`'s row, exactly as the scan-and-
+    /// `swap_remove` it replaces would, so row order does not depend on
+    /// whether the row is indexed. Sparse mode only.
+    #[inline]
+    fn row_swap_remove(&mut self, vertex: u32, neighbour: u32) {
+        let vertex = vertex as usize;
+        let position = match &mut self.row_index[vertex] {
+            Some(index) => match index.remove(&neighbour) {
+                Some(position) => position as usize,
+                None => return,
+            },
+            None => match self.adj[vertex].iter().position(|&w| w == neighbour) {
+                Some(position) => position,
+                None => return,
+            },
+        };
+        let row = &mut self.adj[vertex];
+        let last = row.len() - 1;
+        let moved = row[last];
+        row.swap_remove(position);
+        if position != last
+            && let Some(index) = &mut self.row_index[vertex]
+        {
+            index.insert(moved, position as u32);
+        }
+    }
+
+    /// Whether `vertex`'s row currently carries a membership map.
+    #[cfg(test)]
+    pub(super) fn row_is_indexed(&self, vertex: u32) -> bool {
+        self.row_index[vertex as usize].is_some()
+    }
+
+    /// Empty `vertex`'s row, as elimination does, and drop its map with it.
+    #[inline]
+    fn clear_row(&mut self, vertex: u32) {
+        self.adj[vertex as usize].clear();
+        self.row_index[vertex as usize] = None;
+    }
+
     pub(super) fn from_edges(n: u32, edges: &[(u32, u32)]) -> Self {
         let n = n as usize;
         let mut g = EliminationGraph::new(n);
@@ -153,9 +248,9 @@ impl EliminationGraph {
                 (u as usize) < n && (v as usize) < n,
                 "elimination edge ({u}, {v}) has an endpoint outside 0..{n}"
             );
-            if u != v && !g.adj[u as usize].contains(&v) {
-                g.adj[u as usize].push(v);
-                g.adj[v as usize].push(u);
+            if u != v && !g.row_contains(u, v) {
+                g.row_push(u, v);
+                g.row_push(v, u);
                 g.num_edges += 1;
             }
         }
@@ -169,8 +264,18 @@ impl EliminationGraph {
                     g.bitset[v * w + u as usize / 64] |= 1u64 << (u as usize % 64);
                 }
             }
+            g.drop_row_indexes();
         }
         g
+    }
+
+    /// Release the row maps. Bitset mode answers both questions they are there
+    /// for, and `adj` stops being maintained, so keeping them would be memory
+    /// spent on stale data.
+    fn drop_row_indexes(&mut self) {
+        for slot in self.row_index.iter_mut() {
+            *slot = None;
+        }
     }
 
     /// True when promoting from adj-only to bitset-assisted representation is
@@ -213,6 +318,7 @@ impl EliminationGraph {
         }
         self.bitset = bs;
         self.bitset_words = w;
+        self.drop_row_indexes();
     }
 
     /// Clone preserving only the bitset; adj rows are allocated empty. Only
@@ -221,6 +327,7 @@ impl EliminationGraph {
         debug_assert!(self.bitset_words > 0);
         EliminationGraph {
             adj: vec![Vec::new(); self.adj.len()],
+            row_index: (0..self.adj.len()).map(|_| None).collect(),
             active: self.active.clone(),
             num_active: self.num_active,
             num_edges: self.num_edges,
@@ -332,8 +439,19 @@ impl EliminationGraph {
             let vi = v as usize;
             self.bitset[u as usize * w + vi / 64] & (1u64 << (vi % 64)) != 0
         } else {
-            crate::meter::charge(self.adj[u as usize].len() as u64);
-            self.adj[u as usize].contains(&v)
+            crate::meter::charge(self.row_lookup_units(u));
+            self.row_contains(u, v)
+        }
+    }
+
+    /// Units one membership test on `vertex`'s row costs: a probe if the row
+    /// is indexed, a scan of the whole row otherwise.
+    #[inline]
+    fn row_lookup_units(&self, vertex: u32) -> u64 {
+        if self.row_index[vertex as usize].is_some() {
+            1
+        } else {
+            self.adj[vertex as usize].len() as u64
         }
     }
 
@@ -344,11 +462,11 @@ impl EliminationGraph {
         if self.bitset_words > 0 {
             self.add_edge_bs(u, v)
         } else {
-            if self.adj[u as usize].contains(&v) {
+            if self.row_contains(u, v) {
                 return false;
             }
-            self.adj[u as usize].push(v);
-            self.adj[v as usize].push(u);
+            self.row_push(u, v);
+            self.row_push(v, u);
             self.num_edges += 1;
             true
         }
@@ -397,15 +515,17 @@ impl EliminationGraph {
         // costs sets the scale everything else in construction is charged
         // against.
         //
-        // The sparse path's cost is not k². `eliminate_with_nbrs_marker` walks
-        // every neighbour's whole adjacency row — once to stamp it, and to
-        // find `v` in it — so it pays Σ deg(u) for u ∈ N(v) before it pays the
-        // k² fill test. Around high-degree hubs that scan term can dominate k²
-        // by orders of magnitude. Charging k² alone made elimination read some
-        // fifty times cheaper than it runs, which let a configuration spend its
-        // portfolio's whole window and more while the work clock believed it had
-        // barely started. Measured on one such residual: 3.8 M units charged
-        // against 265 ms of elimination.
+        // The sparse path's cost is not k² alone. For a neighbour whose row is
+        // short, `eliminate_with_nbrs_marker` walks that whole row — once to
+        // stamp it, and to find `v` in it — so it pays deg(u) before it pays
+        // the k² fill test. Around high-degree hubs that scan term used to
+        // dominate k² by orders of magnitude; charging k² alone made
+        // elimination read some fifty times cheaper than it runs, which let a
+        // configuration spend its portfolio's whole window and more while the
+        // work clock believed it had barely started. Measured on one such
+        // residual: 3.8 M units charged against 265 ms of elimination. A hub's
+        // row is now indexed and costs a probe instead, which is what
+        // `nbr_scan_units` reports.
         let k = neighbours.len() as u64;
         crate::meter::charge(if self.bitset_words > 0 {
             k.saturating_mul(self.bitset_words as u64)
@@ -516,6 +636,35 @@ impl EliminationGraph {
         let mut pushes: usize = 0;
         for &u_raw in neighbours {
             let u = u_raw as usize;
+            if let Some(index) = self.row_index[u].as_deref_mut() {
+                // An indexed row needs no stamping pass: the map already says
+                // which of the k candidates are present, and where `v` is. The
+                // mutations below are the same ones the marker path makes, in
+                // the same order, so the row ends up identical either way.
+                let row = &mut self.adj[u];
+                if let Some(position) = index.remove(&v) {
+                    let position = position as usize;
+                    let last = row.len() - 1;
+                    let moved = row[last];
+                    row.swap_remove(position);
+                    if position != last {
+                        index.insert(moved, position as u32);
+                    }
+                }
+                for &w in neighbours {
+                    if w != u_raw && !index.contains_key(&w) {
+                        index.insert(w, row.len() as u32);
+                        row.push(w);
+                        pushes += 1;
+                        if u_raw < w
+                            && let Some(edges) = fill_edges.as_deref_mut()
+                        {
+                            edges.push((u_raw, w));
+                        }
+                    }
+                }
+                continue;
+            }
             self.elim_stamp = self.elim_stamp.wrapping_add(1);
             if self.elim_stamp == 0 {
                 marker.fill(0);
@@ -547,8 +696,11 @@ impl EliminationGraph {
                     }
                 }
             }
+            if self.adj[u].len() >= ROW_INDEX_THRESH {
+                build_row_index(&self.adj[u], &mut self.row_index[u]);
+            }
         }
-        self.adj[v as usize].clear();
+        self.clear_row(v);
         if self.active[v as usize] {
             self.active[v as usize] = false;
             self.num_active -= 1;
@@ -571,10 +723,10 @@ impl EliminationGraph {
     /// needed). Cheaper than `eliminate_with_nbrs`: no stamp-marker work.
     pub(super) fn remove_without_fill_nbrs(&mut self, v: u32, nbrs: &[u32]) {
         // Simplicial elimination adds no fill, so there is no k² term. The
-        // sparse path still searches each neighbour's row for `v` and pays the
-        // same Σ deg(u) scan as the filling path; the bitset path clears one
-        // bit per neighbour and then zeroes `v`'s own row, so it pays k plus
-        // one pass over the words.
+        // sparse path locates `v` in each neighbour's row, which costs a probe
+        // on an indexed row and a scan of the row otherwise; the bitset path
+        // clears one bit per neighbour and then zeroes `v`'s own row, so it
+        // pays k plus one pass over the words.
         crate::meter::charge(if self.bitset_words > 0 {
             (nbrs.len() as u64).saturating_add(self.bitset_words as u64)
         } else {
@@ -594,12 +746,9 @@ impl EliminationGraph {
             self.bitset_degree[vi] = 0;
         } else {
             for &u in nbrs {
-                let row = &mut self.adj[u as usize];
-                if let Some(pos) = row.iter().position(|&x| x == v) {
-                    row.swap_remove(pos);
-                }
+                self.row_swap_remove(u, v);
             }
-            self.adj[vi].clear();
+            self.clear_row(v);
         }
         if self.active[vi] {
             self.active[vi] = false;
@@ -608,9 +757,9 @@ impl EliminationGraph {
         self.num_edges -= nbrs.len();
     }
 
-    /// Units for one pass over the adjacency rows of `nbrs` — what the sparse
-    /// elimination paths actually pay, as opposed to the size of the
-    /// neighbourhood they are handed.
+    /// Units the sparse elimination paths pay to find `v` in each row of
+    /// `nbrs` — a probe per indexed row, a full pass over the others — as
+    /// opposed to the size of the neighbourhood they are handed.
     ///
     /// The metering guard keeps the summation off the un-metered path:
     /// [`crate::meter::charge`] is inert there, so counting for it
@@ -620,9 +769,7 @@ impl EliminationGraph {
         if !crate::meter::is_armed() {
             return 0;
         }
-        nbrs.iter()
-            .map(|&u| self.adj[u as usize].len() as u64)
-            .sum()
+        nbrs.iter().map(|&u| self.row_lookup_units(u)).sum()
     }
 
     /// O(1) check: is the active residual a complete graph?

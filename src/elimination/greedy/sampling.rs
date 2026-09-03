@@ -165,14 +165,12 @@ fn eliminate_sampled_fill_based(
     // `+ SEED_OFFSET` keeps a seed of 0 off xorshift64's zero fixed point, and
     // is part of the tie-break stream this sampler has always drawn.
     let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
-    let mut check_counter = 0u32;
+    let mut pacer = DeadlinePacer::new();
 
     while let Some((minimum_priority, tie_set, total_mass)) = buckets.min_bucket() {
-        check_counter += 1;
-        if check_counter >= DEADLINE_CHECK_STRIDE {
-            check_counter = 0;
+        if pacer.due() {
             if expired(hard_deadline) {
-                return ElimExit::DeadlineReached;
+                return ElimExit::DeadlineReached(Cutoff::Hard);
             }
             if graph.should_promote_bitset() {
                 graph.promote_bitset();
@@ -233,12 +231,12 @@ fn eliminate_sampled_fill_based(
             affected.prepare_inside(graph, v, &live_nbrs);
             graph.eliminate_with_nbrs_record_fill(v, &live_nbrs, &mut fill_edges);
             if !affected.collect_deltas(graph, &live_nbrs, &fill_edges, hard_deadline) {
-                return ElimExit::DeadlineReached;
+                return ElimExit::DeadlineReached(Cutoff::Hard);
             }
             while let Some((u, delta)) = affected.pop_delta() {
                 if expired(hard_deadline) {
                     affected.clear();
-                    return ElimExit::DeadlineReached;
+                    return ElimExit::DeadlineReached(Cutoff::Hard);
                 }
                 let old_fill = fills.as_ref().map_or_else(
                     || {
@@ -260,7 +258,7 @@ fn eliminate_sampled_fill_based(
             }
             for &u in &live_nbrs {
                 if expired(hard_deadline) {
-                    return ElimExit::DeadlineReached;
+                    return ElimExit::DeadlineReached(Cutoff::Hard);
                 }
                 if graph.active[u as usize] {
                     let new_fill = scratch.fill_count_of(graph, u);
@@ -315,18 +313,14 @@ pub(crate) fn eliminate_sampled_min_degree(
     // is part of the tie-break stream this sampler has always drawn.
     let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
     let mut nbrs_buf = Vec::new();
-    let mut check_counter = 0u32;
+    let mut pacer = DeadlinePacer::new();
     let mut clique_residual = false;
     // Lazy degree tracking — defer bucket update to sample time.
     let mut degree_stale: Vec<bool> = vec![false; n];
 
     while let Some((min_deg, tie_set, total_mass)) = buckets.min_bucket() {
-        check_counter += 1;
-        if check_counter >= DEADLINE_CHECK_STRIDE {
-            check_counter = 0;
-            if expired(hard_deadline) {
-                return ElimExit::DeadlineReached;
-            }
+        if pacer.due() && expired(hard_deadline) {
+            return ElimExit::DeadlineReached(Cutoff::Hard);
         }
 
         let v = sample_tie_set(tie_set, weights, &mut rng, uniform_mass, total_mass);

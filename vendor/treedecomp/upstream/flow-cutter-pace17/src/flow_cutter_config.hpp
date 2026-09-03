@@ -1,6 +1,7 @@
 
 #ifndef FLOW_CUTTER_CONFIG_H
 #define FLOW_CUTTER_CONFIG_H
+#include <functional>
 #include <string>
 #include <stdexcept>
 #include <iomanip>
@@ -52,6 +53,13 @@ namespace flow_cutter{
 		};
 		PierceRating pierce_rating;
 
+		// goatd: an optional predicate the cutter loops test, so a caller's
+		// deadline can stop a separator search that is already running rather
+		// than only one that has not started. Null means nothing stops them,
+		// which is what every path that does not set it gets. Held by pointer
+		// so a Config stays cheap to copy.
+		const std::function<bool()>* should_stop;
+
 		Config():
 			cutter_count(3),
 			random_seed(5489),
@@ -61,7 +69,8 @@ namespace flow_cutter{
 			separator_selection(SeparatorSelection::node_min_expansion),
 			graph_search_algorithm(GraphSearchAlgorithm::pseudo_depth_first_search),
 			avoid_augmenting_path(AvoidAugmentingPath::avoid_and_pick_best),
-			pierce_rating(PierceRating::max_target_minus_source_hop_dist){}
+			pierce_rating(PierceRating::max_target_minus_source_hop_dist),
+			should_stop(nullptr){}
 
 		void set(const std::string&var, const std::string&val){
 			int val_id = -1;
