@@ -113,20 +113,20 @@ fn a_ten_second_outer_window_with_output_headroom_raises_the_sampling_cap() {
 }
 
 #[test]
-fn the_standard_portfolio_appends_update_order_minimum_degree() {
+fn the_standard_portfolio_starts_with_update_order_minimum_degree() {
     let weights = [1; 3];
     let candidates = super::standard_orders(0, &weights);
 
     assert_eq!(candidates.len(), 6);
-    assert!(
-        candidates[..5]
-            .iter()
-            .all(|candidate| candidate.preprocess && !candidate.update_order_ties)
-    );
-    let candidate = candidates[5];
+    let candidate = candidates[0];
     assert_eq!(candidate.order, Order::MinDegree);
     assert!(!candidate.preprocess);
     assert!(candidate.update_order_ties);
+    assert!(
+        candidates[1..]
+            .iter()
+            .all(|candidate| candidate.preprocess && !candidate.update_order_ties)
+    );
 }
 
 #[test]
