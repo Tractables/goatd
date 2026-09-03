@@ -82,7 +82,10 @@ Islet and twig elimination run to a fixed point first. This removes forest
 components without introducing a width-2 series bag. The pass then scans the
 series, simplicial, and almost-simplicial rules in that order and starts again
 if any rule fired. Series and simplicial eliminations raise the running lower
-bound used to admit the almost-simplicial rule.
+bound used to admit the almost-simplicial rule. Under a budget the pass stops
+at the soft deadline and hands the rest of the graph to the elimination order;
+the rules it has applied by then stand, and the ones it has not are the
+order's to do.
 
 The recorded bags form the beginning of the elimination sequence. A solver
 continues on the residual graph, then the decomposition builder attaches these
@@ -225,7 +228,10 @@ refine sequence, including V-cycles. For a proposed bisection, goatd builds the
 bipartite graph of crossing edges and computes a minimum vertex cover using
 augmenting-path matching. By König's theorem this is the smallest separator
 obtained by covering those crossing edges, and it is never larger than taking
-all boundary vertices from the smaller side.
+all boundary vertices from the smaller side. Small subgraphs, and a level whose
+bisection leaves nothing to recurse on, are ordered by min-fill; under a budget
+that min-fill runs against the hard deadline too, and the vertices it has not
+reached follow in a fixed order.
 
 The same multilevel graph bisector is public on its own. A separate public
 hypergraph bisector minimizes cut hyperedges, with FM and flow-based

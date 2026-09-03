@@ -605,7 +605,7 @@ fn run_portfolio(
         crate::deadline::staged(started, config.soft_budget, config.hard_budget, "portfolio")?;
     let soft_deadline = deadlines.soft;
     let hard_deadline = deadlines.hard;
-    let mut prebuilt = engine::prebuild(graph);
+    let mut prebuilt = engine::prebuild(graph, soft_deadline);
     let mut original = None;
     let large_residual = prebuilt.num_active() > MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS;
     let cells: [OnceCell<Vec<u32>>; MAX_HEDGE_PASSES] = std::array::from_fn(|_| OnceCell::new());

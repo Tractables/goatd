@@ -28,6 +28,31 @@ const BITSET_THRESH: usize = 16384;
 /// lines, while the map costs a hash and a random probe per lookup.
 pub(super) const ROW_INDEX_THRESH: usize = 256;
 
+/// Whether an edge list is already sorted, deduplicated and oriented `u < v`,
+/// which is what [`crate::Graph::edges`] holds and what lets `from_edges` skip
+/// the per-edge membership test.
+fn is_canonical(edges: &[(u32, u32)]) -> bool {
+    let mut previous: Option<(u32, u32)> = None;
+    for &(u, v) in edges {
+        if u >= v {
+            return false;
+        }
+        if let Some(last) = previous
+            && last >= (u, v)
+        {
+            return false;
+        }
+        previous = Some((u, v));
+    }
+    true
+}
+
+/// Whether a graph of `n` vertices and `num_edges` edges is kept as a flat
+/// bitset: small enough for the bitset to fit and dense enough for it to win.
+fn bitset_mode(n: usize, num_edges: usize) -> bool {
+    n <= BITSET_THRESH && num_edges.saturating_mul(128) > n.saturating_mul(n)
+}
+
 /// Build the membership map of one adjacency row.
 fn build_row_index(row: &[u32], slot: &mut Option<Box<FxHashMap<u32, u32>>>) {
     let mut index: FxHashMap<u32, u32> = FxHashMap::default();
@@ -248,13 +273,23 @@ impl EliminationGraph {
                 (u as usize) < n && (v as usize) < n,
                 "elimination edge ({u}, {v}) has an endpoint outside 0..{n}"
             );
-            if u != v && !g.row_contains(u, v) {
-                g.row_push(u, v);
-                g.row_push(v, u);
-                g.num_edges += 1;
+        }
+        if is_canonical(edges) {
+            // The edge count is known before a row is filled, so whether the
+            // graph goes to bitset mode is too, and the row maps that mode
+            // drops are not built in the first place.
+            let index_rows = !bitset_mode(n, edges.len());
+            g.fill_rows_from_canonical(edges, index_rows);
+        } else {
+            for &(u, v) in edges {
+                if u != v && !g.row_contains(u, v) {
+                    g.row_push(u, v);
+                    g.row_push(v, u);
+                    g.num_edges += 1;
+                }
             }
         }
-        if n <= BITSET_THRESH && g.num_edges.saturating_mul(128) > n.saturating_mul(n) {
+        if bitset_mode(n, g.num_edges) {
             let w = n.div_ceil(64);
             g.bitset = vec![0u64; n * w];
             g.bitset_words = w;
@@ -267,6 +302,42 @@ impl EliminationGraph {
             g.drop_row_indexes();
         }
         g
+    }
+
+    /// Fill the adjacency rows from an edge list already in the form
+    /// [`crate::Graph::edges`] guarantees.
+    ///
+    /// Every production caller passes such a list, and there the membership
+    /// test the general path runs per edge answers "no" every time: with the
+    /// list sorted and deduplicated, no edge can already be in a row. Counting
+    /// the degrees first also lets each row be allocated once and each map be
+    /// built once, instead of growing the row and inserting into the map edge
+    /// by edge. The rows come out in the order the general path leaves them:
+    /// a vertex sees its neighbours below it in increasing order, then those
+    /// above it, because that is the order the sorted list visits them in.
+    /// With `index_rows` false no row gets a membership map, for a caller that
+    /// is about to switch the graph to bitset mode and drop them anyway.
+    fn fill_rows_from_canonical(&mut self, edges: &[(u32, u32)], index_rows: bool) {
+        let mut degree = vec![0u32; self.adj.len()];
+        for &(u, v) in edges {
+            degree[u as usize] += 1;
+            degree[v as usize] += 1;
+        }
+        for (row, &count) in self.adj.iter_mut().zip(degree.iter()) {
+            row.reserve_exact(count as usize);
+        }
+        for &(u, v) in edges {
+            self.adj[u as usize].push(v);
+            self.adj[v as usize].push(u);
+        }
+        if index_rows {
+            for vertex in 0..self.adj.len() {
+                if self.adj[vertex].len() >= ROW_INDEX_THRESH {
+                    build_row_index(&self.adj[vertex], &mut self.row_index[vertex]);
+                }
+            }
+        }
+        self.num_edges = edges.len();
     }
 
     /// Release the row maps. Bitset mode answers both questions they are there
@@ -824,6 +895,74 @@ impl EliminationGraph {
                 }
             }
             true
+        }
+    }
+
+    /// The one edge missing from `v`'s neighbourhood, if exactly one is.
+    ///
+    /// `None` when the neighbourhood is already a clique and when two or more
+    /// edges are missing, which is what the almost-simplicial rule needs: it
+    /// fires only on the single-missing-edge case, and the pair is then unique.
+    ///
+    /// The bitset path counts, for each u ∈ N(v), how many of v's other
+    /// neighbours u is not adjacent to. The sum over N(v) counts every missing
+    /// edge twice, so the scan can stop as soon as it passes two, and the two
+    /// vertices contributing one each are the endpoints. That is O(k · words)
+    /// against the O(k²) membership tests of the pairwise scan, and on a
+    /// residual of a few thousand vertices with degrees in the thousands the
+    /// difference is seconds.
+    pub(super) fn almost_simplicial_nonedge(&self, v: u32) -> Option<(u32, u32)> {
+        if self.bitset_words == 0 {
+            let neighbours = &self.adj[v as usize];
+            let mut missing: Option<(u32, u32)> = None;
+            for i in 0..neighbours.len() {
+                for j in (i + 1)..neighbours.len() {
+                    if !self.contains_edge(neighbours[i], neighbours[j]) {
+                        if missing.is_some() {
+                            return None;
+                        }
+                        missing = Some((neighbours[i], neighbours[j]));
+                    }
+                }
+            }
+            return missing;
+        }
+
+        let w = self.bitset_words;
+        let vb = v as usize * w;
+        let mut endpoints: [u32; 2] = [0, 0];
+        let mut found = 0usize;
+        let mut total = 0u64;
+        let mut neighbours_scanned = 0u64;
+        for j in 0..w {
+            let mut bits = self.bitset[vb + j];
+            while bits != 0 {
+                let u = (j * 64 + bits.trailing_zeros() as usize) as u32;
+                bits &= bits - 1;
+                neighbours_scanned += 1;
+                // u itself is in N(v) and not in N(u), so one of the counted
+                // bits is always u.
+                let missing_at_u = self.bitset_difference_count(v, u) - 1;
+                total += missing_at_u;
+                if total > 2 {
+                    crate::meter::charge(neighbours_scanned * w as u64);
+                    return None;
+                }
+                if missing_at_u == 1 {
+                    if found == 2 {
+                        crate::meter::charge(neighbours_scanned * w as u64);
+                        return None;
+                    }
+                    endpoints[found] = u;
+                    found += 1;
+                }
+            }
+        }
+        crate::meter::charge(neighbours_scanned * w as u64);
+        if total == 2 && found == 2 {
+            Some((endpoints[0], endpoints[1]))
+        } else {
+            None
         }
     }
 

@@ -55,3 +55,44 @@ fn grid_10x10_produces_full_order() {
     s.sort();
     assert_eq!(s, (0..100).collect::<Vec<u32>>());
 }
+
+#[test]
+fn the_base_case_stops_at_the_hard_deadline_and_still_returns_a_full_order() {
+    // The complete graph on 1,200 vertices minus a perfect matching goes
+    // straight to the base case when the threshold is at least its size, the
+    // way a level whose bisection came out degenerate does. It is dense but
+    // not a clique, so min-fill has to score every vertex before its first
+    // elimination, and that scan alone charges the meter tens of
+    // milliseconds; a deadline one millisecond of work away stops the base
+    // case part way. The order must still be a permutation, and the base
+    // case must not have run on past the deadline. The meter is armed, so
+    // this counts work and is not a race with the wall.
+    let n = 1200u32;
+    let active: Vec<u32> = (0..n).collect();
+    let mut edges = Vec::new();
+    for u in 0..n {
+        for v in u + 1..n {
+            if v != u + n / 2 {
+                edges.push((u, v));
+            }
+        }
+    }
+    let salt: Vec<u32> = (0..n).map(|i| i.wrapping_mul(2_654_435_761)).collect();
+
+    let epoch = std::time::Instant::now();
+    let _meter = crate::meter::arm(epoch);
+    let deadline = epoch + std::time::Duration::from_millis(1);
+    let mut params = params(&salt, n as usize);
+    params.hard_deadline = Some(deadline);
+
+    let order = nested_dissection_order(&active, &edges, &params, 0);
+
+    let mut sorted = order.clone();
+    sorted.sort();
+    assert_eq!(sorted, active);
+    let overrun = crate::meter::now().saturating_duration_since(deadline);
+    assert!(
+        overrun <= std::time::Duration::from_millis(2),
+        "the base case ran {overrun:?} past the hard deadline"
+    );
+}

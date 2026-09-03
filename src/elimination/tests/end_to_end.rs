@@ -73,7 +73,7 @@ fn preprocessing_preserves_covering() {
     // every vertex via series reductions.
     let edges = vec![(0, 1), (1, 2), (2, 3), (3, 4), (4, 0)];
     let graph = EliminationGraph::from_edges(5, &edges);
-    let reduced = preprocess(graph);
+    let reduced = preprocess(graph, None);
     assert_eq!(reduced.prefix.bags.len(), 5);
     assert_eq!(reduced.graph.num_active, 0);
 }

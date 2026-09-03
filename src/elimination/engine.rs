@@ -1,6 +1,7 @@
 //! Shared execution machinery for elimination orders and portfolios.
 
 use std::collections::VecDeque;
+use std::time::Instant;
 
 use super::Order;
 use super::build_td::build_td_from_ranked_bags;
@@ -47,9 +48,9 @@ pub(crate) struct Prebuilt {
 
 /// Build the elimination representation and preprocess it once for reuse
 /// across every order in a portfolio.
-pub(crate) fn prebuild(input: &crate::Graph) -> Prebuilt {
+pub(crate) fn prebuild(input: &crate::Graph, soft_deadline: Option<Instant>) -> Prebuilt {
     let graph = EliminationGraph::from_edges(input.num_vertices, &input.edges);
-    finish_prebuild(preprocess(graph))
+    finish_prebuild(preprocess(graph, soft_deadline))
 }
 
 /// Build the elimination representation without applying reduction rules.
