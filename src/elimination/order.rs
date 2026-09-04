@@ -16,6 +16,9 @@ pub enum Order<'a> {
     /// Preprocess, then recursively bisect the graph and eliminate each
     /// separator after its two sides.
     NestedDissection,
+    /// Preprocess, then eliminate along an MCS-M numbering, which fills the
+    /// residual to a minimal triangulation.
+    MinimalTriangulation,
     /// Min-fill with weighted sampling from the full minimum-fill tie set.
     MinFillSampled {
         /// Per-vertex weights, one entry per input graph vertex.
@@ -43,7 +46,10 @@ impl<'a> Order<'a> {
             Order::MinFillSampled { weights }
             | Order::MinDegreeSampled { weights }
             | Order::FillDegreeSampled { weights, .. } => Some(weights),
-            Order::MinFill | Order::MinDegree | Order::NestedDissection => None,
+            Order::MinFill
+            | Order::MinDegree
+            | Order::NestedDissection
+            | Order::MinimalTriangulation => None,
         }
     }
 
@@ -53,6 +59,7 @@ impl<'a> Order<'a> {
             Order::MinFill => Order::MinFill,
             Order::MinDegree => Order::MinDegree,
             Order::NestedDissection => Order::NestedDissection,
+            Order::MinimalTriangulation => Order::MinimalTriangulation,
             Order::MinFillSampled { .. } => Order::MinFillSampled { weights },
             Order::MinDegreeSampled { .. } => Order::MinDegreeSampled { weights },
             Order::FillDegreeSampled {

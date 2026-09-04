@@ -1,10 +1,9 @@
 //! Elimination-order tree decompositions: safe-reduction preprocessing, then
-//! a greedy or nested-dissection elimination order, then the bag tree that
-//! order induces.
+//! an elimination order, then the bag tree that order induces.
 //!
 //! Every construction starts from the same preprocessing and then picks an
-//! order — or, for nested dissection, derives one from a separator
-//! recursion. [`Order`] holds the five that exist:
+//! order — greedily, or from a separator recursion, or from a cardinality
+//! search. [`Order`] holds them all:
 //!
 //!   * **min-fill** and **min-degree** — the plain greedy orders, ties broken
 //!     by a seeded salt.
@@ -15,18 +14,23 @@
 //!   * **nested dissection** via
 //!     [`multilevel_graph_bisect`](crate::partition::multilevel_graph_bisect),
 //!     separating on a König-Egerváry minimum vertex cover.
+//!   * **minimal triangulation** — the MCS-M numbering, which fills the
+//!     residual to a triangulation no added edge can be dropped from.
 //!
 //! [`decompose`] runs one order once. [`crate::portfolio`] combines
-//! several orders, and [`crate::decomposition::refine_with_flowcutter`]
-//! improves an existing decomposition with FlowCutter separators.
+//! several orders, [`crate::decomposition::refine_with_flowcutter`] improves an
+//! existing decomposition with FlowCutter separators, and
+//! [`crate::decomposition::minimalize_triangulation`] drops the fill edges its
+//! bags do not need.
 
 use std::time::Duration;
 
-mod build_td;
+pub(crate) mod build_td;
 pub(crate) mod engine;
 pub(crate) mod execution;
 mod graph;
 mod greedy;
+pub(crate) mod minimal_triangulation;
 mod nested_dissection;
 mod order;
 mod preprocess;

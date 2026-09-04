@@ -14,7 +14,7 @@ use crate::{TdBag, TreeDecomposition};
 /// zero or more later-ranked neighbours. A deadline completion may instead
 /// put every vertex of an unfinished residual component in one bag and assign
 /// all of them that bag's rank.
-pub(super) fn build_td_from_ranked_bags(
+pub(crate) fn build_td_from_ranked_bags(
     ranked_bags: Vec<Vec<u32>>,
     rank: &[u32],
 ) -> TreeDecomposition {

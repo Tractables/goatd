@@ -203,3 +203,49 @@ fn the_portfolio_winner_has_no_bag_subsumed_by_a_neighbour() {
         }
     }
 }
+
+#[test]
+fn the_minimal_triangulation_candidate_can_be_gated_off_and_on() {
+    let graph = grid(5);
+    let weight = vec![1; graph.num_vertices() as usize];
+    let mut stages = Vec::new();
+    decompose_traced(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard(),
+        &mut |candidate| stages.push(candidate.stage),
+    )
+    .unwrap();
+    assert!(
+        stages.contains(&Stage::MinimalTriangulation),
+        "the standard portfolio runs the candidate on a graph this size"
+    );
+
+    stages.clear();
+    decompose_traced(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard().without_minimal_triangulation(),
+        &mut |candidate| stages.push(candidate.stage),
+    )
+    .unwrap();
+    assert!(!stages.contains(&Stage::MinimalTriangulation));
+}
+
+#[test]
+fn dropping_fill_never_widens_the_portfolio_winner() {
+    let graph = grid(6);
+    let weight = vec![1; graph.num_vertices() as usize];
+    let kept = decompose(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard().without_triangulation_refinement(),
+    )
+    .unwrap();
+    let dropped = decompose(&graph, &weight, 0, PortfolioConfig::standard()).unwrap();
+    dropped.validate(&graph).unwrap();
+    assert!(dropped.treewidth() <= kept.treewidth());
+}
