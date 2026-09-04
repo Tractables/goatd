@@ -20,7 +20,7 @@ use super::TreeDecomposition;
 use crate::deadline::{expired, remaining};
 use crate::elimination::build_td::build_td_from_ranked_bags;
 use crate::elimination::execution::DeadlinePacer;
-use crate::elimination::minimal_triangulation::{Reach, cardinality_search};
+use crate::elimination::minimal_triangulation::{Reach, Ties, cardinality_search};
 use crate::{Error, Graph};
 
 #[cfg(test)]
@@ -229,7 +229,8 @@ fn decompose_completion(
         RowSet::members(completion.row(vertex), &mut members);
         adjacency.push(members.clone());
     }
-    let selected = cardinality_search(&adjacency, Reach::Neighbours, deadline)?;
+    let selected =
+        cardinality_search(&adjacency, Reach::Neighbours, Ties::SmallestIndex, deadline)?;
     let mut rank = vec![0u32; vertices];
     for (step, &vertex) in selected.iter().rev().enumerate() {
         rank[vertex as usize] = step as u32;

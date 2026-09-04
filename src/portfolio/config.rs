@@ -321,6 +321,7 @@ pub struct PortfolioConfig {
     pub(super) sample_band_alternate: bool,
     pub(super) expensive_orders_up_to: usize,
     pub(super) maximum_cardinality: Option<u32>,
+    pub(super) maximum_cardinality_restarts: Option<u64>,
     pub(super) minimal_triangulation: Option<u32>,
     pub(super) triangulation_refinement: Option<u32>,
 }
@@ -342,6 +343,7 @@ impl PartialEq for PortfolioConfig {
             && self.sample_band_alternate == other.sample_band_alternate
             && self.expensive_orders_up_to == other.expensive_orders_up_to
             && self.maximum_cardinality == other.maximum_cardinality
+            && self.maximum_cardinality_restarts == other.maximum_cardinality_restarts
             && self.minimal_triangulation == other.minimal_triangulation
             && self.triangulation_refinement == other.triangulation_refinement
     }
@@ -368,6 +370,7 @@ impl PortfolioConfig {
             sample_band_alternate: false,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
             maximum_cardinality: None,
+            maximum_cardinality_restarts: None,
             minimal_triangulation: None,
             triangulation_refinement: None,
         }
@@ -451,6 +454,7 @@ impl PortfolioConfig {
             sample_band_alternate: false,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
             maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
+            maximum_cardinality_restarts: None,
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
         }
@@ -503,6 +507,7 @@ impl PortfolioConfig {
             sample_band_alternate: false,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
             maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
+            maximum_cardinality_restarts: None,
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
         }
@@ -642,6 +647,25 @@ impl PortfolioConfig {
     /// off large residuals anyway.
     pub fn with_maximum_cardinality(mut self, max_residual_vertices: u32) -> Self {
         self.maximum_cardinality = Some(max_residual_vertices);
+        self
+    }
+
+    /// Restart the maximum cardinality search on up to `runs` further tie
+    /// permutations, after the deterministic one.
+    ///
+    /// The search always takes a vertex with the most numbered neighbours; a
+    /// restart changes only which of several tied for that it takes, drawing
+    /// the choice from a permutation of the residual instead of by index. Each
+    /// restart is one more candidate on the same cutoff as the first search,
+    /// one more starts only while the last one's cost still fits before the
+    /// restart deadline, and the loop runs on the residual the plain search's
+    /// own gate admits.
+    ///
+    /// Off by default. The deterministic order is what wins on the graphs
+    /// where this candidate wins at all, and a restart here spends window the
+    /// sampled restarts would otherwise have.
+    pub fn with_maximum_cardinality_restarts(mut self, runs: u64) -> Self {
+        self.maximum_cardinality_restarts = (runs > 0).then_some(runs);
         self
     }
 

@@ -24,6 +24,7 @@ use super::execution::{
 };
 use super::graph::EliminationGraph;
 use crate::deadline::expired;
+use crate::rng::{SEED_OFFSET, Xorshift64};
 
 /// How far a step looks for the vertices whose count it raises.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -37,12 +38,29 @@ pub(crate) enum Reach {
     LowerPaths,
 }
 
+/// Which vertex a step takes when several have the same count.
+#[derive(Clone, Copy)]
+pub(crate) enum Ties<'a> {
+    /// The smallest vertex index, so one graph gives one order.
+    SmallestIndex,
+    /// The one a permutation of the vertices puts first. `rank[v]` is the
+    /// vertex's place in the permutation and `of_rank[rank[v]] == v`; a
+    /// caller that draws the permutation from a seed gets a different order
+    /// per seed out of the same search.
+    Ranked {
+        /// Each vertex's place in the permutation.
+        rank: &'a [u32],
+        /// The vertex at each place, the inverse of `rank`.
+        of_rank: &'a [u32],
+    },
+}
+
 /// Run a cardinality search over `adjacency` and return the vertices in the
 /// order the search numbered them, highest number first.
 ///
-/// Ties go to the smallest vertex index, so one graph gives one order. The
-/// elimination order is this sequence reversed: the last vertex numbered is
-/// eliminated first.
+/// `ties` decides which of several vertices with the same count a step takes.
+/// The elimination order is this sequence reversed: the last vertex numbered
+/// is eliminated first.
 ///
 /// Returns `None` when `hard_deadline` passed before the search finished. Both
 /// reaches read the deadline on the pacer's stride, which counts the work the
@@ -52,6 +70,7 @@ pub(crate) enum Reach {
 pub(crate) fn cardinality_search(
     adjacency: &[Vec<u32>],
     reach: Reach,
+    ties: Ties<'_>,
     hard_deadline: Option<Instant>,
 ) -> Option<Vec<u32>> {
     let n = adjacency.len();
@@ -74,8 +93,18 @@ pub(crate) fn cardinality_search(
     // exactly when it sits below its vertex's current count, and the entry
     // carrying that current count is always in the heap; a stale one is
     // dropped when it surfaces rather than gone looking for.
+    // The heap is keyed on the tie key rather than the vertex, so the two tie
+    // rules are one heap; `vertex_at` reads the key back as a vertex.
+    let key_of = |vertex: u32| match ties {
+        Ties::SmallestIndex => vertex,
+        Ties::Ranked { rank, .. } => rank[vertex as usize],
+    };
+    let vertex_at = |key: u32| match ties {
+        Ties::SmallestIndex => key,
+        Ties::Ranked { of_rank, .. } => of_rank[key as usize],
+    };
     let mut queue: BinaryHeap<(u32, Reverse<u32>)> =
-        (0..n as u32).map(|vertex| (0, Reverse(vertex))).collect();
+        (0..n as u32).map(|key| (0, Reverse(key))).collect();
     // Ordering the vertices into a heap is linear, and it is the one part of
     // the search a deadline cannot interrupt.
     crate::meter::charge(n as u64);
@@ -86,9 +115,9 @@ pub(crate) fn cardinality_search(
             return None;
         }
         let mut chosen = usize::MAX;
-        while let Some((level, Reverse(vertex))) = queue.pop() {
+        while let Some((level, Reverse(key))) = queue.pop() {
             crate::meter::charge(sift_units(queue.len()));
-            let index = vertex as usize;
+            let index = vertex_at(key) as usize;
             if numbered[index] || count[index] != level {
                 continue;
             }
@@ -150,7 +179,7 @@ pub(crate) fn cardinality_search(
             let index = vertex as usize;
             count[index] += 1;
             crate::meter::charge(sift_units(queue.len()));
-            queue.push((count[index], Reverse(vertex)));
+            queue.push((count[index], Reverse(key_of(vertex))));
         }
     }
     Some(selected)
@@ -173,14 +202,25 @@ fn sift_units(len: usize) -> u64 {
 /// triangulation. With [`Reach::Neighbours`] it adds whatever fill the plain
 /// numbering happens to need, which is none when the residual is already
 /// chordal.
+///
+/// With `tie_seed` set the search takes its tied vertices in the order of a
+/// permutation drawn from that seed instead of by index, so the same residual
+/// gives a different numbering per seed. Without one the search is the
+/// deterministic one and allocates nothing extra.
 pub(super) fn eliminate_cardinality_search(
     graph: &mut EliminationGraph,
     reach: Reach,
+    tie_seed: Option<u64>,
     mut sink: ElimSink<'_>,
     stop: ElimStop,
 ) -> ElimExit {
     let (active, adjacency) = residual_edges(graph);
-    let Some(selected) = cardinality_search(&adjacency, reach, stop.hard_deadline) else {
+    let permutation = tie_seed.map(|seed| tie_permutation(adjacency.len(), seed));
+    let ties = match &permutation {
+        None => Ties::SmallestIndex,
+        Some((rank, of_rank)) => Ties::Ranked { rank, of_rank },
+    };
+    let Some(selected) = cardinality_search(&adjacency, reach, ties, stop.hard_deadline) else {
         return ElimExit::DeadlineReached(Cutoff::Hard);
     };
     // The search numbers from `n` down to 1 and the numbering is a perfect
@@ -191,4 +231,25 @@ pub(super) fn eliminate_cardinality_search(
         .rev()
         .map(|local| active[local as usize]);
     eliminate_in_order(graph, order, &mut sink, stop)
+}
+
+/// A permutation of `n` vertices drawn from `seed`, as (rank, of_rank).
+///
+/// Fisher-Yates over the run's own generator, so a seed gives one permutation
+/// and two seeds give unrelated ones. The pass is linear in `n` and the search
+/// that follows costs a pass over the edges, so drawing it is not what decides
+/// whether a restart fits.
+pub(crate) fn tie_permutation(n: usize, seed: u64) -> (Vec<u32>, Vec<u32>) {
+    let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
+    let mut of_rank: Vec<u32> = (0..n as u32).collect();
+    for place in (1..n).rev() {
+        let other = (rng.next_u64() % (place as u64 + 1)) as usize;
+        of_rank.swap(place, other);
+    }
+    let mut rank = vec![0u32; n];
+    for (place, &vertex) in of_rank.iter().enumerate() {
+        rank[vertex as usize] = place as u32;
+    }
+    crate::meter::charge(n as u64);
+    (rank, of_rank)
 }

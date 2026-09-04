@@ -88,6 +88,7 @@ pub fn decompose(
             // A single order samples the exact minimum; the band is a
             // portfolio setting.
             sample_band: 0,
+            cardinality_tie_seed: None,
             update_order_ties: false,
             stop: ElimStop {
                 soft_deadline: deadlines.soft,

@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::elimination::minimal_triangulation::{Reach, cardinality_search};
+use crate::elimination::minimal_triangulation::{Reach, Ties, cardinality_search};
 use crate::elimination::{Order, decompose};
 use crate::{Graph, TreeDecomposition};
 
@@ -142,7 +142,7 @@ fn maximum_cardinality_search_orders_a_chordal_graph_perfectly() {
     for (n, k) in [(12, 3), (20, 4), (9, 1)] {
         let graph = k_tree(n, k);
         let adjacency = adjacency_of(&graph);
-        let selected = cardinality_search(&adjacency, Reach::Neighbours, None)
+        let selected = cardinality_search(&adjacency, Reach::Neighbours, Ties::SmallestIndex, None)
             .expect("no deadline stops the search");
         assert_eq!(selected.len(), n as usize);
         let mut position = vec![0usize; n as usize];
@@ -264,7 +264,7 @@ fn the_plain_search_takes_what_a_scan_would_take() {
         ),
     ] {
         let adjacency = adjacency_of(&graph);
-        let selected = cardinality_search(&adjacency, Reach::Neighbours, None)
+        let selected = cardinality_search(&adjacency, Reach::Neighbours, Ties::SmallestIndex, None)
             .expect("no deadline to stop the search");
         assert_eq!(
             selected,
@@ -301,6 +301,7 @@ fn a_deadline_stops_either_reach_of_the_search() {
             let selected = cardinality_search(
                 adjacency,
                 reach,
+                Ties::SmallestIndex,
                 Some(epoch + Duration::from_millis(budget_ms)),
             );
             let spent = crate::meter::units_spent() - start;
@@ -327,9 +328,56 @@ fn a_deadline_stops_either_reach_of_the_search() {
         let selected = cardinality_search(
             &small,
             reach,
+            Ties::SmallestIndex,
             Some(Instant::now() + Duration::from_secs(60)),
         )
         .expect("a minute is enough for a 144-vertex grid");
         assert_eq!(selected.len(), small.len());
     }
+}
+
+/// A ranked tie rule numbers every vertex once, one seed gives one order, and
+/// two seeds give different ones on a graph whose steps have ties to break.
+#[test]
+fn a_tie_permutation_gives_one_order_per_seed() {
+    let graph = grid(12, 12);
+    let adjacency = adjacency_of(&graph);
+    let n = adjacency.len();
+    let mut orders = Vec::new();
+    for seed in [1u64, 2, 3, 1] {
+        let (rank, of_rank) = super::super::minimal_triangulation::tie_permutation(n, seed);
+        for (place, &vertex) in of_rank.iter().enumerate() {
+            assert_eq!(
+                rank[vertex as usize] as usize, place,
+                "rank inverts of_rank"
+            );
+        }
+        let selected = cardinality_search(
+            &adjacency,
+            Reach::Neighbours,
+            Ties::Ranked {
+                rank: &rank,
+                of_rank: &of_rank,
+            },
+            None,
+        )
+        .expect("no deadline to stop the search");
+        let mut seen = selected.clone();
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            (0..n as u32).collect::<Vec<_>>(),
+            "seed {seed} numbered every vertex exactly once"
+        );
+        orders.push(selected);
+    }
+    assert_eq!(orders[0], orders[3], "one seed gives one order");
+    assert_ne!(orders[0], orders[1], "two seeds give different orders");
+    assert_ne!(orders[1], orders[2], "two seeds give different orders");
+    let plain = cardinality_search(&adjacency, Reach::Neighbours, Ties::SmallestIndex, None)
+        .expect("no deadline to stop the search");
+    assert_ne!(
+        plain, orders[0],
+        "a ranked tie rule is not the index tie rule"
+    );
 }

@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use crate::decomposition::minimalize_triangulation;
-use crate::elimination::minimal_triangulation::{Reach, cardinality_search};
+use crate::elimination::minimal_triangulation::{Reach, Ties, cardinality_search};
 use crate::elimination::{Order, decompose};
 use crate::rng::{SEED_OFFSET, Xorshift64};
 use crate::{Graph, TreeDecomposition};
@@ -47,7 +47,7 @@ fn adjacency_of(graph: &Graph) -> Vec<Vec<u32>> {
 /// ordering a maximum cardinality search produces is a perfect elimination
 /// ordering.
 fn is_chordal(adjacency: &[Vec<u32>]) -> bool {
-    let selected = cardinality_search(adjacency, Reach::Neighbours, None)
+    let selected = cardinality_search(adjacency, Reach::Neighbours, Ties::SmallestIndex, None)
         .expect("an unbounded search always finishes");
     let mut rank = vec![0usize; adjacency.len()];
     for (step, &vertex) in selected.iter().rev().enumerate() {

@@ -1075,6 +1075,7 @@ fn run_portfolio(
                 // Only the restarts draw from a band; see the sampling phase
                 // below.
                 sample_band: 0,
+                cardinality_tie_seed: None,
                 update_order_ties: candidate.update_order_ties,
                 stop: elimination_stop(
                     phase,
@@ -1187,6 +1188,7 @@ fn run_portfolio(
                 // to it, and neither reads the initial fill counts, so there
                 // is no setup for a deadline to pace.
                 sample_band: 0,
+                cardinality_tie_seed: None,
                 update_order_ties: false,
                 stop: elimination_stop(
                     cardinality_phase,
@@ -1211,6 +1213,73 @@ fn run_portfolio(
             outcome,
             elapsed: now.saturating_duration_since(started),
         });
+    }
+    // Restarts of the plain search. The numbering rule is the same; what
+    // changes is which of several vertices tied on the count a step takes,
+    // drawn from a permutation of the residual rather than by index, so a seed
+    // gives a different order out of the same graph. The deterministic order
+    // is one reading of a search that has many, and where it wins by a lot the
+    // window behind it is often spent on restarts that return nothing.
+    //
+    // Off unless a caller asks for it. Each restart takes the same cutoff the
+    // first search took, one more starts only while the last one's cost still
+    // fits, and the whole loop stops at the restart deadline, so it spends
+    // only what the sampled restarts would have.
+    if let Some(runs) = config.maximum_cardinality_restarts
+        && let Some(gate) = config.maximum_cardinality
+        && prebuilt.num_active() <= gate as usize
+    {
+        let mut restart_finished = crate::meter::now();
+        let mut previous_restart: Option<Duration> = None;
+        for index in 1..=runs {
+            if hard_deadline_tripped
+                || expired(restart_deadline)
+                || expired(hard_deadline)
+                || previous_restart.is_some_and(|projected| {
+                    !restart_admitted(
+                        restart_finished,
+                        projected,
+                        [restart_deadline, hard_deadline],
+                    )
+                })
+            {
+                break;
+            }
+            let tie_seed = crate::rng::restart_seed(seed, index as usize);
+            let run = engine::run_order_prebuilt(
+                &mut prebuilt,
+                engine::RunSpec {
+                    order: Order::MaximumCardinality,
+                    seed,
+                    sample_band: 0,
+                    cardinality_tie_seed: Some(tie_seed),
+                    update_order_ties: false,
+                    stop: elimination_stop(
+                        cardinality_phase,
+                        restart_deadline,
+                        hard_deadline,
+                        candidates.best_width(),
+                    ),
+                    complete_on_deadline: false,
+                    setup_deadline: None,
+                },
+            );
+            let (outcome, _) = candidates.record_elimination(run);
+            let finished = crate::meter::now();
+            previous_restart = Some(finished.saturating_duration_since(restart_finished));
+            restart_finished = finished;
+            cardinality_search_cost += previous_restart.unwrap_or_default();
+            trace(CandidateTrace {
+                stage: Stage::MaximumCardinality,
+                seed: tie_seed,
+                pass: Pass::Only,
+                outcome,
+                elapsed: finished.saturating_duration_since(started),
+            });
+            if matches!(outcome, CandidateOutcome::DeadlineReached) {
+                break;
+            }
+        }
     }
     // Sampling phase: try additional seeds of the full-tie-set sampling
     // order with any remaining budget. Measured ≥79% of min-fill pops have
@@ -1350,6 +1419,7 @@ fn run_portfolio(
                 order: candidate.order,
                 seed: candidate.seed,
                 sample_band: candidate.band,
+                cardinality_tie_seed: None,
                 update_order_ties: false,
                 stop: elimination_stop(
                     EliminationPhase::ExtraSampling,

@@ -66,6 +66,7 @@ fn complete_at_immediate_deadline(graph: &crate::Graph) -> crate::TreeDecomposit
             order: Order::MinDegree,
             seed: 0,
             sample_band: 0,
+            cardinality_tie_seed: None,
             update_order_ties: false,
             stop: ElimStop {
                 soft_deadline: None,
@@ -101,6 +102,7 @@ pub(super) fn run_order(
             order,
             seed,
             sample_band: 0,
+            cardinality_tie_seed: None,
             update_order_ties: false,
             stop: ElimStop::default(),
             complete_on_deadline: false,
@@ -130,6 +132,7 @@ fn partial_eliminations_are_never_returned_as_decompositions() {
                 order: Order::MinDegree,
                 seed: 0,
                 sample_band: 0,
+                cardinality_tie_seed: None,
                 update_order_ties: false,
                 stop: ElimStop {
                     soft_deadline: None,
@@ -157,6 +160,7 @@ fn partial_eliminations_are_never_returned_as_decompositions() {
             order: Order::MinDegree,
             seed: 0,
             sample_band: 0,
+            cardinality_tie_seed: None,
             update_order_ties: false,
             stop: ElimStop {
                 soft_deadline: None,
@@ -195,6 +199,7 @@ fn a_soft_cutoff_leaves_the_components_after_it_their_own_orders() {
             order: Order::MinDegree,
             seed: 0,
             sample_band: 0,
+            cardinality_tie_seed: None,
             update_order_ties: false,
             stop: ElimStop {
                 soft_deadline: Some(epoch),

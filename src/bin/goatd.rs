@@ -75,6 +75,12 @@ options:
                         along that numbering reversed; it is one deterministic
                         candidate, it costs a pass over the edges, and the clock
                         rather than the gate is what stops it
+  --mcs-restarts <n>    portfolio only: after the deterministic maximum
+                        cardinality search, restart it on up to n further tie
+                        permutations. The search still takes a vertex with the
+                        most numbered neighbours; a restart changes only which
+                        of several tied for that it takes. Off by default, and
+                        it needs a candidate to restart, so not with --no-mcs
   --no-mcs              portfolio only: run no maximum cardinality search
                         candidate
   --mcsm-up-to <n>      portfolio only: run the MCS-M candidate while the
@@ -181,6 +187,7 @@ struct Args {
     hedge_random: Option<usize>,
     hedge_reserve: Option<f64>,
     mcs_up_to: Option<u32>,
+    mcs_restarts: Option<u64>,
     no_mcs: bool,
     mcsm_up_to: Option<u32>,
     no_mcsm: bool,
@@ -247,6 +254,7 @@ fn parse_args(argv: &[String]) -> Args {
     let mut hedge_random = None;
     let mut hedge_reserve = None;
     let mut mcs_up_to = None;
+    let mut mcs_restarts = None;
     let mut no_mcs = false;
     let mut mcsm_up_to = None;
     let mut no_mcsm = false;
@@ -347,6 +355,7 @@ fn parse_args(argv: &[String]) -> Args {
                 }
                 mcs_up_to = Some(vertices as u32);
             }
+            "--mcs-restarts" => mcs_restarts = Some(number(&mut i, arg)),
             "--no-mcs" => no_mcs = true,
             "--mcsm-up-to" => {
                 let vertices = number(&mut i, arg);
@@ -497,6 +506,15 @@ fn parse_args(argv: &[String]) -> Args {
             );
         }
     }
+    if mcs_restarts.is_some() {
+        needs("--mcs-restarts", order == Method::Portfolio, "portfolio");
+        if no_mcs {
+            usage_error(
+                "--mcs-restarts restarts the maximum cardinality search candidate and --no-mcs \
+                 runs none; give one",
+            );
+        }
+    }
     if no_mcs {
         needs("--no-mcs", order == Method::Portfolio, "portfolio");
     }
@@ -574,6 +592,7 @@ fn parse_args(argv: &[String]) -> Args {
         hedge_random,
         hedge_reserve,
         mcs_up_to,
+        mcs_restarts,
         no_mcs,
         mcsm_up_to,
         no_mcsm,
@@ -672,6 +691,9 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             }
             if let Some(vertices) = args.mcs_up_to {
                 config = config.with_maximum_cardinality(vertices);
+            }
+            if let Some(runs) = args.mcs_restarts {
+                config = config.with_maximum_cardinality_restarts(runs);
             }
             if args.no_mcs {
                 config = config.without_maximum_cardinality();

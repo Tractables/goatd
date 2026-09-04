@@ -95,6 +95,11 @@ pub(crate) struct RunSpec<'a> {
     /// the units of the order's own score. 0 is the exact minimum; the
     /// non-sampling cores ignore it.
     pub(crate) sample_band: u64,
+    /// Seed for the permutation a cardinality search breaks its ties on. With
+    /// none the search takes the smallest index and gives one order per graph;
+    /// with one it gives a different order per seed, which is what lets it
+    /// restart. Every other core ignores it, as they do the band.
+    pub(crate) cardinality_tie_seed: Option<u64>,
     /// Break min-degree ties by the order in which scores were updated.
     pub(crate) update_order_ties: bool,
     /// When the elimination must stop — handed to the core whole.
@@ -282,12 +287,20 @@ fn run_elimination_raw(
         Order::NestedDissection => {
             eliminate_nested_dissection(&mut g, salt, spec.seed, steps.sink(), spec.stop)
         }
-        Order::MinimalTriangulation => {
-            eliminate_cardinality_search(&mut g, Reach::LowerPaths, steps.sink(), spec.stop)
-        }
-        Order::MaximumCardinality => {
-            eliminate_cardinality_search(&mut g, Reach::Neighbours, steps.sink(), spec.stop)
-        }
+        Order::MinimalTriangulation => eliminate_cardinality_search(
+            &mut g,
+            Reach::LowerPaths,
+            spec.cardinality_tie_seed,
+            steps.sink(),
+            spec.stop,
+        ),
+        Order::MaximumCardinality => eliminate_cardinality_search(
+            &mut g,
+            Reach::Neighbours,
+            spec.cardinality_tie_seed,
+            steps.sink(),
+            spec.stop,
+        ),
     };
 
     let residual = if spec.complete_on_deadline && matches!(exit, ElimExit::DeadlineReached(_)) {
