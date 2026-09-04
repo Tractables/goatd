@@ -25,6 +25,8 @@ pub enum Stage {
     },
     /// An ordinary sampled min-fill restart.
     Sample,
+    /// The maximum cardinality search candidate.
+    MaximumCardinality,
     /// The MCS-M candidate, which eliminates along a minimal triangulation of
     /// the residual.
     MinimalTriangulation,
@@ -46,6 +48,7 @@ impl fmt::Display for Stage {
                 write!(formatter, "diverse:{degree_coefficient}")
             }
             Stage::Sample => formatter.write_str("sample"),
+            Stage::MaximumCardinality => formatter.write_str("maximum-cardinality"),
             Stage::MinimalTriangulation => formatter.write_str("minimal-triangulation"),
             Stage::Minimalized => formatter.write_str("minimalized"),
             Stage::FlowCutter => formatter.write_str("flowcutter"),

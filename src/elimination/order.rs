@@ -19,6 +19,10 @@ pub enum Order<'a> {
     /// Preprocess, then eliminate along an MCS-M numbering, which fills the
     /// residual to a minimal triangulation.
     MinimalTriangulation,
+    /// Preprocess, then eliminate along a maximum cardinality search numbering.
+    /// The numbering adds no fill on a chordal residual and is a cheaper
+    /// relative of [`Order::MinimalTriangulation`] on any other.
+    MaximumCardinality,
     /// Min-fill with weighted sampling from the full minimum-fill tie set.
     MinFillSampled {
         /// Per-vertex weights, one entry per input graph vertex.
@@ -49,7 +53,8 @@ impl<'a> Order<'a> {
             Order::MinFill
             | Order::MinDegree
             | Order::NestedDissection
-            | Order::MinimalTriangulation => None,
+            | Order::MinimalTriangulation
+            | Order::MaximumCardinality => None,
         }
     }
 
@@ -60,6 +65,7 @@ impl<'a> Order<'a> {
             Order::MinDegree => Order::MinDegree,
             Order::NestedDissection => Order::NestedDissection,
             Order::MinimalTriangulation => Order::MinimalTriangulation,
+            Order::MaximumCardinality => Order::MaximumCardinality,
             Order::MinFillSampled { .. } => Order::MinFillSampled { weights },
             Order::MinDegreeSampled { .. } => Order::MinDegreeSampled { weights },
             Order::FillDegreeSampled {

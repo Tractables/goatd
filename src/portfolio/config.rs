@@ -41,6 +41,18 @@ pub(super) const FLOWCUTTER_RESERVE: Duration = Duration::from_millis(1_500);
 /// greedy orders were narrower anyway.
 const DEFAULT_MINIMAL_TRIANGULATION_VERTICES: u32 = 1_000;
 
+/// Residual size at or below which the standard portfolio runs the maximum
+/// cardinality search candidate. The plain search has no path walk to pay for,
+/// so it costs one scan of the unnumbered vertices per vertex plus one pass
+/// over the edges, and stays affordable on residuals far larger than MCS-M can
+/// be run on: on a corpus of formula graphs it takes a couple of milliseconds
+/// up to ten thousand vertices and about half a second above that, against a
+/// budget of several seconds. Gates of two, ten and forty thousand were
+/// compared on that corpus and the widest was the best on every reading,
+/// because most of what the candidate wins is on residuals too large for the
+/// greedy orders to run on at all.
+const DEFAULT_MAXIMUM_CARDINALITY_VERTICES: u32 = 40_000;
+
 /// Graph size at or below which the standard portfolio minimalizes the
 /// triangulation behind its winner. The pass holds two bitsets over the
 /// vertices, so its memory grows with the square of this, which is what the
@@ -97,7 +109,7 @@ pub(super) const MAX_RESIDUAL_FOR_FULL_SCHEDULE: usize = 10_000;
 
 /// The default largest residual the expensive orders run on at all. Between
 /// [`MAX_RESIDUAL_FOR_FULL_SCHEDULE`] and this number they run on a paced
-/// schedule; above it the portfolio keeps only its min-degree candidates.
+/// schedule; above it they do not run at all.
 /// [`PortfolioConfig::with_expensive_orders_up_to`] moves the upper line.
 pub(super) const DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS: usize = 300_000;
 
@@ -306,6 +318,7 @@ pub struct PortfolioConfig {
     pub(super) sample_band: u64,
     pub(super) sample_band_alternate: bool,
     pub(super) expensive_orders_up_to: usize,
+    pub(super) maximum_cardinality: Option<u32>,
     pub(super) minimal_triangulation: Option<u32>,
     pub(super) triangulation_refinement: Option<u32>,
 }
@@ -326,6 +339,7 @@ impl PartialEq for PortfolioConfig {
             && self.sample_band == other.sample_band
             && self.sample_band_alternate == other.sample_band_alternate
             && self.expensive_orders_up_to == other.expensive_orders_up_to
+            && self.maximum_cardinality == other.maximum_cardinality
             && self.minimal_triangulation == other.minimal_triangulation
             && self.triangulation_refinement == other.triangulation_refinement
     }
@@ -351,6 +365,7 @@ impl PortfolioConfig {
             sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
+            maximum_cardinality: None,
             minimal_triangulation: None,
             triangulation_refinement: None,
         }
@@ -433,6 +448,7 @@ impl PortfolioConfig {
             sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
+            maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
         }
@@ -481,6 +497,7 @@ impl PortfolioConfig {
             sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
+            maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
         }
@@ -583,15 +600,47 @@ impl PortfolioConfig {
     /// - the trailing FlowCutter candidate runs as on any residual, under its
     ///   own vertex cap.
     ///
-    /// Above the number given here the portfolio keeps only its min-degree
-    /// candidates: the initial list drops min-fill and nested dissection after
-    /// the first candidate, the diverse pass and the hedge do not run, and the
-    /// ordinary restarts are sampled min-degree.
+    /// Above the number given here the expensive orders stop: the initial list
+    /// drops min-fill and nested dissection after the first candidate, the
+    /// diverse pass and the hedge do not run, and the ordinary restarts are
+    /// sampled min-degree. The candidates carrying a vertex cap of their own
+    /// are not part of this choice, the way the trailing FlowCutter candidate
+    /// already was not: the two cardinality searches and the fill-dropping pass
+    /// each answer their own gate, and every one of those gates sits far below
+    /// the default limit here.
     ///
     /// Setting it to 10,000 or lower leaves no middle band, and every residual
-    /// over the number runs min-degree only.
+    /// over the number runs min-degree plus whatever those gates admit.
     pub fn with_expensive_orders_up_to(mut self, vertices: usize) -> Self {
         self.expensive_orders_up_to = vertices;
+        self
+    }
+
+    /// Run the maximum cardinality search candidate while the preprocessed
+    /// residual has at most `max_residual_vertices` vertices.
+    ///
+    /// The search numbers the residual from `n` down to 1, always taking a
+    /// vertex with the most numbered neighbours, and the candidate eliminates
+    /// along that numbering reversed. It reads no seed and no weights, so it is
+    /// one candidate; it runs before the MCS-M candidate and before the
+    /// restarts, and it stops at the soft deadline rather than taking their
+    /// time. It adds no fill on a chordal residual and no minimality guarantee
+    /// on any other, so it is a cheap construction to race against the greedy
+    /// orders rather than a better one.
+    ///
+    /// The gate is a vertex count because the search scans the unnumbered
+    /// vertices once per vertex. The soft deadline is what stops it: the search
+    /// reads the clock while it walks, so a residual the gate lets through but
+    /// the budget cannot finish gives up part-way and the portfolio keeps what
+    /// the other candidates found.
+    pub fn with_maximum_cardinality(mut self, max_residual_vertices: u32) -> Self {
+        self.maximum_cardinality = Some(max_residual_vertices);
+        self
+    }
+
+    /// Run no maximum cardinality search candidate.
+    pub fn without_maximum_cardinality(mut self) -> Self {
+        self.maximum_cardinality = None;
         self
     }
 

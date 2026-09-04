@@ -42,11 +42,12 @@ pub(crate) enum Reach {
 /// elimination order is this sequence reversed: the last vertex numbered is
 /// eliminated first.
 ///
-/// Returns `None` when `hard_deadline` passed before the search finished. The
-/// deadline is read on the pacer's stride, which counts the scanning the search
-/// charges, so a single step over a dense graph is interrupted part-way rather
-/// than run to its end: one MCS-M step walks the whole graph in the worst case,
-/// and a caller with milliseconds left cannot afford one of those.
+/// Returns `None` when `hard_deadline` passed before the search finished. Both
+/// reaches read the deadline on the pacer's stride, which counts the scanning
+/// the search charges, so a single step over a dense graph is interrupted
+/// part-way rather than run to its end: the plain search scans every unnumbered
+/// vertex per step and one MCS-M step walks the whole graph in the worst case,
+/// and a caller with milliseconds left cannot afford either.
 pub(crate) fn cardinality_search(
     adjacency: &[Vec<u32>],
     reach: Reach,
@@ -135,16 +136,21 @@ pub(crate) fn cardinality_search(
     Some(selected)
 }
 
-/// Fill the active residual to a minimal triangulation with MCS-M and
-/// eliminate along the ordering that produces it.
-pub(super) fn eliminate_minimal_triangulation(
+/// Number the active residual with a cardinality search of the given reach and
+/// eliminate along the ordering that comes out.
+///
+/// With [`Reach::LowerPaths`] the elimination fills the residual to a minimal
+/// triangulation. With [`Reach::Neighbours`] it adds whatever fill the plain
+/// numbering happens to need, which is none when the residual is already
+/// chordal.
+pub(super) fn eliminate_cardinality_search(
     graph: &mut EliminationGraph,
+    reach: Reach,
     mut sink: ElimSink<'_>,
     stop: ElimStop,
 ) -> ElimExit {
     let (active, adjacency) = residual_edges(graph);
-    let Some(selected) = cardinality_search(&adjacency, Reach::LowerPaths, stop.hard_deadline)
-    else {
+    let Some(selected) = cardinality_search(&adjacency, reach, stop.hard_deadline) else {
         return ElimExit::DeadlineReached(Cutoff::Hard);
     };
     // The search numbers from `n` down to 1 and the numbering is a perfect

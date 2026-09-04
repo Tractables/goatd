@@ -16,6 +16,8 @@
 //!     separating on a König-Egerváry minimum vertex cover.
 //!   * **minimal triangulation** — the MCS-M numbering, which fills the
 //!     residual to a triangulation no added edge can be dropped from.
+//!   * **maximum cardinality** — the plain MCS numbering, the same search with
+//!     a shorter reach and no minimality guarantee.
 //!
 //! [`decompose`] runs one order once. [`crate::portfolio`] combines
 //! several orders, [`crate::decomposition::refine_with_flowcutter`] improves an
