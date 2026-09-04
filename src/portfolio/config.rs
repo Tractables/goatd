@@ -42,16 +42,18 @@ pub(super) const FLOWCUTTER_RESERVE: Duration = Duration::from_millis(1_500);
 const DEFAULT_MINIMAL_TRIANGULATION_VERTICES: u32 = 1_000;
 
 /// Residual size at or below which the standard portfolio runs the maximum
-/// cardinality search candidate. The plain search has no path walk to pay for,
-/// so it costs one scan of the unnumbered vertices per vertex plus one pass
-/// over the edges, and stays affordable on residuals far larger than MCS-M can
-/// be run on: on a corpus of formula graphs it takes a couple of milliseconds
-/// up to ten thousand vertices and about half a second above that, against a
-/// budget of several seconds. Gates of two, ten and forty thousand were
-/// compared on that corpus and the widest was the best on every reading,
-/// because most of what the candidate wins is on residuals too large for the
-/// greedy orders to run on at all.
-const DEFAULT_MAXIMUM_CARDINALITY_VERTICES: u32 = 40_000;
+/// cardinality search candidate: every size. The plain search has no path walk
+/// to pay for and takes its vertex off a heap rather than by scanning, so it
+/// costs one pass over the edges and a heap operation for each of them, which
+/// is a fraction of the elimination that follows it at any size. What decides
+/// whether it is worth starting is therefore the clock and not the vertex
+/// count, and the candidate reads the clock as it walks. Gates of two, ten and
+/// forty thousand were compared on a corpus of formula graphs and the widest
+/// was the best on every reading, because most of what the candidate wins is
+/// on residuals too large for the greedy orders to run on at all — and the
+/// largest residuals, where the greedy orders do not finish either, were never
+/// admitted at all until the search stopped costing a scan per vertex.
+const DEFAULT_MAXIMUM_CARDINALITY_VERTICES: u32 = u32::MAX;
 
 /// Graph size at or below which the standard portfolio minimalizes the
 /// triangulation behind its winner. The pass holds two bitsets over the
@@ -609,8 +611,8 @@ impl PortfolioConfig {
     /// sampled min-degree. The candidates carrying a vertex cap of their own
     /// are not part of this choice, the way the trailing FlowCutter candidate
     /// already was not: the two cardinality searches and the fill-dropping pass
-    /// each answer their own gate, and every one of those gates sits far below
-    /// the default limit here.
+    /// each answer their own gate, and the maximum cardinality search's gate
+    /// admits every size.
     ///
     /// Setting it to 10,000 or lower leaves no middle band, and every residual
     /// over the number runs min-degree plus whatever those gates admit.
@@ -627,15 +629,19 @@ impl PortfolioConfig {
     /// along that numbering reversed. It reads no seed and no weights, so it is
     /// one candidate; it runs before the MCS-M candidate and before the
     /// restarts, and it stops at the soft deadline rather than taking their
-    /// time. It adds no fill on a chordal residual and no minimality guarantee
-    /// on any other, so it is a cheap construction to race against the greedy
-    /// orders rather than a better one.
+    /// time, except on a residual above the full-schedule size, where the
+    /// elimination owns the rest of the window and the candidate takes half of
+    /// what is left of it. It adds no fill on a chordal residual and no
+    /// minimality guarantee on any other, so it is a cheap construction to race
+    /// against the greedy orders rather than a better one.
     ///
-    /// The gate is a vertex count because the search scans the unnumbered
-    /// vertices once per vertex. The soft deadline is what stops it: the search
-    /// reads the clock while it walks, so a residual the gate lets through but
-    /// the budget cannot finish gives up part-way and the portfolio keeps what
-    /// the other candidates found.
+    /// The default admits every size, because the search takes its vertex off a
+    /// heap rather than by scanning and so costs a pass over the edges however
+    /// large the residual is. The clock is what stops it: the search reads the
+    /// clock while it walks, so a residual the budget cannot finish gives up
+    /// part-way and the portfolio keeps what the other candidates found. The
+    /// gate remains a vertex count for a caller who wants the candidate kept
+    /// off large residuals anyway.
     pub fn with_maximum_cardinality(mut self, max_residual_vertices: u32) -> Self {
         self.maximum_cardinality = Some(max_residual_vertices);
         self

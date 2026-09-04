@@ -1142,15 +1142,31 @@ fn run_portfolio(
     // agree with each other. Both are deterministic, so each runs once; each
     // runs only on a residual its own gate admits, since the plain search
     // affords a residual an order of magnitude larger than the path search
-    // does; and both run against the soft deadline, which the search reads as
-    // it walks, so a graph where one does not finish gives up part-way and
-    // loses nothing but the time it spent. The cheaper one goes first, which
-    // also leaves MCS-M a tighter width bound to abort on.
+    // does; and both read the clock as they walk, so a graph where one does not
+    // finish gives up part-way and loses nothing but the time it spent. The
+    // cheaper one goes first, which also leaves MCS-M a tighter width bound to
+    // abort on.
+    //
+    // Which clock: the one the initial candidates read. Below the full-schedule
+    // size that is the soft deadline, as it always was. Above it, where the
+    // elimination rather than FlowCutter holds the second stage of the window,
+    // a search held to the soft deadline never starts at all — those are the
+    // graphs whose first greedy candidate runs past it — and they are also the
+    // graphs where the greedy orders leave the most behind. So there the
+    // searches run into the second stage as well, on a cutoff of half what the
+    // restarts' deadline has left, the same share an expensive order on an
+    // admitted residual takes, so a search that cannot finish cannot take all
+    // of the restarts' time either.
     //
     // What they cost, which the hedge's model of a stage leaves out: the stages
     // repeat the plain pass on other weights, and neither candidate is part of
     // either.
     let mut cardinality_search_cost = Duration::ZERO;
+    let cardinality_phase = if residual == Residual::Ordinary {
+        EliminationPhase::ExtraSampling
+    } else {
+        EliminationPhase::AdmittedInitial(admitted_cutoff(restart_deadline, hard_deadline))
+    };
     for (gate, order) in [
         (config.maximum_cardinality, Order::MaximumCardinality),
         (config.minimal_triangulation, Order::MinimalTriangulation),
@@ -1161,7 +1177,7 @@ fn run_portfolio(
         let Some(gate) = gate else { continue };
         if hard_deadline_tripped
             || prebuilt.num_active() > gate as usize
-            || expired(soft_deadline)
+            || expired(initial_deadline)
             || expired(hard_deadline)
         {
             continue;
@@ -1177,14 +1193,9 @@ fn run_portfolio(
                 // is no setup for a deadline to pace.
                 sample_band: 0,
                 update_order_ties: false,
-                // The soft deadline, not the wider one the initial candidates
-                // get where the elimination keeps the second stage: a search
-                // that does not finish returns no numbering at all, so running
-                // it into the second stage would spend that stage to produce
-                // nothing, and the restarts use it instead.
                 stop: elimination_stop(
-                    EliminationPhase::ExtraSampling,
-                    soft_deadline,
+                    cardinality_phase,
+                    initial_deadline,
                     hard_deadline,
                     candidates.best_width(),
                 ),
@@ -1199,7 +1210,7 @@ fn run_portfolio(
         let now = crate::meter::now();
         cardinality_search_cost += now.saturating_duration_since(before);
         trace(CandidateTrace {
-            stage: stage_of(order, EliminationPhase::ExtraSampling),
+            stage: stage_of(order, cardinality_phase),
             seed,
             pass: Pass::Only,
             outcome,

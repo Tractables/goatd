@@ -20,7 +20,8 @@ elimination runs:
 The inexpensive order runs first so a valid candidate exists early. Later
 runs receive the best width already found and stop when a bag is too wide to
 win. Two cardinality-search candidates follow the fixed orders, each on a
-residual small enough for it; see *Cardinality searches*. The size of the
+residual its own gate admits — every size, for the plain search; see
+*Cardinality searches*. The size of the
 residual left after preprocessing picks one of three schedules, and neither
 cardinality search is part of that choice: each has its own gate. At or below
 10,000 vertices the portfolio runs all of it: the fixed orders, the diverse
@@ -325,11 +326,12 @@ portfolio rather than replacements for anything.
 runs the plain search on the preprocessed residual and eliminates along the
 numbering reversed. On a chordal residual that adds no fill at all; on any
 other it adds whatever the numbering happens to need, with no minimality
-guarantee. It costs one scan of the unnumbered vertices per vertex plus one
-pass over the edges, which is cheap enough to run on residuals far larger than
-MCS-M can be run on, so `PortfolioConfig::with_maximum_cardinality` has a gate
-of its own. The candidate runs before the MCS-M one, which leaves MCS-M a
-tighter width bound to abort on.
+guarantee. The step takes its vertex off a max-heap keyed on the count and, at
+equal counts, on the smallest index, so the whole search costs one pass over
+the edges and a heap operation for each of them — cheap enough to run on
+residuals far larger than MCS-M can be run on, so
+`PortfolioConfig::with_maximum_cardinality` has a gate of its own. The candidate
+runs before the MCS-M one, which leaves MCS-M a tighter width bound to abort on.
 
 **MCS-M as a candidate.** `Order::MinimalTriangulation` runs MCS-M on the
 preprocessed residual and eliminates along the result. It reads no seed and no
@@ -337,9 +339,14 @@ weights, so it is one candidate rather than a family of them, and so is the
 plain search above it. It costs one traversal of the residual per vertex, which
 is why `PortfolioConfig::with_minimal_triangulation` gates it on the residual's
 vertex count. Both candidates run against the soft deadline and give up
-part-way rather than taking the restarts' time. One step of MCS-M can walk the
-whole residual, so the shared search reads the clock while it walks rather than
-only between steps; both reaches stop the same way. On most graphs the greedy
+part-way rather than taking the restarts' time — except on a residual above the
+full-schedule size, where the elimination rather than FlowCutter owns the second
+stage of the window and a candidate held to the soft deadline would never start,
+since the first greedy order there regularly runs past it. There the searches
+run into the second stage on a cutoff of half what the restarts' deadline has
+left. One step of MCS-M can walk the whole residual, so the shared search reads
+the clock while it walks rather than only between steps; both reaches stop the
+same way. On most graphs the greedy
 orders are narrower and the portfolio keeps them.
 
 **Dropping fill the bags do not need.** Removing one edge `uv` from a chordal

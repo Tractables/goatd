@@ -69,12 +69,12 @@ options:
                         asking for that many
   --mcs-up-to <n>       portfolio only: run the maximum cardinality search
                         candidate while the preprocessed residual has at most n
-                        vertices, in place of the built-in gate. The search
-                        numbers the residual by numbered-neighbour count and the
-                        candidate eliminates along that numbering reversed; it
-                        is one deterministic candidate, and it costs a scan of
-                        the unnumbered vertices per vertex, which is what the
-                        gate bounds
+                        vertices, in place of the built-in gate, which admits
+                        every size. The search numbers the residual by
+                        numbered-neighbour count and the candidate eliminates
+                        along that numbering reversed; it is one deterministic
+                        candidate, it costs a pass over the edges, and the clock
+                        rather than the gate is what stops it
   --no-mcs              portfolio only: run no maximum cardinality search
                         candidate
   --mcsm-up-to <n>      portfolio only: run the MCS-M candidate while the
