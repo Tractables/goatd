@@ -59,13 +59,20 @@ pub(crate) fn staged(
     Ok(TwoStage { soft, hard })
 }
 
-/// Whether `deadline` has passed.
+/// Whether `deadline` has passed, or the caller asked the solve to stop.
+///
+/// A set stop flag answers here exactly as an expired deadline does, including
+/// on a run that was given no deadline at all.
 pub(crate) fn expired(deadline: Option<Instant>) -> bool {
-    deadline.is_some_and(|deadline| crate::meter::now() >= deadline)
+    crate::stop::requested() || deadline.is_some_and(|deadline| crate::meter::now() >= deadline)
 }
 
-/// How long there is until `deadline` — zero once it has passed.
+/// How long there is until `deadline` — zero once it has passed, and zero once
+/// the caller has asked the solve to stop.
 pub(crate) fn remaining(deadline: Instant) -> Duration {
+    if crate::stop::requested() {
+        return Duration::ZERO;
+    }
     deadline.saturating_duration_since(crate::meter::now())
 }
 

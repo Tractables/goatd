@@ -69,6 +69,13 @@ void td_bag_neighbors(const TdResult* td, int bag_idx, int* out);
 // Free a TdResult.
 void td_free(TdResult* td);
 
+// Point the backend at a caller-owned byte that ends the search once it is
+// nonzero, in the same place a passed deadline ends it. The byte is read, never
+// written, and only where the loop already tests its deadline, so a signal
+// handler that does nothing but store into it is all the caller needs. Pass
+// NULL to unset.
+void td_set_stop_flag(const unsigned char* flag);
+
 // Self-test of the vendored FlowCutter k-way id-heap: push/pop max-ordering,
 // contains/get_key, and — the bug #18 regression — that the child-index
 // arithmetic (k*pos+1) does not overflow signed int32 at large heap positions.

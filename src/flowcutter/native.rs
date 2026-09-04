@@ -55,6 +55,7 @@ mod ffi {
         pub(super) fn td_bag_num_neighbors(td: *const TdResult, bag_index: c_int) -> c_int;
         pub(super) fn td_bag_neighbors(td: *const TdResult, bag_index: c_int, out: *mut c_int);
         pub(super) fn td_free(td: *mut TdResult);
+        pub(super) fn td_set_stop_flag(flag: *const u8);
     }
 }
 
@@ -102,6 +103,12 @@ impl NativeDecomposition {
         let search_budget = i64::try_from(search_units).unwrap_or(i64::MAX);
         let units_per_iteration =
             i64::try_from(iteration_work_units(vertices, num_edges as u64)).unwrap_or(i64::MAX);
+
+        // The backend tests this byte where it tests its deadline, so a caller
+        // that sets the stop flag also ends a build already inside the backend.
+        // SAFETY: the flag is a `static`, so the address stays valid for the
+        // process; the backend only reads it.
+        unsafe { ffi::td_set_stop_flag(crate::stop::flag_address()) };
 
         let mut iterations_done = 0i64;
         let mut greedy_touches = 0i64;

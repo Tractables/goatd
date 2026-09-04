@@ -16,7 +16,7 @@ use goatd::portfolio::{
     CandidateOutcome, CandidateTrace, DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, MAX_HEDGE_PASSES,
     Pass, PortfolioConfig, decompose_traced as portfolio,
 };
-use goatd::{Graph, TreeDecomposition};
+use goatd::{Graph, TreeDecomposition, stop_flag};
 
 const USAGE: &str = "\
 usage: goatd <graph.gr | -> [options]
@@ -71,9 +71,11 @@ options:
                         weights, instead of repeating the candidates that read
                         weights on a ranking the portfolio computes itself
   --capped-restarts     portfolio only: stop the ordinary restarts at their
-                        count instead of drawing seeds until the soft
-                        deadline. Needs --budget: with no deadline the count is
-                        what stops them anyway
+                        count instead of drawing seeds until the restart
+                        deadline, which is the hard cutoff less the reserve
+                        kept for the trailing FlowCutter candidate. Needs
+                        --budget: with no deadline the count is what stops
+                        them anyway
   --sample-band <eps>   portfolio only: the ordinary restarts draw from every
                         vertex whose elimination adds at most eps fill edges
                         more than the best. 0 draws only from the vertices
@@ -627,7 +629,36 @@ fn print_candidate(candidate: &CandidateTrace) {
     eprintln!("{line} ms={}", candidate.elapsed.as_millis());
 }
 
+/// Ask the library to stop. The handler stores one byte and does nothing else,
+/// so it is safe to run from a signal.
+#[cfg(unix)]
+extern "C" fn on_terminate(_signal: std::os::raw::c_int) {
+    stop_flag().store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Answer `SIGTERM` by stopping the search rather than by dying, so a caller
+/// that runs the tool under a wall clock still gets the decomposition found so
+/// far. Anything the handler cannot reach, such as reading the graph, keeps the
+/// default behaviour of ending the process.
+#[cfg(unix)]
+fn install_terminate_handler() {
+    // SAFETY: `action` is fully initialized below, and the handler only stores
+    // into an atomic. `sigaction` is given a valid pointer and a null old-action
+    // pointer.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = on_terminate as *const () as usize;
+        libc::sigemptyset(&raw mut action.sa_mask);
+        action.sa_flags = libc::SA_RESTART;
+        libc::sigaction(libc::SIGTERM, &raw const action, std::ptr::null_mut());
+    }
+}
+
+#[cfg(not(unix))]
+fn install_terminate_handler() {}
+
 fn main() {
+    install_terminate_handler();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let args = parse_args(&argv);
 
