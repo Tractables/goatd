@@ -785,6 +785,14 @@ fn run_portfolio(
                     candidates.best_width(),
                 ),
                 complete_on_deadline,
+                // On an admitted residual the fill counts the order seeds
+                // its buckets from are computed under the same cutoff as the
+                // order itself; below the band the setup runs to completion
+                // as it always has.
+                setup_deadline: match phase {
+                    EliminationPhase::AdmittedInitial(cutoff) => cutoff,
+                    _ => None,
+                },
             },
         );
         let (outcome, stop) = candidates.record_elimination(run);
@@ -950,6 +958,7 @@ fn run_portfolio(
                     candidates.best_width(),
                 ),
                 complete_on_deadline: false,
+                setup_deadline: None,
             },
         );
         let (outcome, _) = candidates.record_elimination(run);

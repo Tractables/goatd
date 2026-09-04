@@ -87,6 +87,7 @@ pub fn decompose(
             },
             // Always produce a valid TD.
             complete_on_deadline: true,
+            setup_deadline: None,
         },
     );
     match run {
