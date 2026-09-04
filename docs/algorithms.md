@@ -130,10 +130,61 @@ code, and the caller gets the best decomposition found so far. The command-line
 tool sets it from a `SIGTERM` handler, so a caller that runs the tool under a
 wall clock of its own still gets a decomposition. Both standard
 configurations hedge, which adds the candidates described under *The hedge*.
+Under a budget, the schedule after the fixed orders is decided by a bake-off
+rather than fixed; see *The bake-off*.
 Last of all, on a graph small enough for it, the portfolio rebuilds its winner
 on a minimal triangulation of the same graph and keeps whichever decomposition
 is better; that pass is also under *Cardinality searches*.
 The library remains single-threaded throughout.
+
+## The bake-off
+
+On a residual the whole schedule runs on, and under a budget that turns the
+long schedule on, the portfolio does not divide the window between its
+families of candidates in a fixed way. It races them and gives the rest of the
+window to the one that did best, which is what htd's challenge strategy does
+over its three ordering rules.
+
+The families are sampled min-fill, sampled min-degree, the diverse fill-degree
+scores, those scores on the hedge's first weighting, and FlowCutter. Five
+decision rounds run by default. Each round draws once from every family still
+in the running, on a seed of the round's own, the diverse and weighted
+families taking one degree coefficient per round in the order a diverse pass
+runs them. After each round a family whose narrowest is more than half again
+the round leader's is out, as is one that has never come back with a width.
+What is left of the window then goes to the survivor with the smallest mean
+width over the rounds it answered, ties going to its narrowest single round
+and then to the order the families are listed above. `--no-bakeoff` runs the
+fixed schedule instead; `--bakeoff-rounds` and `--bakeoff-share` change the
+round count and the share.
+
+Three points of detail decide what this costs and what it is worth.
+
+The rounds run without the incumbent width as a ceiling. A round needs a width
+from every family, and a candidate that aborts on the incumbent hands back
+none. The committed phase takes the ceiling again, which is what keeps it
+cheap: only a restart that improves runs to the end.
+
+FlowCutter's slice each round is what that round's elimination families cost
+between them, so it gets the share of the round it would have had as one of
+them. It is the one family whose answer keeps improving inside a single run,
+so a slice understates it in a way a slice does not understate an elimination
+family.
+
+The rounds get a third of what the window has left after the fixed orders, and
+they stop where another round of the same size would not fit. Three rounds have
+to fit in that share before any of them run — projected from what the head's
+own sampled min-fill cost, which like a round runs the whole residual with
+nothing to abort on — because a bake-off that runs one round and stops has
+spent its share and decided nothing, and the projection is not tight enough to
+admit on two. Two rounds have to finish before anything is committed, since one
+draw per family says more about the seed than about the family. Where either
+fails, the schedule is the fixed one, and a residual too large for the whole
+schedule never enters the bake-off at all.
+
+The candidates the rounds run are ordinary candidates: the portfolio keeps
+their decompositions and one of them can win it outright. What the rounds cost
+is not the work but the time the committed family did not have.
 
 ## Preprocessing
 

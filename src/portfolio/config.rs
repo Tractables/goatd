@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use crate::Error;
 use crate::embedding::{DEFAULT_MAX_ROUNDS, MAX_DIM};
+use crate::portfolio::bakeoff::MIN_ROUNDS as MIN_BAKEOFF_ROUNDS;
 
 /// Cap on extra sampled orders when there is no deadline. 100 is the knee
 /// measured across benchmark graphs: fewer leaves quality on the table, more
@@ -92,6 +93,19 @@ const DEFAULT_HEDGE: Hedge = Hedge::eccentricity();
 /// A run with no soft budget has nothing to protect and runs every stage of the
 /// series, whatever this says.
 const DEFAULT_HEDGE_RESERVE: f64 = 0.5;
+
+/// Decision rounds the bake-off runs before it hands the rest of the window to
+/// one family of candidates. htd's own figure, and the round count is not what
+/// bounds the cost here: [`DEFAULT_BAKEOFF_SHARE`] does, and the rounds stop
+/// where it runs out.
+const DEFAULT_BAKEOFF_ROUNDS: u32 = 5;
+
+/// The share of the window left after the fixed head that the bake-off's rounds
+/// may spend. What it buys is not thrown away — every round is real candidates
+/// and the portfolio keeps their decompositions — so the cost of the rounds is
+/// only that the committed family did not run in them. A third leaves the
+/// committed family twice the rounds' time.
+const DEFAULT_BAKEOFF_SHARE: f64 = 0.35;
 
 /// How far above the minimum fill the ordinary restarts draw their tie set, in
 /// fill edges. Drawing only from the vertices tied at the minimum leaves a
@@ -314,6 +328,8 @@ pub struct PortfolioConfig {
     pub(super) flowcutter_budget: Option<Duration>,
     pub(super) hedge: Hedge,
     pub(super) hedge_reserve: f64,
+    pub(super) bakeoff_rounds: Option<u32>,
+    pub(super) bakeoff_share: f64,
     pub(super) restarts_to_deadline: bool,
     pub(super) sample_band: u64,
     pub(super) sample_band_alternate: bool,
@@ -335,6 +351,8 @@ impl PartialEq for PortfolioConfig {
             && self.flowcutter_budget == other.flowcutter_budget
             && self.hedge == other.hedge
             && self.hedge_reserve.to_bits() == other.hedge_reserve.to_bits()
+            && self.bakeoff_rounds == other.bakeoff_rounds
+            && self.bakeoff_share.to_bits() == other.bakeoff_share.to_bits()
             && self.restarts_to_deadline == other.restarts_to_deadline
             && self.sample_band == other.sample_band
             && self.sample_band_alternate == other.sample_band_alternate
@@ -361,6 +379,8 @@ impl PortfolioConfig {
             flowcutter_budget: None,
             hedge: Hedge::Off,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
+            bakeoff_rounds: None,
+            bakeoff_share: DEFAULT_BAKEOFF_SHARE,
             restarts_to_deadline: false,
             sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
@@ -444,6 +464,8 @@ impl PortfolioConfig {
             flowcutter_budget: None,
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
+            bakeoff_rounds: None,
+            bakeoff_share: DEFAULT_BAKEOFF_SHARE,
             restarts_to_deadline: false,
             sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
@@ -496,6 +518,8 @@ impl PortfolioConfig {
             flowcutter_budget: extended.then_some(budget),
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
+            bakeoff_rounds: extended.then_some(DEFAULT_BAKEOFF_ROUNDS),
+            bakeoff_share: DEFAULT_BAKEOFF_SHARE,
             restarts_to_deadline: true,
             sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
@@ -528,6 +552,49 @@ impl PortfolioConfig {
     /// Without a soft budget nothing binds and every stage runs.
     pub fn with_hedge_reserve(mut self, fraction: f64) -> Self {
         self.hedge_reserve = fraction;
+        self
+    }
+
+    /// Run a bake-off over the portfolio's families of candidates and give the
+    /// rest of the window to the one that did best, over `rounds` decision
+    /// rounds.
+    ///
+    /// The families are sampled min-fill, sampled min-degree, the diverse
+    /// fill-degree scores, the same scores on the hedge's first weighting, and
+    /// FlowCutter. Each runs one candidate per round; after every round a
+    /// family more than half again as wide as the round's leader drops out; and
+    /// what is left of the window then goes to the survivor with the smallest
+    /// mean width. Without this the portfolio runs every family in turn, each
+    /// on its own share of the budget.
+    ///
+    /// The bake-off runs only where the whole schedule runs — a residual of at
+    /// most 10,000 vertices — and only under a soft budget, since it is
+    /// deciding where the rest of a window goes. `rounds` is refused below two,
+    /// because one draw per family decides nothing; on a graph where two rounds
+    /// do not fit in [`PortfolioConfig::with_bakeoff_share`], none of them run
+    /// and the schedule is the one this portfolio runs without a bake-off at
+    /// all.
+    pub fn with_bakeoff(mut self, rounds: u32) -> Self {
+        self.bakeoff_rounds = Some(rounds);
+        self
+    }
+
+    /// Run every family of candidates in turn, on the fixed schedule, instead
+    /// of racing them.
+    pub fn without_bakeoff(mut self) -> Self {
+        self.bakeoff_rounds = None;
+        self
+    }
+
+    /// Set the share of the window left after the fixed head that the
+    /// bake-off's rounds may spend, as a fraction in `0 < f < 1`. The rest goes
+    /// to the family the bake-off commits to.
+    ///
+    /// The rounds are not a survey: every candidate they run is kept and can
+    /// win the portfolio outright. What the share costs is the time the
+    /// committed family did not have.
+    pub fn with_bakeoff_share(mut self, fraction: f64) -> Self {
+        self.bakeoff_share = fraction;
         self
     }
 
@@ -769,6 +836,23 @@ pub(super) fn validate(config: PortfolioConfig) -> Result<(), Error> {
     }
     if let Some(series) = config.hedge.series() {
         validate_hedge_series(series)?;
+    }
+    if config
+        .bakeoff_rounds
+        .is_some_and(|rounds| rounds < MIN_BAKEOFF_ROUNDS)
+    {
+        return Err(Error::InvalidInput(format!(
+            "a portfolio bake-off needs at least {MIN_BAKEOFF_ROUNDS} rounds to decide anything"
+        )));
+    }
+    if !(config.bakeoff_share.is_finite()
+        && config.bakeoff_share > 0.0
+        && config.bakeoff_share < 1.0)
+    {
+        return Err(Error::InvalidInput(format!(
+            "portfolio bake-off share {} is not a fraction in 0 < f < 1",
+            config.bakeoff_share
+        )));
     }
     if !(config.hedge_reserve.is_finite()
         && config.hedge_reserve > 0.0

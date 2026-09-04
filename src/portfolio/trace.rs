@@ -36,6 +36,43 @@ pub enum Stage {
     FlowCutter,
     /// A hedge's weighted stage as a whole, rather than one of its candidates.
     WeightedStage,
+    /// The bake-off as a whole, rather than one of the candidates it ran.
+    /// `Committed` says which family got the rest of the window, `StageSkipped`
+    /// that the rounds were too expensive to start, and `NotStarted` that they
+    /// ran and no family came out of them.
+    Bakeoff,
+}
+
+/// One family of candidates the bake-off can hand the rest of the window to.
+///
+/// The families differ in kind, not in seed: two of them are the greedy scores
+/// htd races, one varies the score, one varies the tie weights, and the last is
+/// a different construction altogether.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BakeoffArm {
+    /// Sampled min-fill, drawing from the configured band.
+    MinFill,
+    /// Sampled min-degree.
+    MinDegree,
+    /// The diverse fill-degree scores, one degree coefficient per round.
+    Diverse,
+    /// The same fill-degree scores on the hedge's first weighting.
+    Weighted,
+    /// FlowCutter, given a slice of the bake-off each round.
+    FlowCutter,
+}
+
+impl fmt::Display for BakeoffArm {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            BakeoffArm::MinFill => "min-fill",
+            BakeoffArm::MinDegree => "min-degree",
+            BakeoffArm::Diverse => "diverse",
+            BakeoffArm::Weighted => "weighted",
+            BakeoffArm::FlowCutter => "flowcutter",
+        })
+    }
 }
 
 impl fmt::Display for Stage {
@@ -53,6 +90,7 @@ impl fmt::Display for Stage {
             Stage::Minimalized => formatter.write_str("minimalized"),
             Stage::FlowCutter => formatter.write_str("flowcutter"),
             Stage::WeightedStage => formatter.write_str("weighted-stage"),
+            Stage::Bakeoff => formatter.write_str("bakeoff"),
         }
     }
 }
@@ -76,6 +114,7 @@ pub enum Pass {
 
 /// What one candidate left behind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CandidateOutcome {
     /// A decomposition, recorded and folded into the best width so far.
     Produced {
@@ -110,6 +149,16 @@ pub enum CandidateOutcome {
         /// What the stages may spend between them: the reserve fraction of what
         /// the soft budget had left when the plain pass finished.
         allowance: Duration,
+    },
+    /// The bake-off handed the rest of the window to one family of candidates.
+    /// Reported once, against [`Stage::Bakeoff`].
+    Committed {
+        /// The family that gets the rest of the window.
+        arm: BakeoffArm,
+        /// Rounds the bake-off completed before it decided.
+        rounds: u32,
+        /// The narrowest decomposition that family produced during the rounds.
+        best_width: u32,
     },
 }
 

@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use super::Schedule;
 use super::candidates::CandidateSet;
 use super::config::{MAX_DIVERSE_SAMPLING_RUNS, validate};
+use super::{BakeoffArm, Commitment, commitment};
 use super::{CandidateOutcome, DEFAULT_HEDGE_DIMS, HedgeSeries, HedgeWeights, StageBudget};
 use super::{EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig, Residual};
 use super::{FLOWCUTTER_RESERVE, restart_admitted, restart_deadline};
@@ -19,6 +20,7 @@ fn schedule(base_seed: u64, min_degree_restarts: bool, weights: &[u32]) -> Sched
         base_seed,
         min_degree_restarts,
         ordinary_runs: 1_000,
+        plain_runs: 46,
         diverse_runs: 46,
         modified: &[],
         fixed_runs: 0,
@@ -57,6 +59,7 @@ fn hedged<'a>(
         base_seed,
         min_degree_restarts: false,
         ordinary_runs: 1_000,
+        plain_runs: 46,
         diverse_runs: 46,
         modified,
         fixed_runs,
@@ -1192,5 +1195,175 @@ fn an_estimate_grows_with_the_rate_the_run_is_actually_going_at() {
         super::at_observed_rate(estimate, spent(6_000, 0)),
         estimate,
         "with nothing charged there is no rate to read",
+    );
+}
+
+/// The schedule a ten-second budget runs before the bake-off says anything:
+/// the plain diverse pass, eight weighted stages, then the restarts.
+fn fixed_schedule() -> Commitment {
+    Commitment {
+        plain_runs: 46,
+        ordinary_runs: u64::MAX,
+        min_degree_restarts: false,
+        weighted_stages: true,
+        hedge_reserve: 0.5,
+        flowcutter_takes_the_window: false,
+    }
+}
+
+#[test]
+fn the_ten_second_window_races_the_families_and_a_short_one_does_not() {
+    let config = PortfolioConfig::standard_with_budget(Duration::from_millis(4_750));
+    assert_eq!(config.bakeoff_rounds, Some(5));
+    assert_eq!(
+        PortfolioConfig::standard_with_budget(Duration::from_millis(4_749)).bakeoff_rounds,
+        None
+    );
+    // With no deadline there is no window to hand out.
+    assert_eq!(PortfolioConfig::standard().bakeoff_rounds, None);
+    assert_eq!(PortfolioConfig::sampled_min_fill().bakeoff_rounds, None);
+    assert_eq!(config.without_bakeoff().bakeoff_rounds, None);
+    assert_eq!(config.with_bakeoff(3).bakeoff_rounds, Some(3));
+}
+
+#[test]
+fn a_share_outside_the_open_unit_interval_is_refused() {
+    let config = PortfolioConfig::standard_with_budget(Duration::from_millis(4_750));
+    validate(config).expect("the default share is a fraction");
+    for share in [0.0, 1.0, -0.5, 2.0, f64::NAN] {
+        let refused = validate(config.with_bakeoff_share(share));
+        assert!(
+            refused.is_err(),
+            "{share} is not a share the rounds can use"
+        );
+    }
+    validate(config.with_bakeoff_share(0.9)).expect("0.9 is a share the rounds can use");
+}
+
+#[test]
+fn no_commitment_leaves_the_schedule_alone() {
+    assert_eq!(commitment(None, fixed_schedule()), fixed_schedule());
+}
+
+#[test]
+fn a_commitment_to_min_fill_leaves_the_restarts_and_nothing_else() {
+    let committed = commitment(Some(BakeoffArm::MinFill), fixed_schedule());
+    assert_eq!(committed.plain_runs, 0);
+    assert!(!committed.weighted_stages);
+    assert!(!committed.min_degree_restarts);
+    assert_eq!(committed.ordinary_runs, u64::MAX);
+    assert!(!committed.flowcutter_takes_the_window);
+}
+
+#[test]
+fn a_commitment_to_min_degree_turns_the_restarts_over_to_it() {
+    let committed = commitment(Some(BakeoffArm::MinDegree), fixed_schedule());
+    assert!(committed.min_degree_restarts);
+    assert_eq!(committed.ordinary_runs, u64::MAX);
+    assert_eq!(committed.plain_runs, 0);
+    assert!(!committed.weighted_stages);
+}
+
+#[test]
+fn a_commitment_to_the_diverse_scores_runs_them_until_the_deadline() {
+    let committed = commitment(Some(BakeoffArm::Diverse), fixed_schedule());
+    assert_eq!(committed.plain_runs, u64::MAX);
+    assert_eq!(committed.ordinary_runs, 0);
+    assert!(!committed.weighted_stages);
+}
+
+#[test]
+fn a_commitment_to_the_weighted_scores_gives_the_stages_the_whole_share() {
+    let committed = commitment(Some(BakeoffArm::Weighted), fixed_schedule());
+    assert!(committed.weighted_stages);
+    assert_eq!(committed.hedge_reserve, 1.0);
+    // No plain pass in front of them: the plain scores lost the rounds.
+    assert_eq!(committed.plain_runs, 0);
+}
+
+#[test]
+fn a_commitment_to_flowcutter_empties_the_sampling_phase() {
+    let committed = commitment(Some(BakeoffArm::FlowCutter), fixed_schedule());
+    assert_eq!(committed.plain_runs, 0);
+    assert_eq!(committed.ordinary_runs, 0);
+    assert!(!committed.weighted_stages);
+    assert!(committed.flowcutter_takes_the_window);
+}
+
+#[test]
+fn a_committed_min_fill_schedule_starts_at_the_first_restart() {
+    let weights = vec![1u32; 8];
+    let mut schedule = schedule(0, false, &weights);
+    schedule.plain_runs = 0;
+    let first = extra_sample(schedule, 0).expect("the restarts are the whole schedule");
+    assert_eq!(first.stage, Stage::Sample);
+    assert_eq!(first.seed, sample_seed(0, 0));
+}
+
+#[test]
+fn a_committed_diverse_schedule_keeps_drawing_coefficients() {
+    let weights = vec![1u32; 8];
+    let mut schedule = schedule(0, false, &weights);
+    schedule.plain_runs = u64::MAX;
+    schedule.ordinary_runs = 0;
+    // Past the length of one pass the coefficients repeat on later seeds, so
+    // the family has candidates for as long as the deadline allows.
+    for index in [0, 46, 200, 1_000] {
+        let sample = extra_sample(schedule, index).expect("the diverse pass has no end here");
+        assert!(
+            matches!(sample.stage, Stage::Diverse { .. }),
+            "index {index} is a diverse candidate: {:?}",
+            sample.stage
+        );
+    }
+}
+
+#[test]
+fn the_bakeoff_commits_and_says_so() {
+    // 400 vertices is well inside the residual the whole schedule runs on, and
+    // the budget is the one the shipped CLI passes.
+    let graph = grid(20);
+    let weights = vec![1u32; graph.num_vertices() as usize];
+    let config = PortfolioConfig::standard_with_budget(Duration::from_millis(4_750));
+
+    let mut seen: Vec<(Stage, CandidateOutcome)> = Vec::new();
+    let decomposition = super::decompose_traced(&graph, &weights, 0, config, &mut |candidate| {
+        seen.push((candidate.stage, candidate.outcome));
+    })
+    .unwrap();
+
+    decomposition.validate(&graph).unwrap();
+    let committed = seen
+        .iter()
+        .find_map(|(stage, outcome)| match (stage, outcome) {
+            (Stage::Bakeoff, CandidateOutcome::Committed { arm, rounds, .. }) => {
+                Some((*arm, *rounds))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the bake-off decides on a graph this size: {seen:?}"));
+    assert!(
+        committed.1 >= 2,
+        "it takes two rounds to decide: {committed:?}"
+    );
+}
+
+#[test]
+fn a_portfolio_without_the_bakeoff_runs_the_fixed_schedule() {
+    let graph = grid(20);
+    let weights = vec![1u32; graph.num_vertices() as usize];
+    let config =
+        PortfolioConfig::standard_with_budget(Duration::from_millis(4_750)).without_bakeoff();
+
+    let mut seen: Vec<Stage> = Vec::new();
+    let decomposition = super::decompose_traced(&graph, &weights, 0, config, &mut |candidate| {
+        seen.push(candidate.stage);
+    })
+    .unwrap();
+
+    decomposition.validate(&graph).unwrap();
+    assert!(
+        !seen.contains(&Stage::Bakeoff),
+        "nothing raced, so nothing reports a bake-off: {seen:?}"
     );
 }

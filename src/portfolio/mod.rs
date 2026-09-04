@@ -8,6 +8,7 @@
 use std::cell::OnceCell;
 use std::time::{Duration, Instant};
 
+mod bakeoff;
 mod candidates;
 mod config;
 mod trace;
@@ -23,6 +24,7 @@ use crate::elimination::execution::ElimStop;
 use crate::embedding::{self, Embedding};
 use crate::flowcutter::{Budget, decompose as flowcutter_decompose};
 use crate::{Error, Graph, TreeDecomposition};
+use bakeoff::Bakeoff;
 use candidates::{CandidateSet, ScheduleStop};
 use config::{FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS};
 
@@ -30,7 +32,7 @@ pub use config::{
     DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, HedgeWeights, MAX_DIVERSE_SAMPLING_RUNS,
     MAX_HEDGE_PASSES, PortfolioConfig,
 };
-pub use trace::{CandidateOutcome, CandidateTrace, Pass, Stage};
+pub use trace::{BakeoffArm, CandidateOutcome, CandidateTrace, Pass, Stage};
 
 /// Exit early if FlowCutter hasn't improved treewidth for this long. Caps
 /// per-graph overhead where FlowCutter converges fast.
@@ -43,6 +45,11 @@ const HEDGE_RANDOM_SEED_OFFSET: u64 = 6151;
 /// Separates one random hedge weighting from the next.
 const HEDGE_RANDOM_SEED_STRIDE: u64 = 104_729;
 pub(crate) const SECOND_CANDIDATE_SEED_OFFSET: u64 = 42;
+
+/// Where the bake-off's rounds draw their seeds from. Far enough along the
+/// sequence that no round lands on a seed the restarts reach: the restarts run
+/// in the thousands, not the millions.
+const BAKEOFF_SEED_OFFSET: u64 = 1_000_003;
 
 /// Restarts kept back at the end of the hard window for the trailing FlowCutter
 /// candidate to stop in and hand its result back. See `flowcutter_candidate`.
@@ -229,7 +236,13 @@ struct Schedule<'a> {
     /// Ordinary restarts on offer: the configured count, or `u64::MAX` where
     /// the restart deadline ends them instead of the count.
     ordinary_runs: u64,
-    /// Diverse candidates in one pass.
+    /// Candidates in the plain diverse pass, the one that runs on the caller's
+    /// weights before any weighted stage. Normally the same as `diverse_runs`.
+    /// A bake-off that committed to the diverse scores sets it to `u64::MAX`,
+    /// so the pass runs until the deadline; one that committed to anything else
+    /// sets it to zero, so the plain pass does not run at all.
+    plain_runs: u64,
+    /// Diverse candidates in one weighted stage.
     diverse_runs: u64,
     /// One entry per weighted stage, in the order the stages run. Empty when
     /// nothing is hedged.
@@ -279,7 +292,7 @@ impl<'a> Schedule<'a> {
     /// Candidates before the ordinary restarts: the plain diverse pass, then
     /// one weighted stage per weighting.
     fn passes_total(self) -> u64 {
-        self.diverse_runs
+        self.plain_runs
             .saturating_add(self.stage_length().saturating_mul(self.modified_stages()))
     }
 
@@ -474,7 +487,7 @@ fn extra_sample(schedule: Schedule<'_>, index: u64) -> Option<Sample<'_>> {
     debug_assert!(schedule.diverse_runs <= config::MAX_DIVERSE_SAMPLING_RUNS);
     // The first diverse pass is the one a portfolio without the hedge runs:
     // the caller's weights and the same seeds.
-    if index < schedule.diverse_runs {
+    if index < schedule.plain_runs {
         return schedule.diverse_sample(index, true, 0);
     }
     let stage_length = schedule.stage_length();
@@ -482,7 +495,7 @@ fn extra_sample(schedule: Schedule<'_>, index: u64) -> Option<Sample<'_>> {
         // Then one weighted stage per weighting, in the series' order: the
         // fixed orders that read the weights, on that stage's ranking this
         // time, and then the diverse pass again on it.
-        let after_plain = index - schedule.diverse_runs;
+        let after_plain = index - schedule.plain_runs;
         if after_plain < stage_length.saturating_mul(schedule.modified_stages()) {
             let stage_index = after_plain / stage_length;
             let within = after_plain % stage_length;
@@ -906,6 +919,322 @@ fn sampled_min_fill_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandid
     }]
 }
 
+/// One draw from `arm`, on the round's seed.
+///
+/// Every family draws with the caller's weights except the weighted one, which
+/// draws with the hedge's first weighting — the stage a hedged run always
+/// spends, whatever the budget. The diverse and weighted families take one
+/// degree coefficient per round, in the order a diverse pass runs them, so the
+/// rounds see what those families would actually have started with.
+fn bakeoff_sample<'a>(
+    arm: BakeoffArm,
+    round: u32,
+    seed: u64,
+    band: u64,
+    weights: &'a [u32],
+    modified: &[ModifiedWeights<'a>],
+) -> Option<Sample<'a>> {
+    let coefficient = config::DIVERSE_INITIAL_COEFFICIENTS
+        [round as usize % config::DIVERSE_INITIAL_COEFFICIENTS.len()];
+    let order = match arm {
+        BakeoffArm::MinFill => Order::MinFillSampled { weights },
+        BakeoffArm::MinDegree => Order::MinDegreeSampled { weights },
+        BakeoffArm::Diverse => Order::FillDegreeSampled {
+            weights,
+            degree_coefficient: coefficient,
+        },
+        BakeoffArm::Weighted => Order::FillDegreeSampled {
+            weights: modified.first()?.get(),
+            degree_coefficient: coefficient,
+        },
+        BakeoffArm::FlowCutter => return None,
+    };
+    let mut sample = sample_at(order, seed, Pass::Only, EliminationPhase::ExtraSampling)?;
+    sample.band = if matches!(arm, BakeoffArm::MinFill) {
+        band
+    } else {
+        0
+    };
+    Some(sample)
+}
+
+/// The families this configuration has to race, FlowCutter last so its slice
+/// can be sized from what the round's elimination families cost.
+fn bakeoff_arms(config: PortfolioConfig, modified: &[ModifiedWeights<'_>]) -> Vec<BakeoffArm> {
+    let mut arms = vec![BakeoffArm::MinFill, BakeoffArm::MinDegree];
+    if config.diverse_sampling_runs > 0 {
+        arms.push(BakeoffArm::Diverse);
+    }
+    if !modified.is_empty() {
+        arms.push(BakeoffArm::Weighted);
+    }
+    if config.flowcutter_budget.is_some() {
+        arms.push(BakeoffArm::FlowCutter);
+    }
+    arms
+}
+
+/// Everything the bake-off needs beyond the graph and the candidate set.
+#[derive(Clone, Copy)]
+struct BakeoffRun<'a> {
+    config: PortfolioConfig,
+    rounds: u32,
+    seed: u64,
+    weights: &'a [u32],
+    /// When the portfolio started, for the trace.
+    started: Instant,
+    /// The work clock when it started, for FlowCutter's own estimates.
+    started_units: u64,
+    /// What the head's sampled min-fill cost, the model for one draw.
+    pass_cost: Option<Duration>,
+    /// Where the elimination phases stop.
+    restart_deadline: Instant,
+    hard_deadline: Option<Instant>,
+}
+
+/// What the sampling phase runs, once the bake-off has had its say.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Commitment {
+    /// Candidates in the plain diverse pass, on the caller's weights.
+    plain_runs: u64,
+    /// Ordinary restarts on offer.
+    ordinary_runs: u64,
+    /// The restarts run sampled min-degree in place of sampled min-fill.
+    min_degree_restarts: bool,
+    /// The hedge's weighted stages run.
+    weighted_stages: bool,
+    /// The share of what is left that those stages may spend between them.
+    hedge_reserve: f64,
+    /// The trailing FlowCutter candidate takes the rest of the hard window
+    /// rather than its configured budget.
+    flowcutter_takes_the_window: bool,
+}
+
+/// What one family winning the bake-off leaves running, out of the schedule
+/// `fixed` describes.
+///
+/// Every family the bake-off did not commit to stops here. The rounds were
+/// spent finding out which one suits this graph; the point of them is that the
+/// winner gets the rest of the window. Without a commitment the schedule is
+/// `fixed`, unchanged.
+fn commitment(arm: Option<BakeoffArm>, fixed: Commitment) -> Commitment {
+    let committed = Commitment {
+        plain_runs: 0,
+        weighted_stages: false,
+        ..fixed
+    };
+    match arm {
+        None => fixed,
+        // The plain restarts and nothing else, which is htd's committed phase.
+        Some(BakeoffArm::MinFill) => Commitment {
+            min_degree_restarts: false,
+            ..committed
+        },
+        Some(BakeoffArm::MinDegree) => Commitment {
+            min_degree_restarts: true,
+            ..committed
+        },
+        // The diverse pass past its usual length: the degree coefficients
+        // repeat on fresh seeds and the restart deadline is what ends them.
+        Some(BakeoffArm::Diverse) => Commitment {
+            plain_runs: u64::MAX,
+            ordinary_runs: 0,
+            ..committed
+        },
+        // The weighted stages with nothing kept back for the restarts, and no
+        // plain pass in front of them: the plain scores lost the rounds.
+        Some(BakeoffArm::Weighted) => Commitment {
+            weighted_stages: true,
+            hedge_reserve: 1.0,
+            ..committed
+        },
+        // Nothing for the sampling phase to run, so the trailing FlowCutter
+        // candidate has the window to itself.
+        Some(BakeoffArm::FlowCutter) => Commitment {
+            ordinary_runs: 0,
+            flowcutter_takes_the_window: true,
+            ..committed
+        },
+    }
+}
+
+/// Race the families and say which one gets the rest of the window, with what
+/// the rounds cost.
+///
+/// `None` means nothing was decided and the ordinary schedule stands: the
+/// rounds did not fit, or fewer than two of them completed, and one draw per
+/// family says more about the seed than about the family.
+fn run_bakeoff<'a>(
+    graph: &Graph,
+    prebuilt: &mut engine::Prebuilt,
+    candidates: &mut CandidateSet,
+    modified: &[ModifiedWeights<'a>],
+    run: BakeoffRun<'a>,
+    trace: &mut dyn FnMut(CandidateTrace),
+) -> Result<(Option<BakeoffArm>, Duration), Error> {
+    let opened = crate::meter::now();
+    let elapsed = |now: Instant| now.saturating_duration_since(run.started);
+    let arms = bakeoff_arms(run.config, modified);
+    let allowance = remaining(run.restart_deadline).mul_f64(run.config.bakeoff_share);
+    // One round is a draw from every elimination family plus a FlowCutter slice
+    // of the same size again, so twice one draw times the families. The head's
+    // own sampled min-fill is the measurement of a draw, and the right one:
+    // like a round it runs the whole residual with no incumbent width to abort
+    // on, where a restart later in the schedule usually aborts early. With no
+    // such measurement the head as a whole stands in, which overstates a round
+    // — it holds two nested dissections — and so only ever declines.
+    //
+    // What has to fit is the smallest number of rounds that can decide
+    // anything, and then one more. A bake-off that runs one round and stops has
+    // spent its share and decided nothing, which is the worst of both, and it
+    // is the graphs in the middle of the size range — where a pass costs enough
+    // that a second round does not fit — that land there.
+    //
+    // The extra round is the margin one measurement asked for. On a
+    // 5,747-vertex residual the head's min-fill read 130 ms on one run and
+    // 170 ms on the next, and the round that followed cost 1,783 ms against
+    // the 1,300 the low reading projects. Entering on the low reading spends
+    // a third of the window on a single round and commits to nothing.
+    let round_cost = run
+        .pass_cost
+        .unwrap_or_else(|| elapsed(opened))
+        .saturating_mul(2 * arms.len() as u32);
+    let projected = round_cost.saturating_mul(bakeoff::MIN_ROUNDS + 1);
+    if arms.len() < 2 || projected > allowance {
+        trace(CandidateTrace {
+            stage: Stage::Bakeoff,
+            seed: run.seed,
+            pass: Pass::Only,
+            outcome: CandidateOutcome::StageSkipped {
+                projected,
+                spent: elapsed(opened),
+                allowance,
+            },
+            elapsed: elapsed(opened),
+        });
+        return Ok((None, Duration::ZERO));
+    }
+    let ends_at = opened + allowance;
+    let mut bakeoff = Bakeoff::new(&arms);
+    for round in 0..run.rounds {
+        let alive = bakeoff.alive();
+        if alive.len() < 2 {
+            break;
+        }
+        let round_started = crate::meter::now();
+        let round_seed = sample_seed(run.seed, BAKEOFF_SEED_OFFSET + u64::from(round));
+        // What this round's elimination families cost between them, which is
+        // the slice FlowCutter gets at the end of it.
+        let mut elimination_cost = Duration::ZERO;
+        let mut round_completed = true;
+        for arm in alive {
+            if expired(Some(ends_at)) || expired(run.hard_deadline) {
+                round_completed = false;
+                break;
+            }
+            let before = crate::meter::now();
+            let mut stage = Stage::FlowCutter;
+            let outcome = match bakeoff_sample(
+                arm,
+                round,
+                round_seed,
+                run.config.sample_band,
+                run.weights,
+                modified,
+            ) {
+                Some(sample) => {
+                    stage = sample.stage;
+                    let order_run = engine::run_order_prebuilt(
+                        prebuilt,
+                        engine::RunSpec {
+                            order: sample.order,
+                            seed: sample.seed,
+                            sample_band: sample.band,
+                            update_order_ties: false,
+                            // No width bound. A round needs a width from every
+                            // family, and a candidate that aborts on the
+                            // incumbent hands back none. The committed phase
+                            // takes the bound again.
+                            stop: elimination_stop(
+                                EliminationPhase::ExtraSampling,
+                                Some(ends_at),
+                                run.hard_deadline,
+                                None,
+                            ),
+                            complete_on_deadline: false,
+                            setup_deadline: None,
+                        },
+                    );
+                    let (outcome, _) = candidates.record_elimination(order_run);
+                    elimination_cost += crate::meter::now().saturating_duration_since(before);
+                    outcome
+                }
+                None => {
+                    // FlowCutter, whose slice is what the elimination families
+                    // just spent: the share of the round it would have had if
+                    // it were one of them for as long as they ran.
+                    let slice = elimination_cost
+                        .max(Duration::from_millis(MIN_FLOWCUTTER_CANDIDATE_MS))
+                        .min(remaining(ends_at));
+                    match flowcutter_candidate(
+                        graph,
+                        slice,
+                        Some(ends_at),
+                        Spent {
+                            elapsed: elapsed(before),
+                            charged_units: crate::meter::units_spent()
+                                .saturating_sub(run.started_units),
+                        },
+                    )? {
+                        Some(decomposition) => candidates.push(decomposition),
+                        None => CandidateOutcome::NotStarted,
+                    }
+                }
+            };
+            if let CandidateOutcome::Produced { width, .. } = outcome {
+                bakeoff.record(arm, width);
+            }
+            trace(CandidateTrace {
+                stage,
+                seed: round_seed,
+                pass: Pass::Only,
+                outcome,
+                elapsed: elapsed(crate::meter::now()),
+            });
+        }
+        if !round_completed {
+            break;
+        }
+        bakeoff.end_round();
+        // Stop where another round of the same size would not fit.
+        let now = crate::meter::now();
+        let cost = now.saturating_duration_since(round_started);
+        if now.checked_add(cost).is_none_or(|finish| finish > ends_at) {
+            break;
+        }
+    }
+    let winner = bakeoff.winner();
+    let now = crate::meter::now();
+    trace(CandidateTrace {
+        stage: Stage::Bakeoff,
+        seed: run.seed,
+        pass: Pass::Only,
+        outcome: match winner {
+            Some((arm, best_width)) => CandidateOutcome::Committed {
+                arm,
+                rounds: bakeoff.rounds(),
+                best_width,
+            },
+            None => CandidateOutcome::NotStarted,
+        },
+        elapsed: elapsed(now),
+    });
+    Ok((
+        winner.map(|(arm, _)| arm),
+        now.saturating_duration_since(opened),
+    ))
+}
+
 /// Run a portfolio: the initial orders the residual's size allows, then extra
 /// sampled orders with the remaining budget, then the trailing FlowCutter
 /// candidate where configured.
@@ -1013,6 +1342,8 @@ fn run_portfolio(
     let mut hard_deadline_tripped = false;
     // Set by an initial min-fill order that produced a decomposition.
     let mut min_fill_finished = false;
+    // What that order cost, which is the bake-off's model of one draw.
+    let mut min_fill_cost: Option<Duration> = None;
 
     for (i, candidate) in initial_orders.iter().copied().enumerate() {
         let order = candidate.order;
@@ -1067,6 +1398,7 @@ fn run_portfolio(
         } else {
             original.get_or_insert_with(|| engine::prebuild_original(graph))
         };
+        let candidate_started = crate::meter::now();
         let run = engine::run_order_prebuilt(
             candidate_graph,
             engine::RunSpec {
@@ -1094,18 +1426,20 @@ fn run_portfolio(
             },
         );
         let (outcome, stop) = candidates.record_elimination(run);
+        let candidate_finished = crate::meter::now();
         // What the restarts of an admitted residual follow: a min-fill order
         // that came back with a decomposition finished inside its cutoff, so
         // sampled min-fill has a prospect of finishing too.
         if is_min_fill_variant(order) && matches!(outcome, CandidateOutcome::Produced { .. }) {
             min_fill_finished = true;
+            min_fill_cost = Some(candidate_finished.saturating_duration_since(candidate_started));
         }
         trace(CandidateTrace {
             stage: stage_of(order, phase),
             seed: candidate.seed,
             pass: Pass::Only,
             outcome,
-            elapsed: crate::meter::now().saturating_duration_since(started),
+            elapsed: candidate_finished.saturating_duration_since(started),
         });
         // An expensive order on an admitted residual runs to a cutoff of its
         // own, and the engine reports reaching that the same way it reports the
@@ -1123,9 +1457,12 @@ fn run_portfolio(
                 // Nothing usable from this candidate, but the portfolio is
                 // still inside its budget.
                 CandidateOutcome::WidthAborted => false,
-                // Only the sampling phase has stages to skip, and only the
-                // trailing FlowCutter slot reports an unstarted candidate.
-                CandidateOutcome::StageSkipped { .. } | CandidateOutcome::NotStarted => false,
+                // Only the sampling phase has stages to skip, only the
+                // trailing FlowCutter slot reports an unstarted candidate, and
+                // only the bake-off reports a commitment.
+                CandidateOutcome::StageSkipped { .. }
+                | CandidateOutcome::NotStarted
+                | CandidateOutcome::Committed { .. } => false,
                 CandidateOutcome::Produced { .. } | CandidateOutcome::DeadlineReached => {
                     expired(hard_deadline)
                 }
@@ -1206,6 +1543,43 @@ fn run_portfolio(
             elapsed: now.saturating_duration_since(started),
         });
     }
+    // The bake-off, between the fixed head and the sampling phase. Every
+    // family of candidates draws once per round on the round's seed; a family
+    // more than half again as wide as the round's leader drops out; and what is
+    // left of the window then goes to the survivor with the smallest mean
+    // width, in place of the fixed split below. It runs only where the whole
+    // schedule runs and only under a budget it can divide, and it hands back
+    // nothing on a graph where a round did not fit or two rounds did not
+    // finish, which leaves the fixed split exactly as it was.
+    let mut committed = None;
+    let mut bakeoff_cost = Duration::ZERO;
+    if let Some(rounds) = config.bakeoff_rounds.filter(|rounds| *rounds > 0)
+        && let Some(stop_at) = restart_deadline
+        && residual == Residual::Ordinary
+        && !hard_deadline_tripped
+        && !expired(hard_deadline)
+    {
+        (committed, bakeoff_cost) = run_bakeoff(
+            graph,
+            &mut prebuilt,
+            &mut candidates,
+            &modified,
+            BakeoffRun {
+                config,
+                rounds,
+                seed,
+                weights,
+                started,
+                started_units,
+                pass_cost: min_fill_cost,
+                restart_deadline: stop_at,
+                hard_deadline,
+            },
+            trace,
+        )?;
+        hard_deadline_tripped = expired(hard_deadline);
+    }
+
     // Sampling phase: try additional seeds of the full-tie-set sampling
     // order with any remaining budget. Measured ≥79% of min-fill pops have
     // ≥2 tied candidates, so different seeds explore different
@@ -1245,12 +1619,40 @@ fn run_portfolio(
         Residual::Admitted => !min_fill_finished,
         Residual::Large => true,
     };
+    let commitment = commitment(
+        committed,
+        Commitment {
+            plain_runs: diverse_samples,
+            ordinary_runs,
+            min_degree_restarts,
+            weighted_stages: !modified.is_empty(),
+            hedge_reserve: config.hedge_reserve,
+            flowcutter_takes_the_window: false,
+        },
+    );
+    let Commitment {
+        plain_runs,
+        ordinary_runs,
+        min_degree_restarts,
+        weighted_stages,
+        hedge_reserve,
+        flowcutter_takes_the_window,
+    } = commitment;
+    let modified = if weighted_stages { &modified[..] } else { &[] };
+    let flowcutter_budget = if flowcutter_takes_the_window {
+        // Whatever the hard window still has, rather than the configured
+        // budget: `flowcutter_window` takes the smaller of the two.
+        Some(Duration::MAX)
+    } else {
+        config.flowcutter_budget
+    };
     let schedule = Schedule {
         base_seed: seed,
         min_degree_restarts,
         ordinary_runs,
+        plain_runs,
         diverse_runs: diverse_samples,
-        modified: &modified,
+        modified,
         fixed_runs,
         initial_orders: order_builder,
         weights,
@@ -1263,7 +1665,7 @@ fn run_portfolio(
     // Where the weighted stages sit in the sample sequence, and how long one of
     // them is. A schedule with no stage leaves this empty.
     let stage_length = schedule.stage_length();
-    let stages_start = schedule.diverse_runs;
+    let stages_start = schedule.plain_runs;
     let stages_end = schedule.passes_total();
     let stage_count = schedule.modified_stages();
     // Decided at the end of the plain pass, from what that pass cost and what
@@ -1297,9 +1699,11 @@ fn run_portfolio(
             let stage_index = (sample_index - stages_start) / stage_length;
             let budget = stage_budget.get_or_insert_with(|| {
                 StageBudget::new(
-                    elapsed.saturating_sub(cardinality_search_cost),
+                    elapsed
+                        .saturating_sub(cardinality_search_cost)
+                        .saturating_sub(bakeoff_cost),
                     restart_deadline.map(remaining),
-                    config.hedge_reserve,
+                    hedge_reserve,
                 )
             });
             if stage_index > 0 {
@@ -1376,11 +1780,13 @@ fn run_portfolio(
             // back from a candidate.
             //
             // A candidate that ran has a result, so it never reports
-            // `NotStarted`; only a slot the size rule gave up does.
+            // `NotStarted`; only a slot the size rule gave up does. A
+            // commitment comes from the bake-off, which is over by now.
             CandidateOutcome::Produced { .. }
             | CandidateOutcome::WidthAborted
             | CandidateOutcome::NotStarted
-            | CandidateOutcome::StageSkipped { .. } => {
+            | CandidateOutcome::StageSkipped { .. }
+            | CandidateOutcome::Committed { .. } => {
                 sample_index += 1;
             }
         }
@@ -1393,9 +1799,8 @@ fn run_portfolio(
     // separator-refinement pass is applied to it. It runs on every residual;
     // on the large ones it is often the best candidate by a wide margin, and
     // `flowcutter_candidate` has its own vertex cap.
-    if let Some(configured_budget) = config
-        .flowcutter_budget
-        .filter(|_| !hard_deadline_tripped && !expired(hard_deadline))
+    if let Some(configured_budget) =
+        flowcutter_budget.filter(|_| !hard_deadline_tripped && !expired(hard_deadline))
         && let Some(decomposition) = flowcutter_candidate(
             graph,
             configured_budget,

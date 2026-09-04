@@ -67,6 +67,23 @@ options:
                         budget, so this needs a series of two or more stages —
                         the default one, or --hedge-dims or --hedge-random
                         asking for that many
+  --bakeoff-rounds <n>  portfolio only: decision rounds the bake-off runs
+                        before it hands the rest of the window to one family of
+                        candidates, in place of the built-in count; at least
+                        two, since one draw per family decides nothing. Each round
+                        draws once from sampled min-fill, sampled min-degree,
+                        the diverse fill-degree scores, those scores on the
+                        hedge's first weighting, and FlowCutter; a family more
+                        than half again as wide as the round's leader drops out;
+                        and the survivor with the smallest mean width gets what
+                        is left. Needs --budget, and applies to residuals of at
+                        most 10000 vertices, where the whole schedule runs
+  --no-bakeoff          portfolio only: run every family in turn on its own
+                        share of the budget instead of racing them
+  --bakeoff-share <f>   portfolio only: the share of the window left after the
+                        fixed orders that the bake-off's rounds may spend,
+                        0 < f < 1 (default 0.35). The rest goes to the family
+                        it commits to. Not with --no-bakeoff
   --mcs-up-to <n>       portfolio only: run the maximum cardinality search
                         candidate while the preprocessed residual has at most n
                         vertices, in place of the built-in gate. The search
@@ -180,6 +197,9 @@ struct Args {
     hedge_dims: Option<Vec<usize>>,
     hedge_random: Option<usize>,
     hedge_reserve: Option<f64>,
+    bakeoff_rounds: Option<u32>,
+    no_bakeoff: bool,
+    bakeoff_share: Option<f64>,
     mcs_up_to: Option<u32>,
     no_mcs: bool,
     mcsm_up_to: Option<u32>,
@@ -246,6 +266,9 @@ fn parse_args(argv: &[String]) -> Args {
     let mut hedge_dims: Option<Vec<usize>> = None;
     let mut hedge_random = None;
     let mut hedge_reserve = None;
+    let mut bakeoff_rounds = None;
+    let mut no_bakeoff = false;
+    let mut bakeoff_share = None;
     let mut mcs_up_to = None;
     let mut no_mcs = false;
     let mut mcsm_up_to = None;
@@ -371,6 +394,32 @@ fn parse_args(argv: &[String]) -> Args {
             }
             "--no-drop-fill" => no_drop_fill = true,
             "--no-hedge" => no_hedge = true,
+            "--bakeoff-rounds" => {
+                let rounds = number(&mut i, arg);
+                let Ok(rounds) = u32::try_from(rounds) else {
+                    usage_error("--bakeoff-rounds wants a round count that fits in 32 bits");
+                };
+                if rounds < 2 {
+                    usage_error(
+                        "--bakeoff-rounds wants at least two rounds, since one draw per family \
+                         decides nothing; --no-bakeoff runs none at all",
+                    );
+                }
+                bakeoff_rounds = Some(rounds);
+            }
+            "--no-bakeoff" => no_bakeoff = true,
+            "--bakeoff-share" => {
+                let text = value(&mut i, arg);
+                let fraction: f64 = text.parse().unwrap_or_else(|_| {
+                    usage_error(&format!(
+                        "--bakeoff-share wants a fraction in 0 < f < 1, such as 0.35, not {text:?}"
+                    ))
+                });
+                if !(fraction.is_finite() && fraction > 0.0 && fraction < 1.0) {
+                    usage_error("--bakeoff-share wants a fraction in 0 < f < 1");
+                }
+                bakeoff_share = Some(fraction);
+            }
             "--capped-restarts" => capped_restarts = true,
             "--sample-band" => sample_band = Some(number(&mut i, arg)),
             "--sample-band-alternate" => sample_band_alternate = true,
@@ -486,6 +535,36 @@ fn parse_args(argv: &[String]) -> Args {
     if no_hedge {
         needs("--no-hedge", order == Method::Portfolio, "portfolio");
     }
+    // The bake-off divides a window between the families, so it says nothing
+    // without one, and each flag is refused beside anything that turns the
+    // bake-off off.
+    if let Some(flag) = bakeoff_rounds
+        .is_some()
+        .then_some("--bakeoff-rounds")
+        .or(bakeoff_share.is_some().then_some("--bakeoff-share"))
+    {
+        needs(flag, order == Method::Portfolio, "portfolio");
+        if no_bakeoff {
+            usage_error(&format!(
+                "{flag} configures the bake-off and --no-bakeoff runs none; give one"
+            ));
+        }
+        if budget.is_none() {
+            usage_error(&format!(
+                "{flag} requires --budget: with no deadline there is no window for the \
+                 bake-off to hand out"
+            ));
+        }
+    }
+    if no_bakeoff {
+        needs("--no-bakeoff", order == Method::Portfolio, "portfolio");
+        if budget.is_none() {
+            usage_error(
+                "--no-bakeoff requires --budget: with no deadline the portfolio runs no \
+                 bake-off anyway",
+            );
+        }
+    }
     // Each pair says whether one construction runs and how large a graph it
     // runs on, so giving both leaves one of them with nothing to decide.
     if mcs_up_to.is_some() {
@@ -573,6 +652,9 @@ fn parse_args(argv: &[String]) -> Args {
         hedge_dims,
         hedge_random,
         hedge_reserve,
+        bakeoff_rounds,
+        no_bakeoff,
+        bakeoff_share,
         mcs_up_to,
         no_mcs,
         mcsm_up_to,
@@ -670,6 +752,15 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             if let Some(fraction) = args.hedge_reserve {
                 config = config.with_hedge_reserve(fraction);
             }
+            if let Some(rounds) = args.bakeoff_rounds {
+                config = config.with_bakeoff(rounds);
+            }
+            if args.no_bakeoff {
+                config = config.without_bakeoff();
+            }
+            if let Some(fraction) = args.bakeoff_share {
+                config = config.with_bakeoff_share(fraction);
+            }
             if let Some(vertices) = args.mcs_up_to {
                 config = config.with_maximum_cardinality(vertices);
             }
@@ -744,6 +835,13 @@ fn print_candidate(candidate: &CandidateTrace) {
         CandidateOutcome::WidthAborted => line.push_str(" outcome=aborted"),
         CandidateOutcome::DeadlineReached => line.push_str(" outcome=deadline"),
         CandidateOutcome::NotStarted => line.push_str(" outcome=not-started"),
+        CandidateOutcome::Committed {
+            arm,
+            rounds,
+            best_width,
+        } => line.push_str(&format!(
+            " outcome=committed arm={arm} rounds={rounds} width={best_width}"
+        )),
         CandidateOutcome::StageSkipped {
             projected,
             spent,
@@ -754,6 +852,9 @@ fn print_candidate(candidate: &CandidateTrace) {
             spent.as_millis(),
             allowance.as_millis()
         )),
+        // The library may grow an outcome a build of this binary has no line
+        // for; say so rather than dropping the candidate from the trace.
+        _ => line.push_str(" outcome=unknown"),
     }
     eprintln!("{line} ms={}", candidate.elapsed.as_millis());
 }

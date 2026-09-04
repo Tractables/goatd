@@ -264,6 +264,69 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             ],
             &["--drop-fill-up-to", "--no-drop-fill", "give one"],
         ),
+        (
+            &["--bakeoff-rounds", "5"],
+            &["--bakeoff-rounds", "minfill", "portfolio"],
+        ),
+        (&["--no-bakeoff"], &["--no-bakeoff", "minfill", "portfolio"]),
+        (
+            &["--bakeoff-share", "0.35"],
+            &["--bakeoff-share", "minfill", "portfolio"],
+        ),
+        (
+            &["--order", "portfolio", "--bakeoff-rounds", "5"],
+            &["--bakeoff-rounds", "--budget"],
+        ),
+        (
+            &["--order", "portfolio", "--no-bakeoff"],
+            &["--no-bakeoff", "--budget"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--budget",
+                "500",
+                "--bakeoff-rounds",
+                "1",
+            ],
+            &["--bakeoff-rounds", "two rounds"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--budget",
+                "500",
+                "--bakeoff-share",
+                "1.5",
+            ],
+            &["--bakeoff-share", "0 < f < 1"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--budget",
+                "500",
+                "--no-bakeoff",
+                "--bakeoff-rounds",
+                "5",
+            ],
+            &["--bakeoff-rounds", "--no-bakeoff", "give one"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--budget",
+                "500",
+                "--no-bakeoff",
+                "--bakeoff-share",
+                "0.4",
+            ],
+            &["--bakeoff-share", "--no-bakeoff", "give one"],
+        ),
         (&["--hedge-dims", "1,2"], &["--hedge-dims", "portfolio"]),
         (
             &["--order", "portfolio", "--hedge-dims", "1,9"],
