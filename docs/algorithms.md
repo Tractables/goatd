@@ -44,13 +44,19 @@ complete decomposition that the trailing FlowCutter candidate still runs
 after. `PortfolioConfig::standard_with_budget`, which the CLI uses for
 a budgeted standard portfolio, offers 100 extra samples below a 4.75-second
 soft budget and 1,000 at or above it, and in either case draws seeds on past
-that count until the soft deadline: the count caps how many seeds are drawn,
+that count until the restart deadline: the count caps how many seeds are drawn,
 not the clock, and a graph whose candidates are quick would otherwise finish
 the schedule with budget unspent. `PortfolioConfig::with_restarts_to_deadline`
 turned off stops the restarts at the count, which is what `standard()` and
 `sampled_min_fill()` do; a run with no soft deadline stops at the count either
-way. An extra sample that reaches the soft deadline stops there; the
-remaining hard-budget interval is reserved for a trailing FlowCutter
+way. The restart deadline is the hard deadline less a 1.5-second reserve for
+the trailing FlowCutter candidate, so the restarts and the weighted stages run
+past the soft deadline: on residuals small enough for the expensive orders,
+more restart time lowers width on many more graphs than a longer FlowCutter
+tail does. On a residual above the 10,000-vertex cutoff, and on a run with no
+hard deadline, the restarts stop at the soft deadline as the initial
+candidates do. An extra sample that reaches the restart deadline stops there;
+the rest of the hard-budget interval is left to the trailing FlowCutter
 candidate. That candidate is skipped when the interval is too short to seed
 it, and also when the graph is large enough that the backend's setup and
 first restart alone outlast the interval: the setup pass runs to the end
@@ -192,7 +198,7 @@ A stage is as many candidates as the diverse pass and it takes them from the
 restarts, so several stages can leave a graph whose plain pass nearly filled
 the budget with no restarts at all. The plain pass is the portfolio's own
 measurement of what a stage costs — the same orders on other weights — so the
-stages get `PortfolioConfig::with_hedge_reserve` of what the soft budget had
+stages get `PortfolioConfig::with_hedge_reserve` of what the restart deadline had
 left when the plain pass ended, half of it by default, and one more stage
 starts only while what the stages have spent plus that measurement fits in the
 share. The first stage is outside the rule: a hedge runs one weighted stage on

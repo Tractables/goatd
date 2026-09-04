@@ -5,6 +5,7 @@ use super::candidates::CandidateSet;
 use super::config::{MAX_DIVERSE_SAMPLING_RUNS, validate};
 use super::{CandidateOutcome, DEFAULT_HEDGE_DIMS, HedgeSeries, HedgeWeights, StageBudget};
 use super::{EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig, Sample, Schedule};
+use super::{FLOWCUTTER_RESERVE, restart_deadline};
 use super::{Stage, elimination_stop, extra_sample, hedge_random_seed, sample_seed};
 use crate::elimination::Order;
 use crate::{Graph, TreeDecomposition};
@@ -38,7 +39,7 @@ fn placed<'a>(
         dim: 3,
         rounds: 1_000,
         seed: 0,
-        soft_deadline: None,
+        deadline: None,
     }
 }
 
@@ -465,7 +466,7 @@ fn the_ranking_is_placed_by_the_first_modified_candidate() {
         dim: 1,
         rounds: 8,
         seed: base_seed,
-        soft_deadline: None,
+        deadline: None,
     }];
     let plan = Schedule {
         modified: &modified,
@@ -746,18 +747,18 @@ fn a_reserve_outside_the_unit_interval_is_refused() {
 }
 
 #[test]
-fn an_extra_sample_stops_at_the_soft_deadline() {
-    let soft_deadline = Instant::now() + Duration::from_secs(1);
-    let hard_deadline = soft_deadline + Duration::from_secs(1);
+fn an_extra_sample_stops_at_the_restart_deadline() {
+    let restart_deadline = Instant::now() + Duration::from_secs(1);
+    let hard_deadline = restart_deadline + Duration::from_secs(1);
     let stop = elimination_stop(
         EliminationPhase::ExtraSampling,
-        Some(soft_deadline),
+        Some(restart_deadline),
         Some(hard_deadline),
         Some(17),
     );
 
-    assert_eq!(stop.soft_deadline, Some(soft_deadline));
-    assert_eq!(stop.hard_deadline, Some(soft_deadline));
+    assert_eq!(stop.soft_deadline, Some(restart_deadline));
+    assert_eq!(stop.hard_deadline, Some(restart_deadline));
     assert_eq!(stop.width_bound, Some(17));
 }
 
@@ -841,4 +842,29 @@ fn the_flowcutter_slot_declines_a_graph_it_could_not_stop_on() {
         candidate.is_none(),
         "a graph whose first restart outlasts the window is declined"
     );
+}
+
+#[test]
+fn the_restarts_keep_a_flowcutter_reserve_at_the_end_of_the_hard_window() {
+    let start = crate::meter::now();
+    let soft = start + secs(5);
+    let hard = start + secs(10);
+
+    // An ordinary residual: the restarts run into the hard window and stop a
+    // reserve short of its end.
+    assert_eq!(
+        restart_deadline(false, Some(soft), Some(hard)),
+        Some(hard - FLOWCUTTER_RESERVE),
+    );
+
+    // A large residual keeps the soft deadline.
+    assert_eq!(restart_deadline(true, Some(soft), Some(hard)), Some(soft),);
+
+    // A hard window shorter than the reserve would put the restarts before the
+    // soft deadline, so the soft deadline stands.
+    let tight = start + Duration::from_millis(5_500);
+    assert_eq!(restart_deadline(false, Some(soft), Some(tight)), Some(soft),);
+
+    // No budget, so no hard window to run into.
+    assert_eq!(restart_deadline(false, None, None), None);
 }

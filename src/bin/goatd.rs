@@ -71,9 +71,11 @@ options:
                         weights, instead of repeating the candidates that read
                         weights on a ranking the portfolio computes itself
   --capped-restarts     portfolio only: stop the ordinary restarts at their
-                        count instead of drawing seeds until the soft
-                        deadline. Needs --budget: with no deadline the count is
-                        what stops them anyway
+                        count instead of drawing seeds until the restart
+                        deadline, which is the hard cutoff less the reserve
+                        kept for the trailing FlowCutter candidate. Needs
+                        --budget: with no deadline the count is what stops
+                        them anyway
   --trace               portfolio only: write one line per candidate and one
                         for the winner to stderr as they complete
   --steps <n>           flowcutter only: a step budget in place of a clock,
