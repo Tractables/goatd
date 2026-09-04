@@ -79,6 +79,9 @@ pub fn decompose(
         engine::RunSpec {
             order,
             seed,
+            // A single order samples the exact minimum; the band is a
+            // portfolio setting.
+            sample_band: 0,
             update_order_ties: false,
             stop: ElimStop {
                 soft_deadline: deadlines.soft,

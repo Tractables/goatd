@@ -8,7 +8,7 @@ use super::build_td::build_td_from_ranked_bags;
 use super::execution::{self, Cutoff, ElimExit, ElimSteps};
 use super::graph::EliminationGraph;
 use super::greedy::{
-    self, eliminate_min_degree, eliminate_min_fill, eliminate_sampled_fill_degree,
+    self, SampleDraw, eliminate_min_degree, eliminate_min_fill, eliminate_sampled_fill_degree,
     eliminate_sampled_min_degree, eliminate_sampled_min_fill,
 };
 use super::nested_dissection::eliminate_nested_dissection;
@@ -90,6 +90,10 @@ pub(crate) struct RunSpec<'a> {
     pub(crate) order: Order<'a>,
     /// Selects the RNG stream for salt and tie-set sampling.
     pub(crate) seed: u64,
+    /// How far above the smallest score a sampled order's tie set reaches, in
+    /// the units of the order's own score. 0 is the exact minimum; the
+    /// non-sampling cores ignore it.
+    pub(crate) sample_band: u64,
     /// Break min-degree ties by the order in which scores were updated.
     pub(crate) update_order_ties: bool,
     /// When the elimination must stop — handed to the core whole.
@@ -231,7 +235,10 @@ fn run_elimination_raw(
         ),
         Order::MinFillSampled { weights } => eliminate_sampled_min_fill(
             &mut g,
-            weights,
+            SampleDraw {
+                weights,
+                band: spec.sample_band,
+            },
             spec.seed,
             steps.sink(),
             ElimStop {
@@ -242,7 +249,10 @@ fn run_elimination_raw(
         ),
         Order::MinDegreeSampled { weights } => eliminate_sampled_min_degree(
             &mut g,
-            weights,
+            SampleDraw {
+                weights,
+                band: spec.sample_band,
+            },
             spec.seed,
             steps.sink(),
             ElimStop {
@@ -255,7 +265,10 @@ fn run_elimination_raw(
             degree_coefficient,
         } => eliminate_sampled_fill_degree(
             &mut g,
-            weights,
+            SampleDraw {
+                weights,
+                band: spec.sample_band,
+            },
             spec.seed,
             steps.sink(),
             ElimStop {

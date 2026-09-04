@@ -28,6 +28,10 @@ const SAMPLED_MIN_FILL_TIMEOUT_MS: u64 = 1000;
 
 pub(super) const MIN_FLOWCUTTER_CANDIDATE_MS: u64 = 50;
 
+/// What the sampled restarts leave of the hard window for the trailing
+/// FlowCutter candidate when they run past the soft deadline.
+pub(super) const FLOWCUTTER_RESERVE: Duration = Duration::from_millis(1_500);
+
 /// Dimensions the hedge places the vertices in, one weighted stage each, in
 /// this order. Which graphs a dimension improves is close to arbitrary and two
 /// dimensions improve mostly different ones, so a hedge that runs several
@@ -58,6 +62,14 @@ const DEFAULT_HEDGE: Hedge = Hedge::eccentricity();
 /// A run with no soft budget has nothing to protect and runs every stage of the
 /// series, whatever this says.
 const DEFAULT_HEDGE_RESERVE: f64 = 0.5;
+
+/// How far above the minimum fill the ordinary restarts draw their tie set, in
+/// fill edges. Drawing only from the vertices tied at the minimum leaves a
+/// restart nothing to choose between on a graph where that set holds one
+/// vertex at every step, so every seed replays one order; a band lets the
+/// seeds separate. [`PortfolioConfig::with_sample_band`] with 0 restores the
+/// exact minimum.
+const DEFAULT_SAMPLE_BAND: u64 = 3;
 
 /// Residuals of this size or smaller run the whole schedule: every initial
 /// order, the diverse pass, the hedge, and sampled min-fill restarts. Above it
@@ -273,6 +285,8 @@ pub struct PortfolioConfig {
     pub(super) hedge: Hedge,
     pub(super) hedge_reserve: f64,
     pub(super) restarts_to_deadline: bool,
+    pub(super) sample_band: u64,
+    pub(super) sample_band_alternate: bool,
     pub(super) expensive_orders_up_to: usize,
 }
 
@@ -289,6 +303,8 @@ impl PartialEq for PortfolioConfig {
             && self.hedge == other.hedge
             && self.hedge_reserve.to_bits() == other.hedge_reserve.to_bits()
             && self.restarts_to_deadline == other.restarts_to_deadline
+            && self.sample_band == other.sample_band
+            && self.sample_band_alternate == other.sample_band_alternate
             && self.expensive_orders_up_to == other.expensive_orders_up_to
     }
 }
@@ -310,6 +326,8 @@ impl PortfolioConfig {
             hedge: Hedge::Off,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: false,
+            sample_band: DEFAULT_SAMPLE_BAND,
+            sample_band_alternate: false,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
         }
     }
@@ -344,7 +362,7 @@ impl PortfolioConfig {
     ///
     /// The count stops the restarts of a run with no soft deadline, and of
     /// one with [`PortfolioConfig::with_restarts_to_deadline`] off. Under a
-    /// soft deadline with it on, the restarts run on past the count and the
+    /// budget with it on, the restarts run on past the count and the restart
     /// deadline stops them.
     pub fn with_sampling_runs(mut self, runs: u64) -> Self {
         self.sampling_runs = runs;
@@ -388,6 +406,8 @@ impl PortfolioConfig {
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: false,
+            sample_band: DEFAULT_SAMPLE_BAND,
+            sample_band_alternate: false,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
         }
     }
@@ -401,11 +421,17 @@ impl PortfolioConfig {
     /// fit stays with the ordinary restarts. [`PortfolioConfig::with_hedge_reserve`]
     /// changes that fraction.
     ///
-    /// The ordinary restarts run until the soft deadline: the sampling count
-    /// caps how many seeds are drawn, not the clock, and a graph whose
-    /// candidates are quick would otherwise finish the schedule with budget
-    /// unspent. [`PortfolioConfig::with_restarts_to_deadline`] turned off
-    /// stops them at the count instead.
+    /// The ordinary restarts run past the soft deadline into the hard window,
+    /// stopping 1.5 s before the hard deadline so the trailing FlowCutter
+    /// candidate still has that much to run in. Only a residual that runs the
+    /// whole schedule does that; above 10,000 vertices the restarts stop at the
+    /// soft deadline and the second stage stays with FlowCutter. The
+    /// sampling count caps how many seeds are drawn, not the clock, and a
+    /// graph whose candidates are quick would otherwise finish the schedule
+    /// with budget unspent. One more restart starts only while what the
+    /// previous one cost still fits before that stop.
+    /// [`PortfolioConfig::with_restarts_to_deadline`] turned off stops them at
+    /// the count instead.
     pub fn standard_with_budget(budget: Duration) -> Self {
         let extended = budget >= EXTENDED_SAMPLING_MIN_SOFT_BUDGET;
         let sampling_runs = if extended {
@@ -426,6 +452,8 @@ impl PortfolioConfig {
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: true,
+            sample_band: DEFAULT_SAMPLE_BAND,
+            sample_band_alternate: false,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
         }
     }
@@ -456,10 +484,14 @@ impl PortfolioConfig {
     }
 
     /// Whether the ordinary restarts keep drawing seeds past their count
-    /// while the soft deadline has time left.
+    /// while the restart deadline has time left.
+    ///
+    /// The restart deadline is the hard deadline less the reserve kept for the
+    /// trailing FlowCutter candidate on a residual that runs the whole
+    /// schedule, and the soft deadline on any larger one.
     ///
     /// On, the restarts carry on from the next seed of the same sequence and
-    /// the soft deadline ends them; the count set by
+    /// the restart deadline ends them; the count set by
     /// [`PortfolioConfig::with_sampling_runs`] does not. Off, the restarts stop
     /// at the count or the deadline, whichever comes first. A run with no soft
     /// deadline stops at the count either way, since there is nothing else to
@@ -468,6 +500,33 @@ impl PortfolioConfig {
     /// leave it off.
     pub fn with_restarts_to_deadline(mut self, enabled: bool) -> Self {
         self.restarts_to_deadline = enabled;
+        self
+    }
+
+    /// How far above the minimum fill the ordinary restarts draw their tie set,
+    /// in fill edges.
+    ///
+    /// The restarts eliminate a vertex of minimum fill and break the tie at
+    /// random. A band of `k` puts every vertex whose elimination adds at most
+    /// `k` fill edges more than the best into the same draw, so seeds that
+    /// would return the same order can separate. Every configuration starts
+    /// from the same default band; 0 is the exact minimum. Only the restarts
+    /// read it: the other candidates each run their own score's minimum.
+    pub fn with_sample_band(mut self, band: u64) -> Self {
+        self.sample_band = band;
+        self
+    }
+
+    /// Alternate the ordinary restarts between the exact minimum and the band
+    /// set by [`PortfolioConfig::with_sample_band`].
+    ///
+    /// On, an even-numbered restart draws from the vertices tied at the
+    /// minimum and an odd-numbered one from the band. The seeds are the same
+    /// sequence either way, so the even restarts are the candidates a
+    /// portfolio with no band runs, seed for seed, and the odd ones are what
+    /// the band adds. Off, every restart draws from the band.
+    pub fn with_sample_band_alternate(mut self, alternate: bool) -> Self {
+        self.sample_band_alternate = alternate;
         self
     }
 

@@ -41,7 +41,8 @@ mod tests;
 pub(super) use min_degree::eliminate_min_degree;
 pub(super) use min_fill::eliminate_min_fill;
 pub(super) use sampling::{
-    eliminate_sampled_fill_degree, eliminate_sampled_min_degree, eliminate_sampled_min_fill,
+    SampleDraw, eliminate_sampled_fill_degree, eliminate_sampled_min_degree,
+    eliminate_sampled_min_fill,
 };
 
 /// Above this many active vertices, a single cheap-mode eliminate on a dense
@@ -552,7 +553,9 @@ impl<'a> BucketMap<'a> {
         self.insert(v, new_key);
     }
 
-    fn min_bucket(&mut self) -> Option<(u64, &[u32], u64)> {
+    /// The smallest live priority key, rescanning once when the last removal
+    /// emptied the bucket it named.
+    fn minimum(&mut self) -> Option<u64> {
         if self.minimum_dirty {
             self.minimum_key = match &self.buckets {
                 PriorityBuckets::Dense { slots, .. } => {
@@ -570,12 +573,48 @@ impl<'a> BucketMap<'a> {
             };
             self.minimum_dirty = false;
         }
-        self.minimum_key.map(|key| {
-            let bucket = self.bucket(key).expect("minimum bucket missing");
-            let mass = self.uniform_mass.map_or(bucket.sampling_mass, |mass| {
-                mass * bucket.vertices.len() as u64
-            });
-            (key, bucket.vertices.as_slice(), mass)
+        self.minimum_key
+    }
+
+    /// The tie set a sampler draws from: every vertex whose key is within
+    /// `band` of the minimum, and their combined sampling mass.
+    ///
+    /// A `band` of 0 hands back the minimum bucket's own slice, so the draw
+    /// sees the same tie set in the same order it always has and `scratch` is
+    /// left alone. A wider band copies the buckets from the minimum upwards
+    /// into `scratch`, ascending by key and each bucket in storage order, so
+    /// the tie set is a function of the map's history and not of the copy.
+    fn min_band<'b>(
+        &'b mut self,
+        band: u64,
+        scratch: &'b mut Vec<u32>,
+    ) -> Option<(&'b [u32], u64)> {
+        let minimum = self.minimum()?;
+        if band == 0 {
+            let bucket = self.bucket(minimum).expect("minimum bucket missing");
+            return Some((bucket.vertices.as_slice(), self.bucket_mass(bucket)));
+        }
+        scratch.clear();
+        let mut mass = 0;
+        let top = minimum.saturating_add(band);
+        let mut key = minimum;
+        loop {
+            if let Some(bucket) = self.bucket(key) {
+                scratch.extend_from_slice(&bucket.vertices);
+                mass += self.bucket_mass(bucket);
+            }
+            if key == top {
+                break;
+            }
+            key += 1;
+        }
+        Some((scratch.as_slice(), mass))
+    }
+
+    /// A bucket's sampling mass, which equal weights leave as a count.
+    fn bucket_mass(&self, bucket: &Bucket) -> u64 {
+        self.uniform_mass.map_or(bucket.sampling_mass, |mass| {
+            mass * bucket.vertices.len() as u64
         })
     }
 

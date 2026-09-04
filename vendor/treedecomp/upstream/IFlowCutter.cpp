@@ -56,6 +56,16 @@
 using namespace std;
 using namespace TWD;
 
+namespace TWD {
+const volatile unsigned char* g_external_stop = nullptr;
+}
+
+// goatd: whether the caller has asked for the search to end. Cheap enough to
+// sit beside the clock reads it joins.
+static inline bool external_stop_requested() {
+  return g_external_stop != nullptr && *g_external_stop != 0;
+}
+
 // goatd: budget for the bag-intersection graph built in
 // output_tree_decompostion_of_order.  Above this, the junction-tree
 // spanning-tree construction would consume tens of GB and crash; we throw
@@ -737,7 +747,16 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
   // return an empty TreeDecomposition on graphs where every heuristic was
   // skipped (size gates) and the first flow-cutter iteration didn't finish in
   // time. Producing a decomposition late beats producing none at all.
+  // goatd: the caller's stop flag joins the clock here. It ends the search
+  // whether or not the clock decides, since a metered build has no wall bound
+  // of its own and the caller asking to stop is not a timing decision. It also
+  // ends a build that has produced nothing yet, which the deadline deliberately
+  // does not: the deadline holds off so that a late decomposition beats none,
+  // while a caller that has asked to stop wants the search abandoned, and the
+  // portfolio around this one already has a decomposition to hand back.
   auto deadline_fired = [&]() {
+    if(external_stop_requested())
+      return true;
     return clock_decides
       && best_bag_size < std::numeric_limits<int>::max()
       && std::chrono::steady_clock::now() >= deadline;

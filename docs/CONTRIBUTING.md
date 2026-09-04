@@ -82,3 +82,9 @@ tools the bindings need, is documented in [building.md](building.md).
 Update user-facing documentation with behavior changes. Keep prose direct and
 avoid benchmark numbers that will go stale. Commit subjects are imperative and
 name the behavior or contract changed.
+
+Branches in this repository are pull-request candidates. Keep exploratory work
+elsewhere, push a branch here when a pull request is about to be opened from
+it, and delete the branch once the pull request merges. A change to what the
+portfolio does by default is measured on the solver comparison in `README.md`
+before it merges; say in the pull request what you expect it to move and why.

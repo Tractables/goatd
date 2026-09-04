@@ -103,4 +103,8 @@ void td_free(TdResult* td) {
     delete td;
 }
 
+void td_set_stop_flag(const unsigned char* flag) {
+    TWD::g_external_stop = flag;
+}
+
 } // extern "C"

@@ -15,7 +15,8 @@
 //! [`TreeDecomposition::validate`] checks a result against its graph. The
 //! library is single-threaded. [`meter::arm`] makes duration budgets advance by
 //! charged graph work instead of wall time when repeatable stopping points are
-//! needed.
+//! needed. [`stop_flag`] ends a running solve early and returns the best
+//! decomposition found so far.
 //!
 //! ```
 //! use goatd::Graph;
@@ -45,10 +46,12 @@ mod pace;
 pub mod partition;
 pub mod portfolio;
 mod rng;
+mod stop;
 
 pub use decomposition::{TdBag, TreeDecomposition};
 pub use error::Error;
 pub use graph::Graph;
+pub use stop::stop_flag;
 
 #[cfg(test)]
 mod tests;

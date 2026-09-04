@@ -199,6 +199,9 @@ fn compute_vertices(
     // because in differential tests on small graphs MultiCutter's switching
     // rule discards good single-cutter trajectories.
     for i in 0..iter_cap {
+        if crate::stop::requested() {
+            break;
+        }
         if has_deadline && elapsed_since(start) >= deadline_ms {
             break;
         }

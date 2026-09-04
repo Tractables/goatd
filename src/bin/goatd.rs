@@ -16,7 +16,7 @@ use goatd::portfolio::{
     CandidateOutcome, CandidateTrace, DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, MAX_HEDGE_PASSES,
     Pass, PortfolioConfig, decompose_traced as portfolio,
 };
-use goatd::{Graph, TreeDecomposition};
+use goatd::{Graph, TreeDecomposition, stop_flag};
 
 const USAGE: &str = "\
 usage: goatd <graph.gr | -> [options]
@@ -71,9 +71,22 @@ options:
                         weights, instead of repeating the candidates that read
                         weights on a ranking the portfolio computes itself
   --capped-restarts     portfolio only: stop the ordinary restarts at their
-                        count instead of drawing seeds until the soft
-                        deadline. Needs --budget: with no deadline the count is
-                        what stops them anyway
+                        count instead of drawing seeds until the restart
+                        deadline, which is the hard cutoff less the reserve
+                        kept for the trailing FlowCutter candidate. Needs
+                        --budget: with no deadline the count is what stops
+                        them anyway
+  --sample-band <eps>   portfolio only: the ordinary restarts draw from every
+                        vertex whose elimination adds at most eps fill edges
+                        more than the best. 0 draws only from the vertices
+                        tied at the minimum; the library's own band is the
+                        default. The other candidates keep their exact
+                        minimum
+  --sample-band-alternate
+                        portfolio only: alternate the ordinary restarts
+                        between the exact minimum and --sample-band, an even
+                        restart drawing from the minimum and an odd one from
+                        the band. Needs --sample-band above 0
   --expensive-orders-up-to <n>
                         portfolio only: the largest residual, in vertices left
                         after preprocessing, that still runs min-fill (default
@@ -144,6 +157,8 @@ struct Args {
     hedge_reserve: Option<f64>,
     no_hedge: bool,
     capped_restarts: bool,
+    sample_band: Option<u64>,
+    sample_band_alternate: bool,
     expensive_orders_up_to: Option<usize>,
     trace: bool,
     steps: Option<u64>,
@@ -202,6 +217,8 @@ fn parse_args(argv: &[String]) -> Args {
     let mut hedge_reserve = None;
     let mut no_hedge = false;
     let mut capped_restarts = false;
+    let mut sample_band = None;
+    let mut sample_band_alternate = false;
     let mut expensive_orders_up_to = None;
     let mut trace = false;
     let mut steps = None;
@@ -285,6 +302,8 @@ fn parse_args(argv: &[String]) -> Args {
             }
             "--no-hedge" => no_hedge = true,
             "--capped-restarts" => capped_restarts = true,
+            "--sample-band" => sample_band = Some(number(&mut i, arg)),
+            "--sample-band-alternate" => sample_band_alternate = true,
             "--expensive-orders-up-to" => {
                 let vertices = number(&mut i, arg);
                 expensive_orders_up_to = Some(usize::try_from(vertices).unwrap_or(usize::MAX));
@@ -408,6 +427,24 @@ fn parse_args(argv: &[String]) -> Args {
             );
         }
     }
+    if sample_band.is_some() {
+        needs("--sample-band", order == Method::Portfolio, "portfolio");
+    }
+    // Alternating with a band of zero is the exact minimum on every restart,
+    // so the flag would decide nothing.
+    if sample_band_alternate {
+        needs(
+            "--sample-band-alternate",
+            order == Method::Portfolio,
+            "portfolio",
+        );
+        if sample_band.unwrap_or(0) == 0 {
+            usage_error(
+                "--sample-band-alternate requires --sample-band above 0: it alternates \
+                 between the exact minimum and the band",
+            );
+        }
+    }
     if expensive_orders_up_to.is_some() {
         needs(
             "--expensive-orders-up-to",
@@ -433,6 +470,8 @@ fn parse_args(argv: &[String]) -> Args {
         hedge_reserve,
         no_hedge,
         capped_restarts,
+        sample_band,
+        sample_band_alternate,
         expensive_orders_up_to,
         trace,
         steps,
@@ -523,6 +562,12 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             if args.capped_restarts {
                 config = config.with_restarts_to_deadline(false);
             }
+            if let Some(band) = args.sample_band {
+                config = config.with_sample_band(band);
+            }
+            if args.sample_band_alternate {
+                config = config.with_sample_band_alternate(true);
+            }
             if let Some(vertices) = args.expensive_orders_up_to {
                 config = config.with_expensive_orders_up_to(vertices);
             }
@@ -584,7 +629,36 @@ fn print_candidate(candidate: &CandidateTrace) {
     eprintln!("{line} ms={}", candidate.elapsed.as_millis());
 }
 
+/// Ask the library to stop. The handler stores one byte and does nothing else,
+/// so it is safe to run from a signal.
+#[cfg(unix)]
+extern "C" fn on_terminate(_signal: std::os::raw::c_int) {
+    stop_flag().store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Answer `SIGTERM` by stopping the search rather than by dying, so a caller
+/// that runs the tool under a wall clock still gets the decomposition found so
+/// far. Anything the handler cannot reach, such as reading the graph, keeps the
+/// default behaviour of ending the process.
+#[cfg(unix)]
+fn install_terminate_handler() {
+    // SAFETY: `action` is fully initialized below, and the handler only stores
+    // into an atomic. `sigaction` is given a valid pointer and a null old-action
+    // pointer.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = on_terminate as *const () as usize;
+        libc::sigemptyset(&raw mut action.sa_mask);
+        action.sa_flags = libc::SA_RESTART;
+        libc::sigaction(libc::SIGTERM, &raw const action, std::ptr::null_mut());
+    }
+}
+
+#[cfg(not(unix))]
+fn install_terminate_handler() {}
+
 fn main() {
+    install_terminate_handler();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let args = parse_args(&argv);
 
