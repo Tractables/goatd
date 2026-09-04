@@ -24,13 +24,17 @@ const DEADLINE_CHECK_UNITS: u64 = crate::meter::UNITS_PER_MS;
 /// once a millisecond's worth of it has been charged. The iteration count stays
 /// as a ceiling, so a loop that charges nothing still reads the clock as often
 /// as it used to.
-pub(super) struct DeadlinePacer {
+///
+/// The elimination loops are not the only users:
+/// [`crate::decomposition::minimalize_triangulation`] paces its own loops with
+/// this so every construction in the library reads the clock on the same rule.
+pub(crate) struct DeadlinePacer {
     steps: u32,
     mark: u64,
 }
 
 impl DeadlinePacer {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             steps: 0,
             mark: crate::meter::units_spent(),
@@ -39,7 +43,7 @@ impl DeadlinePacer {
 
     /// Count one iteration and report whether the deadline should be read.
     #[inline]
-    pub(super) fn due(&mut self) -> bool {
+    pub(crate) fn due(&mut self) -> bool {
         self.steps += 1;
         let spent = crate::meter::units_spent();
         if self.steps >= DEADLINE_CHECK_STRIDE

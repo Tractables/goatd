@@ -1,5 +1,7 @@
 //! The minimalization pass against a brute-force definition of minimality.
 
+use std::time::{Duration, Instant};
+
 use crate::decomposition::minimalize_triangulation;
 use crate::elimination::minimal_triangulation::{Reach, cardinality_search};
 use crate::elimination::{Order, decompose};
@@ -152,6 +154,45 @@ fn the_pass_repeats() {
     let second =
         minimalize_triangulation(before, &graph, None).expect("the pass is given its own graph");
     assert_eq!(first, second);
+}
+
+/// The pass under a budget, on a graph whose completion alone costs many times
+/// the shortest budgets asked for here. The meter is armed, so the budget is a
+/// work budget and the run is the same on any machine.
+#[test]
+fn a_budget_bounds_the_pass_and_still_returns_a_decomposition() {
+    let graph = random_graph(320, 8, 3);
+    let before = decompose(&graph, Order::MinDegree, 3, None)
+        .expect("a deterministic order takes no weights");
+    for budget_ms in [0, 1, 2, 4, 8, 16, 32, 64] {
+        let guard = crate::meter::arm(Instant::now());
+        let start = crate::meter::units_spent();
+        let after = minimalize_triangulation(
+            before.clone(),
+            &graph,
+            Some(Duration::from_millis(budget_ms)),
+        )
+        .expect("the pass is given its own graph");
+        let spent = crate::meter::units_spent() - start;
+        drop(guard);
+        after
+            .validate(&graph)
+            .expect("the pass returns a decomposition of the same graph");
+        assert!(
+            after.treewidth() <= before.treewidth(),
+            "budget {budget_ms} ms: the pass widened {} to {}",
+            before.treewidth(),
+            after.treewidth()
+        );
+        // Two milliseconds over the budget: the loops read the clock once a
+        // millisecond's worth of work has been charged, and the rebuild after
+        // the last read is charged for as well.
+        let allowed = (budget_ms + 2) * crate::meter::UNITS_PER_MS;
+        assert!(
+            spent <= allowed,
+            "budget {budget_ms} ms: the pass charged {spent} units, over {allowed}"
+        );
+    }
 }
 
 #[test]

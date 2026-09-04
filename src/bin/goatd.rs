@@ -77,7 +77,10 @@ options:
   --drop-fill-up-to <n> portfolio only: rebuild the winner on a minimal
                         triangulation of the same graph, dropping the fill edges
                         its bags do not need, on graphs of at most n vertices,
-                        in place of the built-in gate. The pass never widens
+                        in place of the built-in gate. The pass never widens,
+                        and it runs only while what it is projected to cost
+                        fits in what is left of the hard budget, so a wide n
+                        costs memory rather than time
   --no-drop-fill        portfolio only: leave the winner's fill edges alone
   --no-hedge            portfolio only: run every candidate once, on uniform
                         weights, instead of repeating the candidates that read

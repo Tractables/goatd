@@ -11,8 +11,8 @@ mod model;
 mod ops;
 mod refine;
 
-pub(crate) use minimal::minimalize_at;
 pub use minimal::minimalize_triangulation;
+pub(crate) use minimal::{minimalize_at, minimalize_fits};
 pub use model::{TdBag, TreeDecomposition};
 pub(crate) use ops::SubsumedBagCompaction;
 pub use ops::{Projection, RootedForest};

@@ -42,7 +42,11 @@ pub(crate) enum Reach {
 /// elimination order is this sequence reversed: the last vertex numbered is
 /// eliminated first.
 ///
-/// Returns `None` when `hard_deadline` passed before the search finished.
+/// Returns `None` when `hard_deadline` passed before the search finished. The
+/// deadline is read on the pacer's stride, which counts the scanning the search
+/// charges, so a single step over a dense graph is interrupted part-way rather
+/// than run to its end: one MCS-M step walks the whole graph in the worst case,
+/// and a caller with milliseconds left cannot afford one of those.
 pub(crate) fn cardinality_search(
     adjacency: &[Vec<u32>],
     reach: Reach,
@@ -61,6 +65,9 @@ pub(crate) fn cardinality_search(
     let mut pacer = DeadlinePacer::new();
 
     for _ in 0..n {
+        // The step's own scan of every vertex, charged before it runs so the
+        // pacer counts a search that reaches nothing else.
+        crate::meter::charge(n as u64);
         if pacer.due() && expired(hard_deadline) {
             return None;
         }
@@ -75,7 +82,7 @@ pub(crate) fn cardinality_search(
         selected.push(chosen as u32);
 
         raised.clear();
-        let mut scanned = adjacency[chosen].len() as u64;
+        crate::meter::charge(adjacency[chosen].len() as u64);
         for &neighbour in &adjacency[chosen] {
             if !numbered[neighbour as usize] {
                 raised.push(neighbour);
@@ -97,7 +104,10 @@ pub(crate) fn cardinality_search(
             }
             for level in 0..=n {
                 while let Some(interior) = buckets[level].pop() {
-                    scanned += adjacency[interior as usize].len() as u64;
+                    crate::meter::charge(adjacency[interior as usize].len() as u64);
+                    if pacer.due() && expired(hard_deadline) {
+                        return None;
+                    }
                     for &next in &adjacency[interior as usize] {
                         let index = next as usize;
                         if numbered[index] || reached[index] {
@@ -121,7 +131,6 @@ pub(crate) fn cardinality_search(
         for &vertex in &raised {
             count[vertex as usize] += 1;
         }
-        crate::meter::charge(scanned.saturating_add(n as u64));
     }
     Some(selected)
 }

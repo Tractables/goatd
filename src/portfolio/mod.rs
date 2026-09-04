@@ -730,8 +730,9 @@ fn run_portfolio(
     // triangulation, which is a different construction from the greedy scores
     // and wins on graphs where they all agree. It is deterministic, so it runs
     // once; it costs a traversal of the residual per vertex, so it runs only on
-    // a residual the gate admits; and it runs against the soft deadline, so a
-    // graph where it does not finish loses nothing but the time it spent.
+    // a residual the gate admits; and it runs against the soft deadline, which
+    // the search reads as it walks, so a graph where it does not finish gives
+    // up part-way and loses nothing but the time it spent.
     // What it cost, which the hedge's model of a stage leaves out: the stages
     // repeat the plain pass on other weights, and this candidate is not part of
     // either.
@@ -933,10 +934,17 @@ fn run_portfolio(
     // decomposition on a minimal triangulation of the same graph, which is
     // never wider, and hands the result back as one more candidate so the set
     // compares it the way it compares every other.
+    //
+    // The vertex gate is the cheap filter, for the two bitsets the pass holds.
+    // What it costs in time follows the bags rather than the vertices, so the
+    // clock rule is the winner's own size against what is left of the hard
+    // deadline, asked before the winner is copied.
     if let Some(gate) = config.triangulation_refinement
         && graph.num_vertices() <= gate
-        && !expired(hard_deadline)
-        && let Some(best) = candidates.best().cloned()
+        && let Some(best) = candidates
+            .best()
+            .filter(|best| decomposition::minimalize_fits(best, graph, hard_deadline))
+            .cloned()
     {
         let before = best.quality_key();
         let minimalized = decomposition::minimalize_at(best, graph, hard_deadline);

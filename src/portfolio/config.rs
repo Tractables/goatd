@@ -39,11 +39,11 @@ const DEFAULT_MINIMAL_TRIANGULATION_VERTICES: u32 = 1_000;
 
 /// Graph size at or below which the standard portfolio minimalizes the
 /// triangulation behind its winner. The pass holds two bitsets over the
-/// vertices, so its memory grows with the square of this, and the time it
-/// takes grows faster than the vertex count: on a corpus of formula graphs it
-/// costs about half a second around this many vertices and several seconds at
-/// three times as many, while the graphs it narrows are mostly the smaller
-/// ones.
+/// vertices, so its memory grows with the square of this, which is what the
+/// gate is for. What the pass costs in time is not a function of the vertex
+/// count at all — it follows the bags of the decomposition being rebuilt — so
+/// the clock is what keeps it inside the budget, and this only keeps the memory
+/// bounded.
 const DEFAULT_TRIANGULATION_REFINEMENT_VERTICES: u32 = 2_000;
 
 /// Dimensions the hedge places the vertices in, one weighted stage each, in
@@ -492,7 +492,10 @@ impl PortfolioConfig {
     /// where it wins it wins by several.
     ///
     /// The gate is a vertex count because the search costs one traversal of the
-    /// residual per vertex.
+    /// residual per vertex. The soft deadline is what stops it: the search reads
+    /// the clock while it walks, so a residual the gate lets through but the
+    /// budget cannot finish gives up part-way and the portfolio keeps what the
+    /// other candidates found.
     pub fn with_minimal_triangulation(mut self, max_residual_vertices: u32) -> Self {
         self.minimal_triangulation = Some(max_residual_vertices);
         self
@@ -514,8 +517,11 @@ impl PortfolioConfig {
     /// winner is returned unchanged.
     ///
     /// The gate is a vertex count because the pass holds two bitsets over the
-    /// graph's vertices, and because its time grows faster than that count: a
-    /// wide gate spends what is left of the hard budget on the pass.
+    /// graph's vertices. It is not what keeps the pass inside the budget: the
+    /// pass costs about what completing the winner's bags costs, which the
+    /// winner says in advance, so the portfolio runs it only while that fits in
+    /// what is left of the hard deadline and stops it there if the sweeps run
+    /// long.
     pub fn with_triangulation_refinement(mut self, max_vertices: u32) -> Self {
         self.triangulation_refinement = Some(max_vertices);
         self

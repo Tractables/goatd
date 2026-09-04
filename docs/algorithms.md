@@ -249,8 +249,10 @@ eliminates along the result. It reads no seed and no weights, so it is one
 candidate rather than a family of them. It costs one traversal of the residual
 per vertex, which is why `PortfolioConfig::with_minimal_triangulation` gates it
 on the residual's vertex count; the candidate also runs against the soft
-deadline and returns nothing rather than taking the restarts' time. On most
-graphs the greedy orders are narrower and the portfolio keeps them.
+deadline and returns nothing rather than taking the restarts' time. One step of
+MCS-M can walk the whole residual, so the search reads the clock while it walks
+rather than only between steps. On most graphs the greedy orders are narrower
+and the portfolio keeps them.
 
 **Dropping fill the bags do not need.** Removing one edge `uv` from a chordal
 graph leaves it chordal exactly when the common neighbourhood of `u` and `v` is
@@ -266,6 +268,19 @@ unchanged. It holds two bitsets over the graph's vertices, which is why
 `PortfolioConfig::with_triangulation_refinement` gates it on the vertex count.
 The portfolio applies it to its winner, whatever candidate produced it, and
 hands the result back as one more candidate.
+
+How long the pass takes does not follow the vertex count. It follows the bags
+of the decomposition being rebuilt, and how many sweeps the edge-dropping needs
+is not known until it has run. So the vertex gate bounds the memory and the
+clock bounds the time: completing the bags costs one insert per pair of a bag,
+which the decomposition says in advance, and the portfolio starts the pass only
+while that projection fits in what is left of the hard deadline. After that,
+every loop in the pass reads the clock on a stride. The completion and the
+rebuild hand back the input decomposition when they run out of time; a sweep cut
+part-way keeps the edges it had already dropped, since taking a removable edge
+out of a chordal graph leaves it chordal whether or not the sweep finishes. A
+graph that runs out of time therefore loses the improvement and keeps its
+decomposition.
 
 ## Nested dissection and multilevel bisection
 
