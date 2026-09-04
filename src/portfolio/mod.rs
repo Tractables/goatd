@@ -993,22 +993,10 @@ fn run_portfolio(
     // margin without starving sampling — under a typical soft-budget
     // contract, `hard_deadline` = 2×`soft_deadline`, leaving up to
     // `soft_deadline` of slack here. FlowCutter already returns a complete
-    // decomposition, so no separator-refinement pass is applied to it.
-    //
-    // An admitted residual does not get one. The backend tests its deadline
-    // between restarts, and a graph this size can spend longer in a single
-    // restart than the window has left, which takes the hard deadline with it
-    // and loses the decomposition the portfolio already holds. The size guard
-    // here only measures the first restart, so it does not catch that.
-    if residual == Residual::Admitted && config.flowcutter_budget.is_some() {
-        trace(CandidateTrace {
-            stage: Stage::FlowCutter,
-            seed,
-            pass: Pass::Only,
-            outcome: CandidateOutcome::NotStarted,
-            elapsed: crate::meter::now().saturating_duration_since(started),
-        });
-    } else if let Some(configured_budget) = config
+    // decomposition, so no separator-refinement pass is applied to it. It runs
+    // on every residual; on the large ones it is often the best candidate by a
+    // wide margin, and `flowcutter_candidate` has its own vertex cap.
+    if let Some(configured_budget) = config
         .flowcutter_budget
         .filter(|_| !hard_deadline_tripped && !expired(hard_deadline))
         && let Some(decomposition) = flowcutter_candidate(graph, configured_budget, hard_deadline)?

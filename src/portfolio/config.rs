@@ -488,8 +488,8 @@ impl PortfolioConfig {
     /// - the restarts are sampled min-fill when an initial min-fill produced a
     ///   decomposition and sampled min-degree when none did, and stop at the
     ///   soft deadline either way;
-    /// - the trailing FlowCutter candidate does not run, since at that size one
-    ///   of its restarts can outlast the window it is given.
+    /// - the trailing FlowCutter candidate runs as on any residual, under its
+    ///   own vertex cap.
     ///
     /// Lowering it below 10,000 leaves no band, and every residual over the
     /// number runs min-degree only.
