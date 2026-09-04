@@ -1,144 +1,107 @@
 # Algorithms
 
 goatd provides several tree-decomposition constructions and a portfolio that
-combines them. This page describes the choices that differ from a textbook
-implementation or from the upstream code.
+combines them. This page describes what differs from a textbook implementation
+or from the vendored upstream code.
 
-## Portfolio
+## The portfolio
 
-`portfolio::candidates` starts with deterministic min-degree on the original
-graph, then shares one graph build and one preprocessing pass across five
-elimination runs:
+`portfolio::candidates` runs a fixed schedule and returns every decomposition
+it produces:
 
-1. deterministic min-degree on the original graph;
+1. deterministic min-degree;
 2. sampled min-degree;
 3. nested dissection;
 4. sampled min-fill;
-5. sampled min-degree with a second seed;
-6. nested dissection with a second seed.
+5. sampled min-degree, second seed;
+6. nested dissection, second seed.
 
-The inexpensive order runs first so a valid candidate exists early. Later
-runs receive the best width already found and stop when a bag is too wide to
-win. Two cardinality-search candidates follow the fixed orders, each on a
-residual small enough for it; see *Cardinality searches*. The size of the
-residual left after preprocessing picks one of three schedules, and neither
-cardinality search is part of that choice: each has its own gate. At or below
-10,000 vertices the portfolio runs all of it: the fixed orders, the diverse
-pass, the hedge, and sampled min-fill restarts. Between
-10,000 and 300,000 vertices min-fill still runs but stops at half the time the
-soft deadline has left when it starts, so the restarts keep a share of the
-budget; nested dissection, the diverse pass and the hedge stay off; and the
-restarts follow min-fill when an initial min-fill produced a decomposition and
-min-degree when none did. Above 300,000 vertices the schedule keeps the
-min-degree candidates and sampled min-degree restarts.
-`PortfolioConfig::with_expensive_orders_up_to` moves the upper boundary. Neither
-boundary applies to a candidate with a vertex cap of its own: the trailing
-FlowCutter candidate, the two cardinality searches and the fill-dropping pass
-each answer their own cap, all three of which sit below the upper boundary.
-Initial fill counts are computed only when a fill-based order first runs, then
-reused across the remaining scores and seeds. The best-only path contracts bags
-contained in an adjacent bag in each candidate that can still win, then
-minimizes `(treewidth, total bag size)`. `sampled_min_fill_candidates` exposes
-the smaller variant used by callers that want to apply their own ranking.
+The first runs on the original graph. The other five share one graph build and
+one preprocessing pass, then compute their own order for the residual.
+Min-degree goes first so that a valid decomposition exists early, and every
+later candidate is handed the best width so far and stops as soon as one of its
+bags is too wide to win. Fill counts are computed once, when the first
+fill-based order needs them, and reused by the rest.
 
-A soft budget, measured from before preprocessing, stops the portfolio from
-starting further candidates and samples. A candidate stopped by either budget
-puts each unfinished residual component in one bag and attaches the partial
-elimination bags to it, as long as it is the first candidate. This completion
-is linear in the residual size. At the soft budget it applies only to the
-component the candidate was working on: the components after it have the rest
-of the hard budget and get their own orders, against the hard deadline alone,
-and fall back to one bag each when it passes. Below 10,000 vertices later
-candidates can stop without completion, because a valid candidate already
-exists and a candidate stopped late in the run has bagged too little to beat
-it. Above 10,000 vertices every candidate completes: each is stopped by a
-deadline rather than by running out of vertices, so what separates them is how
-much of the graph each one got through, and the one with the smallest residual
-left to bag is the one that wins. Only the hard budget ends the
-portfolio: the deterministic min-degree and min-fill orders return when the
-elimination's own deadline passes and the residual is still large, because
-cheap-mode elimination at that scale can overshoot the hard budget by seconds,
-and what they return is a complete decomposition that the trailing FlowCutter
-candidate still runs after. `PortfolioConfig::standard_with_budget`, which the CLI uses for
-a budgeted standard portfolio, offers 100 extra samples below a 4.75-second
-soft budget and 1,000 at or above it, and in either case draws seeds on past
-that count until the restart deadline: the count caps how many seeds are drawn,
-not the clock, and a graph whose candidates are quick would otherwise finish
-the schedule with budget unspent. `PortfolioConfig::with_restarts_to_deadline`
-turned off stops the restarts at the count, which is what `standard()` and
-`sampled_min_fill()` do; a run with no soft deadline stops at the count either
-way. The restart deadline is the hard deadline less a 1.5-second reserve for
-the trailing FlowCutter candidate, so the restarts and the weighted stages run
-past the soft deadline: on residuals that run the whole schedule, more restart
-time lowers width on many more graphs than a longer FlowCutter tail does. Above
-the 10,000-vertex boundary, and on a run with no hard deadline, the restarts
-stop at the soft deadline as the initial candidates do; a restart at that size
-costs a large share of the window, and the second stage is better left to
-FlowCutter.
+Two cardinality-search candidates follow the fixed orders, each on a residual
+small enough for it. Neither is part of the schedule choice below: each has a
+vertex gate of its own. They are described under *Cardinality searches*.
 
-There is one exception, and it covers most large graphs. The portfolio asks
-before it fixes the schedule whether the trailing FlowCutter candidate can
-start and stop inside the second stage on a graph this size, using the same
-work-unit test the candidate itself applies. Where the answer is no, nothing
-would run in the second stage at all, so above the 10,000-vertex boundary the
-elimination takes it: the initial candidates and the restarts run to the hard
-deadline less what the run needs to write its answer out. That reserve is sized
-from the graph rather than fixed, since bagging the residual, building the
-decomposition and writing it all grow with the vertex and edge counts, and it
-stops at a ceiling, since past a few hundred thousand vertices they stop
-growing: what the handover costs follows how many bags the elimination built,
-not how many vertices it started from. The ceiling is what keeps the exception
-from pricing the largest graphs out of the second stage. The question is asked
-with the widest window the schedule could offer and the smallest reserve, so a
-graph refused on those terms is refused on any.
+With time left the portfolio keeps going: first a diverse pass over sampled
+fill/degree scores, then further min-fill seeds, which the rest of this page
+calls the restarts. A trailing candidate hands the graph to FlowCutter.
 
-Running the elimination longer never widens the answer it hands back. Its bags
-are made in order, the residual it never reached goes into one bag, and that
-bag is the widest thing a stopped candidate produces; carrying on can only
-shrink it, and every bag made along the way is smaller than the residual it
-came out of. A later candidate is kept only when its width and total bag size
-are both no worse, so a longer schedule holds whatever the shorter one had.
+The size of the residual after preprocessing picks between three schedules.
+At or below 10,000 vertices all of the above runs. Between 10,000 and 300,000
+vertices the min-fill candidate still runs but stops at half the time the soft
+deadline has left when it starts, so the restarts keep a share of the budget;
+nested dissection, the diverse pass and the hedge are skipped; and the restarts
+are sampled min-fill when the initial min-fill produced a decomposition and
+sampled min-degree when it did not. Above 300,000 vertices only the min-degree
+candidates and sampled min-degree restarts run.
+`PortfolioConfig::with_expensive_orders_up_to` moves the upper boundary; the
+lower one is fixed. The FlowCutter candidate runs on a residual of any size,
+under its own vertex cap.
 
-An extra sample that reaches the restart deadline stops there,
-and one more restart starts only while what the previous restart cost still
-fits before that deadline: a restart stopped part-way leaves nothing behind,
-so the time is better left to the FlowCutter candidate.
+`portfolio::decompose` returns one decomposition rather than all of them. It
+contracts bags contained in a neighbouring bag, in each candidate that can
+still win, then minimizes `(treewidth, total bag size)`.
+`sampled_min_fill_candidates` is the smaller set, for callers that rank the
+candidates themselves.
 
-The rest of the hard-budget interval is what the trailing FlowCutter candidate
-gets, less a reserve for the end of the run. The backend tests its deadline
-between restarts, so it can return one restart after the timeout it was handed,
-and the result is then copied out of it a bag at a time; the reserve is two
-estimated restarts, which covers both. The reserve is taken at the rate the run
-has actually been going, which is the wall time it has spent divided by the
-graph work it has charged: on a machine running one solve per core a restart
-costs several times what the model says, and a reserve at the model's own rate
-leaves the candidate returning after the deadline it was sized for. The
-candidate is skipped when what remains is too short to seed it, and also when
-the graph is large enough that the backend's setup and first restart alone
-outlast it: the setup pass runs to the end whatever the clock says, so on such
-a graph the run would return well after the hard deadline.
-Both estimates use the work-unit model in *Flow-based separators*. Once the
-search is under way the backend does test the deadline inside it — between the
-restarts, between the cells of one partition, and between the augmentations of
-one cut — and a search stopped that way returns the best decomposition it has
-already recorded. By default, a 4.75-second soft budget has a 9.5-second hard
-deadline. Callers that need more time to write the result can set an earlier
-hard budget independently without changing the soft schedule. `stop_flag` ends
-a run from outside it: once set, every deadline check in the library answers as
-an expired hard deadline does, in the vendored backend as well as in the Rust
-code, and the caller gets the best decomposition found so far. The command-line
-tool sets it from a `SIGTERM` handler, so a caller that runs the tool under a
-wall clock of its own still gets a decomposition. Both standard
-configurations hedge, which adds the candidates described under *The hedge*.
-Last of all, on a graph small enough for it, the portfolio rebuilds its winner
-on a minimal triangulation of the same graph and keeps whichever decomposition
-is better; that pass is also under *Cardinality searches*.
-The library remains single-threaded throughout.
+### Budgets
+
+A configuration carries a soft and a hard deadline, both measured from before
+preprocessing. The soft one stops the portfolio starting further candidates and
+samples; the hard one ends the run. In the solver the hard deadline defaults to
+twice `--budget`, so a 4.75-second budget pairs with a 9.5-second cutoff. A
+caller that needs time to write the result out can bring the hard deadline in
+on its own.
+
+A run returns a decomposition whatever the clock does. The first candidate to
+run out of time puts each unfinished residual component in a bag of its own and
+attaches the elimination bags it did build, at a cost linear in the residual.
+Below the 10,000-vertex cutoff later candidates just stop, since a valid
+decomposition already exists; above it every candidate completes, and the one
+that left the smallest residual wins. At the soft deadline that completion
+covers only the component in hand, and the ones behind it get their own orders
+against the hard deadline.
+
+The restarts run past the soft deadline into the hard window, stopping 1.5
+seconds short of it to leave the FlowCutter candidate that much to run in.
+`PortfolioConfig::standard_with_budget` allows 100 extra seeds below a
+4.75-second soft budget and 1,000 at or above it, but the count caps how many
+seeds are drawn, not how long they run, and one more restart starts only while
+what the previous one cost still fits. On a residual over the 10,000-vertex
+cutoff the restarts stop at the soft deadline as the initial candidates do,
+unless the FlowCutter candidate's own work model says it could not start and
+stop inside the hard window on a graph this size; then the initial candidates
+and the restarts run to the hard deadline less a reserve for bagging the
+residual and writing the result, which grows with the vertex and edge counts
+and is held between 50 ms and 4 s. On a run with no hard deadline they stop at
+the soft deadline. `PortfolioConfig::with_restarts_to_deadline` turned off stops
+them at the count, which is what `standard()` and `sampled_min_fill()` do.
+
+The FlowCutter candidate takes what is left, less two estimated restarts, since
+the vendored backend tests its deadline only between restarts and the result
+still has to be copied out. It is skipped when what remains is too short to
+seed it, or when the backend's setup and first restart would outlast it.
+
+Last of all, on a graph small enough for it, the portfolio drops the fill its
+winner does not need and keeps the better of the two. That pass cannot widen a
+bag, and it starts only while the work it projects fits in what the hard
+deadline has left; it is described under *Cardinality searches*.
+
+`stop_flag` ends a run from outside it: every deadline check in the library and
+in the vendored backend then answers as an expired hard deadline, and the
+caller gets the best decomposition found so far. The solver sets the flag from
+a `SIGTERM` handler. Both standard configurations hedge, and the library is
+single-threaded throughout.
 
 ## Preprocessing
 
-Every elimination construction starts with the same deterministic reduction
-pass:
+Every elimination construction starts from the same deterministic reduction,
+which the portfolio runs once and shares:
 
 | rule | condition | action |
 | --- | --- | --- |
@@ -148,155 +111,112 @@ pass:
 | simplicial | the live neighbours of `v` form a clique | remove `v` and record `{v} ∪ N(v)` |
 | almost simplicial | the live neighbours have exactly one missing edge, and `degree(v)` does not exceed the running width lower bound | add the missing edge, remove `v`, and record `{v} ∪ N(v)` |
 
-Islet and twig elimination run to a fixed point first. This removes forest
-components without introducing a width-2 series bag. The pass then scans the
-series, simplicial, and almost-simplicial rules in that order and starts again
-if any rule fired. Series and simplicial eliminations raise the running lower
-bound used to admit the almost-simplicial rule. Under a budget the pass stops
-at the soft deadline and hands the rest of the graph to the elimination order;
-the rules it has applied by then stand, and the ones it has not are the
-order's to do.
+Islet and twig removal runs to a fixed point first, which clears forest
+components without leaving a width-2 series bag behind. The pass then tries
+series, simplicial and almost simplicial in that order, and starts again
+whenever a rule fires. Series and simplicial eliminations raise the running
+lower bound that admits the almost-simplicial rule. Under a budget the pass
+stops at the soft deadline and leaves the rest of the graph to the elimination
+order.
 
-The recorded bags form the beginning of the elimination sequence. A solver
-continues on the residual graph, then the decomposition builder attaches these
-prefix bags in reverse elimination order. The graph keeps its original vertex
-ids; removed vertices are marked inactive rather than renumbered.
-
-The portfolio performs this work once. Five elimination candidates share the
-reduced graph and prefix, then compute their own order for the residual graph.
-The initial deterministic min-degree candidate uses the original graph.
+The recorded bags are the front of the elimination sequence. A solver continues
+on the residual graph, and the decomposition builder attaches the prefix bags
+in reverse elimination order. Vertex ids never change: a removed vertex is
+marked inactive rather than renumbered.
 
 ## Min-fill and min-degree
 
-Min-fill eliminates the vertex whose removal introduces the fewest missing
-edges among its neighbors. Fill counts are maintained in a heap and only dirty
-neighbors are rescored. Dense neighborhoods use bitsets; sparse neighborhoods
-use a stamped marker array. Min-degree uses the same elimination and bag
-construction path with a cheaper degree key.
+Min-fill eliminates the vertex whose removal adds the fewest edges among its
+neighbours. Fill counts live in a heap, only dirty neighbours are rescored, and
+dense neighbourhoods use bitsets where sparse ones use a stamped marker array.
+Min-degree shares the elimination and bag-building path with a cheaper key, and
+refreshes the heap entry of every affected neighbour, including when a degree
+falls.
 
-Minimum-degree heap entries are refreshed for every affected neighbour after
-an elimination, including when its degree decreases. The portfolio's initial
-form breaks equal-degree ties by heap insertion order; the standalone form
-uses the caller's seeded salt.
+Each score is exact. What varies between the orders is how they break ties.
 
-The salted deterministic forms use a seeded per-vertex value after the primary
-key. The sampled forms instead draw from the complete minimum-key tie set. Besides
-fill and degree, a sampled order can minimize
-`fill + degree_coefficient * degree` for a signed coefficient. A caller may
-supply one weight per vertex; uniform weights give uniform sampling. Each
-score remains exact while the orders explore different elimination paths.
+- A salted deterministic order adds a seeded per-vertex value after the primary
+  key. The portfolio's initial min-degree instead breaks equal degrees by heap
+  insertion order.
+- A sampled order draws from the whole minimum-key tie set, with one
+  caller-supplied weight per vertex; uniform weights give uniform sampling.
+- The restarts widen that set into a band, taking every vertex whose fill is
+  within a fixed distance of the smallest, so seeds still separate on a graph
+  where one vertex holds the minimum at every step.
+  `PortfolioConfig::with_sample_band` sets the width, which the standard
+  configurations leave at 3, and 0 restores the exact minimum;
+  `with_sample_band_alternate` sends even-numbered
+  restarts to the minimum and odd-numbered ones to the band. Only the restarts
+  read the band. Every other candidate runs its own score's exact minimum.
 
-The ordinary restarts draw from a band rather than from the minimum alone: a
-restart's tie set is every vertex whose fill is at most a fixed number above
-the smallest, so seeds still separate on a graph where one vertex holds the
-minimum at every step. `PortfolioConfig::with_sample_band` sets the width and 0
-returns the exact minimum. Only the restarts read it — the other candidates
-each run their own score's exact minimum.
-`PortfolioConfig::with_sample_band_alternate` splits the restarts between the
-two: an even-numbered restart draws from the exact minimum and an odd-numbered
-one from the band, on the same seed sequence either way, so the schedule keeps
-the candidates it had and adds the band's.
-
-These choices extend the standard greedy heuristics with shared reductions,
-incremental scoring, explicit weighted ties, incumbent-width pruning, and
-budget-aware completion.
+Besides fill and degree, a sampled order can minimize
+`fill + degree_coefficient * degree` for a signed coefficient.
 
 ## Vertex coordinates
 
 `embedding::Embedding::compute` places the vertices by repeated lazy
-random-walk averaging: each round moves every vertex halfway toward the mean
-of its neighbours, then whitens the cloud — recentre it, rotate it onto the
+random-walk averaging. Each round moves every vertex halfway toward the mean of
+its neighbours, then whitens the cloud: recentre it, rotate it onto the
 eigenvectors of its covariance with cyclic Jacobi, and rescale every axis to
 unit standard deviation. Without the whitening the averaging collapses the
-graph onto one point. With it the averaging is subspace iteration on the lazy
-random walk: the axes settle on the walk's slowest modes, they come out in
-descending order of variance, and the leading one approximates a Fiedler
-vector.
+graph onto one point. With it the rounds are subspace iteration on the lazy
+random walk, so the axes settle on the walk's slowest modes in descending order
+of variance, and the leading one approximates a Fiedler vector.
 
-Whitening pins the frame only up to a rotation, since axes with close
-eigenvalues can come back swapped or flipped, so the loop watches quantities a
-rotation leaves alone. It stops after `patience` consecutive rounds in which no
-squared eccentricity and no squared edge length changed by more than the
-tolerance (1e-4 in whitened units by default), at the round cap (1,000 by
-default), or when the caller's stop signal fires, and returns the last
-coordinates. A round costs `O(m·d + n·d²)` and is charged to the construction
-meter.
+Since whitening pins the frame only up to a rotation, the stopping test watches
+quantities a rotation leaves alone: the loop stops after `patience` consecutive
+rounds in which no squared eccentricity and no squared edge length moved by
+more than the tolerance, at the round cap, or on the caller's stop signal. The
+defaults are 1e-4 in whitened units and 1,000 rounds. A round costs
+`O(m·d + n·d²)` and is charged to the construction meter.
 
-The distance of a vertex from the centre of the cloud says how peripheral it
-is. `Embedding::rank_weights` turns that order into sampling weights, spread
-over the whole `u32` range: a sampled order draws a tied vertex with mass
-`u32::MAX - weight + 1`, so literal ranks would differ in mass by a few parts
+Distance from the centre of the cloud is how peripheral a vertex is.
+`Embedding::rank_weights` turns that order into sampling weights. They are
+spread over the whole `u32` range because a sampled order draws a tied vertex
+with mass `u32::MAX - weight + 1`, so literal ranks would differ by a few parts
 in 2^32 and draw almost uniformly.
 
 ## The hedge
 
-Peripheral-first sampling weights help some graphs and hurt others.
-`PortfolioConfig::with_hedge` runs the portfolio's own candidates and the
-weighted ones instead of choosing between them, and the cost is the time the
-second set takes.
+Peripheral-first sampling weights help some graphs and hurt others, so the
+standard configurations run both sets of candidates rather than choose between
+them. The cost is the time the second set takes.
 
-The plain candidates go first: the diverse pass runs on the caller's weights
-and the seeds it always had. Then the fixed orders that read the weights run
-again on the ranking, and the diverse pass follows on the ranking and on those
-same seeds. Every ordinary restart stays plain, on the seed sequence and in
-the order a portfolio without the hedge runs, so no restart that portfolio
-would have reached goes unrun. Nothing repeats a deterministic order, which
-ignores weights. Ordering matters under a budget: where the schedule finishes,
-the second set is free, and where the budget binds, the second set costs later
-candidates rather than displacing the first. The incumbent width bound and the
-deadlines apply to every candidate of both sets.
+The plain candidates go first, on the caller's weights and the usual seeds. A
+weighted stage then repeats, on one ranking, the fixed orders that read weights
+and the diverse pass. Deterministic orders are not repeated, since they ignore
+weights, and the restarts stay plain and keep the seeds and the position they
+hold without a hedge. The incumbent width bound and both deadlines apply to
+every candidate of both sets.
 
 `PortfolioConfig::standard` and `standard_with_budget` hedge on eccentricity
-rankings in the dimensions of `portfolio::DEFAULT_HEDGE_DIMS`, which is
-`[3, 1, 2, 4, 8, 5, 6, 7]` — every dimension the embedding has, since the
-budget rule stops the series where there is no time for another stage. Each
-placement runs when the first candidate that reads it asks
-for it, after the plain diverse pass, so a run that ends inside the plain pass
-never pays for any of them; a placement is charged to the construction meter
-and stops at the restart deadline. Only a residual that runs the whole schedule
-hedges: above the 10,000-vertex boundary the portfolio runs restarts and
-nothing else, so there is nothing there for a weighted stage to run against.
-`with_hedge(Hedge::Off)` runs the schedule without any of it.
+rankings in the dimensions of `portfolio::DEFAULT_HEDGE_DIMS`,
+`[3, 1, 2, 4, 8, 5, 6, 7]`, which is every dimension the embedding has, with
+the one that helps most on its own in front. A ranking is computed when the
+first candidate that reads it asks for it, so a run that ends inside the plain
+pass pays for none of them. `PortfolioConfig::with_hedge` takes `Hedge::Off` or
+a `Hedge::Passes` carrying a `HedgeSeries`, where
+`HedgeSeries::eccentricity_dims` gives one dimension per stage and
+`HedgeSeries::random` draws the weights at random as a control.
 
-`Hedge::Passes` carries a `HedgeSeries`: one weighted stage per weighting, in
-the order the series gives them, each stage being the fixed orders that read
-weights and the diverse pass again. A series of one runs exactly what is
-described above. Which graphs a weighting improves is close to arbitrary and
-two weightings improve mostly different ones, so several stages collect more of
-them; the incumbent width bounds the candidates of every stage after the first.
-Three leads the default series because on its own it is the dimension that
-helps most, and a budget that has room for one stage should spend it there.
-`HedgeSeries::eccentricity_dims` takes one dimension per stage and
-`HedgeSeries::random` runs the same schedule on weights drawn at random, the
-control for a series that means something.
+A stage is as many candidates as the diverse pass and takes them from the
+restarts, so the budget decides how many run. The plain pass is the portfolio's
+own measurement of what a stage costs. The stages get
+`PortfolioConfig::with_hedge_reserve` of whatever the restart deadline had left
+when that pass ended, half of it by default, and another stage starts only
+while the stages' spend and one more measurement fit inside that share. One
+stage runs on any budget. A run with no soft budget runs the whole series, and
+the trace reports each stage left unrun.
 
-A stage is as many candidates as the diverse pass and it takes them from the
-restarts, so several stages can leave a graph whose plain pass nearly filled
-the budget with no restarts at all. The plain pass is the portfolio's own
-measurement of what a stage costs — the same orders on other weights — so the
-stages get `PortfolioConfig::with_hedge_reserve` of what the restart deadline had
-left when the plain pass ended, half of it by default, and one more stage
-starts only while what the stages have spent plus that measurement fits in the
-share. The first stage is outside the rule: a hedge runs one weighted stage on
-any budget, and the reserve decides how many follow it. A stage that has run
-replaces the measurement when it was cheaper, since the incumbent bounds the
-stages after the first. A refused stage refuses the ones behind it, the
-restarts start where they always start. A run with no soft budget bounds no
-stage and runs the whole series: the rule exists to leave the restarts their
-time, and there is no deadline to take it from, which also keeps such a run's
-schedule independent of how long any candidate took. Without a deadline the
-diverse pass does not run either, so a stage there is only the fixed orders
-that read weights. The trace reports each stage left unrun.
-
-## Attributing a result
+## Tracing a run
 
 `portfolio::decompose_traced` reports each candidate to a caller-supplied sink
 as it finishes: which candidate of the schedule it was (`portfolio::Stage`),
 the seed, the pass of a hedge, whether it produced a decomposition or stopped
-at the width bound or the deadline, and how far into the portfolio it
-finished. A candidate that produced one also says whether the portfolio would
-return it, so the winner is reported rather than inferred.
-`portfolio::decompose` is the same run with the sink discarded.
+at the width bound or a deadline, and how far into the portfolio it finished. A
+candidate that produced one also says whether the portfolio would return it, so
+the winner is reported rather than inferred. `portfolio::decompose` is the same
+run with the sink discarded.
 
 ## Cardinality searches
 
@@ -372,91 +292,82 @@ decomposition.
 
 ## Nested dissection and multilevel bisection
 
-Nested dissection is not a separate partitioning primitive. It repeatedly
-calls goatd's multilevel graph bisector, turns the crossing edges of that
-bisection into a vertex separator, recurses on both remaining sides, and
-eliminates the separator last.
+Nested dissection is not a separate partitioning primitive. It repeatedly calls
+goatd's multilevel graph bisector, turns the crossing edges of a bisection into
+a vertex separator, recurses on both remaining sides, and eliminates the
+separator last.
 
-The bisector follows the usual coarsen, initial-partition, uncoarsen, and
-refine sequence, including V-cycles. For a proposed bisection, goatd builds the
-bipartite graph of crossing edges and computes a minimum vertex cover using
-augmenting-path matching. By König's theorem this is the smallest separator
-obtained by covering those crossing edges, and it is never larger than taking
-all boundary vertices from the smaller side. Small subgraphs, and a level whose
-bisection leaves nothing to recurse on, are ordered by min-fill; under a budget
-that min-fill runs against the hard deadline too, and the vertices it has not
-reached follow in a fixed order.
+The bisector follows the usual coarsen, initial-partition, uncoarsen and refine
+sequence, V-cycles included. For a proposed bisection, goatd builds the
+bipartite graph of crossing edges and computes a minimum vertex cover by
+augmenting-path matching. By König's theorem that is the smallest separator
+covering those edges, and it is never larger than all the boundary vertices on
+the smaller side. Small subgraphs, and a level whose bisection leaves nothing
+to recurse on, are ordered by min-fill against the hard deadline; the vertices
+it does not reach follow in a fixed order.
 
-The same multilevel graph bisector is public on its own. A separate public
-hypergraph bisector minimizes cut hyperedges, with FM and flow-based
-refinement; it is not used to disguise a hypergraph as a graph. Hypergraph
+The graph bisector is public on its own, as is a separate hypergraph bisector
+that minimizes cut hyperedges with FM and flow-based refinement. Hypergraph
 coarsening matches vertices by their total shared hyperedge weight, so explicit
-weights and repeated hyperedges affect both coarsening and the cut objective.
+weights and repeated hyperedges affect both the coarsening and the cut
+objective.
 
-Partition refinement is part of the partitioner. It improves the temporary
-0/1 bisection during uncoarsening and returns another bisection. Decomposition
-refinement is under `decomposition`: it starts from complete bags and a bag
-tree, then rewrites them around a separator supplied by FlowCutter.
+Partition refinement belongs to the partitioner: it improves the temporary 0/1
+bisection during uncoarsening and returns another bisection. Decomposition
+refinement is under `decomposition`, and rewrites complete bags and a bag tree
+around a separator supplied by FlowCutter.
 
 ## Flow-based separators
 
-[FlowCutter](https://github.com/kit-algo/flow-cutter-pace17) explores the
-tradeoff between cut size and balance by repeatedly advancing max-flow cuts.
-goatd contains two related implementations:
+[FlowCutter](https://github.com/kit-algo/flow-cutter-pace17) trades cut size
+against balance by repeatedly advancing max-flow cuts. goatd contains two
+implementations of it:
 
-- `flowcutter::separator::find` is a Rust separator search. It returns the
-  separator and its two sides, and is used by decomposition refinement.
-- `flowcutter::decompose` is the vendored PACE 2017 C++ tree-decomposition
-  builder. It constructs a full decomposition and remains useful because its
-  complete search is not the same operation as the Rust separator call.
+- `flowcutter::separator::find`, a Rust separator search that returns the
+  separator and its two sides, used by decomposition refinement;
+- `flowcutter::decompose`, the vendored PACE 2017 C++ builder, which constructs
+  a whole decomposition.
 
-The Rust separator search uses one cutter per restart instead of increasing a
-multi-cutter batch, and uses goatd's seeded RNG. Refinement projects an existing
-decomposition onto both sides of a separator, glues the projections at a new
-separator bag, and accepts the replacement only when `(treewidth, total bag
-size)` improves. Recursion applies the same monotone check.
+The Rust search uses one cutter per restart rather than a growing multi-cutter
+batch, and goatd's seeded RNG. Refinement projects an existing decomposition
+onto both sides of a separator, glues the projections at a new separator bag,
+and accepts the replacement only when `(treewidth, total bag size)` improves;
+recursion applies the same monotone check.
 
-The C++ builder carries several practical changes over the PACE source:
-
-- memory guards for the dense adjacency matrix and bag-adjacency graph;
-- 64-bit heap-position arithmetic;
-- bounded greedy-order passes and work-unit metering;
-- an early-convergence patience limit;
-- a density gate for a shortcut order that is expensive on clique-dominated
-  graphs.
-
-The complete list of source changes and licences is in
-[THIRD-PARTY.md](THIRD-PARTY.md).
+The C++ builder carries several practical changes over the PACE source: memory
+guards for the dense adjacency matrix and the bag-adjacency graph, 64-bit
+heap-position arithmetic, bounded greedy-order passes with work-unit metering,
+an early-convergence patience limit, and a density gate on a shortcut order
+that is expensive on clique-dominated graphs.
+[THIRD-PARTY.md](THIRD-PARTY.md) lists every source change and licence.
 
 ## Decomposition operations
 
-`decomposition` contains the tree-decomposition type, validation, projection,
+`decomposition` holds the tree-decomposition type, validation, projection,
 FlowCutter-based refinement, and the minimalization pass of *Cardinality
-searches*. Refinement preserves global vertex ids while
-it projects each side and glues them at a separator.
+searches*. Refinement preserves global vertex ids while it projects each side
+and glues them at a separator.
 
 Public constructors canonicalize each bag's contents and the undirected bag
 edges, so equivalent caller inputs expose the same rooted walk. Native
-algorithms may retain stable algorithm-defined vertex and neighbour order when
-it carries useful traversal information; FlowCutter preserves both at its
+algorithms may keep a stable algorithm-defined vertex and neighbour order where
+it carries useful traversal information, and FlowCutter preserves both at its
 adapter boundary.
 
 ## Correctness and reproducibility
 
-`TreeDecomposition::validate` checks bag contents, the bag forest, vertex and edge
-coverage, and the running intersection property.
+`TreeDecomposition::validate` checks bag contents, the bag forest, vertex and
+edge coverage, and the running intersection property.
 
 Elimination reads the clock on the work it has charged rather than on the
 iterations it has run: once a millisecond's worth of charged work has passed,
-or 64 iterations, whichever comes first. A count alone is the wrong interval
-where iterations differ in cost by orders of magnitude — one min-fill score on
-a dense residual takes milliseconds, and 64 of them used to carry a run seconds
-past its hard deadline.
+or 64 iterations, whichever comes first. Iterations differ in cost by orders of
+magnitude, so a count alone used to carry a run seconds past its hard deadline.
 
-Seeded, step-budgeted runs are reproducible. Machine speed and load can change
-where a wall-clock budget stops. While a caller holds the guard returned by
-`meter::arm`, duration budgets advance by charged graph work instead. Dropping
-the guard restores wall-clock budgets.
+Seeded, step-budgeted runs are reproducible. Wall-clock budgets are not, since
+machine speed and load change where they stop. While a caller holds the guard
+returned by `meter::arm`, duration budgets advance by charged graph work
+instead; dropping the guard restores wall-clock budgets.
 
 The main algorithmic sources are the
 [FlowCutter bisection paper](https://arxiv.org/abs/1504.03812), the
