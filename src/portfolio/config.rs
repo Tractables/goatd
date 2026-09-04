@@ -32,6 +32,24 @@ pub(super) const MIN_FLOWCUTTER_CANDIDATE_MS: u64 = 50;
 /// FlowCutter candidate when they run past the soft deadline.
 pub(super) const FLOWCUTTER_RESERVE: Duration = Duration::from_millis(1_500);
 
+/// Residual size at or below which the standard portfolio runs the MCS-M
+/// candidate. MCS-M costs one search per vertex over the whole residual, so its
+/// cost grows with the vertex count times the edge count; above this it takes
+/// more of the budget than the restarts it displaces are worth. On a corpus of
+/// formula graphs it stays under a tenth of a second at this size and wins the
+/// portfolio often; on larger residuals it costs a second or more and the
+/// greedy orders were narrower anyway.
+const DEFAULT_MINIMAL_TRIANGULATION_VERTICES: u32 = 1_000;
+
+/// Graph size at or below which the standard portfolio minimalizes the
+/// triangulation behind its winner. The pass holds two bitsets over the
+/// vertices, so its memory grows with the square of this, which is what the
+/// gate is for. What the pass costs in time is not a function of the vertex
+/// count at all — it follows the bags of the decomposition being rebuilt — so
+/// the clock is what keeps it inside the budget, and this only keeps the memory
+/// bounded.
+const DEFAULT_TRIANGULATION_REFINEMENT_VERTICES: u32 = 2_000;
+
 /// Dimensions the hedge places the vertices in, one weighted stage each, in
 /// this order. Which graphs a dimension improves is close to arbitrary and two
 /// dimensions improve mostly different ones, so a hedge that runs several
@@ -288,6 +306,8 @@ pub struct PortfolioConfig {
     pub(super) sample_band: u64,
     pub(super) sample_band_alternate: bool,
     pub(super) expensive_orders_up_to: usize,
+    pub(super) minimal_triangulation: Option<u32>,
+    pub(super) triangulation_refinement: Option<u32>,
 }
 
 /// Two configurations are equal when they ask for the same run, the reserve
@@ -306,6 +326,8 @@ impl PartialEq for PortfolioConfig {
             && self.sample_band == other.sample_band
             && self.sample_band_alternate == other.sample_band_alternate
             && self.expensive_orders_up_to == other.expensive_orders_up_to
+            && self.minimal_triangulation == other.minimal_triangulation
+            && self.triangulation_refinement == other.triangulation_refinement
     }
 }
 
@@ -329,6 +351,8 @@ impl PortfolioConfig {
             sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
+            minimal_triangulation: None,
+            triangulation_refinement: None,
         }
     }
 
@@ -409,6 +433,8 @@ impl PortfolioConfig {
             sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
+            minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
+            triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
         }
     }
 
@@ -455,6 +481,8 @@ impl PortfolioConfig {
             sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
+            minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
+            triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
         }
     }
 
@@ -564,6 +592,59 @@ impl PortfolioConfig {
     /// over the number runs min-degree only.
     pub fn with_expensive_orders_up_to(mut self, vertices: usize) -> Self {
         self.expensive_orders_up_to = vertices;
+        self
+    }
+
+    /// Run the MCS-M candidate while the preprocessed residual has at most
+    /// `max_residual_vertices` vertices.
+    ///
+    /// MCS-M eliminates along a numbering that fills the residual to a minimal
+    /// triangulation. It is one deterministic candidate, it runs after the
+    /// fixed orders and before the restarts, and it stops at the soft deadline
+    /// with nothing rather than taking their time. On most graphs it is wider
+    /// than the greedy orders and the portfolio keeps whichever is narrower;
+    /// where it wins it wins by several.
+    ///
+    /// The gate is a vertex count because the search costs one traversal of the
+    /// residual per vertex. The soft deadline is what stops it: the search reads
+    /// the clock while it walks, so a residual the gate lets through but the
+    /// budget cannot finish gives up part-way and the portfolio keeps what the
+    /// other candidates found.
+    pub fn with_minimal_triangulation(mut self, max_residual_vertices: u32) -> Self {
+        self.minimal_triangulation = Some(max_residual_vertices);
+        self
+    }
+
+    /// Run no MCS-M candidate.
+    pub fn without_minimal_triangulation(mut self) -> Self {
+        self.minimal_triangulation = None;
+        self
+    }
+
+    /// Minimalize the triangulation behind the portfolio's winner on graphs of
+    /// at most `max_vertices` vertices.
+    ///
+    /// The winner's bags are completed to cliques, the added edges that can go
+    /// without breaking chordality are dropped, and the cliques of what remains
+    /// become the new bags. The pass never widens the decomposition; where it
+    /// drops nothing, or improves neither the width nor the total bag size, the
+    /// winner is returned unchanged.
+    ///
+    /// The gate is a vertex count because the pass holds two bitsets over the
+    /// graph's vertices. It is not what keeps the pass inside the budget: the
+    /// pass costs about what completing the winner's bags costs, which the
+    /// winner says in advance, so the portfolio runs it only while that fits in
+    /// what is left of the hard deadline and stops it there if the sweeps run
+    /// long.
+    pub fn with_triangulation_refinement(mut self, max_vertices: u32) -> Self {
+        self.triangulation_refinement = Some(max_vertices);
+        self
+    }
+
+    /// Leave the winner's triangulation as the candidate that produced it left
+    /// it.
+    pub fn without_triangulation_refinement(mut self) -> Self {
+        self.triangulation_refinement = None;
         self
     }
 }

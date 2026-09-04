@@ -25,6 +25,11 @@ pub enum Stage {
     },
     /// An ordinary sampled min-fill restart.
     Sample,
+    /// The MCS-M candidate, which eliminates along a minimal triangulation of
+    /// the residual.
+    MinimalTriangulation,
+    /// The pass that drops the fill edges the winner's bags do not need.
+    Minimalized,
     /// The trailing FlowCutter candidate.
     FlowCutter,
     /// A hedge's weighted stage as a whole, rather than one of its candidates.
@@ -41,6 +46,8 @@ impl fmt::Display for Stage {
                 write!(formatter, "diverse:{degree_coefficient}")
             }
             Stage::Sample => formatter.write_str("sample"),
+            Stage::MinimalTriangulation => formatter.write_str("minimal-triangulation"),
+            Stage::Minimalized => formatter.write_str("minimalized"),
             Stage::FlowCutter => formatter.write_str("flowcutter"),
             Stage::WeightedStage => formatter.write_str("weighted-stage"),
         }

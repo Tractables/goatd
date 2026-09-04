@@ -500,6 +500,7 @@ fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
             },
             _,
         ) => Stage::Diverse { degree_coefficient },
+        (Order::MinimalTriangulation, _) => Stage::MinimalTriangulation,
     }
 }
 
@@ -989,6 +990,57 @@ fn run_portfolio(
             break;
         }
     }
+    // One MCS-M candidate, between the fixed orders and the restarts. It
+    // eliminates along a numbering that fills the residual to a minimal
+    // triangulation, which is a different construction from the greedy scores
+    // and wins on graphs where they all agree. It is deterministic, so it runs
+    // once; it costs a traversal of the residual per vertex, so it runs only on
+    // a residual the gate admits; and it runs against the soft deadline, which
+    // the search reads as it walks, so a graph where it does not finish gives
+    // up part-way and loses nothing but the time it spent.
+    // What it cost, which the hedge's model of a stage leaves out: the stages
+    // repeat the plain pass on other weights, and this candidate is not part of
+    // either.
+    let mut minimal_triangulation_cost = Duration::ZERO;
+    if let Some(gate) = config.minimal_triangulation
+        && !hard_deadline_tripped
+        && residual != Residual::Large
+        && prebuilt.num_active() <= gate as usize
+        && !expired(soft_deadline)
+        && !expired(hard_deadline)
+    {
+        let before = crate::meter::now();
+        let run = engine::run_order_prebuilt(
+            &mut prebuilt,
+            engine::RunSpec {
+                order: Order::MinimalTriangulation,
+                seed,
+                // The search samples no tie set, so the band means nothing to
+                // it, and it does not read the initial fill counts, so there is
+                // no setup for a deadline to pace.
+                sample_band: 0,
+                update_order_ties: false,
+                stop: elimination_stop(
+                    EliminationPhase::ExtraSampling,
+                    soft_deadline,
+                    hard_deadline,
+                    candidates.best_width(),
+                ),
+                complete_on_deadline: false,
+                setup_deadline: None,
+            },
+        );
+        let (outcome, _) = candidates.record_elimination(run);
+        let now = crate::meter::now();
+        minimal_triangulation_cost = now.saturating_duration_since(before);
+        trace(CandidateTrace {
+            stage: Stage::MinimalTriangulation,
+            seed,
+            pass: Pass::Only,
+            outcome,
+            elapsed: now.saturating_duration_since(started),
+        });
+    }
     // Sampling phase: try additional seeds of the full-tie-set sampling
     // order with any remaining budget. Measured ≥79% of min-fill pops have
     // ≥2 tied candidates, so different seeds explore different
@@ -1080,7 +1132,7 @@ fn run_portfolio(
             let stage_index = (sample_index - stages_start) / stage_length;
             let budget = stage_budget.get_or_insert_with(|| {
                 StageBudget::new(
-                    elapsed,
+                    elapsed.saturating_sub(minimal_triangulation_cost),
                     restart_deadline.map(remaining),
                     config.hedge_reserve,
                 )
@@ -1192,6 +1244,46 @@ fn run_portfolio(
         let outcome = candidates.push(decomposition);
         trace(CandidateTrace {
             stage: Stage::FlowCutter,
+            seed,
+            pass: Pass::Only,
+            outcome,
+            elapsed: crate::meter::now().saturating_duration_since(started),
+        });
+    }
+    // Last, the fill edges the winner's bags do not need. The pass rebuilds the
+    // decomposition on a minimal triangulation of the same graph, which is
+    // never wider, and hands the result back as one more candidate so the set
+    // compares it the way it compares every other.
+    //
+    // The vertex gate is the cheap filter, for the two bitsets the pass holds.
+    // What it costs in time follows the bags rather than the vertices, so the
+    // clock rule is the winner's own size against what is left of the hard
+    // deadline, asked before the winner is copied.
+    if let Some(gate) = config.triangulation_refinement
+        && graph.num_vertices() <= gate
+        && let Some(best) = candidates
+            .best()
+            .filter(|best| decomposition::minimalize_fits(best, graph, hard_deadline))
+            .cloned()
+    {
+        let before = best.quality_key();
+        let minimalized = decomposition::minimalize_at(best, graph, hard_deadline);
+        let (width, total_bag_size) = minimalized.quality_key();
+        // The pass returns its input where it found nothing to drop, and the
+        // set holds that decomposition already, so only an improvement is
+        // recorded. The trace reports the pass either way, so a caller can see
+        // what it cost on a graph where it changed nothing.
+        let outcome = if (width, total_bag_size) < before {
+            candidates.push(minimalized)
+        } else {
+            CandidateOutcome::Produced {
+                width,
+                total_bag_size,
+                best: false,
+            }
+        };
+        trace(CandidateTrace {
+            stage: Stage::Minimalized,
             seed,
             pass: Pass::Only,
             outcome,

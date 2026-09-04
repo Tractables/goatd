@@ -234,6 +234,30 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--hard-budget", "--budget", "at least"],
         ),
         (&["--no-hedge"], &["--no-hedge", "minfill", "portfolio"]),
+        (&["--mcsm-up-to", "500"], &["--mcsm-up-to", "portfolio"]),
+        (&["--no-mcsm"], &["--no-mcsm", "minfill", "portfolio"]),
+        (
+            &["--order", "portfolio", "--mcsm-up-to", "500", "--no-mcsm"],
+            &["--mcsm-up-to", "--no-mcsm", "give one"],
+        ),
+        (
+            &["--drop-fill-up-to", "500"],
+            &["--drop-fill-up-to", "portfolio"],
+        ),
+        (
+            &["--no-drop-fill"],
+            &["--no-drop-fill", "minfill", "portfolio"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--drop-fill-up-to",
+                "500",
+                "--no-drop-fill",
+            ],
+            &["--drop-fill-up-to", "--no-drop-fill", "give one"],
+        ),
         (&["--hedge-dims", "1,2"], &["--hedge-dims", "portfolio"]),
         (
             &["--order", "portfolio", "--hedge-dims", "1,9"],
@@ -882,4 +906,74 @@ fn help_prints_the_usage_and_exits_zero() {
     let help = String::from_utf8_lossy(&out.stdout);
     assert!(help.starts_with("usage: goatd"));
     assert!(help.contains("portfolio"));
+}
+
+#[test]
+fn the_portfolio_runs_an_mcs_m_candidate_and_no_mcsm_turns_it_off() {
+    let with = goatd(
+        &["-", "--order", "portfolio", "--budget", "500", "--trace"],
+        Some(&grid_gr()),
+    );
+    assert!(with.status.success(), "{}", stderr_of(&with));
+    assert!(
+        stderr_of(&with).contains("candidate=minimal-triangulation"),
+        "{}",
+        stderr_of(&with)
+    );
+
+    let without = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            "500",
+            "--trace",
+            "--no-mcsm",
+        ],
+        Some(&grid_gr()),
+    );
+    assert!(without.status.success(), "{}", stderr_of(&without));
+    assert!(
+        !stderr_of(&without).contains("candidate=minimal-triangulation"),
+        "{}",
+        stderr_of(&without)
+    );
+}
+
+#[test]
+fn a_zero_gate_leaves_the_mcs_m_candidate_unrun() {
+    let out = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            "500",
+            "--trace",
+            "--mcsm-up-to",
+            "0",
+        ],
+        Some(&grid_gr()),
+    );
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    assert!(
+        !stderr_of(&out).contains("candidate=minimal-triangulation"),
+        "{}",
+        stderr_of(&out)
+    );
+}
+
+#[test]
+fn the_fill_dropping_pass_leaves_a_valid_decomposition() {
+    for extra in [&["--no-drop-fill"][..], &["--drop-fill-up-to", "1000"][..]] {
+        let mut args = vec!["-", "--order", "portfolio", "--budget", "500"];
+        args.extend_from_slice(extra);
+        let out = goatd(&args, Some(&grid_gr()));
+        assert!(out.status.success(), "{}", stderr_of(&out));
+        let td = TreeDecomposition::from_td(&String::from_utf8_lossy(&out.stdout))
+            .expect("the CLI writes a .td");
+        td.validate(&Graph::from_gr(&grid_gr()).expect("the fixture parses"))
+            .expect("the CLI writes a decomposition of its input");
+    }
 }
