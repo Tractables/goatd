@@ -84,6 +84,7 @@ pub fn decompose(
                 soft_deadline: deadlines.soft,
                 hard_deadline: deadlines.hard,
                 width_bound: None,
+                abort_on_tie: false,
             },
             // Always produce a valid TD.
             complete_on_deadline: true,

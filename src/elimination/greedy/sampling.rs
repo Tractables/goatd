@@ -128,6 +128,7 @@ fn eliminate_sampled_fill_based(
     let ElimStop {
         hard_deadline,
         width_bound,
+        abort_on_tie,
         ..
     } = stop;
     let n = graph.len();
@@ -275,7 +276,7 @@ fn eliminate_sampled_fill_based(
         let bag_len = bag.len();
         sink.record(v, bag);
 
-        if exceeds_width_bound(bag_len, width_bound) {
+        if exceeds_width_bound(bag_len, width_bound, abort_on_tie) {
             return ElimExit::WidthLimitExceeded;
         }
     }
@@ -296,6 +297,7 @@ pub(crate) fn eliminate_sampled_min_degree(
     let ElimStop {
         hard_deadline,
         width_bound,
+        abort_on_tie,
         ..
     } = stop;
     let n = graph.len();
@@ -350,7 +352,7 @@ pub(crate) fn eliminate_sampled_min_degree(
         }
         sink.record(v, bag);
 
-        if exceeds_width_bound(bag_len, width_bound) {
+        if exceeds_width_bound(bag_len, width_bound, abort_on_tie) {
             return ElimExit::WidthLimitExceeded;
         }
 

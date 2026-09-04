@@ -78,6 +78,28 @@ hard budget independently without changing the soft schedule. Both standard
 configurations hedge, which adds the candidates described under *The hedge*.
 The library remains single-threaded throughout.
 
+Two settings change what the sampling phase spends its restarts on, both off
+unless a caller turns them on. `PortfolioConfig::with_restart_abort_on_tie`
+stops a restart as soon as one of its bags reaches the incumbent width, rather
+than when a bag passes it: only a strictly narrower restart then finishes, and
+the pass a tying restart would have completed goes to the next seed instead.
+The fixed candidates keep the ordinary bound, so one of those that ties the
+incumbent still finishes and can win on total bag size.
+`PortfolioConfig::with_restart_commit` races the sampling families for a given
+number of rounds and gives the rest of the phase to one of them. A family is
+one order kind on the plain pass — each degree coefficient the diverse score is
+drawn at, and the ordinary sampled min-fill restart — and one round draws one
+candidate from every family still in the race, all on that round's seed. A
+family whose best width exceeds 1.5 times the best any family reached is
+dropped after the round, and after the last round the phase commits to the
+surviving family with the smallest mean width, ties broken by a draw off the
+run's seed. A candidate stopped at the width bound is charged the narrowest
+width it could still have had, which is the same value for every family. The
+hedge's weighted stages are unaffected and run between the race and the
+committed restarts. On a residual above the 10,000-vertex cutoff the phase
+draws sampled min-degree whatever else is set, so there is one family and
+nothing to commit to; the tie abort still applies to those restarts.
+
 ## Preprocessing
 
 Every elimination construction starts with the same deterministic reduction

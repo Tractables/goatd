@@ -62,6 +62,9 @@ pub(crate) struct ElimStop {
     pub(crate) soft_deadline: Option<Instant>,
     pub(crate) hard_deadline: Option<Instant>,
     pub(crate) width_bound: Option<u32>,
+    /// Stop a candidate as soon as a bag reaches `width_bound` rather than
+    /// passes it, so only a strictly narrower run finishes.
+    pub(crate) abort_on_tie: bool,
 }
 
 /// Which of the two cutoffs stopped a run.
@@ -85,9 +88,19 @@ pub(super) enum ElimExit {
 }
 
 /// Whether a newly emitted bag is already too wide to improve `bound`.
+///
+/// A bag of `bag_len` vertices carries width `bag_len - 1`. Without
+/// `abort_on_tie` the run continues while it can still match `bound`, so a
+/// candidate that ties the incumbent finishes and can win on total bag size.
+/// With it the run stops as soon as a bag reaches `bound`, so only a strictly
+/// narrower candidate finishes.
 #[inline]
-pub(super) fn exceeds_width_bound(bag_len: usize, bound: Option<u32>) -> bool {
-    matches!(bound, Some(b) if bag_len > b as usize + 1)
+pub(super) fn exceeds_width_bound(bag_len: usize, bound: Option<u32>, abort_on_tie: bool) -> bool {
+    match bound {
+        Some(bound) if abort_on_tie => bag_len > bound as usize,
+        Some(bound) => bag_len > bound as usize + 1,
+        None => false,
+    }
 }
 
 /// Bags and elimination ranks produced by one or more consecutive phases.

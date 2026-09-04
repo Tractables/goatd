@@ -76,6 +76,21 @@ options:
                         kept for the trailing FlowCutter candidate. Needs
                         --budget: with no deadline the count is what stops
                         them anyway
+  --restart-abort-on-tie
+                        portfolio only: stop a restart of the sampling phase as
+                        soon as one of its bags reaches the incumbent width, so
+                        only a strictly narrower restart finishes and a tying
+                        one gives its remaining time to the next seed. The fixed
+                        candidates keep the ordinary bound
+  --restart-commit <n>  portfolio only: race the sampling families for n rounds
+                        and give the rest of the sampling phase to the one with
+                        the smallest mean width. A family is one order kind on
+                        the plain pass: each degree coefficient of the diverse
+                        score, and the ordinary sampled min-fill restart. A
+                        family whose best width exceeds 1.5 times the best any
+                        family reached is dropped after the round. Needs
+                        --budget: without one the portfolio runs no diverse
+                        orders, so there is one family and nothing to choose
   --trace               portfolio only: write one line per candidate and one
                         for the winner to stderr as they complete
   --steps <n>           flowcutter only: a step budget in place of a clock,
@@ -134,6 +149,8 @@ struct Args {
     hedge_reserve: Option<f64>,
     no_hedge: bool,
     capped_restarts: bool,
+    restart_abort_on_tie: bool,
+    restart_commit: Option<u64>,
     trace: bool,
     steps: Option<u64>,
     refine: bool,
@@ -191,6 +208,8 @@ fn parse_args(argv: &[String]) -> Args {
     let mut hedge_reserve = None;
     let mut no_hedge = false;
     let mut capped_restarts = false;
+    let mut restart_abort_on_tie = false;
+    let mut restart_commit = None;
     let mut trace = false;
     let mut steps = None;
     let mut refine = false;
@@ -273,6 +292,14 @@ fn parse_args(argv: &[String]) -> Args {
             }
             "--no-hedge" => no_hedge = true,
             "--capped-restarts" => capped_restarts = true,
+            "--restart-abort-on-tie" => restart_abort_on_tie = true,
+            "--restart-commit" => {
+                let rounds = number(&mut i, arg);
+                if rounds == 0 {
+                    usage_error("--restart-commit wants a positive round count");
+                }
+                restart_commit = Some(rounds);
+            }
             "--trace" => trace = true,
             "--steps" => {
                 let n = number(&mut i, arg);
@@ -392,6 +419,24 @@ fn parse_args(argv: &[String]) -> Args {
             );
         }
     }
+    if restart_abort_on_tie {
+        needs(
+            "--restart-abort-on-tie",
+            order == Method::Portfolio,
+            "portfolio",
+        );
+    }
+    // The race is between the diverse orders and the ordinary restart, and only
+    // a budgeted portfolio runs the diverse orders.
+    if restart_commit.is_some() {
+        needs("--restart-commit", order == Method::Portfolio, "portfolio");
+        if budget.is_none() {
+            usage_error(
+                "--restart-commit requires --budget: without one the portfolio runs no \
+                 diverse orders, so the mix is one family and there is nothing to commit to",
+            );
+        }
+    }
     if trace {
         needs("--trace", order == Method::Portfolio, "portfolio");
     }
@@ -410,6 +455,8 @@ fn parse_args(argv: &[String]) -> Args {
         hedge_reserve,
         no_hedge,
         capped_restarts,
+        restart_abort_on_tie,
+        restart_commit,
         trace,
         steps,
         refine,
@@ -498,6 +545,12 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             }
             if args.capped_restarts {
                 config = config.with_restarts_to_deadline(false);
+            }
+            if args.restart_abort_on_tie {
+                config = config.with_restart_abort_on_tie(true);
+            }
+            if let Some(rounds) = args.restart_commit {
+                config = config.with_restart_commit(rounds);
             }
             let mut winner = None;
             let mut report = |candidate: CandidateTrace| {

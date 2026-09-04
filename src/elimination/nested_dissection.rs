@@ -115,7 +115,7 @@ pub(super) fn eliminate_nested_dissection(
         let bag_len = bag.len();
         graph.eliminate_with_nbrs(vertex, &neighbours);
         sink.record(vertex, bag);
-        if exceeds_width_bound(bag_len, stop.width_bound) {
+        if exceeds_width_bound(bag_len, stop.width_bound, stop.abort_on_tie) {
             return ElimExit::WidthLimitExceeded;
         }
     }

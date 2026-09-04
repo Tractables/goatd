@@ -43,6 +43,8 @@ const HEDGE_RANDOM_SEED_OFFSET: u64 = 6151;
 /// Separates one random hedge weighting from the next.
 const HEDGE_RANDOM_SEED_STRIDE: u64 = 104_729;
 pub(crate) const SECOND_CANDIDATE_SEED_OFFSET: u64 = 42;
+/// Separates the commit rule's tie-break draw from the run's other draws.
+const COMMIT_TIE_SEED_OFFSET: u64 = 15_485_863;
 
 /// Residuals above this size run only min-degree candidates after the first;
 /// the other orders can overrun a short portfolio budget at this scale.
@@ -119,6 +121,135 @@ impl<'a> ModifiedWeights<'a> {
     }
 }
 
+/// One family the commit rule races. A family is an order kind on the plain
+/// pass, which is the unit the sampling phase varies: the diverse fill-degree
+/// score at one degree coefficient, or the ordinary sampled min-fill restart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Family {
+    /// The diverse fill-degree score at this degree coefficient.
+    Diverse(i8),
+    /// The ordinary sampled min-fill restart.
+    MinFill,
+}
+
+/// Which families the commit rule races and for how long. The race replaces the
+/// plain diverse pass; what follows it is unchanged.
+#[derive(Clone, Copy)]
+struct CommitPlan<'a> {
+    families: &'a [Family],
+    rounds: u64,
+}
+
+impl CommitPlan<'_> {
+    /// Candidates the race has room for: one per family per round. A family the
+    /// drop rule has taken out leaves its slots unused.
+    fn slots(self) -> u64 {
+        (self.families.len() as u64).saturating_mul(self.rounds)
+    }
+
+    /// The round a race slot belongs to and which family it draws.
+    fn at(self, index: u64) -> (u64, usize) {
+        let width = self.families.len() as u64;
+        (index / width, (index % width) as usize)
+    }
+}
+
+/// What the commit rule has seen of each family so far.
+struct Race {
+    /// Whether the family is still drawn.
+    alive: Vec<bool>,
+    /// The narrowest width charged to the family, if any.
+    best: Vec<Option<u32>>,
+    /// The widths charged to it, summed, and how many there were.
+    total_width: Vec<u64>,
+    samples: Vec<u64>,
+    /// One draw off the run's seed per family, which breaks a tie on mean
+    /// width.
+    keys: Vec<u32>,
+}
+
+impl Race {
+    fn new(families: usize, seed: u64) -> Self {
+        let mut rng = crate::rng::Xorshift64::from_state(
+            seed.wrapping_add(COMMIT_TIE_SEED_OFFSET)
+                .wrapping_add(crate::rng::SEED_OFFSET),
+        );
+        Self {
+            alive: vec![true; families],
+            best: vec![None; families],
+            total_width: vec![0; families],
+            samples: vec![0; families],
+            keys: (0..families).map(|_| rng.next_u32()).collect(),
+        }
+    }
+
+    /// Charge one candidate of `family` with the width it reached.
+    fn record(&mut self, family: usize, width: Option<u32>) {
+        let Some(width) = width else {
+            return;
+        };
+        self.samples[family] += 1;
+        self.total_width[family] += u64::from(width);
+        self.best[family] = Some(match self.best[family] {
+            Some(best) => best.min(width),
+            None => width,
+        });
+    }
+
+    /// Drop every family whose best width is more than 1.5 times the best any
+    /// family reached, and every family that has been charged nothing at all.
+    /// The best family is never dropped, so a race that charged anything keeps
+    /// at least one; a race that charged nothing keeps all of them.
+    fn drop_outclassed(&mut self) {
+        let overall = (0..self.alive.len())
+            .filter(|&family| self.alive[family])
+            .filter_map(|family| self.best[family])
+            .min();
+        let Some(overall) = overall else {
+            return;
+        };
+        for family in 0..self.alive.len() {
+            if !self.alive[family] {
+                continue;
+            }
+            let outclassed = match self.best[family] {
+                Some(best) => u64::from(best) * 2 > u64::from(overall) * 3,
+                None => true,
+            };
+            if outclassed {
+                self.alive[family] = false;
+            }
+        }
+    }
+
+    /// The surviving family with the smallest mean width, ties broken by the
+    /// family's key. `None` when no family was charged a width, which leaves
+    /// the restarts where a portfolio without the rule has them.
+    fn winner(&self, families: &[Family]) -> Option<Family> {
+        let mut winner: Option<usize> = None;
+        for family in 0..families.len() {
+            if !self.alive[family] || self.samples[family] == 0 {
+                continue;
+            }
+            winner = Some(match winner {
+                None => family,
+                Some(current) => {
+                    let mine =
+                        u128::from(self.total_width[family]) * u128::from(self.samples[current]);
+                    let theirs =
+                        u128::from(self.total_width[current]) * u128::from(self.samples[family]);
+                    if mine < theirs || (mine == theirs && self.keys[family] < self.keys[current]) {
+                        family
+                    } else {
+                        current
+                    }
+                }
+            });
+        }
+        winner.map(|family| families[family])
+    }
+}
+
 /// Everything the sampling phase draws a candidate from. The phase asks for
 /// index 0, 1, 2, … and stops at the first `None`.
 #[derive(Clone, Copy)]
@@ -141,6 +272,11 @@ struct Schedule<'a> {
     initial_orders: InitialOrderBuilder,
     /// The sampling weights every plain candidate draws with: the caller's.
     weights: &'a [u32],
+    /// The commit rule's race, in place of the plain diverse pass, when it is
+    /// on.
+    commit: Option<CommitPlan<'a>>,
+    /// The family the race committed to, once the race has ended.
+    committed: Option<Family>,
 }
 
 impl<'a> Schedule<'a> {
@@ -174,10 +310,19 @@ impl<'a> Schedule<'a> {
         self.fixed_runs.saturating_add(self.diverse_runs)
     }
 
-    /// Candidates before the ordinary restarts: the plain diverse pass, then
-    /// one weighted stage per weighting.
+    /// Candidates the phase offers before the weighted stages: the plain
+    /// diverse pass, or the commit rule's race in its place.
+    fn plain_runs(self) -> u64 {
+        match self.commit {
+            Some(plan) => plan.slots(),
+            None => self.diverse_runs,
+        }
+    }
+
+    /// Candidates before the ordinary restarts: the plain pass, then one
+    /// weighted stage per weighting.
     fn passes_total(self) -> u64 {
-        self.diverse_runs
+        self.plain_runs()
             .saturating_add(self.stage_length().saturating_mul(self.modified_stages()))
     }
 
@@ -222,6 +367,25 @@ impl<'a> Schedule<'a> {
             },
             sample_seed(self.base_seed, seed_index),
             self.pass(plain, stage),
+            EliminationPhase::ExtraSampling,
+        )
+    }
+
+    /// One draw from `family`, on the seed of the `round`-th round.
+    fn family_sample(self, family: Family, round: u64) -> Option<Sample<'a>> {
+        let order = match family {
+            Family::Diverse(degree_coefficient) => Order::FillDegreeSampled {
+                weights: self.weights,
+                degree_coefficient,
+            },
+            Family::MinFill => Order::MinFillSampled {
+                weights: self.weights,
+            },
+        };
+        sample_at(
+            order,
+            sample_seed(self.base_seed, round),
+            self.pass(true, 0),
             EliminationPhase::ExtraSampling,
         )
     }
@@ -365,17 +529,26 @@ fn extra_sample(schedule: Schedule<'_>, index: u64) -> Option<Sample<'_>> {
     }
 
     debug_assert!(schedule.diverse_runs <= config::MAX_DIVERSE_SAMPLING_RUNS);
-    // The first diverse pass is the one a portfolio without the hedge runs:
-    // the caller's weights and the same seeds.
-    if index < schedule.diverse_runs {
-        return schedule.diverse_sample(index, true, 0);
+    // The plain pass. Without the commit rule it is the diverse pass a
+    // portfolio runs anyway: the caller's weights and the same seeds. With the
+    // rule it is the race, one candidate per family per round, every family of
+    // a round on that round's seed.
+    match schedule.commit {
+        Some(plan) if index < plan.slots() => {
+            let (round, family) = plan.at(index);
+            return schedule.family_sample(plan.families[family], round);
+        }
+        None if index < schedule.diverse_runs => {
+            return schedule.diverse_sample(index, true, 0);
+        }
+        _ => {}
     }
     let stage_length = schedule.stage_length();
     if schedule.hedged() && stage_length > 0 {
         // Then one weighted stage per weighting, in the series' order: the
         // fixed orders that read the weights, on that stage's ranking this
         // time, and then the diverse pass again on it.
-        let after_plain = index - schedule.diverse_runs;
+        let after_plain = index - schedule.plain_runs();
         if after_plain < stage_length.saturating_mul(schedule.modified_stages()) {
             let stage_index = after_plain / stage_length;
             let within = after_plain % stage_length;
@@ -397,15 +570,24 @@ fn extra_sample(schedule: Schedule<'_>, index: u64) -> Option<Sample<'_>> {
         return None;
     }
     // Nothing is given up here: the restarts are the whole sequence a
-    // portfolio without the hedge runs, seed for seed.
-    sample_at(
-        Order::MinFillSampled {
-            weights: schedule.weights,
-        },
-        sample_seed(base_seed, ordinary_index),
-        schedule.pass(true, 0),
-        EliminationPhase::ExtraSampling,
-    )
+    // portfolio without the hedge runs, seed for seed. Under the commit rule
+    // they come from the family the race committed to instead, carrying on from
+    // the seed after the race's last round; a race that committed to nothing
+    // leaves them on the ordinary sequence.
+    match schedule.commit {
+        Some(plan) => schedule.family_sample(
+            schedule.committed.unwrap_or(Family::MinFill),
+            plan.rounds.saturating_add(ordinary_index),
+        ),
+        None => sample_at(
+            Order::MinFillSampled {
+                weights: schedule.weights,
+            },
+            sample_seed(base_seed, ordinary_index),
+            schedule.pass(true, 0),
+            EliminationPhase::ExtraSampling,
+        ),
+    }
 }
 
 /// The label for `order` in `phase`. A sampled min-fill order is a restart in
@@ -502,6 +684,25 @@ enum EliminationPhase {
     ExtraSampling,
 }
 
+/// The width one race candidate is charged with, or `None` where it says
+/// nothing about its family.
+///
+/// A candidate that produced a decomposition is charged its width. One stopped
+/// on the width bound is charged the narrowest width it could still have had:
+/// the bound itself where a tie aborts, and one more where the run had to pass
+/// the bound to be stopped. That is the same value for every family, so it
+/// leaves the comparison to the candidates that did produce something while
+/// still giving each family the same number of readings.
+fn charged_width(outcome: CandidateOutcome, bound: Option<u32>, abort_on_tie: bool) -> Option<u32> {
+    match outcome {
+        CandidateOutcome::Produced { width, .. } => Some(width),
+        CandidateOutcome::WidthAborted => {
+            bound.map(|bound| bound.saturating_add(u32::from(!abort_on_tie)))
+        }
+        CandidateOutcome::DeadlineReached | CandidateOutcome::StageSkipped { .. } => None,
+    }
+}
+
 /// Where the sampled restarts stop.
 ///
 /// On a residual small enough for the expensive orders they run past the soft
@@ -548,11 +749,16 @@ fn restart_admitted(now: Instant, projected: Duration, deadlines: [Option<Instan
 /// Initial candidates may use the complete two-stage window so the first one
 /// can always return a decomposition. Extra samples stop at the restart
 /// deadline; the rest of the hard window belongs to FlowCutter.
+///
+/// `abort_on_tie` is the extra-sampling phase's alone: a fixed candidate keeps
+/// the ordinary bound, so a fixed candidate that ties the incumbent still
+/// finishes and can win on total bag size.
 fn elimination_stop(
     phase: EliminationPhase,
     soft_deadline: Option<Instant>,
     hard_deadline: Option<Instant>,
     width_bound: Option<u32>,
+    abort_on_tie: bool,
 ) -> ElimStop {
     ElimStop {
         soft_deadline,
@@ -561,6 +767,7 @@ fn elimination_stop(
             EliminationPhase::ExtraSampling => soft_deadline,
         },
         width_bound,
+        abort_on_tie: abort_on_tie && matches!(phase, EliminationPhase::ExtraSampling),
     }
 }
 
@@ -759,6 +966,7 @@ fn run_portfolio(
                     soft_deadline,
                     hard_deadline,
                     candidates.best_width(),
+                    config.restart_abort_on_tie,
                 ),
                 complete_on_deadline,
             },
@@ -819,7 +1027,29 @@ fn run_portfolio(
     } else {
         config.diverse_sampling_runs
     };
-    let schedule = Schedule {
+    // The families the commit rule races, when it is on: one per degree
+    // coefficient the diverse score is drawn at, and the ordinary restart. A
+    // large residual draws sampled min-degree whatever else is set, and a
+    // portfolio without the diverse orders has one family, so neither races.
+    let commit_families: Vec<Family> = match config.restart_commit_rounds {
+        Some(_) if !large_residual && diverse_samples > 0 => config::DIVERSE_INITIAL_COEFFICIENTS
+            .iter()
+            .map(|&coefficient| Family::Diverse(coefficient))
+            .chain(std::iter::once(Family::MinFill))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let commit = config
+        .restart_commit_rounds
+        .filter(|_| !commit_families.is_empty())
+        .map(|rounds| CommitPlan {
+            families: &commit_families,
+            rounds,
+        });
+    let mut race = commit.map(|plan| Race::new(plan.families.len(), seed));
+    // Whether the race has already picked the family the restarts come from.
+    let mut committed = false;
+    let mut schedule = Schedule {
         base_seed: seed,
         large_residual,
         ordinary_runs,
@@ -828,12 +1058,14 @@ fn run_portfolio(
         fixed_runs,
         initial_orders: order_builder,
         weights,
+        commit,
+        committed: None,
     };
     let total_samples = schedule.total();
     // Where the weighted stages sit in the sample sequence, and how long one of
     // them is. A schedule with no stage leaves this empty.
     let stage_length = schedule.stage_length();
-    let stages_start = schedule.diverse_runs;
+    let stages_start = schedule.plain_runs();
     let stages_end = schedule.passes_total();
     let stage_count = schedule.modified_stages();
     // Decided at the end of the plain pass, from what that pass cost and what
@@ -854,6 +1086,27 @@ fn run_portfolio(
         && !expired(restart_deadline)
         && !expired(hard_deadline)
     {
+        // The race. A family the drop rule has taken out leaves its slot
+        // unused, and the rule is applied at the front of every round after the
+        // first. When the last slot is behind, the phase commits.
+        if let Some(plan) = schedule.commit
+            && let Some(race) = race.as_mut()
+        {
+            if sample_index < plan.slots() {
+                let (_, family) = plan.at(sample_index);
+                if family == 0 && sample_index > 0 {
+                    race.drop_outclassed();
+                }
+                if !race.alive[family] {
+                    sample_index += 1;
+                    continue;
+                }
+            } else if !committed {
+                race.drop_outclassed();
+                schedule.committed = race.winner(plan.families);
+                committed = true;
+            }
+        }
         // At the front of a weighted stage, charge the one that just ended and
         // ask whether one more fits; the first stage runs whatever the answer.
         // Nothing after a refusal fits either — the projection never grows and
@@ -906,6 +1159,8 @@ fn run_portfolio(
         }
         let candidate = extra_sample(schedule, sample_index)
             .expect("sample index is below the configured total");
+        // What the candidate had to beat, for the race's record of its family.
+        let bound = candidates.best_width();
         // Extra sampling only runs after the fixed candidates, so at least one prior
         // candidate won, so deadline completion is unnecessary here.
         let run = engine::run_order_prebuilt(
@@ -918,12 +1173,23 @@ fn run_portfolio(
                     EliminationPhase::ExtraSampling,
                     restart_deadline,
                     hard_deadline,
-                    candidates.best_width(),
+                    bound,
+                    config.restart_abort_on_tie,
                 ),
                 complete_on_deadline: false,
             },
         );
         let (outcome, _) = candidates.record_elimination(run);
+        if let Some(plan) = schedule.commit
+            && let Some(race) = race.as_mut()
+            && sample_index < plan.slots()
+        {
+            let (_, family) = plan.at(sample_index);
+            race.record(
+                family,
+                charged_width(outcome, bound, config.restart_abort_on_tie),
+            );
+        }
         let finished = crate::meter::now();
         previous_restart = Some(finished.saturating_duration_since(restart_finished));
         restart_finished = finished;

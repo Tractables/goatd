@@ -195,6 +195,7 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
         soft_deadline,
         hard_deadline,
         width_bound,
+        abort_on_tie,
     } = stop;
     // Preprocessing may have removed low-degree vertices, pushing density past
     // the bitset break-even even when the graph was built in adj-only mode.
@@ -282,14 +283,14 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
         }
         sink.record(v, bag);
 
-        if exceeds_width_bound(bag_len, width_bound) {
+        if exceeds_width_bound(bag_len, width_bound, abort_on_tie) {
             return ElimExit::WidthLimitExceeded;
         }
 
         if clique_residual {
             // The drain below will put every remaining vertex in one bag;
             // check the bound against that now rather than after draining.
-            if exceeds_width_bound(graph.num_active, width_bound) {
+            if exceeds_width_bound(graph.num_active, width_bound, abort_on_tie) {
                 return ElimExit::WidthLimitExceeded;
             }
             drain_clique_tail(graph, &mut sink, policy, &mut nbrs_buf);

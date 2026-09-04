@@ -265,6 +265,8 @@ pub struct PortfolioConfig {
     pub(super) hedge: Hedge,
     pub(super) hedge_reserve: f64,
     pub(super) restarts_to_deadline: bool,
+    pub(super) restart_abort_on_tie: bool,
+    pub(super) restart_commit_rounds: Option<u64>,
 }
 
 /// Two configurations are equal when they ask for the same run, the reserve
@@ -280,6 +282,8 @@ impl PartialEq for PortfolioConfig {
             && self.hedge == other.hedge
             && self.hedge_reserve.to_bits() == other.hedge_reserve.to_bits()
             && self.restarts_to_deadline == other.restarts_to_deadline
+            && self.restart_abort_on_tie == other.restart_abort_on_tie
+            && self.restart_commit_rounds == other.restart_commit_rounds
     }
 }
 
@@ -299,6 +303,8 @@ impl PortfolioConfig {
             flowcutter_budget: None,
             hedge: Hedge::Off,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
+            restart_abort_on_tie: false,
+            restart_commit_rounds: None,
             restarts_to_deadline: false,
         }
     }
@@ -375,6 +381,8 @@ impl PortfolioConfig {
             flowcutter_budget: None,
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
+            restart_abort_on_tie: false,
+            restart_commit_rounds: None,
             restarts_to_deadline: false,
         }
     }
@@ -417,6 +425,8 @@ impl PortfolioConfig {
             flowcutter_budget: extended.then_some(budget),
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
+            restart_abort_on_tie: false,
+            restart_commit_rounds: None,
             restarts_to_deadline: true,
         }
     }
@@ -463,6 +473,45 @@ impl PortfolioConfig {
     /// leave it off.
     pub fn with_restarts_to_deadline(mut self, enabled: bool) -> Self {
         self.restarts_to_deadline = enabled;
+        self
+    }
+
+    /// Stop a restart of the extra-sampling phase as soon as one of its bags
+    /// reaches the incumbent width, so only a strictly narrower restart
+    /// finishes.
+    ///
+    /// Off, a restart that ties the incumbent runs to the end and wins on total
+    /// bag size if it is smaller there. On, the pass a tying restart would have
+    /// spent goes to the next seed instead. The fixed candidates keep the
+    /// ordinary bound either way, and a restart that does finish is still
+    /// compared on width and then total bag size.
+    pub fn with_restart_abort_on_tie(mut self, enabled: bool) -> Self {
+        self.restart_abort_on_tie = enabled;
+        self
+    }
+
+    /// Race the sampling families for `rounds` rounds and give the rest of the
+    /// extra-sampling phase to the one that did best.
+    ///
+    /// A family is one order kind on the plain pass: each degree coefficient
+    /// the diverse fill-degree score is drawn at, and the ordinary sampled
+    /// min-fill restart. One round draws one candidate from every family still
+    /// in the race, all of them on the round's seed. After each round a family
+    /// whose best width exceeds 1.5 times the best width any family reached is
+    /// dropped. After the last round the phase commits to the surviving family
+    /// with the smallest mean width, ties broken by a draw off the run's seed,
+    /// and every later restart comes from that family alone. A race in which no
+    /// family produced a decomposition commits to nothing and leaves the
+    /// restarts on the ordinary sampled min-fill sequence.
+    ///
+    /// The hedge's weighted stages are untouched: they run between the race and
+    /// the committed restarts, where the plain pass leaves them.
+    ///
+    /// `rounds` must be positive, and the portfolio must run the diverse orders
+    /// ([`PortfolioConfig::with_diverse_sampling_runs`]); without them the mix
+    /// is one family and there is nothing to choose between.
+    pub fn with_restart_commit(mut self, rounds: u64) -> Self {
+        self.restart_commit_rounds = Some(rounds);
         self
     }
 }
@@ -532,6 +581,20 @@ pub(super) fn validate(config: PortfolioConfig) -> Result<(), Error> {
         return Err(Error::InvalidInput(format!(
             "portfolio diverse sampling runs must be at most {MAX_DIVERSE_SAMPLING_RUNS}"
         )));
+    }
+    if let Some(rounds) = config.restart_commit_rounds {
+        if rounds == 0 {
+            return Err(Error::InvalidInput(
+                "portfolio restart commit needs at least one round".into(),
+            ));
+        }
+        if config.diverse_sampling_runs == 0 {
+            return Err(Error::InvalidInput(
+                "portfolio restart commit races the diverse orders against the ordinary \
+                 restart, and this portfolio runs no diverse orders"
+                    .into(),
+            ));
+        }
     }
     if let Some(series) = config.hedge.series() {
         validate_hedge_series(series)?;

@@ -191,6 +191,7 @@ fn the_seeding_scan_stops_within_a_millisecond_of_the_hard_deadline() {
             soft_deadline: None,
             hard_deadline: Some(deadline),
             width_bound: None,
+            abort_on_tie: false,
         },
     );
 

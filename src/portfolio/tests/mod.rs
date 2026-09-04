@@ -3,9 +3,10 @@ use std::time::{Duration, Instant};
 
 use super::candidates::CandidateSet;
 use super::config::{MAX_DIVERSE_SAMPLING_RUNS, validate};
-use super::{CandidateOutcome, DEFAULT_HEDGE_DIMS, HedgeSeries, HedgeWeights, StageBudget};
+use super::{CandidateOutcome, CommitPlan, DEFAULT_HEDGE_DIMS, Family, HedgeSeries, HedgeWeights};
 use super::{EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig, Sample, Schedule};
 use super::{FLOWCUTTER_RESERVE, restart_admitted, restart_deadline};
+use super::{Race, StageBudget};
 use super::{Stage, elimination_stop, extra_sample, hedge_random_seed, sample_seed};
 use crate::elimination::Order;
 use crate::{Graph, TreeDecomposition};
@@ -22,6 +23,8 @@ fn schedule(base_seed: u64, large_residual: bool, weights: &[u32]) -> Schedule<'
         fixed_runs: 0,
         initial_orders: super::standard_orders,
         weights,
+        commit: None,
+        committed: None,
     }
 }
 
@@ -59,6 +62,8 @@ fn hedged<'a>(
         fixed_runs,
         initial_orders: super::standard_orders,
         weights,
+        commit: None,
+        committed: None,
     }
 }
 
@@ -755,11 +760,13 @@ fn an_extra_sample_stops_at_the_restart_deadline() {
         Some(restart_deadline),
         Some(hard_deadline),
         Some(17),
+        false,
     );
 
     assert_eq!(stop.soft_deadline, Some(restart_deadline));
     assert_eq!(stop.hard_deadline, Some(restart_deadline));
     assert_eq!(stop.width_bound, Some(17));
+    assert!(!stop.abort_on_tie);
 }
 
 /// The `side × side` grid, vertex `row * side + column`.
@@ -918,4 +925,132 @@ fn the_flowcutter_window_stops_one_restart_short_of_the_hard_deadline() {
         configured,
         "with no hard deadline the configured budget stands",
     );
+}
+
+/// Families for the commit-rule tests: two diverse coefficients and the
+/// ordinary restart.
+const RACED: [Family; 3] = [Family::Diverse(1), Family::Diverse(-1), Family::MinFill];
+
+#[test]
+fn the_race_commits_to_the_family_with_the_smallest_mean_width() {
+    let mut race = Race::new(RACED.len(), 0);
+    // The second family is the narrowest on average; the third is far enough
+    // behind after the first round to be dropped, and is drawn no more.
+    for round in [[10, 9, 40], [10, 8, 40], [10, 12, 40]] {
+        for (family, width) in round.into_iter().enumerate() {
+            if race.alive[family] {
+                race.record(family, Some(width));
+            }
+        }
+        race.drop_outclassed();
+    }
+
+    assert!(
+        !race.alive[2],
+        "a family more than half again the best width is dropped",
+    );
+    assert_eq!(race.samples[2], 1, "a dropped family is drawn no more");
+    assert_eq!(race.winner(&RACED), Some(Family::Diverse(-1)));
+}
+
+#[test]
+fn a_race_nothing_produced_in_commits_to_nothing() {
+    let mut race = Race::new(RACED.len(), 0);
+    for family in 0..RACED.len() {
+        race.record(family, None);
+    }
+    race.drop_outclassed();
+
+    assert!(race.alive.iter().all(|&alive| alive));
+    assert_eq!(
+        race.winner(&RACED),
+        None,
+        "the restarts stay on the ordinary sequence",
+    );
+}
+
+#[test]
+fn a_tie_on_mean_width_is_broken_by_the_run_seed() {
+    let winners: Vec<Option<Family>> = (0..16)
+        .map(|seed| {
+            let mut race = Race::new(RACED.len(), seed);
+            for family in 0..RACED.len() {
+                race.record(family, Some(7));
+            }
+            race.winner(&RACED)
+        })
+        .collect();
+
+    assert!(winners.iter().all(Option::is_some));
+    assert!(
+        winners.windows(2).any(|pair| pair[0] != pair[1]),
+        "a different seed can pick a different family out of a tie",
+    );
+}
+
+#[test]
+fn the_race_draws_every_family_each_round_and_commits_the_tail() {
+    let weights = [1; 3];
+    let families = [Family::Diverse(-3), Family::MinFill];
+    let mut plan = schedule(5, false, &weights);
+    plan.commit = Some(CommitPlan {
+        families: &families,
+        rounds: 2,
+    });
+
+    for round in 0..2u64 {
+        let diverse = extra_sample(plan, round * 2).unwrap();
+        assert!(matches!(
+            diverse.order,
+            Order::FillDegreeSampled {
+                degree_coefficient: -3,
+                ..
+            }
+        ));
+        assert_eq!(diverse.seed, sample_seed(5, round));
+        let ordinary = extra_sample(plan, round * 2 + 1).unwrap();
+        assert!(matches!(ordinary.order, Order::MinFillSampled { .. }));
+        assert_eq!(ordinary.seed, sample_seed(5, round));
+    }
+
+    let uncommitted = extra_sample(plan, 4).unwrap();
+    assert!(
+        matches!(uncommitted.order, Order::MinFillSampled { .. }),
+        "with nothing committed the restarts stay on the ordinary sequence",
+    );
+    assert_eq!(
+        uncommitted.seed,
+        sample_seed(5, 2),
+        "the tail carries on from the seed after the last round",
+    );
+
+    plan.committed = Some(Family::Diverse(-3));
+    let committed = extra_sample(plan, 4).unwrap();
+    assert!(matches!(
+        committed.order,
+        Order::FillDegreeSampled {
+            degree_coefficient: -3,
+            ..
+        }
+    ));
+    assert_eq!(
+        committed.stage,
+        Stage::Diverse {
+            degree_coefficient: -3
+        }
+    );
+}
+
+#[test]
+fn a_commit_rule_with_nothing_to_race_is_rejected() {
+    let budgeted = PortfolioConfig::standard_with_budget(Duration::from_secs(10));
+    assert!(
+        validate(budgeted.with_restart_commit(0)).is_err(),
+        "a race of no rounds decides nothing",
+    );
+    assert!(
+        validate(PortfolioConfig::standard().with_restart_commit(3)).is_err(),
+        "without the diverse orders the mix is one family",
+    );
+    validate(budgeted.with_restart_commit(3)).unwrap();
 }

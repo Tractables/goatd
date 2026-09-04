@@ -70,6 +70,7 @@ fn complete_at_immediate_deadline(graph: &crate::Graph) -> crate::TreeDecomposit
                 soft_deadline: None,
                 hard_deadline: Some(epoch),
                 width_bound: None,
+                abort_on_tie: false,
             },
             complete_on_deadline: true,
         },
@@ -130,6 +131,7 @@ fn partial_eliminations_are_never_returned_as_decompositions() {
                     soft_deadline: None,
                     hard_deadline: Some(epoch),
                     width_bound: None,
+                    abort_on_tie: false,
                 },
                 complete_on_deadline,
             },
@@ -155,11 +157,58 @@ fn partial_eliminations_are_never_returned_as_decompositions() {
                 soft_deadline: None,
                 hard_deadline: None,
                 width_bound: Some(0),
+                abort_on_tie: false,
             },
             complete_on_deadline: false,
         },
     );
     assert!(matches!(width_limited, OrderRun::WidthAborted));
+}
+
+#[test]
+fn a_tying_run_finishes_unless_the_tie_abort_stops_it() {
+    let graph = complete_bipartite(8);
+    let mut prebuilt = prebuild(&graph, None);
+    let unbounded = run_order_prebuilt(
+        &mut prebuilt,
+        RunSpec {
+            order: Order::MinDegree,
+            seed: 0,
+            update_order_ties: false,
+            stop: ElimStop::default(),
+            complete_on_deadline: false,
+        },
+    );
+    let OrderRun::Completed(decomposition) = unbounded else {
+        panic!("an unbounded run finishes");
+    };
+    let width = decomposition.treewidth();
+
+    let mut at_width = |abort_on_tie| {
+        run_order_prebuilt(
+            &mut prebuilt,
+            RunSpec {
+                order: Order::MinDegree,
+                seed: 0,
+                update_order_ties: false,
+                stop: ElimStop {
+                    soft_deadline: None,
+                    hard_deadline: None,
+                    width_bound: Some(width),
+                    abort_on_tie,
+                },
+                complete_on_deadline: false,
+            },
+        )
+    };
+    assert!(
+        matches!(at_width(false), OrderRun::Completed(_)),
+        "a run that ties the bound finishes, so it can still win on total bag size",
+    );
+    assert!(
+        matches!(at_width(true), OrderRun::WidthAborted),
+        "with the tie abort only a strictly narrower run finishes",
+    );
 }
 
 #[test]
@@ -191,6 +240,7 @@ fn a_soft_cutoff_leaves_the_components_after_it_their_own_orders() {
                 soft_deadline: Some(epoch),
                 hard_deadline: Some(epoch + std::time::Duration::from_secs(30)),
                 width_bound: None,
+                abort_on_tie: false,
             },
             complete_on_deadline: true,
         },
