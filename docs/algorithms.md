@@ -108,10 +108,16 @@ shrink it, and every bag made along the way is smaller than the residual it
 came out of. A later candidate is kept only when its width and total bag size
 are both no worse, so a longer schedule holds whatever the shorter one had.
 
-An extra sample that reaches the restart deadline stops there,
-and one more restart starts only while what the previous restart cost still
-fits before that deadline: a restart stopped part-way leaves nothing behind,
-so the time is better left to the FlowCutter candidate.
+An extra sample that reaches the restart deadline stops there, and one more
+restart starts only while what a restart costs on this graph still fits before
+that deadline. What one costs varies by an order of magnitude between a draw the
+incumbent width aborts on its first wide bag and one that runs to the end, so
+below the 10,000-vertex boundary, where the restarts hold the end of the window
+themselves, the projection is the fastest draw the run has measured: a draw that
+turns out slower is stopped by the same deadline and leaves nothing behind,
+which costs only time nothing else was going to use. Above the boundary the
+second stage is FlowCutter's, so the last draw's own cost stands and the
+restarts give the stage up when it no longer fits.
 
 The rest of the hard-budget interval is what the trailing FlowCutter candidate
 gets, less a reserve for the end of the run. The backend tests its deadline

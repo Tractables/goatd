@@ -849,13 +849,38 @@ fn admitted_cutoff(
     Some(crate::meter::now() + remaining(restart) / 2)
 }
 
+/// What the next restart is projected to cost, from `measured` — the projection
+/// the restarts before it ran under — and `cost`, what the one that just ran
+/// took.
+///
+/// What one restart costs varies by an order of magnitude between a draw the
+/// incumbent width aborts on its first wide bag and one that runs to the end,
+/// so a projection that follows the last draw refuses the end of the window
+/// whenever that draw was a slow one, and the run then idles to its deadline.
+/// Where the restarts hold the end of the window themselves, the projection is
+/// the fastest restart this graph has produced, which is the run's own evidence
+/// that another draw can still fit; a draw that then turns out slower is
+/// stopped by the same deadline and leaves nothing behind, which costs only
+/// time nothing else was going to use.
+///
+/// Above the full-schedule size something else is waiting for that time: the
+/// second stage is FlowCutter's and it is regularly the widest margin the
+/// portfolio has on graphs of that size, so there the last restart's own cost
+/// stands and the restarts give the stage up when it no longer fits.
+fn projected_restart(measured: Option<Duration>, cost: Duration, residual: Residual) -> Duration {
+    match measured {
+        Some(fastest) if residual == Residual::Ordinary => fastest.min(cost),
+        _ => cost,
+    }
+}
+
 /// Whether another restart is admitted: one projected to cost `projected` and
 /// started at `now` has to end before every deadline it must respect.
 ///
 /// A restart that would run into its deadline is stopped part-way and leaves
 /// nothing behind, so starting it takes time from whatever the schedule kept
-/// the end of the window for. The projection is what the previous restart cost,
-/// which is the portfolio's own measurement of one restart on this graph.
+/// the end of the window for. The projection is [`projected_restart`], the
+/// portfolio's own measurement of what a restart costs on this graph.
 fn restart_admitted(now: Instant, projected: Duration, deadlines: [Option<Instant>; 2]) -> bool {
     let Some(finish) = now.checked_add(projected) else {
         return false;
@@ -1356,9 +1381,9 @@ fn run_portfolio(
     let mut stage_budget: Option<StageBudget> = None;
     let mut stage_started = Duration::ZERO;
     let mut sample_index: u64 = 0;
-    // When the last restart ended and what it cost, for the admission rule
-    // below. The first restart of the loop has nothing to be projected from and
-    // runs on the deadline checks alone.
+    // When the last restart ended and what the next one is projected to cost,
+    // for the admission rule below. The first restart of the loop has nothing to
+    // be projected from and runs on the deadline checks alone.
     let mut restart_finished = crate::meter::now();
     let mut restart_cost: Option<Duration> = None;
     // Normally the restart deadline fires first; the portfolio hard-deadline
@@ -1457,7 +1482,11 @@ fn run_portfolio(
         );
         let (outcome, _) = candidates.record_elimination(run);
         let finished = crate::meter::now();
-        restart_cost = Some(finished.saturating_duration_since(restart_finished));
+        restart_cost = Some(projected_restart(
+            restart_cost,
+            finished.saturating_duration_since(restart_finished),
+            residual,
+        ));
         restart_finished = finished;
         trace(CandidateTrace {
             stage: candidate.stage,

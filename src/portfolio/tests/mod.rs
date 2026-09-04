@@ -1184,6 +1184,40 @@ fn the_trailing_reserve_is_what_the_candidate_needs_on_this_graph() {
 }
 
 #[test]
+fn the_restart_projection_follows_the_fastest_draw_below_the_boundary() {
+    let slow = Duration::from_millis(900);
+    let quick = Duration::from_millis(40);
+
+    // Below the boundary the restarts hold the end of the window, so one slow
+    // draw does not close the schedule down.
+    assert_eq!(
+        super::projected_restart(Some(quick), slow, Residual::Ordinary),
+        quick,
+    );
+    assert_eq!(
+        super::projected_restart(Some(slow), quick, Residual::Ordinary),
+        quick,
+    );
+
+    // Above it the trailing candidate is waiting for the same time, so the last
+    // draw's own cost stands.
+    assert_eq!(
+        super::projected_restart(Some(quick), slow, Residual::Admitted),
+        slow,
+    );
+    assert_eq!(
+        super::projected_restart(Some(quick), slow, Residual::Large),
+        slow,
+    );
+
+    // The first restart of a run has nothing to compare against.
+    assert_eq!(
+        super::projected_restart(None, slow, Residual::Ordinary),
+        slow,
+    );
+}
+
+#[test]
 fn the_writeout_reserve_grows_with_the_residual() {
     let small = grid(20);
     assert_eq!(
