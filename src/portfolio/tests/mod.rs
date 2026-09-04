@@ -6,7 +6,7 @@ use super::candidates::CandidateSet;
 use super::config::{MAX_DIVERSE_SAMPLING_RUNS, validate};
 use super::{CandidateOutcome, DEFAULT_HEDGE_DIMS, HedgeSeries, HedgeWeights, StageBudget};
 use super::{EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig, Residual};
-use super::{FLOWCUTTER_RESERVE, restart_admitted, restart_deadline};
+use super::{FLOWCUTTER_RESERVE, SingleRule, restart_admitted, restart_deadline};
 use super::{Sample, SampleBand};
 use super::{Stage, elimination_stop, extra_sample, hedge_random_seed, sample_seed};
 use crate::elimination::Order;
@@ -981,18 +981,18 @@ fn the_restarts_keep_a_flowcutter_reserve_at_the_end_of_the_hard_window() {
     // An ordinary residual: the restarts run into the hard window and stop a
     // reserve short of its end.
     assert_eq!(
-        restart_deadline(Residual::Ordinary, Some(soft), Some(hard), None),
+        restart_deadline(Residual::Ordinary, false, Some(soft), Some(hard), None),
         Some(hard - FLOWCUTTER_RESERVE),
     );
 
     // Both larger classes keep the soft deadline while FlowCutter holds the
     // second stage, so it is there for the trailing candidate.
     assert_eq!(
-        restart_deadline(Residual::Admitted, Some(soft), Some(hard), None),
+        restart_deadline(Residual::Admitted, false, Some(soft), Some(hard), None),
         Some(soft),
     );
     assert_eq!(
-        restart_deadline(Residual::Large, Some(soft), Some(hard), None),
+        restart_deadline(Residual::Large, false, Some(soft), Some(hard), None),
         Some(soft),
     );
 
@@ -1000,12 +1000,15 @@ fn the_restarts_keep_a_flowcutter_reserve_at_the_end_of_the_hard_window() {
     // soft deadline, so the soft deadline stands.
     let tight = start + Duration::from_millis(5_500);
     assert_eq!(
-        restart_deadline(Residual::Ordinary, Some(soft), Some(tight), None),
+        restart_deadline(Residual::Ordinary, false, Some(soft), Some(tight), None),
         Some(soft),
     );
 
     // No budget, so no hard window to run into.
-    assert_eq!(restart_deadline(Residual::Ordinary, None, None, None), None);
+    assert_eq!(
+        restart_deadline(Residual::Ordinary, false, None, None, None),
+        None
+    );
 }
 
 #[test]
@@ -1018,27 +1021,138 @@ fn a_large_residual_takes_the_second_stage_flowcutter_declined() {
     // FlowCutter will not run at this size, so both larger classes eliminate to
     // the end of the hard window instead of stopping half way through it.
     assert_eq!(
-        restart_deadline(Residual::Admitted, Some(soft), Some(hard), Some(writeout)),
+        restart_deadline(
+            Residual::Admitted,
+            false,
+            Some(soft),
+            Some(hard),
+            Some(writeout)
+        ),
         Some(hard - writeout),
     );
     assert_eq!(
-        restart_deadline(Residual::Large, Some(soft), Some(hard), Some(writeout)),
+        restart_deadline(
+            Residual::Large,
+            false,
+            Some(soft),
+            Some(hard),
+            Some(writeout)
+        ),
         Some(hard - writeout),
     );
 
     // An ordinary residual keeps the FlowCutter reserve whatever the writeout
     // reserve says, since the trailing candidate does run at that size.
     assert_eq!(
-        restart_deadline(Residual::Ordinary, Some(soft), Some(hard), Some(writeout)),
+        restart_deadline(
+            Residual::Ordinary,
+            false,
+            Some(soft),
+            Some(hard),
+            Some(writeout)
+        ),
         Some(hard - FLOWCUTTER_RESERVE),
     );
 
     // A writeout reserve wider than the whole second stage leaves the soft
     // deadline where it was.
     assert_eq!(
-        restart_deadline(Residual::Large, Some(soft), Some(hard), Some(secs(6))),
+        restart_deadline(
+            Residual::Large,
+            false,
+            Some(soft),
+            Some(hard),
+            Some(secs(6))
+        ),
         Some(soft),
     );
+
+    // A run on a single rule has no trailing candidate to keep the reserve
+    // for, so the restarts take the second stage on an ordinary residual too.
+    assert_eq!(
+        restart_deadline(
+            Residual::Ordinary,
+            true,
+            Some(soft),
+            Some(hard),
+            Some(writeout)
+        ),
+        Some(hard - writeout),
+    );
+}
+
+#[test]
+fn a_portfolio_on_one_rule_runs_that_rule_and_no_other_candidate() {
+    let graph = grid(12);
+    let weights = vec![1u32; graph.num_vertices() as usize];
+    for (rule, stages) in [
+        (SingleRule::MinFill, vec![Stage::MinFill, Stage::Sample]),
+        (SingleRule::MinDegree, vec![Stage::MinDegree]),
+        (
+            SingleRule::MaximumCardinality,
+            vec![Stage::MaximumCardinality],
+        ),
+    ] {
+        let config = PortfolioConfig::sampled_min_fill()
+            .with_single_rule(rule)
+            .with_soft_budget(Duration::from_millis(50))
+            .with_restarts_to_deadline(true);
+
+        let mut seen: Vec<Stage> = Vec::new();
+        let decomposition =
+            super::decompose_traced(&graph, &weights, 0, config, &mut |candidate| {
+                seen.push(candidate.stage);
+            })
+            .unwrap();
+
+        decomposition.validate(&graph).unwrap();
+        assert!(
+            seen.iter().all(|stage| stages.contains(stage)),
+            "{rule:?} ran a candidate that is not the rule: {seen:?}"
+        );
+    }
+}
+
+#[test]
+fn maximum_cardinality_search_on_its_own_runs_one_order() {
+    let graph = grid(12);
+    let weights = vec![1u32; graph.num_vertices() as usize];
+    let config = PortfolioConfig::sampled_min_fill()
+        .with_single_rule(SingleRule::MaximumCardinality)
+        .with_soft_budget(Duration::from_millis(50))
+        .with_restarts_to_deadline(true);
+
+    let mut seen: Vec<Stage> = Vec::new();
+    super::decompose_traced(&graph, &weights, 0, config, &mut |candidate| {
+        seen.push(candidate.stage);
+    })
+    .unwrap();
+
+    // The search draws no tie set, so a second seed would replay the first
+    // order and the restarts are not offered at all.
+    assert_eq!(seen, vec![Stage::MaximumCardinality]);
+}
+
+#[test]
+fn a_portfolio_on_one_rule_refuses_a_stage_beside_it() {
+    let base = PortfolioConfig::sampled_min_fill().with_single_rule(SingleRule::MinFill);
+    for (name, config) in [
+        ("FlowCutter", base.with_flowcutter(Duration::from_secs(1))),
+        ("maximum cardinality", base.with_maximum_cardinality(1_000)),
+        ("MCS-M", base.with_minimal_triangulation(1_000)),
+        ("fill-dropping", base.with_triangulation_refinement(1_000)),
+        (
+            "hedge",
+            base.with_hedge(Hedge::Passes(HedgeSeries::random(2))),
+        ),
+        ("diverse", base.with_diverse_sampling_runs(4)),
+    ] {
+        assert!(
+            validate(config).is_err(),
+            "a single-rule portfolio accepted the {name} stage"
+        );
+    }
+    assert!(validate(base).is_ok(), "the rule on its own is a valid run");
 }
 
 #[test]

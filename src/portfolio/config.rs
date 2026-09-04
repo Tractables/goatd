@@ -308,7 +308,7 @@ impl Hedge {
 /// This exists to measure a rule against another solver's implementation of
 /// the same rule at the same allocation, so the run has to be the rule and
 /// nothing else: one order, restarted against the incumbent until the hard
-/// window ends, with no other candidate and no scheduling stage. [`validate`]
+/// window ends, with no other candidate and no scheduling stage. A portfolio
 /// refuses a configuration that asks for a stage as well, so a stage left on
 /// by accident is an error rather than a silent part of the measurement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -401,9 +401,15 @@ impl PortfolioConfig {
     /// with the whole window rather than the half an admitted residual gives an
     /// expensive order — and the window the trailing FlowCutter candidate would
     /// hold goes to the restarts, since there is no such candidate here. Every
-    /// other stage has to be off already: [`validate`] refuses a configuration
-    /// that asks for one. [`PortfolioConfig::sampled_min_fill`] is the base that
-    /// has none of them on.
+    /// other stage has to be off already, and a portfolio refuses a
+    /// configuration that asks for one. [`PortfolioConfig::sampled_min_fill`]
+    /// is the base that has none of them on.
+    ///
+    /// # Errors
+    ///
+    /// A portfolio run under this returns
+    /// [`Error::InvalidInput`](crate::Error::InvalidInput) when another
+    /// candidate or stage is configured as well.
     pub fn with_single_rule(mut self, rule: SingleRule) -> Self {
         self.single_rule = Some(rule);
         self
@@ -821,10 +827,19 @@ pub(super) fn validate(config: PortfolioConfig) -> Result<(), Error> {
     }
     if config.single_rule.is_some() {
         let stage = [
-            ("a trailing FlowCutter candidate", config.flowcutter_budget.is_some()),
-            ("maximum cardinality search", config.maximum_cardinality.is_some()),
+            (
+                "a trailing FlowCutter candidate",
+                config.flowcutter_budget.is_some(),
+            ),
+            (
+                "maximum cardinality search",
+                config.maximum_cardinality.is_some(),
+            ),
             ("MCS-M", config.minimal_triangulation.is_some()),
-            ("the fill-dropping pass", config.triangulation_refinement.is_some()),
+            (
+                "the fill-dropping pass",
+                config.triangulation_refinement.is_some(),
+            ),
             ("a hedge", config.hedge.series().is_some()),
             ("the diverse pass", config.diverse_sampling_runs > 0),
         ]

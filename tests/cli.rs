@@ -380,6 +380,56 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--order", "flowcutter", "--trace"],
             &["--trace", "flowcutter", "portfolio"],
         ),
+        (
+            &["--only-rule", "minfill"],
+            &["--only-rule", "minfill", "portfolio"],
+        ),
+        (
+            &["--order", "portfolio", "--only-rule", "mindegree"],
+            &["--only-rule", "--budget"],
+        ),
+        (
+            &["--order", "portfolio", "--only-rule", "fill"],
+            &["--only-rule", "minfill, mindegree or mcs"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--budget",
+                "50",
+                "--only-rule",
+                "minfill",
+                "--no-mcs",
+            ],
+            &["--no-mcs", "--only-rule"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--budget",
+                "50",
+                "--only-rule",
+                "minfill",
+                "--hedge-dims",
+                "1,2",
+            ],
+            &["--hedge-dims", "--only-rule"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--budget",
+                "50",
+                "--only-rule",
+                "mcs",
+                "--sample-band",
+                "2",
+            ],
+            &["--sample-band", "--only-rule mcs"],
+        ),
         (&["--ties", "salt"], &["--ties"]),
         (&["--budget", "0"], &["--budget", "positive"]),
         (&["--order", "treewidth"], &["--order"]),
@@ -455,6 +505,60 @@ fn the_trace_names_the_candidate_the_decomposition_came_from() {
 }
 
 #[test]
+fn only_rule_runs_that_rule_and_no_other_candidate() {
+    // Under a single rule the first candidate is the rule's own order and the
+    // restarts that follow are the same order on other seeds, which the trace
+    // labels `sample` for min-fill.
+    for (rule, stages) in [
+        ("minfill", &["min-fill", "sample"][..]),
+        ("mindegree", &["min-degree"][..]),
+    ] {
+        let out = goatd(
+            &[
+                "-",
+                "--order",
+                "portfolio",
+                "--budget",
+                "300",
+                "--only-rule",
+                rule,
+                "--trace",
+            ],
+            Some(&grid_gr()),
+        );
+        assert!(out.status.success(), "{}", stderr_of(&out));
+        let candidates = trace_stages(&out);
+        assert!(
+            candidates.len() > 2,
+            "the rule restarts until the window ends: {candidates:?}"
+        );
+        for stage in &candidates {
+            assert!(
+                stages.contains(&stage.as_str()),
+                "--only-rule {rule} ran {stage}, which is not the rule"
+            );
+        }
+    }
+
+    // The search draws no tie set, so one order is the whole run.
+    let out = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            "300",
+            "--only-rule",
+            "mcs",
+            "--trace",
+        ],
+        Some(&grid_gr()),
+    );
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    assert_eq!(trace_stages(&out), vec!["maximum-cardinality".to_string()]);
+}
+
+#[test]
 fn the_default_portfolio_hedges_and_no_hedge_turns_that_off() {
     let out = goatd(
         &["-", "--order", "portfolio", "--budget", "500", "--trace"],
@@ -517,6 +621,17 @@ fn trace_candidates(out: &Output) -> Vec<String> {
                 .filter(|field| !field.starts_with("ms="))
                 .collect::<Vec<_>>()
                 .join(" ")
+        })
+        .collect()
+}
+
+/// The stage name of every candidate the trace reported, in order.
+fn trace_stages(out: &Output) -> Vec<String> {
+    stderr_of(out)
+        .lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix("c trace candidate=")?;
+            Some(rest.split(' ').next()?.to_string())
         })
         .collect()
 }
