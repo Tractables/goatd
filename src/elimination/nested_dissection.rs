@@ -17,7 +17,7 @@ use std::time::Instant;
 use rustc_hash::FxHashSet;
 
 use super::execution::{
-    Cutoff, DeadlinePacer, ElimExit, ElimSink, ElimSteps, ElimStop, exceeds_width_bound,
+    ElimExit, ElimSink, ElimSteps, ElimStop, eliminate_in_order, residual_edges,
 };
 use super::graph::EliminationGraph;
 use super::greedy::eliminate_min_fill;
@@ -66,24 +66,16 @@ pub(super) fn eliminate_nested_dissection(
     mut sink: ElimSink<'_>,
     stop: ElimStop,
 ) -> ElimExit {
-    let active: Vec<u32> = (0..graph.len() as u32)
-        .filter(|&vertex| graph.active[vertex as usize])
-        .collect();
-    // Preprocessing may leave the list representation stale after switching
-    // to bitsets, so read the residual through the representation-neutral
-    // accessor.
-    let mut neighbours = Vec::new();
+    let (active, adjacency) = residual_edges(graph);
+    // The active vertices are in index order, so a neighbour later in that list
+    // is also the larger of the two original ids and each edge is emitted once.
     let mut edges: Vec<(u32, u32)> = Vec::new();
-    for &vertex in &active {
-        neighbours.clear();
-        graph.collect_live_nbrs_into(vertex, &mut neighbours);
-        edges.extend(
-            neighbours
-                .iter()
-                .copied()
-                .filter(|&neighbour| neighbour > vertex)
-                .map(|neighbour| (vertex, neighbour)),
-        );
+    for (index, neighbours) in adjacency.iter().enumerate() {
+        for &neighbour in neighbours {
+            if neighbour as usize > index {
+                edges.push((active[index], active[neighbour as usize]));
+            }
+        }
     }
 
     let order = nested_dissection_order(
@@ -99,27 +91,7 @@ pub(super) fn eliminate_nested_dissection(
         0,
     );
 
-    let mut pacer = DeadlinePacer::new();
-    for vertex in order {
-        if !graph.active[vertex as usize] {
-            continue;
-        }
-        if pacer.due() && expired(stop.hard_deadline) {
-            return ElimExit::DeadlineReached(Cutoff::Hard);
-        }
-        neighbours.clear();
-        graph.collect_live_nbrs_into(vertex, &mut neighbours);
-        let mut bag = Vec::with_capacity(neighbours.len() + 1);
-        bag.push(vertex);
-        bag.extend_from_slice(&neighbours);
-        let bag_len = bag.len();
-        graph.eliminate_with_nbrs(vertex, &neighbours);
-        sink.record(vertex, bag);
-        if exceeds_width_bound(bag_len, stop.width_bound) {
-            return ElimExit::WidthLimitExceeded;
-        }
-    }
-    ElimExit::Complete
+    eliminate_in_order(graph, order, &mut sink, stop)
 }
 
 /// Compute a nested-dissection elimination order for the active vertex set

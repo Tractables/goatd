@@ -67,6 +67,31 @@ options:
                         budget, so this needs a series of two or more stages —
                         the default one, or --hedge-dims or --hedge-random
                         asking for that many
+  --mcs-up-to <n>       portfolio only: run the maximum cardinality search
+                        candidate while the preprocessed residual has at most n
+                        vertices, in place of the built-in gate. The search
+                        numbers the residual by numbered-neighbour count and the
+                        candidate eliminates along that numbering reversed; it
+                        is one deterministic candidate, and it costs a scan of
+                        the unnumbered vertices per vertex, which is what the
+                        gate bounds
+  --no-mcs              portfolio only: run no maximum cardinality search
+                        candidate
+  --mcsm-up-to <n>      portfolio only: run the MCS-M candidate while the
+                        preprocessed residual has at most n vertices, in place
+                        of the built-in gate. MCS-M eliminates along a minimal
+                        triangulation of the residual; it is one deterministic
+                        candidate, and it costs a traversal of the residual per
+                        vertex, which is what the gate bounds
+  --no-mcsm             portfolio only: run no MCS-M candidate
+  --drop-fill-up-to <n> portfolio only: rebuild the winner on a minimal
+                        triangulation of the same graph, dropping the fill edges
+                        its bags do not need, on graphs of at most n vertices,
+                        in place of the built-in gate. The pass never widens,
+                        and it runs only while what it is projected to cost
+                        fits in what is left of the hard budget, so a wide n
+                        costs memory rather than time
+  --no-drop-fill        portfolio only: leave the winner's fill edges alone
   --no-hedge            portfolio only: run every candidate once, on uniform
                         weights, instead of repeating the candidates that read
                         weights on a ranking the portfolio computes itself
@@ -155,6 +180,12 @@ struct Args {
     hedge_dims: Option<Vec<usize>>,
     hedge_random: Option<usize>,
     hedge_reserve: Option<f64>,
+    mcs_up_to: Option<u32>,
+    no_mcs: bool,
+    mcsm_up_to: Option<u32>,
+    no_mcsm: bool,
+    drop_fill_up_to: Option<u32>,
+    no_drop_fill: bool,
     no_hedge: bool,
     capped_restarts: bool,
     sample_band: Option<u64>,
@@ -215,6 +246,12 @@ fn parse_args(argv: &[String]) -> Args {
     let mut hedge_dims: Option<Vec<usize>> = None;
     let mut hedge_random = None;
     let mut hedge_reserve = None;
+    let mut mcs_up_to = None;
+    let mut no_mcs = false;
+    let mut mcsm_up_to = None;
+    let mut no_mcsm = false;
+    let mut drop_fill_up_to = None;
+    let mut no_drop_fill = false;
     let mut no_hedge = false;
     let mut capped_restarts = false;
     let mut sample_band = None;
@@ -300,6 +337,39 @@ fn parse_args(argv: &[String]) -> Args {
                 }
                 hedge_reserve = Some(fraction);
             }
+            "--mcs-up-to" => {
+                let vertices = number(&mut i, arg);
+                if vertices > u64::from(u32::MAX) {
+                    usage_error(&format!(
+                        "--mcs-up-to wants a vertex count in 0..={}",
+                        u32::MAX
+                    ));
+                }
+                mcs_up_to = Some(vertices as u32);
+            }
+            "--no-mcs" => no_mcs = true,
+            "--mcsm-up-to" => {
+                let vertices = number(&mut i, arg);
+                if vertices > u64::from(u32::MAX) {
+                    usage_error(&format!(
+                        "--mcsm-up-to wants a vertex count in 0..={}",
+                        u32::MAX
+                    ));
+                }
+                mcsm_up_to = Some(vertices as u32);
+            }
+            "--no-mcsm" => no_mcsm = true,
+            "--drop-fill-up-to" => {
+                let vertices = number(&mut i, arg);
+                if vertices > u64::from(u32::MAX) {
+                    usage_error(&format!(
+                        "--drop-fill-up-to wants a vertex count in 0..={}",
+                        u32::MAX
+                    ));
+                }
+                drop_fill_up_to = Some(vertices as u32);
+            }
+            "--no-drop-fill" => no_drop_fill = true,
             "--no-hedge" => no_hedge = true,
             "--capped-restarts" => capped_restarts = true,
             "--sample-band" => sample_band = Some(number(&mut i, arg)),
@@ -416,6 +486,41 @@ fn parse_args(argv: &[String]) -> Args {
     if no_hedge {
         needs("--no-hedge", order == Method::Portfolio, "portfolio");
     }
+    // Each pair says whether one construction runs and how large a graph it
+    // runs on, so giving both leaves one of them with nothing to decide.
+    if mcs_up_to.is_some() {
+        needs("--mcs-up-to", order == Method::Portfolio, "portfolio");
+        if no_mcs {
+            usage_error(
+                "--mcs-up-to gates the maximum cardinality search candidate and --no-mcs runs \
+                 none; give one",
+            );
+        }
+    }
+    if no_mcs {
+        needs("--no-mcs", order == Method::Portfolio, "portfolio");
+    }
+    if mcsm_up_to.is_some() {
+        needs("--mcsm-up-to", order == Method::Portfolio, "portfolio");
+        if no_mcsm {
+            usage_error("--mcsm-up-to gates the MCS-M candidate and --no-mcsm runs none; give one");
+        }
+    }
+    if no_mcsm {
+        needs("--no-mcsm", order == Method::Portfolio, "portfolio");
+    }
+    if drop_fill_up_to.is_some() {
+        needs("--drop-fill-up-to", order == Method::Portfolio, "portfolio");
+        if no_drop_fill {
+            usage_error(
+                "--drop-fill-up-to gates the fill-dropping pass and --no-drop-fill runs none; \
+                 give one",
+            );
+        }
+    }
+    if no_drop_fill {
+        needs("--no-drop-fill", order == Method::Portfolio, "portfolio");
+    }
     // The count is what stops the restarts of a run with no deadline, so the
     // flag decides nothing there.
     if capped_restarts {
@@ -468,6 +573,12 @@ fn parse_args(argv: &[String]) -> Args {
         hedge_dims,
         hedge_random,
         hedge_reserve,
+        mcs_up_to,
+        no_mcs,
+        mcsm_up_to,
+        no_mcsm,
+        drop_fill_up_to,
+        no_drop_fill,
         no_hedge,
         capped_restarts,
         sample_band,
@@ -558,6 +669,24 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             }
             if let Some(fraction) = args.hedge_reserve {
                 config = config.with_hedge_reserve(fraction);
+            }
+            if let Some(vertices) = args.mcs_up_to {
+                config = config.with_maximum_cardinality(vertices);
+            }
+            if args.no_mcs {
+                config = config.without_maximum_cardinality();
+            }
+            if let Some(vertices) = args.mcsm_up_to {
+                config = config.with_minimal_triangulation(vertices);
+            }
+            if args.no_mcsm {
+                config = config.without_minimal_triangulation();
+            }
+            if let Some(vertices) = args.drop_fill_up_to {
+                config = config.with_triangulation_refinement(vertices);
+            }
+            if args.no_drop_fill {
+                config = config.without_triangulation_refinement();
             }
             if args.capped_restarts {
                 config = config.with_restarts_to_deadline(false);

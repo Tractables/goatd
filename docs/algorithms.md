@@ -23,6 +23,10 @@ later candidate is handed the best width so far and stops as soon as one of its
 bags is too wide to win. Fill counts are computed once, when the first
 fill-based order needs them, and reused by the rest.
 
+Two cardinality-search candidates follow the fixed orders, each on a residual
+small enough for it. Neither is part of the schedule choice below: each has a
+vertex gate of its own. They are described under *Cardinality searches*.
+
 With time left the portfolio keeps going: first a diverse pass over sampled
 fill/degree scores, then further min-fill seeds, which the rest of this page
 calls the restarts. A trailing candidate hands the graph to FlowCutter.
@@ -82,6 +86,11 @@ The FlowCutter candidate takes what is left, less two estimated restarts, since
 the vendored backend tests its deadline only between restarts and the result
 still has to be copied out. It is skipped when what remains is too short to
 seed it, or when the backend's setup and first restart would outlast it.
+
+Last of all, on a graph small enough for it, the portfolio drops the fill its
+winner does not need and keeps the better of the two. That pass cannot widen a
+bag, and it starts only while the work it projects fits in what the hard
+deadline has left; it is described under *Cardinality searches*.
 
 `stop_flag` ends a run from outside it: every deadline check in the library and
 in the vendored backend then answers as an expired hard deadline, and the
@@ -209,7 +218,79 @@ candidate that produced one also says whether the portfolio would return it, so
 the winner is reported rather than inferred. `portfolio::decompose` is the same
 run with the sink discarded.
 
-## Nested dissection and bisection
+## Cardinality searches
+
+Completing every bag of a tree decomposition to a clique gives a chordal graph
+containing the input — a triangulation — whose maximal cliques are the bags of
+a decomposition of the same width. A triangulation is minimal when none of the
+edges it added can be taken out again without breaking chordality. A minimal
+triangulation is not a narrowest one, but it never has an edge the width is
+paying for and nothing needs.
+
+Maximum cardinality search numbers the vertices from `n` down to 1, always
+taking one with the most numbered neighbours; on a chordal graph the numbers
+read backwards are a perfect elimination ordering. MCS-M is the same search
+with a longer reach: a vertex counts the numbered vertices it can reach along a
+path whose interior vertices all count lower than the path's endpoint.
+Eliminating along the numbering MCS-M produces fills the graph to a minimal
+triangulation (Berry, Blair, Heggernes and Peyton, *Maximum cardinality search
+for computing minimal triangulations of graphs*, Algorithmica 39(4), 2004). The
+two searches differ only in how one step collects the vertices whose count goes
+up, so they are one function with a switch.
+
+Three things come out of that, all of them optional gated additions to the
+portfolio rather than replacements for anything.
+
+**Maximum cardinality search as a candidate.** `Order::MaximumCardinality`
+runs the plain search on the preprocessed residual and eliminates along the
+numbering reversed. On a chordal residual that adds no fill at all; on any
+other it adds whatever the numbering happens to need, with no minimality
+guarantee. It costs one scan of the unnumbered vertices per vertex plus one
+pass over the edges, which is cheap enough to run on residuals far larger than
+MCS-M can be run on, so `PortfolioConfig::with_maximum_cardinality` has a gate
+of its own. The candidate runs before the MCS-M one, which leaves MCS-M a
+tighter width bound to abort on.
+
+**MCS-M as a candidate.** `Order::MinimalTriangulation` runs MCS-M on the
+preprocessed residual and eliminates along the result. It reads no seed and no
+weights, so it is one candidate rather than a family of them, and so is the
+plain search above it. It costs one traversal of the residual per vertex, which
+is why `PortfolioConfig::with_minimal_triangulation` gates it on the residual's
+vertex count. Both candidates run against the soft deadline and give up
+part-way rather than taking the restarts' time. One step of MCS-M can walk the
+whole residual, so the shared search reads the clock while it walks rather than
+only between steps; both reaches stop the same way. On most graphs the greedy
+orders are narrower and the portfolio keeps them.
+
+**Dropping fill the bags do not need.** Removing one edge `uv` from a chordal
+graph leaves it chordal exactly when the common neighbourhood of `u` and `v` is
+a clique, and a triangulation is minimal exactly when no single added edge can
+be removed (Rose, Tarjan and Lueker, *Algorithmic aspects of vertex elimination
+on graphs*, SIAM Journal on Computing 5(2), 1976). So dropping removable added
+edges until none is left gives a minimal triangulation.
+`decomposition::minimalize_triangulation` does that to a decomposition's own
+completion and rebuilds the bags from a perfect elimination ordering of what
+remains. Dropping edges cannot enlarge a clique, so the pass never widens; when
+it improves neither the width nor the total bag size, the input comes back
+unchanged. It holds two bitsets over the graph's vertices, which is why
+`PortfolioConfig::with_triangulation_refinement` gates it on the vertex count.
+The portfolio applies it to its winner, whatever candidate produced it, and
+hands the result back as one more candidate.
+
+How long the pass takes does not follow the vertex count. It follows the bags
+of the decomposition being rebuilt, and how many sweeps the edge-dropping needs
+is not known until it has run. So the vertex gate bounds the memory and the
+clock bounds the time: completing the bags costs one insert per pair of a bag,
+which the decomposition says in advance, and the portfolio starts the pass only
+while that projection fits in what is left of the hard deadline. After that,
+every loop in the pass reads the clock on a stride. The completion and the
+rebuild hand back the input decomposition when they run out of time; a sweep cut
+part-way keeps the edges it had already dropped, since taking a removable edge
+out of a chordal graph leaves it chordal whether or not the sweep finishes. A
+graph that runs out of time therefore loses the improvement and keeps its
+decomposition.
+
+## Nested dissection and multilevel bisection
 
 Nested dissection is not a separate partitioning primitive. It repeatedly calls
 goatd's multilevel graph bisector, turns the crossing edges of a bisection into
@@ -262,9 +343,10 @@ that is expensive on clique-dominated graphs.
 
 ## Decomposition operations
 
-`decomposition` holds the tree-decomposition type, validation, projection and
-FlowCutter-based refinement. Refinement preserves global vertex ids while it
-projects each side and glues them at a separator.
+`decomposition` holds the tree-decomposition type, validation, projection,
+FlowCutter-based refinement, and the minimalization pass of *Cardinality
+searches*. Refinement preserves global vertex ids while it projects each side
+and glues them at a separator.
 
 Public constructors canonicalize each bag's contents and the undirected bag
 edges, so equivalent caller inputs expose the same rooted walk. Native
