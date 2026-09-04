@@ -5,6 +5,7 @@ use super::candidates::CandidateSet;
 use super::config::{MAX_DIVERSE_SAMPLING_RUNS, validate};
 use super::{CandidateOutcome, DEFAULT_HEDGE_DIMS, HedgeSeries, HedgeWeights, StageBudget};
 use super::{EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig, Sample, Schedule};
+use super::{FLOWCUTTER_RESERVE, restart_admitted, restart_deadline};
 use super::{Stage, elimination_stop, extra_sample, hedge_random_seed, sample_seed};
 use crate::elimination::Order;
 use crate::{Graph, TreeDecomposition};
@@ -38,7 +39,7 @@ fn placed<'a>(
         dim: 3,
         rounds: 1_000,
         seed: 0,
-        soft_deadline: None,
+        deadline: None,
     }
 }
 
@@ -465,7 +466,7 @@ fn the_ranking_is_placed_by_the_first_modified_candidate() {
         dim: 1,
         rounds: 8,
         seed: base_seed,
-        soft_deadline: None,
+        deadline: None,
     }];
     let plan = Schedule {
         modified: &modified,
@@ -746,18 +747,18 @@ fn a_reserve_outside_the_unit_interval_is_refused() {
 }
 
 #[test]
-fn an_extra_sample_stops_at_the_soft_deadline() {
-    let soft_deadline = Instant::now() + Duration::from_secs(1);
-    let hard_deadline = soft_deadline + Duration::from_secs(1);
+fn an_extra_sample_stops_at_the_restart_deadline() {
+    let restart_deadline = Instant::now() + Duration::from_secs(1);
+    let hard_deadline = restart_deadline + Duration::from_secs(1);
     let stop = elimination_stop(
         EliminationPhase::ExtraSampling,
-        Some(soft_deadline),
+        Some(restart_deadline),
         Some(hard_deadline),
         Some(17),
     );
 
-    assert_eq!(stop.soft_deadline, Some(soft_deadline));
-    assert_eq!(stop.hard_deadline, Some(soft_deadline));
+    assert_eq!(stop.soft_deadline, Some(restart_deadline));
+    assert_eq!(stop.hard_deadline, Some(restart_deadline));
     assert_eq!(stop.width_bound, Some(17));
 }
 
@@ -824,21 +825,134 @@ fn ring_with_chords(vertices: u32) -> Graph {
     Graph::new(vertices, edges)
 }
 
+/// A run that has charged nothing has no rate to read, so estimates stand at
+/// the model's own rate.
+fn unmeasured() -> super::Spent {
+    super::Spent {
+        elapsed: Duration::ZERO,
+        charged_units: 0,
+    }
+}
+
 #[test]
 fn the_flowcutter_slot_declines_a_graph_it_could_not_stop_on() {
     // A 20x20 grid needs a few milliseconds of setup and a restart, so even a
     // 200-millisecond window is enough for it.
     let small = grid(20);
-    let candidate = super::flowcutter_candidate(&small, Duration::from_millis(200), None).unwrap();
+    let candidate =
+        super::flowcutter_candidate(&small, Duration::from_millis(200), None, unmeasured())
+            .unwrap();
     assert!(candidate.is_some(), "a small graph fits a short window");
 
     // 60,000 vertices and 180,000 edges put setup and one restart at about
     // nine seconds, and the backend cannot stop before finishing that restart.
     let large = ring_with_chords(60_000);
     let candidate =
-        super::flowcutter_candidate(&large, Duration::from_millis(4_750), None).unwrap();
+        super::flowcutter_candidate(&large, Duration::from_millis(4_750), None, unmeasured())
+            .unwrap();
     assert!(
         candidate.is_none(),
         "a graph whose first restart outlasts the window is declined"
+    );
+}
+
+#[test]
+fn the_restarts_keep_a_flowcutter_reserve_at_the_end_of_the_hard_window() {
+    let start = crate::meter::now();
+    let soft = start + secs(5);
+    let hard = start + secs(10);
+
+    // An ordinary residual: the restarts run into the hard window and stop a
+    // reserve short of its end.
+    assert_eq!(
+        restart_deadline(false, Some(soft), Some(hard)),
+        Some(hard - FLOWCUTTER_RESERVE),
+    );
+
+    // A large residual keeps the soft deadline.
+    assert_eq!(restart_deadline(true, Some(soft), Some(hard)), Some(soft),);
+
+    // A hard window shorter than the reserve would put the restarts before the
+    // soft deadline, so the soft deadline stands.
+    let tight = start + Duration::from_millis(5_500);
+    assert_eq!(restart_deadline(false, Some(soft), Some(tight)), Some(soft),);
+
+    // No budget, so no hard window to run into.
+    assert_eq!(restart_deadline(false, None, None), None);
+}
+
+#[test]
+fn a_restart_that_would_not_finish_in_time_is_not_started() {
+    let now = crate::meter::now();
+    let restart = Some(now + Duration::from_millis(500));
+    let hard = Some(now + secs(2));
+
+    assert!(
+        restart_admitted(now, Duration::from_millis(400), [restart, hard]),
+        "a restart that ends before both deadlines is admitted",
+    );
+    assert!(
+        !restart_admitted(now, Duration::from_millis(600), [restart, hard]),
+        "a restart that runs into the restart deadline is not",
+    );
+    assert!(
+        !restart_admitted(now, secs(3), [None, hard]),
+        "nor is one that runs past the hard deadline",
+    );
+    assert!(
+        restart_admitted(now, secs(30), [None, None]),
+        "with no deadline the count is what stops the restarts",
+    );
+}
+
+#[test]
+fn the_flowcutter_window_stops_the_reserve_short_of_the_hard_deadline() {
+    let configured = Duration::from_millis(4_750);
+    let reserve = Duration::from_millis(340);
+
+    assert_eq!(
+        super::flowcutter_window(configured, Some(Duration::from_millis(1_500)), reserve),
+        Duration::from_millis(1_160),
+        "the backend is stopped the reserve before the hard deadline",
+    );
+    assert_eq!(
+        super::flowcutter_window(configured, Some(secs(9)), reserve),
+        configured - reserve,
+        "a window wider than the configured budget is capped by it",
+    );
+    assert_eq!(
+        super::flowcutter_window(configured, Some(Duration::from_millis(100)), reserve),
+        Duration::ZERO,
+        "a window shorter than the reserve leaves nothing",
+    );
+    assert_eq!(
+        super::flowcutter_window(configured, None, reserve),
+        configured,
+        "with no hard deadline the configured budget stands",
+    );
+}
+
+#[test]
+fn an_estimate_grows_with_the_rate_the_run_is_actually_going_at() {
+    let estimate = Duration::from_millis(340);
+    let spent = |elapsed_ms, charged_ms: u64| super::Spent {
+        elapsed: Duration::from_millis(elapsed_ms),
+        charged_units: charged_ms * crate::meter::UNITS_PER_MS,
+    };
+
+    assert_eq!(
+        super::at_observed_rate(estimate, spent(8_000, 2_000)),
+        Duration::from_millis(1_360),
+        "a run taking four times the modelled work reserves four times as much",
+    );
+    assert_eq!(
+        super::at_observed_rate(estimate, spent(6_000, 8_000)),
+        estimate,
+        "a run beating the model keeps the estimate; it is never scaled down",
+    );
+    assert_eq!(
+        super::at_observed_rate(estimate, spent(6_000, 0)),
+        estimate,
+        "with nothing charged there is no rate to read",
     );
 }

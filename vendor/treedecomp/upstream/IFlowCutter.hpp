@@ -41,6 +41,12 @@
 
 namespace TWD {
 
+// goatd: address of a caller-owned byte that, once nonzero, ends a running
+// search wherever a passed deadline ends it. Null when the caller has set none.
+// Read only, and only at the points the loop already reads its clock, so the
+// caller may set the byte from a signal handler.
+extern const volatile unsigned char* g_external_stop;
+
 struct SeparatorOutput {
   std::vector<int> separator;   // vertex IDs in input-node-id space
 };

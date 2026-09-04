@@ -7,8 +7,8 @@ below.
 
 ## Rust dependencies
 
-`rand`, `rustc-hash`, and the build-dependency `cc`. Each is dual-licensed
-`MIT OR Apache-2.0` and is used here under Apache-2.0.
+`rand`, `rustc-hash`, `libc` on Unix, and the build-dependency `cc`. Each is
+dual-licensed `MIT OR Apache-2.0` and is used here under Apache-2.0.
 
 ## FlowCutter tree decomposition — vendored C++, statically linked
 

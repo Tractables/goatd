@@ -61,6 +61,7 @@ name = "goatd"
 version = "0.1.2"
 dependencies = [
  "cc",
+ "libc",
  "rand",
  "rustc-hash",
 ]
