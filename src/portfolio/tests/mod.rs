@@ -5,7 +5,7 @@ use super::candidates::CandidateSet;
 use super::config::{MAX_DIVERSE_SAMPLING_RUNS, validate};
 use super::{CandidateOutcome, DEFAULT_HEDGE_DIMS, HedgeSeries, HedgeWeights, StageBudget};
 use super::{EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig, Sample, Schedule};
-use super::{FLOWCUTTER_RESERVE, restart_admitted, restart_deadline};
+use super::{FLOWCUTTER_RESERVE, SampleBand, restart_admitted, restart_deadline};
 use super::{Stage, elimination_stop, extra_sample, hedge_random_seed, sample_seed};
 use crate::elimination::Order;
 use crate::{Graph, TreeDecomposition};
@@ -22,6 +22,7 @@ fn schedule(base_seed: u64, large_residual: bool, weights: &[u32]) -> Schedule<'
         fixed_runs: 0,
         initial_orders: super::standard_orders,
         weights,
+        band: SampleBand::default(),
     }
 }
 
@@ -59,6 +60,7 @@ fn hedged<'a>(
         fixed_runs,
         initial_orders: super::standard_orders,
         weights,
+        band: SampleBand::default(),
     }
 }
 
@@ -452,6 +454,46 @@ fn the_hedge_leaves_every_restart_on_the_unmodified_sequence() {
         assert_eq!(sample.pass, Pass::Plain);
     }
     assert!(extra_sample(plan, first_restart + 1_000).is_none());
+}
+
+#[test]
+fn an_alternating_band_leaves_every_second_restart_on_the_exact_minimum() {
+    let given = [1; 4];
+    let plan = Schedule {
+        band: SampleBand {
+            width: 2,
+            alternate: true,
+        },
+        ..schedule(17, false, &given)
+    };
+    let plain = Schedule {
+        band: SampleBand {
+            width: 2,
+            alternate: false,
+        },
+        ..schedule(17, false, &given)
+    };
+    let none = schedule(17, false, &given);
+
+    // The plain diverse pass is 46 candidates; the restarts follow it.
+    for index in 0..46 {
+        assert_eq!(
+            extra_sample(plan, index).unwrap().band,
+            0,
+            "candidate {index}"
+        );
+    }
+    for restart in 0..8u64 {
+        let index = 46 + restart;
+        let sample = extra_sample(plan, index).unwrap();
+        let expected = if restart.is_multiple_of(2) { 0 } else { 2 };
+        assert_eq!(sample.band, expected, "restart {restart}");
+        // Alternating changes the band a restart draws with, not its seed.
+        assert_eq!(sample.seed, extra_sample(none, index).unwrap().seed);
+        assert_eq!(sample.order, extra_sample(none, index).unwrap().order);
+        assert_eq!(extra_sample(plain, index).unwrap().band, 2);
+        assert_eq!(extra_sample(none, index).unwrap().band, 0);
+    }
 }
 
 #[test]

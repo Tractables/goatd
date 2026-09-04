@@ -76,6 +76,17 @@ options:
                         kept for the trailing FlowCutter candidate. Needs
                         --budget: with no deadline the count is what stops
                         them anyway
+  --sample-band <eps>   portfolio only: the ordinary restarts draw from every
+                        vertex whose elimination adds at most eps fill edges
+                        more than the best. 0 draws only from the vertices
+                        tied at the minimum; the library's own band is the
+                        default. The other candidates keep their exact
+                        minimum
+  --sample-band-alternate
+                        portfolio only: alternate the ordinary restarts
+                        between the exact minimum and --sample-band, an even
+                        restart drawing from the minimum and an odd one from
+                        the band. Needs --sample-band above 0
   --trace               portfolio only: write one line per candidate and one
                         for the winner to stderr as they complete
   --steps <n>           flowcutter only: a step budget in place of a clock,
@@ -134,6 +145,8 @@ struct Args {
     hedge_reserve: Option<f64>,
     no_hedge: bool,
     capped_restarts: bool,
+    sample_band: Option<u64>,
+    sample_band_alternate: bool,
     trace: bool,
     steps: Option<u64>,
     refine: bool,
@@ -191,6 +204,8 @@ fn parse_args(argv: &[String]) -> Args {
     let mut hedge_reserve = None;
     let mut no_hedge = false;
     let mut capped_restarts = false;
+    let mut sample_band = None;
+    let mut sample_band_alternate = false;
     let mut trace = false;
     let mut steps = None;
     let mut refine = false;
@@ -273,6 +288,8 @@ fn parse_args(argv: &[String]) -> Args {
             }
             "--no-hedge" => no_hedge = true,
             "--capped-restarts" => capped_restarts = true,
+            "--sample-band" => sample_band = Some(number(&mut i, arg)),
+            "--sample-band-alternate" => sample_band_alternate = true,
             "--trace" => trace = true,
             "--steps" => {
                 let n = number(&mut i, arg);
@@ -392,6 +409,24 @@ fn parse_args(argv: &[String]) -> Args {
             );
         }
     }
+    if sample_band.is_some() {
+        needs("--sample-band", order == Method::Portfolio, "portfolio");
+    }
+    // Alternating with a band of zero is the exact minimum on every restart,
+    // so the flag would decide nothing.
+    if sample_band_alternate {
+        needs(
+            "--sample-band-alternate",
+            order == Method::Portfolio,
+            "portfolio",
+        );
+        if sample_band.unwrap_or(0) == 0 {
+            usage_error(
+                "--sample-band-alternate requires --sample-band above 0: it alternates \
+                 between the exact minimum and the band",
+            );
+        }
+    }
     if trace {
         needs("--trace", order == Method::Portfolio, "portfolio");
     }
@@ -410,6 +445,8 @@ fn parse_args(argv: &[String]) -> Args {
         hedge_reserve,
         no_hedge,
         capped_restarts,
+        sample_band,
+        sample_band_alternate,
         trace,
         steps,
         refine,
@@ -498,6 +535,12 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             }
             if args.capped_restarts {
                 config = config.with_restarts_to_deadline(false);
+            }
+            if let Some(band) = args.sample_band {
+                config = config.with_sample_band(band);
+            }
+            if args.sample_band_alternate {
+                config = config.with_sample_band_alternate(true);
             }
             let mut winner = None;
             let mut report = |candidate: CandidateTrace| {

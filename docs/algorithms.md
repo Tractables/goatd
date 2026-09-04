@@ -139,6 +139,17 @@ fill and degree, a sampled order can minimize
 supply one weight per vertex; uniform weights give uniform sampling. Each
 score remains exact while the orders explore different elimination paths.
 
+The ordinary restarts draw from a band rather than from the minimum alone: a
+restart's tie set is every vertex whose fill is at most a fixed number above
+the smallest, so seeds still separate on a graph where one vertex holds the
+minimum at every step. `PortfolioConfig::with_sample_band` sets the width and 0
+returns the exact minimum. Only the restarts read it — the other candidates
+each run their own score's exact minimum.
+`PortfolioConfig::with_sample_band_alternate` splits the restarts between the
+two: an even-numbered restart draws from the exact minimum and an odd-numbered
+one from the band, on the same seed sequence either way, so the schedule keeps
+the candidates it had and adds the band's.
+
 These choices extend the standard greedy heuristics with shared reductions,
 incremental scoring, explicit weighted ties, incumbent-width pruning, and
 budget-aware completion.

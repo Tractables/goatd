@@ -2,7 +2,8 @@
 //!
 //! These stay outside `greedy.rs`'s skeleton on purpose. They do not pop from
 //! a heap: they read the whole minimum-priority bucket out of a [`BucketMap`]
-//! and draw a vertex from it at random, which means no lazy deletion, no stale
+//! — or, with a `band`, every bucket within `band` of the minimum — and draw a
+//! vertex from it at random, which means no lazy deletion, no stale
 //! entries to skip, and a priority structure that has to be kept exact rather
 //! than corrected on pop. `eliminate_sampled_min_fill` also has no
 //! clique-residual fast drain — at fill 0 every remaining vertex ties, and
@@ -15,6 +16,17 @@
 use super::*;
 use crate::deadline::expired;
 use crate::rng::{SEED_OFFSET, Xorshift64};
+
+/// How a sampled core draws: the weights that bias the tie set, and how far
+/// above the minimum score the tie set reaches.
+#[derive(Clone, Copy)]
+pub(crate) struct SampleDraw<'a> {
+    /// One weight per graph vertex; a smaller weight is drawn more often.
+    pub(crate) weights: &'a [u32],
+    /// The band above the minimum score, in the score's own units. 0 draws
+    /// from the vertices tied at the minimum, as the samplers always have.
+    pub(crate) band: u64,
+}
 
 #[derive(Clone, Copy)]
 enum FillPriority {
@@ -73,9 +85,12 @@ fn rescore_neighbours(
 /// htd-style min-fill elimination: priority = fill only (no secondary degree
 /// or salt key), ties broken by random sampling from the full min-fill tie
 /// set. A smaller `weights[v]` makes `v` more likely to be drawn.
+///
+/// `band` widens the tie set to every vertex whose fill is at most `band` above
+/// the smallest; 0 is the exact minimum.
 pub(crate) fn eliminate_sampled_min_fill(
     graph: &mut EliminationGraph,
-    weights: &[u32],
+    draw: SampleDraw<'_>,
     seed: u64,
     sink: ElimSink<'_>,
     stop: ElimStop,
@@ -83,7 +98,7 @@ pub(crate) fn eliminate_sampled_min_fill(
 ) -> ElimExit {
     eliminate_sampled_fill_based(
         graph,
-        weights,
+        draw,
         seed,
         sink,
         stop,
@@ -93,10 +108,10 @@ pub(crate) fn eliminate_sampled_min_fill(
 }
 
 /// Fill-plus-coefficient-times-degree elimination with weighted sampling from
-/// the complete minimum-score tie set.
+/// the complete minimum-score tie set, or from a `band` above it.
 pub(crate) fn eliminate_sampled_fill_degree(
     graph: &mut EliminationGraph,
-    weights: &[u32],
+    draw: SampleDraw<'_>,
     seed: u64,
     sink: ElimSink<'_>,
     stop: ElimStop,
@@ -105,7 +120,7 @@ pub(crate) fn eliminate_sampled_fill_degree(
 ) -> ElimExit {
     eliminate_sampled_fill_based(
         graph,
-        weights,
+        draw,
         seed,
         sink,
         stop,
@@ -116,13 +131,14 @@ pub(crate) fn eliminate_sampled_fill_degree(
 
 fn eliminate_sampled_fill_based(
     graph: &mut EliminationGraph,
-    weights: &[u32],
+    draw: SampleDraw<'_>,
     seed: u64,
     mut sink: ElimSink<'_>,
     stop: ElimStop,
     initial_fill: Option<&[u64]>,
     priority: FillPriority,
 ) -> ElimExit {
+    let SampleDraw { weights, band } = draw;
     // No cheap mode here to degrade into, so the soft deadline is not this
     // core's to read.
     let ElimStop {
@@ -166,8 +182,9 @@ fn eliminate_sampled_fill_based(
     // is part of the tie-break stream this sampler has always drawn.
     let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
     let mut pacer = DeadlinePacer::new();
+    let mut tie_scratch = Vec::new();
 
-    while let Some((minimum_priority, tie_set, total_mass)) = buckets.min_bucket() {
+    while let Some((tie_set, total_mass)) = buckets.min_band(band, &mut tie_scratch) {
         if pacer.due() {
             if expired(hard_deadline) {
                 return ElimExit::DeadlineReached(Cutoff::Hard);
@@ -178,15 +195,23 @@ fn eliminate_sampled_fill_based(
         }
 
         let v = sample_tie_set(tie_set, weights, &mut rng, uniform_mass, total_mass);
-        let min_fill = fills
-            .as_ref()
-            .map_or(minimum_priority, |fills| fills[v as usize]);
+        // The drawn vertex's own fill, not the band's smallest: the simplicial
+        // path below is only correct for a vertex that adds no fill edge, and a
+        // band wider than 0 can draw one that does.
+        let sampled_fill = fills.as_ref().map_or_else(
+            || {
+                buckets
+                    .key_of(v)
+                    .expect("a sampled vertex has a fill bucket")
+            },
+            |fills| fills[v as usize],
+        );
 
         buckets.remove_vertex(v);
 
         let bag = take_bag(graph, v, &mut live_nbrs);
 
-        if min_fill == 0 {
+        if sampled_fill == 0 {
             // Bitset mode: exact Δfill update in O(w) before removing v.
             // When v is simplicial, N(v) is a clique so no fill edges are added.
             // Δfill(u) = -|N(u) \ N(v) \ {v}| = -(popcount(bs[u] & ~bs[v]) - 1).
@@ -284,14 +309,16 @@ fn eliminate_sampled_fill_based(
 
 /// htd-style min-degree elimination: priority = degree only, ties broken by
 /// random sampling from the full min-degree tie set. `weights` biases the
-/// sample (see `eliminate_sampled_min_fill`).
+/// sample and `band` widens the tie set by degree, both as in
+/// `eliminate_sampled_min_fill`.
 pub(crate) fn eliminate_sampled_min_degree(
     graph: &mut EliminationGraph,
-    weights: &[u32],
+    draw: SampleDraw<'_>,
     seed: u64,
     mut sink: ElimSink<'_>,
     stop: ElimStop,
 ) -> ElimExit {
+    let SampleDraw { weights, band } = draw;
     // As in `eliminate_sampled_min_fill`: no cheap mode, so no soft deadline.
     let ElimStop {
         hard_deadline,
@@ -317,8 +344,9 @@ pub(crate) fn eliminate_sampled_min_degree(
     let mut clique_residual = false;
     // Lazy degree tracking — defer bucket update to sample time.
     let mut degree_stale: Vec<bool> = vec![false; n];
+    let mut tie_scratch = Vec::new();
 
-    while let Some((min_deg, tie_set, total_mass)) = buckets.min_bucket() {
+    while let Some((tie_set, total_mass)) = buckets.min_band(band, &mut tie_scratch) {
         if pacer.due() && expired(hard_deadline) {
             return ElimExit::DeadlineReached(Cutoff::Hard);
         }
@@ -329,7 +357,10 @@ pub(crate) fn eliminate_sampled_min_degree(
         if degree_stale[vi] {
             let live_degree = graph.degree(v) as u64;
             degree_stale[vi] = false;
-            if live_degree != min_deg {
+            let filed_degree = buckets
+                .key_of(v)
+                .expect("a sampled vertex has a degree bucket");
+            if live_degree != filed_degree {
                 buckets.update(v, live_degree);
                 continue;
             }

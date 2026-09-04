@@ -2,7 +2,7 @@ use crate::elimination::execution::{Cutoff, ElimExit, ElimSink, ElimStop};
 use crate::elimination::graph::EliminationGraph;
 use crate::elimination::greedy::min_fill::*;
 use crate::elimination::greedy::sampling::{
-    eliminate_sampled_fill_degree, eliminate_sampled_min_fill,
+    SampleDraw, eliminate_sampled_fill_degree, eliminate_sampled_min_fill,
 };
 
 #[test]
@@ -78,7 +78,17 @@ fn sampled_min_fill_rechecks_vertices_two_hops_from_an_elimination() {
     let mut rank = Vec::new();
     let sink = ElimSink::new(&mut bags, &mut rank, 0);
 
-    eliminate_sampled_min_fill(&mut graph, &weights, 0, sink, ElimStop::default(), None);
+    eliminate_sampled_min_fill(
+        &mut graph,
+        SampleDraw {
+            weights: &weights,
+            band: 0,
+        },
+        0,
+        sink,
+        ElimStop::default(),
+        None,
+    );
 
     let mut reference = EliminationGraph::from_edges(6, &edges);
     for (step, bag) in bags.iter().enumerate() {
@@ -117,7 +127,10 @@ fn assert_sampled_fill_degree_minimizes_score(degree_coefficient: i8) {
 
     eliminate_sampled_fill_degree(
         &mut graph,
-        &weights,
+        SampleDraw {
+            weights: &weights,
+            band: 0,
+        },
         0,
         sink,
         ElimStop::default(),
@@ -199,5 +212,85 @@ fn the_seeding_scan_stops_within_a_millisecond_of_the_hard_deadline() {
     assert!(
         overrun <= std::time::Duration::from_millis(1),
         "the seeding scan ran {overrun:?} past the hard deadline",
+    );
+}
+
+/// A four-cycle 0-1-2-3-0 with a fifth vertex joined to the adjacent pair
+/// 0-1. The fills are 2, 2, 1, 1, 0, so the minimum bucket holds vertex 4
+/// alone and a band of one adds vertices 2 and 3 to it.
+const BAND_EDGES: [(u32, u32); 6] = [(0, 1), (1, 2), (2, 3), (0, 3), (0, 4), (1, 4)];
+
+/// Run the sampled min-fill core over `BAND_EDGES` at `seed` with `band`,
+/// checking on the way that every bag is the drawn vertex with its live
+/// neighbours and that the draw came from inside the band. Returns the drawn
+/// vertices in elimination order.
+fn band_run(band: u64, seed: u64) -> Vec<u32> {
+    let mut graph = EliminationGraph::from_edges(5, &BAND_EDGES);
+    let weights = vec![1; 5];
+    let mut bags = Vec::new();
+    let mut rank = Vec::new();
+    let sink = ElimSink::new(&mut bags, &mut rank, 0);
+
+    eliminate_sampled_min_fill(
+        &mut graph,
+        SampleDraw {
+            weights: &weights,
+            band,
+        },
+        seed,
+        sink,
+        ElimStop::default(),
+        None,
+    );
+
+    let mut reference = EliminationGraph::from_edges(5, &BAND_EDGES);
+    let mut drawn = Vec::new();
+    for (step, bag) in bags.iter().enumerate() {
+        let selected = bag[0];
+        let mut neighbours = reference.live_neighbours(selected);
+        neighbours.sort_unstable();
+        let mut recorded = bag[1..].to_vec();
+        recorded.sort_unstable();
+        assert_eq!(
+            recorded, neighbours,
+            "step {step} recorded a bag that is not vertex {selected} with its live neighbours",
+        );
+        let selected_fill = reference.fill_count_of_bs(selected);
+        let minimum_fill = (0..5)
+            .filter(|&vertex| reference.active[vertex])
+            .map(|vertex| reference.fill_count_of_bs(vertex as u32))
+            .min()
+            .unwrap();
+        assert!(
+            selected_fill <= minimum_fill + band,
+            "step {step} drew vertex {selected} with fill {selected_fill}, minimum {minimum_fill}, band {band}",
+        );
+        reference.eliminate(selected);
+        drawn.push(selected);
+    }
+    drawn
+}
+
+#[test]
+fn a_band_of_zero_draws_only_the_minimum_fill() {
+    for seed in 0..16 {
+        let drawn = band_run(0, seed);
+        assert_eq!(drawn.len(), 5);
+        assert_eq!(
+            drawn[0], 4,
+            "vertex 4 is the only one at the minimum fill, so it is drawn first at seed {seed}",
+        );
+    }
+}
+
+#[test]
+fn a_band_of_one_draws_outside_the_minimum_fill() {
+    let outside = (0..16)
+        .map(|seed| band_run(1, seed))
+        .filter(|drawn| drawn[0] != 4)
+        .count();
+    assert!(
+        outside > 0,
+        "a band of one puts vertices 2 and 3 in the first draw, so some seed opens on one",
     );
 }

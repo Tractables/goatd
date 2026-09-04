@@ -63,6 +63,14 @@ const DEFAULT_HEDGE: Hedge = Hedge::eccentricity();
 /// series, whatever this says.
 const DEFAULT_HEDGE_RESERVE: f64 = 0.5;
 
+/// How far above the minimum fill the ordinary restarts draw their tie set, in
+/// fill edges. Drawing only from the vertices tied at the minimum leaves a
+/// restart nothing to choose between on a graph where that set holds one
+/// vertex at every step, so every seed replays one order; a band lets the
+/// seeds separate. [`PortfolioConfig::with_sample_band`] with 0 restores the
+/// exact minimum.
+const DEFAULT_SAMPLE_BAND: u64 = 3;
+
 /// Where one weighted stage takes its sampling weights from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -265,6 +273,8 @@ pub struct PortfolioConfig {
     pub(super) hedge: Hedge,
     pub(super) hedge_reserve: f64,
     pub(super) restarts_to_deadline: bool,
+    pub(super) sample_band: u64,
+    pub(super) sample_band_alternate: bool,
 }
 
 /// Two configurations are equal when they ask for the same run, the reserve
@@ -280,6 +290,8 @@ impl PartialEq for PortfolioConfig {
             && self.hedge == other.hedge
             && self.hedge_reserve.to_bits() == other.hedge_reserve.to_bits()
             && self.restarts_to_deadline == other.restarts_to_deadline
+            && self.sample_band == other.sample_band
+            && self.sample_band_alternate == other.sample_band_alternate
     }
 }
 
@@ -300,6 +312,8 @@ impl PortfolioConfig {
             hedge: Hedge::Off,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: false,
+            sample_band: DEFAULT_SAMPLE_BAND,
+            sample_band_alternate: false,
         }
     }
 
@@ -376,6 +390,8 @@ impl PortfolioConfig {
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: false,
+            sample_band: DEFAULT_SAMPLE_BAND,
+            sample_band_alternate: false,
         }
     }
 
@@ -418,6 +434,8 @@ impl PortfolioConfig {
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: true,
+            sample_band: DEFAULT_SAMPLE_BAND,
+            sample_band_alternate: false,
         }
     }
 
@@ -463,6 +481,33 @@ impl PortfolioConfig {
     /// leave it off.
     pub fn with_restarts_to_deadline(mut self, enabled: bool) -> Self {
         self.restarts_to_deadline = enabled;
+        self
+    }
+
+    /// How far above the minimum fill the ordinary restarts draw their tie set,
+    /// in fill edges.
+    ///
+    /// The restarts eliminate a vertex of minimum fill and break the tie at
+    /// random. A band of `k` puts every vertex whose elimination adds at most
+    /// `k` fill edges more than the best into the same draw, so seeds that
+    /// would return the same order can separate. Every configuration starts
+    /// from the same default band; 0 is the exact minimum. Only the restarts
+    /// read it: the other candidates each run their own score's minimum.
+    pub fn with_sample_band(mut self, band: u64) -> Self {
+        self.sample_band = band;
+        self
+    }
+
+    /// Alternate the ordinary restarts between the exact minimum and the band
+    /// set by [`PortfolioConfig::with_sample_band`].
+    ///
+    /// On, an even-numbered restart draws from the vertices tied at the
+    /// minimum and an odd-numbered one from the band. The seeds are the same
+    /// sequence either way, so the even restarts are the candidates a
+    /// portfolio with no band runs, seed for seed, and the odd ones are what
+    /// the band adds. Off, every restart draws from the band.
+    pub fn with_sample_band_alternate(mut self, alternate: bool) -> Self {
+        self.sample_band_alternate = alternate;
         self
     }
 }
