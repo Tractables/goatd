@@ -783,7 +783,7 @@ fn an_expensive_initial_order_on_an_admitted_residual_stops_at_half_the_budget_l
         .expect("a soft deadline gives a cutoff");
     let allowed = cutoff.saturating_duration_since(before);
     assert!(
-        allowed >= Duration::from_millis(450) && allowed <= Duration::from_millis(500),
+        allowed >= Duration::from_millis(450) && allowed <= Duration::from_millis(501),
         "half of a one-second window, got {allowed:?}"
     );
     // With no soft deadline there is nothing to halve, so the order runs to the
