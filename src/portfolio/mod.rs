@@ -427,6 +427,7 @@ fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
             _,
         ) => Stage::Diverse { degree_coefficient },
         (Order::MinimalTriangulation, _) => Stage::MinimalTriangulation,
+        (Order::MaximumCardinality, _) => Stage::MaximumCardinality,
     }
 }
 
@@ -725,29 +726,41 @@ fn run_portfolio(
             break;
         }
     }
-    // One MCS-M candidate, between the fixed orders and the restarts. It
-    // eliminates along a numbering that fills the residual to a minimal
-    // triangulation, which is a different construction from the greedy scores
-    // and wins on graphs where they all agree. It is deterministic, so it runs
-    // once; it costs a traversal of the residual per vertex, so it runs only on
-    // a residual the gate admits; and it runs against the soft deadline, so a
-    // graph where it does not finish loses nothing but the time it spent.
-    // What it cost, which the hedge's model of a stage leaves out: the stages
-    // repeat the plain pass on other weights, and this candidate is not part of
+    // The cardinality-search candidates, between the fixed orders and the
+    // restarts: first the plain maximum cardinality search, then MCS-M, which
+    // is the same search with a longer reach. Both eliminate along a numbering
+    // rather than a greedy score, so they win on graphs where the greedy scores
+    // agree with each other. Both are deterministic, so each runs once; each
+    // runs only on a residual its own gate admits, since the plain search
+    // affords a residual an order of magnitude larger than the path search
+    // does; and both run against the soft deadline, so a graph where one does
+    // not finish loses nothing but the time it spent. The cheaper one goes
+    // first, which also leaves MCS-M a tighter width bound to abort on.
+    //
+    // What they cost, which the hedge's model of a stage leaves out: the stages
+    // repeat the plain pass on other weights, and neither candidate is part of
     // either.
-    let mut minimal_triangulation_cost = Duration::ZERO;
-    if let Some(gate) = config.minimal_triangulation
-        && !hard_deadline_tripped
-        && !large_residual
-        && prebuilt.num_active() <= gate as usize
-        && !expired(soft_deadline)
-        && !expired(hard_deadline)
-    {
+    let mut cardinality_search_cost = Duration::ZERO;
+    for (gate, order) in [
+        (config.maximum_cardinality, Order::MaximumCardinality),
+        (config.minimal_triangulation, Order::MinimalTriangulation),
+    ] {
+        // The gate is the one place that decides how large a residual each
+        // search runs on, so the shared large-residual skip does not apply
+        // here.
+        let Some(gate) = gate else { continue };
+        if hard_deadline_tripped
+            || prebuilt.num_active() > gate as usize
+            || expired(soft_deadline)
+            || expired(hard_deadline)
+        {
+            continue;
+        }
         let before = crate::meter::now();
         let run = engine::run_order_prebuilt(
             &mut prebuilt,
             engine::RunSpec {
-                order: Order::MinimalTriangulation,
+                order,
                 seed,
                 update_order_ties: false,
                 stop: elimination_stop(
@@ -761,9 +774,9 @@ fn run_portfolio(
         );
         let (outcome, _) = candidates.record_elimination(run);
         let now = crate::meter::now();
-        minimal_triangulation_cost = now.saturating_duration_since(before);
+        cardinality_search_cost += now.saturating_duration_since(before);
         trace(CandidateTrace {
-            stage: Stage::MinimalTriangulation,
+            stage: stage_of(order, EliminationPhase::ExtraSampling),
             seed,
             pass: Pass::Only,
             outcome,
@@ -841,7 +854,7 @@ fn run_portfolio(
             let stage_index = (sample_index - stages_start) / stage_length;
             let budget = stage_budget.get_or_insert_with(|| {
                 StageBudget::new(
-                    elapsed.saturating_sub(minimal_triangulation_cost),
+                    elapsed.saturating_sub(cardinality_search_cost),
                     soft_deadline.map(remaining),
                     config.hedge_reserve,
                 )

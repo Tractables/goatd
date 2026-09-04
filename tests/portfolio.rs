@@ -249,3 +249,57 @@ fn dropping_fill_never_widens_the_portfolio_winner() {
     dropped.validate(&graph).unwrap();
     assert!(dropped.treewidth() <= kept.treewidth());
 }
+
+#[test]
+fn the_maximum_cardinality_candidate_can_be_gated_off_and_on() {
+    let graph = grid(5);
+    let weight = vec![1; graph.num_vertices() as usize];
+    let mut stages = Vec::new();
+    decompose_traced(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard(),
+        &mut |candidate| stages.push(candidate.stage),
+    )
+    .unwrap();
+    assert!(
+        stages.contains(&Stage::MaximumCardinality),
+        "the standard portfolio runs the candidate on a graph this size"
+    );
+    let plain = stages
+        .iter()
+        .position(|stage| *stage == Stage::MaximumCardinality);
+    let paths = stages
+        .iter()
+        .position(|stage| *stage == Stage::MinimalTriangulation);
+    assert!(plain < paths, "the cheaper search runs first: {stages:?}");
+
+    stages.clear();
+    decompose_traced(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard().without_maximum_cardinality(),
+        &mut |candidate| stages.push(candidate.stage),
+    )
+    .unwrap();
+    assert!(!stages.contains(&Stage::MaximumCardinality));
+    assert!(stages.contains(&Stage::MinimalTriangulation));
+}
+
+#[test]
+fn a_gate_below_the_residual_leaves_the_maximum_cardinality_candidate_unrun() {
+    let graph = grid(5);
+    let weight = vec![1; graph.num_vertices() as usize];
+    let mut stages = Vec::new();
+    decompose_traced(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard().with_maximum_cardinality(0),
+        &mut |candidate| stages.push(candidate.stage),
+    )
+    .unwrap();
+    assert!(!stages.contains(&Stage::MaximumCardinality));
+}

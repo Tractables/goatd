@@ -37,6 +37,18 @@ pub(super) const MIN_FLOWCUTTER_CANDIDATE_MS: u64 = 50;
 /// greedy orders were narrower anyway.
 const DEFAULT_MINIMAL_TRIANGULATION_VERTICES: u32 = 1_000;
 
+/// Residual size at or below which the standard portfolio runs the maximum
+/// cardinality search candidate. The plain search has no path walk to pay for,
+/// so it costs one scan of the unnumbered vertices per vertex plus one pass
+/// over the edges, and stays affordable on residuals far larger than MCS-M can
+/// be run on: on a corpus of formula graphs it takes a couple of milliseconds
+/// up to ten thousand vertices and about half a second above that, against a
+/// budget of several seconds. Gates of two, ten and forty thousand were
+/// compared on that corpus and the widest was the best on every reading,
+/// because most of what the candidate wins is on residuals too large for the
+/// greedy orders to run on at all.
+const DEFAULT_MAXIMUM_CARDINALITY_VERTICES: u32 = 40_000;
+
 /// Graph size at or below which the standard portfolio minimalizes the
 /// triangulation behind its winner. The pass holds two bitsets over the
 /// vertices, so its memory grows with the square of this, and the time it
@@ -279,6 +291,7 @@ pub struct PortfolioConfig {
     pub(super) hedge: Hedge,
     pub(super) hedge_reserve: f64,
     pub(super) restarts_to_deadline: bool,
+    pub(super) maximum_cardinality: Option<u32>,
     pub(super) minimal_triangulation: Option<u32>,
     pub(super) triangulation_refinement: Option<u32>,
 }
@@ -296,6 +309,7 @@ impl PartialEq for PortfolioConfig {
             && self.hedge == other.hedge
             && self.hedge_reserve.to_bits() == other.hedge_reserve.to_bits()
             && self.restarts_to_deadline == other.restarts_to_deadline
+            && self.maximum_cardinality == other.maximum_cardinality
             && self.minimal_triangulation == other.minimal_triangulation
             && self.triangulation_refinement == other.triangulation_refinement
     }
@@ -318,6 +332,7 @@ impl PortfolioConfig {
             hedge: Hedge::Off,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: false,
+            maximum_cardinality: None,
             minimal_triangulation: None,
             triangulation_refinement: None,
         }
@@ -396,6 +411,7 @@ impl PortfolioConfig {
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: false,
+            maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
         }
@@ -435,6 +451,7 @@ impl PortfolioConfig {
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: true,
+            maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
         }
@@ -478,6 +495,31 @@ impl PortfolioConfig {
     /// leave it off.
     pub fn with_restarts_to_deadline(mut self, enabled: bool) -> Self {
         self.restarts_to_deadline = enabled;
+        self
+    }
+
+    /// Run the maximum cardinality search candidate while the preprocessed
+    /// residual has at most `max_residual_vertices` vertices.
+    ///
+    /// The search numbers the residual from `n` down to 1, always taking a
+    /// vertex with the most numbered neighbours, and the candidate eliminates
+    /// along that numbering reversed. It reads no seed and no weights, so it is
+    /// one candidate; it runs before the MCS-M candidate and before the
+    /// restarts, and it stops at the soft deadline rather than taking their
+    /// time. It adds no fill on a chordal residual and no minimality guarantee
+    /// on any other, so it is a cheap construction to race against the greedy
+    /// orders rather than a better one.
+    ///
+    /// The gate is a vertex count because the search scans the unnumbered
+    /// vertices once per vertex.
+    pub fn with_maximum_cardinality(mut self, max_residual_vertices: u32) -> Self {
+        self.maximum_cardinality = Some(max_residual_vertices);
+        self
+    }
+
+    /// Run no maximum cardinality search candidate.
+    pub fn without_maximum_cardinality(mut self) -> Self {
+        self.maximum_cardinality = None;
         self
     }
 

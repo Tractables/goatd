@@ -19,8 +19,9 @@ elimination runs:
 
 The inexpensive order runs first so a valid candidate exists early. Later
 runs receive the best width already found and stop when a bag is too wide to
-win. One MCS-M candidate follows the fixed orders, on a residual small enough
-for it; see *Minimal triangulations*. With time left, the portfolio tries
+win. Two cardinality-search candidates follow the fixed orders, each on a
+residual small enough for it; see *Cardinality searches*. With time left, the
+portfolio tries
 sampled fill/degree scores followed by further sampled min-fill seeds; on a very large residual it uses sampled
 min-degree and skips the expensive fixed orders instead. Initial fill counts
 are computed only when a fill-based order first runs, then reused across the
@@ -66,7 +67,7 @@ hard budget independently without changing the soft schedule. Both standard
 configurations hedge, which adds the candidates described under *The hedge*.
 Last of all, on a graph small enough for it, the portfolio rebuilds its winner
 on a minimal triangulation of the same graph and keeps whichever decomposition
-is better; that pass is also under *Minimal triangulations*.
+is better; that pass is also under *Cardinality searches*.
 The library remains single-threaded throughout.
 
 ## Preprocessing
@@ -220,7 +221,7 @@ finished. A candidate that produced one also says whether the portfolio would
 return it, so the winner is reported rather than inferred.
 `portfolio::decompose` is the same run with the sink discarded.
 
-## Minimal triangulations
+## Cardinality searches
 
 Completing every bag of a tree decomposition to a clique gives a chordal graph
 containing the input — a triangulation — whose maximal cliques are the bags of
@@ -229,28 +230,39 @@ edges it added can be taken out again without breaking chordality. A minimal
 triangulation is not a narrowest one, but it never has an edge the width is
 paying for and nothing needs.
 
-goatd builds them two ways, and both are optional gated additions to the
+Maximum cardinality search numbers the vertices from `n` down to 1, always
+taking one with the most numbered neighbours; on a chordal graph the numbers
+read backwards are a perfect elimination ordering. MCS-M is the same search
+with a longer reach: a vertex counts the numbered vertices it can reach along a
+path whose interior vertices all count lower than the path's endpoint.
+Eliminating along the numbering MCS-M produces fills the graph to a minimal
+triangulation (Berry, Blair, Heggernes and Peyton, *Maximum cardinality search
+for computing minimal triangulations of graphs*, Algorithmica 39(4), 2004). The
+two searches differ only in how one step collects the vertices whose count goes
+up, so they are one function with a switch.
+
+Three things come out of that, all of them optional gated additions to the
 portfolio rather than replacements for anything.
 
-**MCS-M as a candidate.** Maximum cardinality search numbers the vertices from
-`n` down to 1, always taking one with the most numbered neighbours; on a
-chordal graph the numbers read backwards are a perfect elimination ordering.
-MCS-M is the same search with a longer reach: a vertex counts the numbered
-vertices it can reach along a path whose interior vertices all count lower than
-the path's endpoint. Eliminating along the numbering it produces fills the
-graph to a minimal triangulation (Berry, Blair, Heggernes and Peyton,
-*Maximum cardinality search for computing minimal triangulations of graphs*,
-Algorithmica 39(4), 2004). The two searches differ only in how one step
-collects the vertices whose count goes up, so they are one function with a
-switch.
+**Maximum cardinality search as a candidate.** `Order::MaximumCardinality`
+runs the plain search on the preprocessed residual and eliminates along the
+numbering reversed. On a chordal residual that adds no fill at all; on any
+other it adds whatever the numbering happens to need, with no minimality
+guarantee. It costs one scan of the unnumbered vertices per vertex plus one
+pass over the edges, which is cheap enough to run on residuals far larger than
+MCS-M can be run on, so `PortfolioConfig::with_maximum_cardinality` has a gate
+of its own. The
+candidate runs before the MCS-M one, which leaves MCS-M a tighter width bound
+to abort on.
 
-`Order::MinimalTriangulation` runs MCS-M on the preprocessed residual and
-eliminates along the result. It reads no seed and no weights, so it is one
-candidate rather than a family of them. It costs one traversal of the residual
-per vertex, which is why `PortfolioConfig::with_minimal_triangulation` gates it
-on the residual's vertex count; the candidate also runs against the soft
-deadline and returns nothing rather than taking the restarts' time. On most
-graphs the greedy orders are narrower and the portfolio keeps them.
+**MCS-M as a candidate.** `Order::MinimalTriangulation` runs MCS-M on the
+preprocessed residual and eliminates along the result. It reads no seed and no weights, so it is one
+candidate rather than a family of them, and so is the plain search above it. It
+costs one traversal of the residual per vertex, which is why
+`PortfolioConfig::with_minimal_triangulation` gates it on the residual's vertex
+count. Both candidates run against the soft deadline and return nothing rather
+than taking the restarts' time. On most graphs the greedy orders are narrower
+and the portfolio keeps them.
 
 **Dropping fill the bags do not need.** Removing one edge `uv` from a chordal
 graph leaves it chordal exactly when the common neighbourhood of `u` and `v` is
@@ -328,8 +340,8 @@ The complete list of source changes and licences is in
 ## Decomposition operations
 
 `decomposition` contains the tree-decomposition type, validation, projection,
-FlowCutter-based refinement, and the minimalization pass of *Minimal
-triangulations*. Refinement preserves global vertex ids while
+FlowCutter-based refinement, and the minimalization pass of *Cardinality
+searches*. Refinement preserves global vertex ids while
 it projects each side and glues them at a separator.
 
 Public constructors canonicalize each bag's contents and the undirected bag

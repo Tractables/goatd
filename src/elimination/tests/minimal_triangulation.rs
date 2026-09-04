@@ -1,5 +1,8 @@
-//! MCS-M on graphs whose treewidth is known, and the ordering's determinism.
+//! The two cardinality searches on graphs whose treewidth is known, the
+//! perfect elimination ordering the plain search gives a chordal graph, and
+//! both orderings' determinism.
 
+use crate::elimination::minimal_triangulation::{Reach, cardinality_search};
 use crate::elimination::{Order, decompose};
 use crate::{Graph, TreeDecomposition};
 
@@ -32,12 +35,40 @@ fn complete_bipartite(left: u32, right: u32) -> Graph {
     Graph::new(left + right, edges)
 }
 
-fn minimal_triangulation(graph: &Graph) -> TreeDecomposition {
-    let td = decompose(graph, Order::MinimalTriangulation, 0, None)
-        .expect("a deterministic order takes no weights");
+/// A `k`-tree on `n` vertices: the first `k + 1` form a clique and every later
+/// vertex joins the `k` before it. Chordal, of treewidth `k`.
+fn k_tree(n: u32, k: u32) -> Graph {
+    let mut edges = Vec::new();
+    for vertex in 1..n {
+        for earlier in vertex.saturating_sub(k)..vertex {
+            edges.push((earlier, vertex));
+        }
+    }
+    Graph::new(n, edges)
+}
+
+fn adjacency_of(graph: &Graph) -> Vec<Vec<u32>> {
+    let mut adjacency = vec![Vec::new(); graph.num_vertices as usize];
+    for &(a, b) in &graph.edges {
+        adjacency[a as usize].push(b);
+        adjacency[b as usize].push(a);
+    }
+    adjacency
+}
+
+fn decomposed_by(graph: &Graph, order: Order<'_>) -> TreeDecomposition {
+    let td = decompose(graph, order, 0, None).expect("a deterministic order takes no weights");
     td.validate(graph)
         .expect("the order produces a decomposition of its graph");
     td
+}
+
+fn minimal_triangulation(graph: &Graph) -> TreeDecomposition {
+    decomposed_by(graph, Order::MinimalTriangulation)
+}
+
+fn maximum_cardinality(graph: &Graph) -> TreeDecomposition {
+    decomposed_by(graph, Order::MaximumCardinality)
 }
 
 #[test]
@@ -98,5 +129,82 @@ fn the_order_repeats() {
         let again = decompose(&graph, Order::MinimalTriangulation, seed, None)
             .expect("a deterministic order takes no weights");
         assert_eq!(again, first, "MCS-M reads no seed, so every run agrees");
+    }
+}
+
+#[test]
+fn maximum_cardinality_search_orders_a_chordal_graph_perfectly() {
+    // On a chordal graph the numbering read backwards is a perfect elimination
+    // ordering: when a vertex leaves, the neighbours still present are already
+    // a clique, so eliminating it adds no edge.
+    for (n, k) in [(12, 3), (20, 4), (9, 1)] {
+        let graph = k_tree(n, k);
+        let adjacency = adjacency_of(&graph);
+        let selected = cardinality_search(&adjacency, Reach::Neighbours, None)
+            .expect("no deadline stops the search");
+        assert_eq!(selected.len(), n as usize);
+        let mut position = vec![0usize; n as usize];
+        for (index, &vertex) in selected.iter().enumerate() {
+            // The elimination order is the numbering reversed, so a higher
+            // number leaves earlier.
+            position[vertex as usize] = n as usize - index;
+        }
+        for (vertex, neighbours) in adjacency.iter().enumerate() {
+            let later: Vec<u32> = neighbours
+                .iter()
+                .copied()
+                .filter(|&other| position[other as usize] > position[vertex])
+                .collect();
+            for (index, &a) in later.iter().enumerate() {
+                for &b in &later[index + 1..] {
+                    assert!(
+                        adjacency[a as usize].contains(&b),
+                        "the {k}-tree on {n} vertices needs fill at {vertex}: {a} and {b}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn maximum_cardinality_search_decomposes_a_chordal_graph_at_its_treewidth() {
+    for (n, k) in [(12, 3), (20, 4), (9, 1)] {
+        assert_eq!(maximum_cardinality(&k_tree(n, k)).treewidth(), k);
+    }
+}
+
+#[test]
+fn maximum_cardinality_search_decomposes_graphs_at_or_above_their_treewidth() {
+    // The plain search adds whatever fill its numbering needs and promises no
+    // minimality, so all that holds on a graph that is not chordal is that the
+    // result is a decomposition and no narrower than the treewidth.
+    for n in [4, 7, 25] {
+        assert!(
+            maximum_cardinality(&cycle(n)).treewidth() >= 2,
+            "cycle of {n}"
+        );
+    }
+    for (rows, columns) in [(3, 3), (4, 4), (3, 6)] {
+        let width = maximum_cardinality(&grid(rows, columns)).treewidth();
+        assert!(width >= rows.min(columns), "the {rows}x{columns} grid");
+    }
+    for (left, right) in [(2, 5), (3, 3), (3, 4)] {
+        let width = maximum_cardinality(&complete_bipartite(left, right)).treewidth();
+        assert!(width >= left.min(right), "K_{left},{right}");
+    }
+}
+
+#[test]
+fn the_maximum_cardinality_order_repeats() {
+    let graph = grid(5, 6);
+    let first = maximum_cardinality(&graph);
+    for seed in [0, 1, 12_345] {
+        let again = decompose(&graph, Order::MaximumCardinality, seed, None)
+            .expect("a deterministic order takes no weights");
+        assert_eq!(
+            again, first,
+            "maximum cardinality search reads no seed, so every run agrees"
+        );
     }
 }

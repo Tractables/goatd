@@ -234,6 +234,12 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--hard-budget", "--budget", "at least"],
         ),
         (&["--no-hedge"], &["--no-hedge", "minfill", "portfolio"]),
+        (&["--mcs-up-to", "500"], &["--mcs-up-to", "portfolio"]),
+        (&["--no-mcs"], &["--no-mcs", "minfill", "portfolio"]),
+        (
+            &["--order", "portfolio", "--mcs-up-to", "500", "--no-mcs"],
+            &["--mcs-up-to", "--no-mcs", "give one"],
+        ),
         (&["--mcsm-up-to", "500"], &["--mcsm-up-to", "portfolio"]),
         (&["--no-mcsm"], &["--no-mcsm", "minfill", "portfolio"]),
         (
@@ -968,4 +974,65 @@ fn the_fill_dropping_pass_leaves_a_valid_decomposition() {
         td.validate(&Graph::from_gr(&grid_gr()).expect("the fixture parses"))
             .expect("the CLI writes a decomposition of its input");
     }
+}
+
+#[test]
+fn the_portfolio_runs_a_maximum_cardinality_candidate_and_no_mcs_turns_it_off() {
+    let with = goatd(
+        &["-", "--order", "portfolio", "--budget", "500", "--trace"],
+        Some(&grid_gr()),
+    );
+    assert!(with.status.success(), "{}", stderr_of(&with));
+    assert!(
+        stderr_of(&with).contains("candidate=maximum-cardinality"),
+        "{}",
+        stderr_of(&with)
+    );
+
+    let without = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            "500",
+            "--trace",
+            "--no-mcs",
+        ],
+        Some(&grid_gr()),
+    );
+    assert!(without.status.success(), "{}", stderr_of(&without));
+    assert!(
+        !stderr_of(&without).contains("candidate=maximum-cardinality"),
+        "{}",
+        stderr_of(&without)
+    );
+    assert!(
+        stderr_of(&without).contains("candidate=minimal-triangulation"),
+        "--no-mcs leaves the MCS-M candidate alone: {}",
+        stderr_of(&without)
+    );
+}
+
+#[test]
+fn a_zero_gate_leaves_the_maximum_cardinality_candidate_unrun() {
+    let out = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            "500",
+            "--trace",
+            "--mcs-up-to",
+            "0",
+        ],
+        Some(&grid_gr()),
+    );
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    assert!(
+        !stderr_of(&out).contains("candidate=maximum-cardinality"),
+        "{}",
+        stderr_of(&out)
+    );
 }

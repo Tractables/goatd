@@ -67,6 +67,16 @@ options:
                         budget, so this needs a series of two or more stages —
                         the default one, or --hedge-dims or --hedge-random
                         asking for that many
+  --mcs-up-to <n>       portfolio only: run the maximum cardinality search
+                        candidate while the preprocessed residual has at most n
+                        vertices, in place of the built-in gate. The search
+                        numbers the residual by numbered-neighbour count and the
+                        candidate eliminates along that numbering reversed; it
+                        is one deterministic candidate, and it costs a scan of
+                        the unnumbered vertices per vertex, which is what the
+                        gate bounds
+  --no-mcs              portfolio only: run no maximum cardinality search
+                        candidate
   --mcsm-up-to <n>      portfolio only: run the MCS-M candidate while the
                         preprocessed residual has at most n vertices, in place
                         of the built-in gate. MCS-M eliminates along a minimal
@@ -142,6 +152,8 @@ struct Args {
     hedge_dims: Option<Vec<usize>>,
     hedge_random: Option<usize>,
     hedge_reserve: Option<f64>,
+    mcs_up_to: Option<u32>,
+    no_mcs: bool,
     mcsm_up_to: Option<u32>,
     no_mcsm: bool,
     drop_fill_up_to: Option<u32>,
@@ -203,6 +215,8 @@ fn parse_args(argv: &[String]) -> Args {
     let mut hedge_dims: Option<Vec<usize>> = None;
     let mut hedge_random = None;
     let mut hedge_reserve = None;
+    let mut mcs_up_to = None;
+    let mut no_mcs = false;
     let mut mcsm_up_to = None;
     let mut no_mcsm = false;
     let mut drop_fill_up_to = None;
@@ -289,6 +303,17 @@ fn parse_args(argv: &[String]) -> Args {
                 }
                 hedge_reserve = Some(fraction);
             }
+            "--mcs-up-to" => {
+                let vertices = number(&mut i, arg);
+                if vertices > u64::from(u32::MAX) {
+                    usage_error(&format!(
+                        "--mcs-up-to wants a vertex count in 0..={}",
+                        u32::MAX
+                    ));
+                }
+                mcs_up_to = Some(vertices as u32);
+            }
+            "--no-mcs" => no_mcs = true,
             "--mcsm-up-to" => {
                 let vertices = number(&mut i, arg);
                 if vertices > u64::from(u32::MAX) {
@@ -423,6 +448,18 @@ fn parse_args(argv: &[String]) -> Args {
     }
     // Each pair says whether one construction runs and how large a graph it
     // runs on, so giving both leaves one of them with nothing to decide.
+    if mcs_up_to.is_some() {
+        needs("--mcs-up-to", order == Method::Portfolio, "portfolio");
+        if no_mcs {
+            usage_error(
+                "--mcs-up-to gates the maximum cardinality search candidate and --no-mcs runs \
+                 none; give one",
+            );
+        }
+    }
+    if no_mcs {
+        needs("--no-mcs", order == Method::Portfolio, "portfolio");
+    }
     if mcsm_up_to.is_some() {
         needs("--mcsm-up-to", order == Method::Portfolio, "portfolio");
         if no_mcsm {
@@ -471,6 +508,8 @@ fn parse_args(argv: &[String]) -> Args {
         hedge_dims,
         hedge_random,
         hedge_reserve,
+        mcs_up_to,
+        no_mcs,
         mcsm_up_to,
         no_mcsm,
         drop_fill_up_to,
@@ -562,6 +601,12 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             }
             if let Some(fraction) = args.hedge_reserve {
                 config = config.with_hedge_reserve(fraction);
+            }
+            if let Some(vertices) = args.mcs_up_to {
+                config = config.with_maximum_cardinality(vertices);
+            }
+            if args.no_mcs {
+                config = config.without_maximum_cardinality();
             }
             if let Some(vertices) = args.mcsm_up_to {
                 config = config.with_minimal_triangulation(vertices);
