@@ -44,13 +44,18 @@ elimination bags to it, as long as it is the first candidate. This completion
 is linear in the residual size. At the soft budget it applies only to the
 component the candidate was working on: the components after it have the rest
 of the hard budget and get their own orders, against the hard deadline alone,
-and fall back to one bag each when it passes. Later candidates can stop without completion
-because a valid candidate already exists. Only the hard budget ends the
-portfolio: the deterministic min-degree and min-fill orders return at the soft
-budget when the residual is still large, because cheap-mode elimination at
-that scale can overshoot the hard budget by seconds, and what they return is a
-complete decomposition that the trailing FlowCutter candidate still runs
-after. `PortfolioConfig::standard_with_budget`, which the CLI uses for
+and fall back to one bag each when it passes. Below 10,000 vertices later
+candidates can stop without completion, because a valid candidate already
+exists and a candidate stopped late in the run has bagged too little to beat
+it. Above 10,000 vertices every candidate completes: each is stopped by a
+deadline rather than by running out of vertices, so what separates them is how
+much of the graph each one got through, and the one with the smallest residual
+left to bag is the one that wins. Only the hard budget ends the
+portfolio: the deterministic min-degree and min-fill orders return when the
+elimination's own deadline passes and the residual is still large, because
+cheap-mode elimination at that scale can overshoot the hard budget by seconds,
+and what they return is a complete decomposition that the trailing FlowCutter
+candidate still runs after. `PortfolioConfig::standard_with_budget`, which the CLI uses for
 a budgeted standard portfolio, offers 100 extra samples below a 4.75-second
 soft budget and 1,000 at or above it, and in either case draws seeds on past
 that count until the restart deadline: the count caps how many seeds are drawn,
@@ -65,7 +70,21 @@ time lowers width on many more graphs than a longer FlowCutter tail does. Above
 the 10,000-vertex boundary, and on a run with no hard deadline, the restarts
 stop at the soft deadline as the initial candidates do; a restart at that size
 costs a large share of the window, and the second stage is better left to
-FlowCutter. An extra sample that reaches the restart deadline stops there,
+FlowCutter.
+
+There is one exception, and it covers most large graphs. The portfolio asks
+before it fixes the schedule whether the trailing FlowCutter candidate can
+start and stop inside the second stage on a graph this size, using the same
+work-unit test the candidate itself applies. Where the answer is no, nothing
+would run in the second stage at all, so above the 10,000-vertex boundary the
+elimination takes it: the initial candidates and the restarts run to the hard
+deadline less what the run needs to write its answer out. That reserve is sized
+from the graph rather than fixed, since bagging the residual, building the
+decomposition and writing it all grow with the vertex and edge counts. The
+question is asked with the widest window the schedule could offer and the
+smallest reserve, so a graph refused on those terms is refused on any.
+
+An extra sample that reaches the restart deadline stops there,
 and one more restart starts only while what the previous restart cost still
 fits before that deadline: a restart stopped part-way leaves nothing behind,
 so the time is better left to the FlowCutter candidate.
