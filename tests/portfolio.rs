@@ -180,6 +180,51 @@ fn a_soft_budget_on_the_standard_portfolio_keeps_the_restart_count() {
     );
 }
 
+/// Every candidate a run traced, in order.
+fn traced_stages(graph: &Graph, config: PortfolioConfig) -> Vec<(Stage, Pass)> {
+    let weight = vec![1; graph.num_vertices() as usize];
+    let mut seen = Vec::new();
+    decompose_traced(graph, &weight, 0, config, &mut |candidate| {
+        seen.push((candidate.stage, candidate.pass));
+    })
+    .expect("a decomposition");
+    seen
+}
+
+#[test]
+fn the_expensive_orders_stop_at_the_configured_residual() {
+    let graph = grid(6);
+    let config = PortfolioConfig::standard();
+
+    let ordinary = traced_stages(&graph, config);
+    // A limit of zero puts every graph above the line, whatever its size.
+    let min_degree_only = traced_stages(&graph, config.with_expensive_orders_up_to(0));
+    // The grid is far below the default limit, so naming it changes nothing.
+    let at_the_default = traced_stages(&graph, config.with_expensive_orders_up_to(300_000));
+
+    assert!(
+        ordinary.iter().any(|&(stage, _)| stage == Stage::MinFill),
+        "a small graph runs the expensive orders: {ordinary:?}"
+    );
+    assert!(
+        ordinary.iter().any(|&(stage, _)| stage == Stage::Sample),
+        "its restarts are sampled min-fill: {ordinary:?}"
+    );
+    assert!(
+        ordinary
+            .iter()
+            .any(|&(_, pass)| matches!(pass, Pass::Modified { .. })),
+        "and the hedge runs: {ordinary:?}"
+    );
+    assert!(
+        min_degree_only
+            .iter()
+            .all(|&(stage, pass)| stage == Stage::MinDegree && pass == Pass::Only),
+        "above the limit only min-degree runs: {min_degree_only:?}"
+    );
+    assert_eq!(at_the_default, ordinary, "300,000 is the default limit");
+}
+
 #[test]
 fn the_portfolio_winner_has_no_bag_subsumed_by_a_neighbour() {
     let graph = Graph::new(4, [(0, 1), (1, 2), (2, 3)]);

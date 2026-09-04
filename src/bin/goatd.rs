@@ -85,6 +85,18 @@ options:
                         between the exact minimum and --sample-band, an even
                         restart drawing from the minimum and an odd one from
                         the band. Needs --sample-band above 0
+  --expensive-orders-up-to <n>
+                        portfolio only: the largest residual, in vertices left
+                        after preprocessing, that still runs min-fill (default
+                        300000). At or below 10000 vertices the whole schedule
+                        runs. Above 10000 and at or below this, min-fill runs
+                        but stops at half the time --budget has left when it
+                        starts, so the restarts keep a share of it; nested
+                        dissection, the diverse pass and the hedge stay off;
+                        and the restarts follow min-fill if the initial
+                        min-fill finished and min-degree if it did not. Above
+                        this the portfolio keeps only its min-degree
+                        candidates
   --trace               portfolio only: write one line per candidate and one
                         for the winner to stderr as they complete
   --steps <n>           flowcutter only: a step budget in place of a clock,
@@ -145,6 +157,7 @@ struct Args {
     capped_restarts: bool,
     sample_band: Option<u64>,
     sample_band_alternate: bool,
+    expensive_orders_up_to: Option<usize>,
     trace: bool,
     steps: Option<u64>,
     refine: bool,
@@ -204,6 +217,7 @@ fn parse_args(argv: &[String]) -> Args {
     let mut capped_restarts = false;
     let mut sample_band = None;
     let mut sample_band_alternate = false;
+    let mut expensive_orders_up_to = None;
     let mut trace = false;
     let mut steps = None;
     let mut refine = false;
@@ -288,6 +302,10 @@ fn parse_args(argv: &[String]) -> Args {
             "--capped-restarts" => capped_restarts = true,
             "--sample-band" => sample_band = Some(number(&mut i, arg)),
             "--sample-band-alternate" => sample_band_alternate = true,
+            "--expensive-orders-up-to" => {
+                let vertices = number(&mut i, arg);
+                expensive_orders_up_to = Some(usize::try_from(vertices).unwrap_or(usize::MAX));
+            }
             "--trace" => trace = true,
             "--steps" => {
                 let n = number(&mut i, arg);
@@ -425,6 +443,13 @@ fn parse_args(argv: &[String]) -> Args {
             );
         }
     }
+    if expensive_orders_up_to.is_some() {
+        needs(
+            "--expensive-orders-up-to",
+            order == Method::Portfolio,
+            "portfolio",
+        );
+    }
     if trace {
         needs("--trace", order == Method::Portfolio, "portfolio");
     }
@@ -445,6 +470,7 @@ fn parse_args(argv: &[String]) -> Args {
         capped_restarts,
         sample_band,
         sample_band_alternate,
+        expensive_orders_up_to,
         trace,
         steps,
         refine,
@@ -540,6 +566,9 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             if args.sample_band_alternate {
                 config = config.with_sample_band_alternate(true);
             }
+            if let Some(vertices) = args.expensive_orders_up_to {
+                config = config.with_expensive_orders_up_to(vertices);
+            }
             let mut winner = None;
             let mut report = |candidate: CandidateTrace| {
                 if args.trace {
@@ -583,6 +612,7 @@ fn print_candidate(candidate: &CandidateTrace) {
         } => line.push_str(&format!(" width={width} bags={total_bag_size}")),
         CandidateOutcome::WidthAborted => line.push_str(" outcome=aborted"),
         CandidateOutcome::DeadlineReached => line.push_str(" outcome=deadline"),
+        CandidateOutcome::NotStarted => line.push_str(" outcome=not-started"),
         CandidateOutcome::StageSkipped {
             projected,
             spent,

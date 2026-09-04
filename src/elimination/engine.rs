@@ -100,6 +100,12 @@ pub(crate) struct RunSpec<'a> {
     pub(crate) stop: ElimStop,
     /// Whether a deadline stop must still leave a complete TD behind.
     pub(crate) complete_on_deadline: bool,
+    /// An instant the run's setup honours: with one set, the fill counts a
+    /// fill-based order seeds its buckets from are computed with the clock
+    /// read between vertices, and a run whose setup reaches the instant
+    /// reports the hard cutoff without eliminating. Without one the setup
+    /// runs to completion, which is what every run did before the field.
+    pub(crate) setup_deadline: Option<Instant>,
 }
 
 /// Run a single spec using a preprocessed graph. The first sampled min-fill
@@ -107,19 +113,40 @@ pub(crate) struct RunSpec<'a> {
 /// graph before mutating it.
 pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> OrderRun {
     if spec.order.uses_initial_fill_cache() && prebuilt.initial_fill.is_none() {
-        prebuilt.initial_fill = Some(if prebuilt.reduced.graph.bitset_words > 0 {
-            (0..prebuilt.reduced.graph.len())
+        let graph = &prebuilt.reduced.graph;
+        let fill = if let Some(deadline) = spec.setup_deadline {
+            // The count is quadratic in a vertex's degree, and on a graph of a
+            // million edges the whole pass outlasts a short cutoff, so it is
+            // paced like an elimination: the clock is read between vertices
+            // and a pass that reaches the cutoff leaves no cache behind.
+            let mut scratch = greedy::FillScratch::new(graph.len());
+            let mut pacer = execution::DeadlinePacer::new();
+            let mut counts = Vec::with_capacity(graph.len());
+            for vertex in 0..graph.len() {
+                if graph.active[vertex] {
+                    if pacer.due() && crate::deadline::expired(Some(deadline)) {
+                        return OrderRun::DeadlineAborted(Cutoff::Hard);
+                    }
+                    counts.push(scratch.fill_count_of(graph, vertex as u32));
+                } else {
+                    counts.push(0);
+                }
+            }
+            counts
+        } else if graph.bitset_words > 0 {
+            (0..graph.len())
                 .map(|vertex| {
-                    if prebuilt.reduced.graph.active[vertex] {
-                        prebuilt.reduced.graph.fill_count_of_bs(vertex as u32)
+                    if graph.active[vertex] {
+                        graph.fill_count_of_bs(vertex as u32)
                     } else {
                         0
                     }
                 })
                 .collect()
         } else {
-            greedy::compute_initial_fill(&prebuilt.reduced.graph)
-        });
+            greedy::compute_initial_fill(graph)
+        };
+        prebuilt.initial_fill = Some(fill);
     }
     let clone_bitset_only =
         prebuilt.components.len() == 1 && prebuilt.reduced.graph.bitset_words > 0;

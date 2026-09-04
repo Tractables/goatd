@@ -5,17 +5,18 @@ use super::Schedule;
 use super::candidates::CandidateSet;
 use super::config::{MAX_DIVERSE_SAMPLING_RUNS, validate};
 use super::{CandidateOutcome, DEFAULT_HEDGE_DIMS, HedgeSeries, HedgeWeights, StageBudget};
-use super::{EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig, Sample, SampleBand};
+use super::{EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig, Residual};
+use super::{Sample, SampleBand};
 use super::{Stage, elimination_stop, extra_sample, hedge_random_seed, sample_seed};
 use crate::elimination::Order;
 use crate::{Graph, TreeDecomposition};
 
 /// An unhedged schedule: the caller's weights on every candidate, one diverse
 /// pass, no weighted stage to run against it.
-fn schedule(base_seed: u64, large_residual: bool, weights: &[u32]) -> Schedule<'_> {
+fn schedule(base_seed: u64, min_degree_restarts: bool, weights: &[u32]) -> Schedule<'_> {
     Schedule {
         base_seed,
-        large_residual,
+        min_degree_restarts,
         ordinary_runs: 1_000,
         diverse_runs: 46,
         modified: &[],
@@ -53,7 +54,7 @@ fn hedged<'a>(
 ) -> Schedule<'a> {
     Schedule {
         base_seed,
-        large_residual: false,
+        min_degree_restarts: false,
         ordinary_runs: 1_000,
         diverse_runs: 46,
         modified,
@@ -785,6 +786,80 @@ fn a_reserve_outside_the_unit_interval_is_refused() {
     assert!(
         validate(PortfolioConfig::standard().with_hedge_reserve(1.0)).is_ok(),
         "the whole of what is left is a usable reserve",
+    );
+}
+
+#[test]
+fn the_size_rule_admits_a_residual_only_between_the_two_boundaries() {
+    let full = super::config::MAX_RESIDUAL_FOR_FULL_SCHEDULE;
+    let limit = super::config::DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS;
+    assert!(limit > full, "the default limit opens a band");
+
+    // The vertices between the two boundaries are admitted.
+    assert_eq!(Residual::classify(full, limit), Residual::Ordinary);
+    assert_eq!(Residual::classify(full + 1, limit), Residual::Admitted);
+    assert_eq!(Residual::classify(limit, limit), Residual::Admitted);
+    assert_eq!(Residual::classify(limit + 1, limit), Residual::Large);
+    // A limit at the lower boundary leaves no band: ordinary or large.
+    assert_eq!(Residual::classify(full, full), Residual::Ordinary);
+    assert_eq!(Residual::classify(full + 1, full), Residual::Large);
+    // Lowered further, everything over the limit is large and nothing is
+    // admitted.
+    assert_eq!(Residual::classify(100, 99), Residual::Large);
+    assert_eq!(Residual::classify(99, 99), Residual::Ordinary);
+}
+
+#[test]
+fn an_expensive_initial_order_on_an_admitted_residual_stops_at_half_the_budget_left() {
+    let before = crate::meter::now();
+    let soft_deadline = before + Duration::from_secs(1);
+    let hard_deadline = soft_deadline + Duration::from_secs(1);
+
+    // Half of what the soft deadline has left, so the restarts keep the rest.
+    let cutoff = super::admitted_cutoff(Some(soft_deadline), Some(hard_deadline))
+        .expect("a soft deadline gives a cutoff");
+    let allowed = cutoff.saturating_duration_since(before);
+    assert!(
+        allowed >= Duration::from_millis(450) && allowed <= Duration::from_millis(501),
+        "half of a one-second window, got {allowed:?}"
+    );
+    // With no soft deadline there is nothing to halve, so the order runs to the
+    // portfolio's hard deadline as it would below the band.
+    assert_eq!(
+        super::admitted_cutoff(None, Some(hard_deadline)),
+        Some(hard_deadline)
+    );
+
+    let admitted = elimination_stop(
+        EliminationPhase::AdmittedInitial(Some(cutoff)),
+        Some(soft_deadline),
+        Some(hard_deadline),
+        Some(17),
+    );
+    let ordinary = elimination_stop(
+        EliminationPhase::Initial,
+        Some(soft_deadline),
+        Some(hard_deadline),
+        Some(17),
+    );
+
+    // The order runs to its own cutoff, under the incumbent width bound.
+    assert_eq!(admitted.hard_deadline, Some(cutoff));
+    assert_eq!(admitted.soft_deadline, Some(soft_deadline));
+    assert_eq!(admitted.width_bound, Some(17));
+    // A residual inside the default limit keeps the whole window.
+    assert_eq!(ordinary.hard_deadline, Some(hard_deadline));
+    // A sampled min-fill order is labelled the portfolio's own candidate in
+    // either initial phase, and a restart only in the sampling phase.
+    let weights = [1; 4];
+    let order = Order::MinFillSampled { weights: &weights };
+    assert_eq!(
+        super::stage_of(order, EliminationPhase::AdmittedInitial(Some(cutoff))),
+        Stage::MinFill
+    );
+    assert_eq!(
+        super::stage_of(order, EliminationPhase::ExtraSampling),
+        Stage::Sample
     );
 }
 

@@ -52,7 +52,7 @@ pub(super) const CHEAP_MODE_MAX_ACTIVE: usize = 512;
 
 /// Scratch state for min-fill's fill-count computation, reused across calls
 /// to avoid reallocating per vertex.
-struct FillScratch {
+pub(super) struct FillScratch {
     /// Stamp-based marker: `marker[v] == stamp` iff v ∈ current N(v) being
     /// checked. u16 (2 bytes/entry) instead of u32 (4 bytes/entry) halves the
     /// marker footprint — at N=16K the marker goes from 64KB (2×L1) to 32KB
@@ -64,7 +64,7 @@ struct FillScratch {
 }
 
 impl FillScratch {
-    fn new(n: usize) -> Self {
+    pub(super) fn new(n: usize) -> Self {
         FillScratch {
             marker: vec![0; n],
             stamp: 0,
@@ -86,7 +86,7 @@ impl FillScratch {
     ///
     /// Relies on `graph.adj` holding only active vertices — a graph invariant,
     /// not enforced here.
-    fn fill_count_of(&mut self, graph: &EliminationGraph, v: u32) -> u64 {
+    pub(super) fn fill_count_of(&mut self, graph: &EliminationGraph, v: u32) -> u64 {
         // Bitset path is O(k · words) vs O(Σdeg) for the marker path below;
         // wins when avg_deg >> words ≈ n/64.
         if graph.bitset_words > 0 {
