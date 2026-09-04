@@ -84,20 +84,25 @@ seconds on one CPU.
 
 | Solver | Nontrivial | Exact best | Within +1 | Within +4 |
 | --- | ---: | ---: | ---: | ---: |
-| goatd portfolio | **9,344 (99.3%)** | **8,745 (92.9%)** | **9,100 (96.7%)** | **9,199 (97.7%)** |
-| Jdrasil heuristic | 9,095 (96.6%) | 1,273 (13.5%) | 2,676 (28.4%) | 5,598 (59.5%) |
-| Tamaki PACE 2017 | 8,240 (87.5%) | 818 (8.7%) | 1,457 (15.5%) | 3,431 (36.4%) |
-| HTD | 9,139 (97.1%) | 328 (3.5%) | 473 (5.0%) | 1,996 (21.2%) |
-| FlowCutter PACE 2017 | 9,115 (96.8%) | 320 (3.4%) | 495 (5.3%) | 2,215 (23.5%) |
-| NetworkX min-degree | 8,999 (95.6%) | 138 (1.5%) | 153 (1.6%) | 241 (2.6%) |
-| NetworkX min-fill | 8,279 (88.0%) | 65 (0.7%) | 196 (2.1%) | 1,595 (16.9%) |
-| Arboretum heuristic | 5,549 (59.0%) | 35 (0.4%) | 125 (1.3%) | 1,032 (11.0%) |
+| goatd portfolio | **9,344 (99.3%)** | **8,205 (87.2%)** | **8,915 (94.7%)** | **9,138 (97.1%)** |
+| HTD | 9,203 (97.8%) | 2,460 (26.1%) | 3,893 (41.4%) | 6,783 (72.1%) |
+| Jdrasil heuristic | 9,095 (96.6%) | 1,071 (11.4%) | 2,466 (26.2%) | 5,520 (58.6%) |
+| Tamaki PACE 2017 | 8,240 (87.5%) | 783 (8.3%) | 1,416 (15.0%) | 3,387 (36.0%) |
+| FlowCutter PACE 2017 | 9,115 (96.8%) | 284 (3.0%) | 443 (4.7%) | 2,084 (22.1%) |
+| NetworkX min-degree | 8,999 (95.6%) | 135 (1.4%) | 150 (1.6%) | 233 (2.5%) |
+| NetworkX min-fill | 8,279 (88.0%) | 64 (0.7%) | 184 (2.0%) | 1,539 (16.3%) |
+| Arboretum heuristic | 5,549 (59.0%) | 32 (0.3%) | 112 (1.2%) | 999 (10.6%) |
 
-Every decomposition is checked by the same validator. The default selection
-omits graphs where pinned NetworkX min-degree returns a validated width below
-30. “Nontrivial” means a validated decomposition narrower than `|V| - 1`.
-“Exact best” is the smallest width observed among the displayed solvers, not a
-proven optimum.
+Each solver runs at the setting its own documentation recommends for the
+smallest width inside a fixed time limit, which for HTD is
+`--opt width --iterations 0 --strategy challenge`. The anytime solvers keep
+searching until the ten seconds are up and report whatever decomposition they
+hold when the harness stops them. goatd stops itself at its own hard cutoff
+just under ten seconds and writes what it has. Every decomposition is checked
+by the same validator. The default selection omits graphs where pinned
+NetworkX min-degree returns a validated width below 30. “Nontrivial” means a
+validated decomposition narrower than `|V| - 1`. “Exact best” is the smallest
+width observed among the displayed solvers, not a proven optimum.
 
 ## Building and contributing
 
