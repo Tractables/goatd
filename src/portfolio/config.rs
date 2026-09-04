@@ -28,9 +28,12 @@ const SAMPLED_MIN_FILL_TIMEOUT_MS: u64 = 1000;
 
 pub(super) const MIN_FLOWCUTTER_CANDIDATE_MS: u64 = 50;
 
-/// What the sampled restarts leave of the hard window for the trailing
+/// The most of the hard window the sampled restarts leave for the trailing
 /// FlowCutter candidate when they run past the soft deadline.
-pub(super) const FLOWCUTTER_RESERVE: Duration = Duration::from_millis(1_500);
+///
+/// What they actually leave is what the candidate projects to need on the graph
+/// in hand, which is never more than this; see `trailing_reserve`.
+pub(super) const MAX_FLOWCUTTER_RESERVE: Duration = Duration::from_millis(1_500);
 
 /// Residual size at or below which the standard portfolio runs the MCS-M
 /// candidate. MCS-M costs one search per vertex over the whole residual, so its
@@ -464,9 +467,12 @@ impl PortfolioConfig {
     /// changes that fraction.
     ///
     /// The ordinary restarts run past the soft deadline into the hard window,
-    /// stopping 1.5 s before the hard deadline so the trailing FlowCutter
-    /// candidate still has that much to run in. Only a residual that runs the
-    /// whole schedule does that; above 10,000 vertices the second stage stays
+    /// stopping short of the hard deadline by what the trailing FlowCutter
+    /// candidate projects to need on this graph — its setup pass and a couple
+    /// of restarts, at the rate the run has been going, and at most 1.5 s. On a
+    /// graph it will decline they stop only short enough to hand the answer
+    /// over. Only a residual that runs the whole schedule does that; above
+    /// 10,000 vertices the second stage stays
     /// with FlowCutter, and the restarts stop at the soft deadline — unless
     /// FlowCutter's own work model says it cannot start and stop inside the
     /// second stage on a graph this size, in which case the elimination keeps

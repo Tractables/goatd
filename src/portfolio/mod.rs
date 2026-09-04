@@ -24,7 +24,7 @@ use crate::embedding::{self, Embedding};
 use crate::flowcutter::{Budget, decompose as flowcutter_decompose};
 use crate::{Error, Graph, TreeDecomposition};
 use candidates::{CandidateSet, ScheduleStop};
-use config::{FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS};
+use config::{MAX_FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS};
 
 pub use config::{
     DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, HedgeWeights, MAX_DIVERSE_SAMPLING_RUNS,
@@ -47,6 +47,16 @@ pub(crate) const SECOND_CANDIDATE_SEED_OFFSET: u64 = 42;
 /// Restarts kept back at the end of the hard window for the trailing FlowCutter
 /// candidate to stop in and hand its result back. See `flowcutter_candidate`.
 const RESERVE_RESTARTS: u32 = 2;
+
+/// FlowCutter restarts the trailing reserve leaves room for, on top of the
+/// setup pass the backend has to run before its first one.
+///
+/// One restart is what it takes to have a decomposition at all. The second is
+/// what the candidate needs to improve on it, and the returns after that are
+/// what the reserve is being taken from the sampled restarts to pay for: on
+/// residuals that run the whole schedule the restarts win the portfolio an
+/// order of magnitude more often than this candidate does.
+const FLOWCUTTER_TAIL_RESTARTS: u64 = 2;
 
 /// Nanoseconds [`writeout_reserve`] keeps per residual vertex for each thousand
 /// vertices the residual holds.
@@ -706,9 +716,11 @@ enum EliminationPhase {
 /// Where the elimination phases stop.
 ///
 /// On a residual that runs the whole schedule the restarts run past the soft
-/// deadline into the hard window, keeping [`FLOWCUTTER_RESERVE`] at the end of
-/// it for the trailing FlowCutter candidate. More restart time is worth more
-/// than a longer FlowCutter tail on these graphs.
+/// deadline into the hard window, keeping `trailing` at the end of it for the
+/// trailing FlowCutter candidate. More restart time is worth more than a longer
+/// FlowCutter tail on these graphs, so `trailing` is what that candidate
+/// projects to need rather than a fixed share of the window; see
+/// [`trailing_reserve`].
 ///
 /// Above the full-schedule size the second stage is nominally FlowCutter's: a
 /// restart there costs a large fraction of the window, and on graphs of that
@@ -725,9 +737,10 @@ fn restart_deadline(
     soft_deadline: Option<Instant>,
     hard_deadline: Option<Instant>,
     writeout: Option<Duration>,
+    trailing: Duration,
 ) -> Option<Instant> {
     let reserve = match residual {
-        Residual::Ordinary => FLOWCUTTER_RESERVE,
+        Residual::Ordinary => trailing,
         _ => match writeout {
             Some(reserve) => reserve,
             None => return soft_deadline,
@@ -761,6 +774,61 @@ fn writeout_reserve(graph: &Graph, residual: usize) -> Duration {
         .clamp(MIN_WRITEOUT_RESERVE, MAX_WRITEOUT_RESERVE)
 }
 
+/// What the restarts keep at the end of the hard window on a residual that runs
+/// the whole schedule: what the trailing FlowCutter candidate projects to need
+/// on this graph, and never more than [`MAX_FLOWCUTTER_RESERVE`].
+///
+/// What the candidate can use varies with the graph by more than an order of
+/// magnitude, since the backend's setup pass follows the vertex and edge counts
+/// and one restart follows the edges times the square root of the vertices. A
+/// reserve of a fixed size is then a fixed spend against a variable
+/// requirement: on a small graph it holds back a second of window the candidate
+/// has no use for, and on a graph whose setup and first restart outlast it the
+/// candidate declines and none of the reserve is spent at all. Both are time
+/// the sampled restarts would otherwise have drawn another elimination order
+/// in, which is where most of the width comes from at this size.
+///
+/// So the reserve is the same work-unit model the candidate is admitted by —
+/// its setup pass plus [`FLOWCUTTER_TAIL_RESTARTS`] restarts — read at the rate
+/// this run has actually been going, plus what the candidate keeps to stop and
+/// copy its answer out. Where even the ceiling cannot hold the setup and first
+/// restart, the candidate is going to decline whatever it is left, so nothing
+/// is kept for it. What is kept in that case, and what floors the reserve
+/// everywhere, is the handover: enough to bag what the last elimination did not
+/// reach and write the answer out.
+fn trailing_reserve(
+    graph: &Graph,
+    residual: usize,
+    config: PortfolioConfig,
+    spent: Spent,
+) -> Duration {
+    let handover = writeout_reserve(graph, residual);
+    let Some(configured_budget) = config.flowcutter_budget else {
+        return handover;
+    };
+    let ceiling = MAX_FLOWCUTTER_RESERVE.min(configured_budget);
+    let stop = flowcutter_reserve(graph, spent);
+    let vertices = u64::from(graph.num_vertices);
+    let edges = graph.edges.len() as u64;
+    let work = crate::flowcutter::first_restart_units(vertices, edges).saturating_add(
+        crate::flowcutter::iteration_work_units(vertices, edges)
+            .saturating_mul(FLOWCUTTER_TAIL_RESTARTS.saturating_sub(1)),
+    );
+    let search = at_observed_rate(
+        Duration::from_millis(crate::meter::milliseconds_for_units(work)),
+        spent,
+    );
+    // The window the candidate would be admitted on is what is kept less what
+    // it keeps back itself, and it is never offered less than the shortest
+    // window it runs in at all.
+    let floor = Duration::from_millis(MIN_FLOWCUTTER_CANDIDATE_MS).saturating_add(stop);
+    let need = search.saturating_add(stop).max(floor).min(ceiling);
+    if !flowcutter_runs_in(graph, need.saturating_sub(stop)) {
+        return handover;
+    }
+    need.max(handover)
+}
+
 /// The cutoff an expensive order on an admitted residual runs to: half the time
 /// the restarts' own deadline has left when the order starts.
 ///
@@ -785,9 +853,9 @@ fn admitted_cutoff(
 /// started at `now` has to end before every deadline it must respect.
 ///
 /// A restart that would run into its deadline is stopped part-way and leaves
-/// nothing behind, so starting it only takes time from the trailing FlowCutter
-/// candidate. The projection is what the previous restart cost, which is the
-/// portfolio's own measurement of one restart on this graph.
+/// nothing behind, so starting it takes time from whatever the schedule kept
+/// the end of the window for. The projection is what the previous restart cost,
+/// which is the portfolio's own measurement of one restart on this graph.
 fn restart_admitted(now: Instant, projected: Duration, deadlines: [Option<Instant>; 2]) -> bool {
     let Some(finish) = now.checked_add(projected) else {
         return false;
@@ -946,12 +1014,29 @@ fn run_portfolio(
     // window goes unused. Ask before the schedule is fixed, and where the
     // answer is that FlowCutter will not take it, the elimination keeps the
     // second stage and gives back only what it needs to hand its answer over.
+    let residual_vertices = prebuilt.num_active();
     let writeout = (residual != Residual::Ordinary
         && flowcutter_declines_second_stage(graph, config, soft_deadline, hard_deadline))
-    .then(|| writeout_reserve(graph, prebuilt.num_active()));
+    .then(|| writeout_reserve(graph, residual_vertices));
+    // Where the run stands on both clocks, for the estimates written in work
+    // units. Read again during the restart phase, where the rate the machine is
+    // running this graph at decides how much of the window the trailing
+    // candidate needs.
+    let spent_now = || Spent {
+        elapsed: crate::meter::now().saturating_duration_since(started),
+        charged_units: crate::meter::units_spent().saturating_sub(started_units),
+    };
     // Where the elimination stops: the restart phase always, and the initial
-    // candidates too where the whole window is theirs.
-    let restart_deadline = restart_deadline(residual, soft_deadline, hard_deadline, writeout);
+    // candidates too where the whole window is theirs. Nothing has been
+    // measured yet, so the trailing reserve reads at the model's own rate here;
+    // the restart phase reads it again against what the run has spent.
+    let restart_deadline = restart_deadline(
+        residual,
+        soft_deadline,
+        hard_deadline,
+        writeout,
+        trailing_reserve(graph, residual_vertices, config, Spent::unmeasured()),
+    );
     // What ends an initial candidate's search. Below the band, and where
     // FlowCutter holds the second stage, this is the soft deadline and a
     // candidate that reaches it stops there with the residual it has left; with
@@ -1275,15 +1360,30 @@ fn run_portfolio(
     // below. The first restart of the loop has nothing to be projected from and
     // runs on the deadline checks alone.
     let mut restart_finished = crate::meter::now();
-    let mut previous_restart: Option<Duration> = None;
+    let mut restart_cost: Option<Duration> = None;
     // Normally the restart deadline fires first; the portfolio hard-deadline
     // check also prevents another sample after an initial candidate used the
     // complete two-stage window.
-    while sample_index < total_samples
-        && !hard_deadline_tripped
-        && !expired(restart_deadline)
-        && !expired(hard_deadline)
-    {
+    while sample_index < total_samples && !hard_deadline_tripped && !expired(hard_deadline) {
+        // Where the restarts stop. On a residual that runs the whole schedule
+        // this is read again on every pass: the trailing reserve is priced at
+        // the rate the run has been going, and that rate is only known once
+        // there is something to measure it on. Above that size the reserve is
+        // the handover, which the graph fixes, and the deadline does not move.
+        let restart_deadline = if residual == Residual::Ordinary {
+            self::restart_deadline(
+                residual,
+                soft_deadline,
+                hard_deadline,
+                writeout,
+                trailing_reserve(graph, residual_vertices, config, spent_now()),
+            )
+        } else {
+            restart_deadline
+        };
+        if expired(restart_deadline) {
+            break;
+        }
         // At the front of a weighted stage, charge the one that just ended and
         // ask whether one more fits; the first stage runs whatever the answer.
         // Nothing after a refusal fits either — the projection never grows and
@@ -1323,9 +1423,9 @@ fn run_portfolio(
             }
             stage_started = elapsed;
         }
-        // One more restart is only started when the last one's cost still fits
+        // One more restart is only started when its projected cost still fits
         // before both deadlines.
-        if let Some(projected) = previous_restart
+        if let Some(projected) = restart_cost
             && !restart_admitted(
                 restart_finished,
                 projected,
@@ -1357,7 +1457,7 @@ fn run_portfolio(
         );
         let (outcome, _) = candidates.record_elimination(run);
         let finished = crate::meter::now();
-        previous_restart = Some(finished.saturating_duration_since(restart_finished));
+        restart_cost = Some(finished.saturating_duration_since(restart_finished));
         restart_finished = finished;
         trace(CandidateTrace {
             stage: candidate.stage,
@@ -1396,15 +1496,8 @@ fn run_portfolio(
     if let Some(configured_budget) = config
         .flowcutter_budget
         .filter(|_| !hard_deadline_tripped && !expired(hard_deadline))
-        && let Some(decomposition) = flowcutter_candidate(
-            graph,
-            configured_budget,
-            hard_deadline,
-            Spent {
-                elapsed: crate::meter::now().saturating_duration_since(started),
-                charged_units: crate::meter::units_spent().saturating_sub(started_units),
-            },
-        )?
+        && let Some(decomposition) =
+            flowcutter_candidate(graph, configured_budget, hard_deadline, spent_now())?
     {
         let outcome = candidates.push(decomposition);
         trace(CandidateTrace {

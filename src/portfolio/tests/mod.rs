@@ -6,7 +6,7 @@ use super::candidates::CandidateSet;
 use super::config::{MAX_DIVERSE_SAMPLING_RUNS, validate};
 use super::{CandidateOutcome, DEFAULT_HEDGE_DIMS, HedgeSeries, HedgeWeights, StageBudget};
 use super::{EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig, Residual};
-use super::{FLOWCUTTER_RESERVE, restart_admitted, restart_deadline};
+use super::{MAX_FLOWCUTTER_RESERVE, restart_admitted, restart_deadline};
 use super::{Sample, SampleBand};
 use super::{Stage, elimination_stop, extra_sample, hedge_random_seed, sample_seed};
 use crate::elimination::Order;
@@ -977,35 +977,39 @@ fn the_restarts_keep_a_flowcutter_reserve_at_the_end_of_the_hard_window() {
     let start = crate::meter::now();
     let soft = start + secs(5);
     let hard = start + secs(10);
+    let trailing = Duration::from_millis(400);
 
-    // An ordinary residual: the restarts run into the hard window and stop a
-    // reserve short of its end.
+    // An ordinary residual: the restarts run into the hard window and stop the
+    // trailing candidate's reserve short of its end.
     assert_eq!(
-        restart_deadline(Residual::Ordinary, Some(soft), Some(hard), None),
-        Some(hard - FLOWCUTTER_RESERVE),
+        restart_deadline(Residual::Ordinary, Some(soft), Some(hard), None, trailing),
+        Some(hard - trailing),
     );
 
     // Both larger classes keep the soft deadline while FlowCutter holds the
     // second stage, so it is there for the trailing candidate.
     assert_eq!(
-        restart_deadline(Residual::Admitted, Some(soft), Some(hard), None),
+        restart_deadline(Residual::Admitted, Some(soft), Some(hard), None, trailing),
         Some(soft),
     );
     assert_eq!(
-        restart_deadline(Residual::Large, Some(soft), Some(hard), None),
+        restart_deadline(Residual::Large, Some(soft), Some(hard), None, trailing),
         Some(soft),
     );
 
     // A hard window shorter than the reserve would put the restarts before the
     // soft deadline, so the soft deadline stands.
-    let tight = start + Duration::from_millis(5_500);
+    let tight = start + Duration::from_millis(5_200);
     assert_eq!(
-        restart_deadline(Residual::Ordinary, Some(soft), Some(tight), None),
+        restart_deadline(Residual::Ordinary, Some(soft), Some(tight), None, trailing),
         Some(soft),
     );
 
     // No budget, so no hard window to run into.
-    assert_eq!(restart_deadline(Residual::Ordinary, None, None, None), None);
+    assert_eq!(
+        restart_deadline(Residual::Ordinary, None, None, None, trailing),
+        None,
+    );
 }
 
 #[test]
@@ -1014,29 +1018,54 @@ fn a_large_residual_takes_the_second_stage_flowcutter_declined() {
     let soft = start + secs(5);
     let hard = start + secs(10);
     let writeout = Duration::from_millis(200);
+    let trailing = Duration::from_millis(400);
 
     // FlowCutter will not run at this size, so both larger classes eliminate to
     // the end of the hard window instead of stopping half way through it.
     assert_eq!(
-        restart_deadline(Residual::Admitted, Some(soft), Some(hard), Some(writeout)),
+        restart_deadline(
+            Residual::Admitted,
+            Some(soft),
+            Some(hard),
+            Some(writeout),
+            trailing,
+        ),
         Some(hard - writeout),
     );
     assert_eq!(
-        restart_deadline(Residual::Large, Some(soft), Some(hard), Some(writeout)),
+        restart_deadline(
+            Residual::Large,
+            Some(soft),
+            Some(hard),
+            Some(writeout),
+            trailing,
+        ),
         Some(hard - writeout),
     );
 
-    // An ordinary residual keeps the FlowCutter reserve whatever the writeout
-    // reserve says, since the trailing candidate does run at that size.
+    // An ordinary residual keeps the trailing candidate's own reserve whatever
+    // the writeout reserve says, since that candidate does run at that size.
     assert_eq!(
-        restart_deadline(Residual::Ordinary, Some(soft), Some(hard), Some(writeout)),
-        Some(hard - FLOWCUTTER_RESERVE),
+        restart_deadline(
+            Residual::Ordinary,
+            Some(soft),
+            Some(hard),
+            Some(writeout),
+            trailing,
+        ),
+        Some(hard - trailing),
     );
 
     // A writeout reserve wider than the whole second stage leaves the soft
     // deadline where it was.
     assert_eq!(
-        restart_deadline(Residual::Large, Some(soft), Some(hard), Some(secs(6))),
+        restart_deadline(
+            Residual::Large,
+            Some(soft),
+            Some(hard),
+            Some(secs(6)),
+            trailing,
+        ),
         Some(soft),
     );
 }
@@ -1079,6 +1108,78 @@ fn the_second_stage_is_declined_for_a_graph_flowcutter_cannot_stop_on() {
     assert!(
         !super::flowcutter_declines_second_stage(&grid(20), config, None, None),
         "an unbudgeted run leaves the schedule alone",
+    );
+}
+
+#[test]
+fn the_trailing_reserve_is_what_the_candidate_needs_on_this_graph() {
+    let budgeted = PortfolioConfig::standard_with_budget(Duration::from_millis(4_750));
+    let reserve = |graph: &Graph, config, spent| {
+        super::trailing_reserve(graph, graph.num_vertices() as usize, config, spent)
+    };
+
+    // A 20x20 grid: the backend's setup and a couple of restarts on it are a
+    // fraction of the ceiling, so the restarts keep the rest of the window.
+    let small = grid(20);
+    let kept = reserve(&small, budgeted, unmeasured());
+    assert!(
+        kept < MAX_FLOWCUTTER_RESERVE / 10,
+        "a 400-vertex graph does not need the ceiling: {kept:?}",
+    );
+    assert!(
+        super::flowcutter_runs_in(
+            &small,
+            kept.saturating_sub(super::flowcutter_reserve(&small, unmeasured())),
+        ),
+        "what is kept still admits the candidate: {kept:?}",
+    );
+
+    // 10,000 vertices and 30,000 edges put setup and one restart at about a
+    // second, and the candidate's own reserve takes the rest of the ceiling, so
+    // it would decline whatever it is left. Nothing is kept for it beyond the
+    // handover.
+    let dense = ring_with_chords(10_000);
+    let declined = reserve(&dense, budgeted, unmeasured());
+    assert_eq!(
+        declined,
+        super::writeout_reserve(&dense, dense.num_vertices() as usize),
+        "a graph the candidate will decline keeps only the handover",
+    );
+
+    // With no trailing candidate configured there is nothing to keep the end of
+    // the window for at all.
+    assert_eq!(
+        reserve(&small, PortfolioConfig::standard(), unmeasured()),
+        super::writeout_reserve(&small, small.num_vertices() as usize),
+        "a portfolio without the candidate keeps only the handover",
+    );
+
+    // The reserve is priced at the rate the run is going, so a loaded machine
+    // keeps more of the window for the same graph — and never more than the
+    // ceiling.
+    let slow = super::Spent {
+        elapsed: Duration::from_millis(8_000),
+        charged_units: 500 * crate::meter::UNITS_PER_MS,
+    };
+    let at_rate = reserve(&small, budgeted, slow);
+    assert!(
+        at_rate > kept && at_rate <= MAX_FLOWCUTTER_RESERVE,
+        "sixteen times the modelled work keeps more, up to the ceiling: {at_rate:?}",
+    );
+
+    // The same rate on a graph the ceiling could just hold at the model's own
+    // rate takes it past what the ceiling can hold, and the candidate is
+    // declined rather than left a window it cannot start in.
+    let medium = ring_with_chords(4_000);
+    assert!(
+        reserve(&medium, budgeted, unmeasured()) > super::MIN_WRITEOUT_RESERVE,
+        "the candidate is admitted on this graph at the model's own rate",
+    );
+    assert_eq!(
+        reserve(&medium, budgeted, slow),
+        super::writeout_reserve(&medium, medium.num_vertices() as usize),
+        "at the rate the machine is actually going it cannot start, so nothing \
+         is kept for it",
     );
 }
 

@@ -67,10 +67,19 @@ not the clock, and a graph whose candidates are quick would otherwise finish
 the schedule with budget unspent. `PortfolioConfig::with_restarts_to_deadline`
 turned off stops the restarts at the count, which is what `standard()` and
 `sampled_min_fill()` do; a run with no soft deadline stops at the count either
-way. The restart deadline is the hard deadline less a 1.5-second reserve for
-the trailing FlowCutter candidate, so the restarts and the weighted stages run
-past the soft deadline: on residuals that run the whole schedule, more restart
-time lowers width on many more graphs than a longer FlowCutter tail does. Above
+way. The restart deadline is the hard deadline less a reserve for the trailing
+FlowCutter candidate, so the restarts and the weighted stages run past the soft
+deadline: on residuals that run the whole schedule, more restart time lowers
+width on many more graphs than a longer FlowCutter tail does. That reserve is
+what the candidate projects to need on the graph in hand rather than a fixed
+share of the window, since what it can use varies with the graph by more than an
+order of magnitude: the backend's setup pass follows the vertex and edge counts
+and one restart follows the edges times the square root of the vertices. It is
+the setup pass plus two restarts, taken at the rate the run has been going, plus
+what the candidate keeps back to stop and copy its answer out, and it stops at a
+ceiling of 1.5 seconds. Where the ceiling cannot hold the setup and the first
+restart, the candidate would decline whatever it was left, so the restarts keep
+the window and give back only what the run needs to hand its answer over. Above
 the 10,000-vertex boundary, and on a run with no hard deadline, the restarts
 stop at the soft deadline as the initial candidates do; a restart at that size
 costs a large share of the window, and the second stage is better left to
