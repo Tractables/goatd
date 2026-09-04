@@ -14,7 +14,7 @@ use goatd::embedding::MAX_DIM;
 use goatd::flowcutter::{Budget, decompose as flowcutter};
 use goatd::portfolio::{
     CandidateOutcome, CandidateTrace, DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, MAX_HEDGE_PASSES,
-    Pass, PortfolioConfig, decompose_traced as portfolio,
+    Pass, PortfolioConfig, SingleRule, decompose_traced as portfolio,
 };
 use goatd::{Graph, TreeDecomposition, stop_flag};
 
@@ -124,6 +124,15 @@ options:
                         min-fill finished and min-degree if it did not. Above
                         this the portfolio keeps only its min-degree
                         candidates
+  --only-rule <name>    portfolio only: run one rule and nothing else, so that
+                        its width can be read against another solver's
+                        implementation of the same rule at the same
+                        allocation. minfill and mindegree restart their
+                        sampled order against the incumbent width until the
+                        hard window ends; mcs runs maximum cardinality search
+                        once, since it draws no tie set. The size rule does
+                        not apply and no other candidate or stage runs, so
+                        the flags that name one are refused. Needs --budget
   --trace               portfolio only: write one line per candidate and one
                         for the winner to stderr as they complete
   --steps <n>           flowcutter only: a step budget in place of a clock,
@@ -191,6 +200,7 @@ struct Args {
     sample_band: Option<u64>,
     sample_band_alternate: bool,
     expensive_orders_up_to: Option<usize>,
+    only_rule: Option<SingleRule>,
     trace: bool,
     steps: Option<u64>,
     refine: bool,
@@ -257,6 +267,7 @@ fn parse_args(argv: &[String]) -> Args {
     let mut sample_band = None;
     let mut sample_band_alternate = false;
     let mut expensive_orders_up_to = None;
+    let mut only_rule = None;
     let mut trace = false;
     let mut steps = None;
     let mut refine = false;
@@ -377,6 +388,17 @@ fn parse_args(argv: &[String]) -> Args {
             "--expensive-orders-up-to" => {
                 let vertices = number(&mut i, arg);
                 expensive_orders_up_to = Some(usize::try_from(vertices).unwrap_or(usize::MAX));
+            }
+            "--only-rule" => {
+                let name = value(&mut i, arg);
+                only_rule = Some(match name.as_str() {
+                    "minfill" => SingleRule::MinFill,
+                    "mindegree" => SingleRule::MinDegree,
+                    "mcs" => SingleRule::MaximumCardinality,
+                    _ => usage_error(&format!(
+                        "unknown --only-rule {name:?}; use minfill, mindegree or mcs"
+                    )),
+                });
             }
             "--trace" => trace = true,
             "--steps" => {
@@ -557,6 +579,53 @@ fn parse_args(argv: &[String]) -> Args {
             "portfolio",
         );
     }
+    if let Some(rule) = only_rule {
+        needs("--only-rule", order == Method::Portfolio, "portfolio");
+        if budget.is_none() {
+            usage_error(
+                "--only-rule requires --budget: the rule is given the whole window, and with \
+                 no deadline there is no window",
+            );
+        }
+        // Every one of these names a candidate or a stage that a run on one
+        // rule does not have, so it would decide nothing.
+        for (flag, given) in [
+            ("--hedge-dims", hedge_dims.is_some()),
+            ("--hedge-random", hedge_random.is_some()),
+            ("--hedge-reserve", hedge_reserve.is_some()),
+            ("--no-hedge", no_hedge),
+            ("--mcs-up-to", mcs_up_to.is_some()),
+            ("--no-mcs", no_mcs),
+            ("--mcsm-up-to", mcsm_up_to.is_some()),
+            ("--no-mcsm", no_mcsm),
+            ("--drop-fill-up-to", drop_fill_up_to.is_some()),
+            ("--no-drop-fill", no_drop_fill),
+            ("--expensive-orders-up-to", expensive_orders_up_to.is_some()),
+        ] {
+            if given {
+                usage_error(&format!(
+                    "{flag} is not valid with --only-rule, which runs one rule and no other \
+                     candidate or stage"
+                ));
+            }
+        }
+        // The search draws no tie set and runs once, so neither the band the
+        // restarts draw from nor the rule that stops them means anything.
+        if rule == SingleRule::MaximumCardinality {
+            for (flag, given) in [
+                ("--sample-band", sample_band.is_some()),
+                ("--sample-band-alternate", sample_band_alternate),
+                ("--capped-restarts", capped_restarts),
+            ] {
+                if given {
+                    usage_error(&format!(
+                        "{flag} is not valid with --only-rule mcs, which draws no tie set and \
+                         runs one order"
+                    ));
+                }
+            }
+        }
+    }
     if trace {
         needs("--trace", order == Method::Portfolio, "portfolio");
     }
@@ -584,6 +653,7 @@ fn parse_args(argv: &[String]) -> Args {
         sample_band,
         sample_band_alternate,
         expensive_orders_up_to,
+        only_rule,
         trace,
         steps,
         refine,
@@ -651,10 +721,20 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             .unwrap_or_else(|e| fail(&e.to_string())),
         Method::Portfolio => {
             let weights = vec![1; graph.num_vertices() as usize];
-            let mut config = budget.map_or_else(
-                PortfolioConfig::standard,
-                PortfolioConfig::standard_with_budget,
-            );
+            // A run on one rule is built from the configuration that has no
+            // other candidate and no stage on, rather than by turning the
+            // standard portfolio's off one at a time.
+            let mut config = match (args.only_rule, budget) {
+                (Some(rule), Some(budget)) => PortfolioConfig::sampled_min_fill()
+                    .with_single_rule(rule)
+                    .with_soft_budget(budget)
+                    .with_restarts_to_deadline(true),
+                (Some(_), None) => unreachable!("--only-rule requires --budget"),
+                (None, _) => budget.map_or_else(
+                    PortfolioConfig::standard,
+                    PortfolioConfig::standard_with_budget,
+                ),
+            };
             if let Some(hard_budget) = args.hard_budget {
                 config = config.with_hard_budget(hard_budget);
             }

@@ -28,7 +28,7 @@ use config::{FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS};
 
 pub use config::{
     DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, HedgeWeights, MAX_DIVERSE_SAMPLING_RUNS,
-    MAX_HEDGE_PASSES, PortfolioConfig,
+    MAX_HEDGE_PASSES, PortfolioConfig, SingleRule,
 };
 pub use trace::{CandidateOutcome, CandidateTrace, Pass, Stage};
 
@@ -720,14 +720,19 @@ enum EliminationPhase {
 /// The soft deadline also stands on a run with no hard deadline, and where the
 /// reserve would put the stop before the soft deadline on a hard window shorter
 /// than the reserve.
+///
+/// A portfolio on a single rule has no FlowCutter candidate to keep the reserve
+/// for, on any residual, so the restarts keep the whole window less what the
+/// handover needs.
 fn restart_deadline(
     residual: Residual,
+    single_rule: bool,
     soft_deadline: Option<Instant>,
     hard_deadline: Option<Instant>,
     writeout: Option<Duration>,
 ) -> Option<Instant> {
     let reserve = match residual {
-        Residual::Ordinary => FLOWCUTTER_RESERVE,
+        Residual::Ordinary if !single_rule => FLOWCUTTER_RESERVE,
         _ => match writeout {
             Some(reserve) => reserve,
             None => return soft_deadline,
@@ -896,6 +901,25 @@ fn reads_weights(order: Order<'_>) -> bool {
     order.tie_weights().is_some()
 }
 
+/// The order a portfolio on a single rule runs, sampled where the rule samples.
+fn single_rule_order(rule: SingleRule, weights: &[u32]) -> Order<'_> {
+    match rule {
+        SingleRule::MinFill => Order::MinFillSampled { weights },
+        SingleRule::MinDegree => Order::MinDegreeSampled { weights },
+        SingleRule::MaximumCardinality => Order::MaximumCardinality,
+    }
+}
+
+/// The one candidate a portfolio on a single rule starts with.
+fn single_rule_candidate(rule: SingleRule, seed: u64, weights: &[u32]) -> InitialCandidate<'_> {
+    InitialCandidate {
+        order: single_rule_order(rule, weights),
+        seed,
+        preprocess: true,
+        update_order_ties: false,
+    }
+}
+
 /// The fixed candidate at the front of the sampled-min-fill portfolio.
 fn sampled_min_fill_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandidate<'_>> {
     vec![InitialCandidate {
@@ -946,12 +970,24 @@ fn run_portfolio(
     // window goes unused. Ask before the schedule is fixed, and where the
     // answer is that FlowCutter will not take it, the elimination keeps the
     // second stage and gives back only what it needs to hand its answer over.
-    let writeout = (residual != Residual::Ordinary
-        && flowcutter_declines_second_stage(graph, config, soft_deadline, hard_deadline))
+    //
+    // A portfolio on a single rule has no FlowCutter candidate at all, so the
+    // whole window is the rule's on any residual and the handover is the only
+    // thing it keeps back.
+    let single_rule = config.single_rule;
+    let writeout = (single_rule.is_some()
+        || (residual != Residual::Ordinary
+            && flowcutter_declines_second_stage(graph, config, soft_deadline, hard_deadline)))
     .then(|| writeout_reserve(graph, prebuilt.num_active()));
     // Where the elimination stops: the restart phase always, and the initial
     // candidates too where the whole window is theirs.
-    let restart_deadline = restart_deadline(residual, soft_deadline, hard_deadline, writeout);
+    let restart_deadline = restart_deadline(
+        residual,
+        single_rule.is_some(),
+        soft_deadline,
+        hard_deadline,
+        writeout,
+    );
     // What ends an initial candidate's search. Below the band, and where
     // FlowCutter holds the second stage, this is the soft deadline and a
     // candidate that reaches it stops there with the residual it has left; with
@@ -1002,7 +1038,13 @@ fn run_portfolio(
     };
     // The builder is needed again for the fixed orders the hedge repeats.
     let order_builder = initial_orders;
-    let initial_orders = initial_orders(seed, weights);
+    let initial_orders = match single_rule {
+        // One candidate, which is the rule itself. The restarts below draw the
+        // same order again on other seeds; this one is what gives them an
+        // incumbent to be bounded by.
+        Some(rule) => vec![single_rule_candidate(rule, seed, weights)],
+        None => initial_orders(seed, weights),
+    };
     let mut candidates = match retention {
         CandidateRetention::All => CandidateSet::all(initial_orders.len() + 1),
         CandidateRetention::BestOnly => CandidateSet::best_only(),
@@ -1047,7 +1089,11 @@ fn run_portfolio(
         // the restarts still get a share of the budget. The min-degree
         // candidates keep the window they have on any residual, since one of
         // them has to come back with a decomposition.
-        let phase = if residual == Residual::Admitted && expensive {
+        //
+        // A portfolio on a single rule is outside the size rule: the rule is
+        // the whole run, so halving its window would leave the time to nothing
+        // rather than to the candidates the rule was paced for.
+        let phase = if residual == Residual::Admitted && expensive && single_rule.is_none() {
             EliminationPhase::AdmittedInitial(admitted_cutoff(restart_deadline, hard_deadline))
         } else {
             EliminationPhase::Initial
@@ -1226,7 +1272,11 @@ fn run_portfolio(
     // left. Configured to, the restarts carry on from the next seed of the
     // same sequence and the restart deadline ends them. Without a deadline
     // there is nothing else to stop at, so the count stands.
-    let ordinary_runs = if config.restarts_to_deadline && restart_deadline.is_some() {
+    let ordinary_runs = if single_rule == Some(SingleRule::MaximumCardinality) {
+        // The search draws no tie set, so a second seed replays the first
+        // order. The one candidate above is the whole run.
+        0
+    } else if config.restarts_to_deadline && restart_deadline.is_some() {
         u64::MAX
     } else {
         config.sampling_runs
@@ -1240,10 +1290,17 @@ fn run_portfolio(
     // finish: below the size rule, or on an admitted residual where the
     // initial min-fill did finish. Everywhere else they fall back to sampled
     // min-degree, which is what a residual past the limit has always run.
-    let min_degree_restarts = match residual {
-        Residual::Ordinary => false,
-        Residual::Admitted => !min_fill_finished,
-        Residual::Large => true,
+    //
+    // A portfolio on a single rule restarts the rule it was given, on any
+    // residual: whether the rule finishes at that size is what the run is
+    // measuring, so it is not for the schedule to substitute another one.
+    let min_degree_restarts = match single_rule {
+        Some(rule) => rule == SingleRule::MinDegree,
+        None => match residual {
+            Residual::Ordinary => false,
+            Residual::Admitted => !min_fill_finished,
+            Residual::Large => true,
+        },
     };
     let schedule = Schedule {
         base_seed: seed,

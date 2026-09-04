@@ -303,10 +303,31 @@ impl Hedge {
     }
 }
 
+/// One rule a portfolio runs on its own, in place of its candidate set.
+///
+/// This exists to measure a rule against another solver's implementation of
+/// the same rule at the same allocation, so the run has to be the rule and
+/// nothing else: one order, restarted against the incumbent until the hard
+/// window ends, with no other candidate and no scheduling stage. [`validate`]
+/// refuses a configuration that asks for a stage as well, so a stage left on
+/// by accident is an error rather than a silent part of the measurement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SingleRule {
+    /// Sampled min-fill, restarted for the whole window.
+    MinFill,
+    /// Sampled min-degree, restarted for the whole window.
+    MinDegree,
+    /// Maximum cardinality search. It draws no tie set, so it gives the same
+    /// order every time and runs once.
+    MaximumCardinality,
+}
+
 /// What a portfolio runs under, beyond the candidate list.
 #[derive(Clone, Copy, Debug)]
 #[must_use]
 pub struct PortfolioConfig {
+    pub(super) single_rule: Option<SingleRule>,
     pub(super) soft_budget: Option<Duration>,
     pub(super) hard_budget: Option<Duration>,
     pub(super) sampling_runs: u64,
@@ -328,7 +349,8 @@ pub struct PortfolioConfig {
 /// value compared by equality does.
 impl PartialEq for PortfolioConfig {
     fn eq(&self, other: &Self) -> bool {
-        self.soft_budget == other.soft_budget
+        self.single_rule == other.single_rule
+            && self.soft_budget == other.soft_budget
             && self.hard_budget == other.hard_budget
             && self.sampling_runs == other.sampling_runs
             && self.diverse_sampling_runs == other.diverse_sampling_runs
@@ -354,6 +376,7 @@ impl PortfolioConfig {
     /// how many there can be.
     pub fn sampled_min_fill() -> Self {
         Self {
+            single_rule: None,
             soft_budget: Some(Duration::from_millis(SAMPLED_MIN_FILL_TIMEOUT_MS)),
             hard_budget: None,
             sampling_runs: MAX_SAMPLING_RUNS,
@@ -369,6 +392,21 @@ impl PortfolioConfig {
             minimal_triangulation: None,
             triangulation_refinement: None,
         }
+    }
+
+    /// Run `rule` on its own: one order, restarted against the incumbent width
+    /// until the hard window ends, and no other candidate.
+    ///
+    /// The size rule does not apply — the rule runs on a residual of any size,
+    /// with the whole window rather than the half an admitted residual gives an
+    /// expensive order — and the window the trailing FlowCutter candidate would
+    /// hold goes to the restarts, since there is no such candidate here. Every
+    /// other stage has to be off already: [`validate`] refuses a configuration
+    /// that asks for one. [`PortfolioConfig::sampled_min_fill`] is the base that
+    /// has none of them on.
+    pub fn with_single_rule(mut self, rule: SingleRule) -> Self {
+        self.single_rule = Some(rule);
+        self
     }
 
     /// Request one trailing FlowCutter candidate with the given budget. It is
@@ -437,6 +475,7 @@ impl PortfolioConfig {
     /// [`PortfolioConfig::with_restarts_to_deadline`] is turned on.
     pub fn standard() -> Self {
         Self {
+            single_rule: None,
             soft_budget: None,
             hard_budget: None,
             sampling_runs: MAX_SAMPLING_RUNS,
@@ -485,6 +524,7 @@ impl PortfolioConfig {
             MAX_SAMPLING_RUNS
         };
         Self {
+            single_rule: None,
             soft_budget: Some(budget),
             hard_budget: None,
             sampling_runs,
@@ -778,6 +818,24 @@ pub(super) fn validate(config: PortfolioConfig) -> Result<(), Error> {
             "portfolio hedge reserve {} is not a fraction in 0 < f <= 1",
             config.hedge_reserve
         )));
+    }
+    if config.single_rule.is_some() {
+        let stage = [
+            ("a trailing FlowCutter candidate", config.flowcutter_budget.is_some()),
+            ("maximum cardinality search", config.maximum_cardinality.is_some()),
+            ("MCS-M", config.minimal_triangulation.is_some()),
+            ("the fill-dropping pass", config.triangulation_refinement.is_some()),
+            ("a hedge", config.hedge.series().is_some()),
+            ("the diverse pass", config.diverse_sampling_runs > 0),
+        ]
+        .into_iter()
+        .find_map(|(name, on)| on.then_some(name));
+        if let Some(stage) = stage {
+            return Err(Error::InvalidInput(format!(
+                "a portfolio on a single rule runs that rule and nothing else, so it cannot \
+                 also run {stage}"
+            )));
+        }
     }
     Ok(())
 }
