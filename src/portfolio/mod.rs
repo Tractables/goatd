@@ -24,7 +24,7 @@ use crate::embedding::{self, Embedding};
 use crate::flowcutter::{Budget, decompose as flowcutter_decompose};
 use crate::{Error, Graph, TreeDecomposition};
 use candidates::{CandidateSet, ScheduleStop};
-use config::MIN_FLOWCUTTER_CANDIDATE_MS;
+use config::{FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS};
 
 pub use config::{
     DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, HedgeWeights, MAX_DIVERSE_SAMPLING_RUNS,
@@ -47,6 +47,10 @@ pub(crate) const SECOND_CANDIDATE_SEED_OFFSET: u64 = 42;
 /// Residuals above this size run only min-degree candidates after the first;
 /// the other orders can overrun a short portfolio budget at this scale.
 const MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS: usize = 10_000;
+
+/// Restarts kept back at the end of the hard window for the trailing FlowCutter
+/// candidate to stop in and hand its result back. See `flowcutter_candidate`.
+const RESERVE_RESTARTS: u32 = 2;
 
 fn is_min_degree_variant(order: Order<'_>) -> bool {
     matches!(order, Order::MinDegree | Order::MinDegreeSampled { .. })
@@ -80,7 +84,7 @@ enum ModifiedWeights<'a> {
         dim: usize,
         rounds: usize,
         seed: u64,
-        soft_deadline: Option<Instant>,
+        deadline: Option<Instant>,
     },
     /// Uniform weights from `seed`, drawn on first use into `cell`.
     Random {
@@ -99,7 +103,7 @@ impl<'a> ModifiedWeights<'a> {
                 dim,
                 rounds,
                 seed,
-                soft_deadline,
+                deadline,
             } => cell.get_or_init(|| {
                 Embedding::compute(
                     graph,
@@ -108,7 +112,7 @@ impl<'a> ModifiedWeights<'a> {
                     rounds,
                     embedding::DEFAULT_PATIENCE,
                     embedding::DEFAULT_TOLERANCE,
-                    &mut || expired(soft_deadline),
+                    &mut || expired(deadline),
                 )
                 .rank_weights(true)
             }),
@@ -152,7 +156,7 @@ struct Schedule<'a> {
     /// A residual too large for the expensive orders: sampled min-degree only.
     large_residual: bool,
     /// Ordinary restarts on offer: the configured count, or `u64::MAX` where
-    /// the soft deadline ends them instead of the count.
+    /// the restart deadline ends them instead of the count.
     ordinary_runs: u64,
     /// Diverse candidates in one pass.
     diverse_runs: u64,
@@ -277,7 +281,7 @@ impl<'a> Schedule<'a> {
 /// filled the budget with no restarts at all. The plain pass is the portfolio's
 /// own measurement of what one stage costs: the same fixed orders and the same
 /// diverse candidates, on other weights. So the stages get a fraction of what
-/// the soft budget had left when the plain pass ended, and stop when one more
+/// the restart phase had left when the plain pass ended, and stop when one more
 /// of them would not fit in it.
 ///
 /// The first stage is outside the rule. A hedge runs one weighted stage
@@ -299,7 +303,7 @@ struct StageBudget {
 
 impl StageBudget {
     /// The stages' share of the budget, decided once the plain pass has both
-    /// cost `plain` and left `left` of the soft budget.
+    /// cost `plain` and left `left` of the time the restart phase has.
     ///
     /// `left` is `None` for a run with no soft budget. The share is then
     /// unbounded and every stage of the series runs: the rule exists to leave
@@ -462,32 +466,86 @@ fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
     }
 }
 
+/// The window the trailing FlowCutter candidate is given.
+///
+/// `left` is what the hard deadline still has, and `None` on a run without one.
+/// Against a hard deadline the window stops `reserve` short of it, so the run
+/// ends inside the time the portfolio actually has. Without a hard deadline
+/// there is nothing to end inside and the configured budget stands.
+fn flowcutter_window(
+    configured_budget: Duration,
+    left: Option<Duration>,
+    reserve: Duration,
+) -> Duration {
+    match left {
+        Some(left) => left.min(configured_budget).saturating_sub(reserve),
+        None => configured_budget,
+    }
+}
+
+/// What the run has spent so far, on both clocks.
+#[derive(Clone, Copy)]
+struct Spent {
+    elapsed: Duration,
+    charged_units: u64,
+}
+
+/// `estimate` at the rate this run has actually been going.
+///
+/// The library charges graph work in the units the FlowCutter estimates are
+/// written in, so the wall time a run has spent divided by the work it has
+/// charged says what one modelled millisecond has cost here. On a box running
+/// one solve per core it is several. The value is never scaled down: the
+/// estimate at the model's own rate is the floor. Under an armed meter both
+/// numbers come from the same clock and the estimate is returned unchanged.
+fn at_observed_rate(estimate: Duration, spent: Spent) -> Duration {
+    let modelled = crate::meter::milliseconds_for_units(spent.charged_units);
+    let elapsed = u64::try_from(spent.elapsed.as_millis()).unwrap_or(u64::MAX);
+    if modelled == 0 || elapsed <= modelled {
+        return estimate;
+    }
+    let estimate_ms = u64::try_from(estimate.as_millis()).unwrap_or(u64::MAX);
+    Duration::from_millis(estimate_ms.saturating_mul(elapsed) / modelled)
+}
+
 fn flowcutter_candidate(
     graph: &Graph,
     configured_budget: Duration,
     hard_deadline: Option<Instant>,
+    spent: Spent,
 ) -> Result<Option<TreeDecomposition>, Error> {
-    let timeout = hard_deadline
-        .map(crate::deadline::remaining)
-        .unwrap_or(configured_budget)
-        .min(configured_budget);
+    let vertices = u64::from(graph.num_vertices);
+    let edges = graph.edges.len() as u64;
+    // The same work-unit model the metered path charges the backend with.
+    let one_restart = Duration::from_millis(crate::meter::milliseconds_for_units(
+        crate::flowcutter::iteration_work_units(vertices, edges),
+    ));
+    // What the end of the run costs once the window is up. The backend tests
+    // its deadline between restarts, so it returns up to one restart late, and
+    // the result is then copied out of it a bag at a time. On a 1,728-vertex
+    // primal graph whose result has 114,600 bags the two came to about 200 ms
+    // against a modelled restart of 172, so the reserve is two restarts. Both
+    // are taken at the rate the run has been going: at the model's own rate the
+    // reserve is a fraction of what a loaded machine spends here, and the
+    // candidate then returns after the deadline it was sized for.
+    let reserve = at_observed_rate(RESERVE_RESTARTS * one_restart, spent);
+    let timeout = flowcutter_window(
+        configured_budget,
+        hard_deadline.map(crate::deadline::remaining),
+        reserve,
+    );
     // Skip windows too small to seed useful FlowCutter iterations; FFI overhead
     // alone eats tens of ms on small graphs.
     if timeout < Duration::from_millis(MIN_FLOWCUTTER_CANDIDATE_MS) {
         return Ok(None);
     }
-    // Skip windows too small for this graph. The backend tests its deadline
-    // between restarts, so a graph whose setup and first restart already
-    // outlast the window cannot be stopped inside it: the run comes back long
-    // after the portfolio's hard deadline with a result the caller has no time
-    // left to write. Measured at a 4.75-second window: 6.8 seconds on a graph
-    // of 79,000 vertices and 175,000 edges, 115 seconds on one of 92,000 and
-    // 1.08 million. The estimate is the same work-unit model the metered path
-    // charges the backend with.
-    let first_restart = crate::flowcutter::first_restart_units(
-        u64::from(graph.num_vertices),
-        graph.edges.len() as u64,
-    );
+    // Skip windows too small for this graph: a graph whose setup and first
+    // restart already outlast the window cannot be stopped inside it, so the
+    // run comes back long after the portfolio's hard deadline with a result the
+    // caller has no time left to write. Measured at a 4.75-second window: 6.8
+    // seconds on a graph of 79,000 vertices and 175,000 edges, 115 seconds on
+    // one of 92,000 and 1.08 million.
+    let first_restart = crate::flowcutter::first_restart_units(vertices, edges);
     if Duration::from_millis(crate::meter::milliseconds_for_units(first_restart)) > timeout {
         return Ok(None);
     }
@@ -514,9 +572,52 @@ enum EliminationPhase {
     ExtraSampling,
 }
 
+/// Where the sampled restarts stop.
+///
+/// On a residual small enough for the expensive orders they run past the soft
+/// deadline into the hard window, keeping [`FLOWCUTTER_RESERVE`] at the end of
+/// it for the trailing FlowCutter candidate. More restart time is worth more
+/// than a longer FlowCutter tail on these graphs. On a large residual, and on
+/// a run with no hard deadline, the soft deadline stands. So does it when the
+/// reserve would put the stop before the soft deadline, on a hard window
+/// shorter than the reserve.
+fn restart_deadline(
+    large_residual: bool,
+    soft_deadline: Option<Instant>,
+    hard_deadline: Option<Instant>,
+) -> Option<Instant> {
+    if large_residual {
+        return soft_deadline;
+    }
+    let (Some(soft), Some(hard)) = (soft_deadline, hard_deadline) else {
+        return soft_deadline;
+    };
+    match hard.checked_sub(FLOWCUTTER_RESERVE) {
+        Some(reserved) if reserved > soft => Some(reserved),
+        _ => Some(soft),
+    }
+}
+
+/// Whether another restart is admitted: one projected to cost `projected` and
+/// started at `now` has to end before every deadline it must respect.
+///
+/// A restart that would run into its deadline is stopped part-way and leaves
+/// nothing behind, so starting it only takes time from the trailing FlowCutter
+/// candidate. The projection is what the previous restart cost, which is the
+/// portfolio's own measurement of one restart on this graph.
+fn restart_admitted(now: Instant, projected: Duration, deadlines: [Option<Instant>; 2]) -> bool {
+    let Some(finish) = now.checked_add(projected) else {
+        return false;
+    };
+    deadlines
+        .iter()
+        .flatten()
+        .all(|deadline| finish <= *deadline)
+}
+
 /// Initial candidates may use the complete two-stage window so the first one
-/// can always return a decomposition. Extra samples stop at the soft deadline;
-/// the rest of the hard window belongs to FlowCutter.
+/// can always return a decomposition. Extra samples stop at the restart
+/// deadline; the rest of the hard window belongs to FlowCutter.
 fn elimination_stop(
     phase: EliminationPhase,
     soft_deadline: Option<Instant>,
@@ -634,6 +735,9 @@ fn run_portfolio(
 ) -> Result<CandidateSet, crate::Error> {
     config::validate(config)?;
     let started = crate::meter::now();
+    // Where the run stands on the work clock, so estimates written in work
+    // units can be read at the rate this machine is actually running them.
+    let started_units = crate::meter::units_spent();
     let deadlines =
         crate::deadline::staged(started, config.soft_budget, config.hard_budget, "portfolio")?;
     let soft_deadline = deadlines.soft;
@@ -641,6 +745,9 @@ fn run_portfolio(
     let mut prebuilt = engine::prebuild(graph, soft_deadline);
     let mut original = None;
     let large_residual = prebuilt.num_active() > MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS;
+    // Where the restart phase stops. The initial candidates keep the soft
+    // deadline whatever this is.
+    let restart_deadline = restart_deadline(large_residual, soft_deadline, hard_deadline);
     let cells: [OnceCell<Vec<u32>>; MAX_HEDGE_PASSES] = std::array::from_fn(|_| OnceCell::new());
     // A large residual runs sampled min-degree restarts whatever is set, so
     // there is nothing there for a hedge to run against. Each stage's weights
@@ -657,7 +764,7 @@ fn run_portfolio(
                     dim,
                     rounds,
                     seed,
-                    soft_deadline,
+                    deadline: restart_deadline,
                 },
                 HedgeWeights::Random { stream } => ModifiedWeights::Random {
                     cell,
@@ -766,7 +873,7 @@ fn run_portfolio(
     // elimination orders and can lower width on small/medium graphs where the
     // base portfolio returns in tens of ms. Falls back to sampled min-degree on
     // large residuals, matching the main loop's skip rule. A started extra
-    // sample stops at the soft deadline so it cannot consume the trailing
+    // sample stops at the restart deadline so it cannot consume the trailing
     // FlowCutter and output interval. On extended small/medium runs, diverse
     // fill-degree scores precede the complete ordinary min-fill seed sequence.
     // A hedge adds one weighted stage per weighting between the two — the fixed
@@ -776,9 +883,9 @@ fn run_portfolio(
     // The sampling count caps how many seeds are drawn, not the clock, so a
     // graph whose candidates are quick can finish the schedule with budget
     // left. Configured to, the restarts carry on from the next seed of the
-    // same sequence and the soft deadline ends them. Without a soft deadline
+    // same sequence and the restart deadline ends them. Without a deadline
     // there is nothing else to stop at, so the count stands.
-    let ordinary_runs = if config.restarts_to_deadline && soft_deadline.is_some() {
+    let ordinary_runs = if config.restarts_to_deadline && restart_deadline.is_some() {
         u64::MAX
     } else {
         config.sampling_runs
@@ -810,16 +917,21 @@ fn run_portfolio(
     let stages_end = schedule.passes_total();
     let stage_count = schedule.modified_stages();
     // Decided at the end of the plain pass, from what that pass cost and what
-    // the soft budget has left.
+    // the restart phase has left.
     let mut stage_budget: Option<StageBudget> = None;
     let mut stage_started = Duration::ZERO;
     let mut sample_index: u64 = 0;
-    // Normally the soft deadline fires first; the portfolio hard-deadline
+    // When the last restart ended and what it cost, for the admission rule
+    // below. The first restart of the loop has nothing to be projected from and
+    // runs on the deadline checks alone.
+    let mut restart_finished = crate::meter::now();
+    let mut previous_restart: Option<Duration> = None;
+    // Normally the restart deadline fires first; the portfolio hard-deadline
     // check also prevents another sample after an initial candidate used the
     // complete two-stage window.
     while sample_index < total_samples
         && !hard_deadline_tripped
-        && !expired(soft_deadline)
+        && !expired(restart_deadline)
         && !expired(hard_deadline)
     {
         // At the front of a weighted stage, charge the one that just ended and
@@ -834,7 +946,11 @@ fn run_portfolio(
             let elapsed = crate::meter::now().saturating_duration_since(started);
             let stage_index = (sample_index - stages_start) / stage_length;
             let budget = stage_budget.get_or_insert_with(|| {
-                StageBudget::new(elapsed, soft_deadline.map(remaining), config.hedge_reserve)
+                StageBudget::new(
+                    elapsed,
+                    restart_deadline.map(remaining),
+                    config.hedge_reserve,
+                )
             });
             if stage_index > 0 {
                 budget.charge(elapsed.saturating_sub(stage_started));
@@ -857,6 +973,17 @@ fn run_portfolio(
             }
             stage_started = elapsed;
         }
+        // One more restart is only started when the last one's cost still fits
+        // before both deadlines.
+        if let Some(projected) = previous_restart
+            && !restart_admitted(
+                restart_finished,
+                projected,
+                [restart_deadline, hard_deadline],
+            )
+        {
+            break;
+        }
         let candidate = extra_sample(schedule, sample_index)
             .expect("sample index is below the configured total");
         // Extra sampling only runs after the fixed candidates, so at least one prior
@@ -870,7 +997,7 @@ fn run_portfolio(
                 update_order_ties: false,
                 stop: elimination_stop(
                     EliminationPhase::ExtraSampling,
-                    soft_deadline,
+                    restart_deadline,
                     hard_deadline,
                     candidates.best_width(),
                 ),
@@ -878,12 +1005,15 @@ fn run_portfolio(
             },
         );
         let (outcome, _) = candidates.record_elimination(run);
+        let finished = crate::meter::now();
+        previous_restart = Some(finished.saturating_duration_since(restart_finished));
+        restart_finished = finished;
         trace(CandidateTrace {
             stage: candidate.stage,
             seed: candidate.seed,
             pass: candidate.pass,
             outcome,
-            elapsed: crate::meter::now().saturating_duration_since(started),
+            elapsed: finished.saturating_duration_since(started),
         });
         match outcome {
             // No time left for more sampled orders.
@@ -901,15 +1031,23 @@ fn run_portfolio(
         }
     }
     // Runs vanilla FlowCutter once as a final portfolio candidate. Placed after
-    // the extra-sampling loop so it runs in the remaining hard-deadline
-    // margin without starving sampling — under a typical soft-budget
-    // contract, `hard_deadline` = 2×`soft_deadline`, leaving up to
-    // `soft_deadline` of slack here. FlowCutter already returns a complete
-    // decomposition, so no separator-refinement pass is applied to it.
+    // the extra-sampling loop so it runs in whatever is left of the hard
+    // window: the restart reserve on an ordinary residual, and up to the whole
+    // second stage where the restarts stopped at the soft deadline. FlowCutter
+    // already returns a complete decomposition, so no separator-refinement pass
+    // is applied to it.
     if let Some(configured_budget) = config
         .flowcutter_budget
         .filter(|_| !hard_deadline_tripped && !expired(hard_deadline))
-        && let Some(decomposition) = flowcutter_candidate(graph, configured_budget, hard_deadline)?
+        && let Some(decomposition) = flowcutter_candidate(
+            graph,
+            configured_budget,
+            hard_deadline,
+            Spent {
+                elapsed: crate::meter::now().saturating_duration_since(started),
+                charged_units: crate::meter::units_spent().saturating_sub(started_units),
+            },
+        )?
     {
         let outcome = candidates.push(decomposition);
         trace(CandidateTrace {

@@ -27,9 +27,7 @@ portfolio runs several constructions and keeps the narrowest result:
 - **portfolio search** — safe reductions, several seeds and construction
   methods, then optional separator refinement;
 - **greedy elimination** — min-fill and min-degree, with deterministic or
-  weighted-sampling tie breaking. Repeated min-fill runs sample from a band
-  just above the minimum score, so different seeds reach different orders on
-  graphs where the minimum is held by one vertex at a time;
+  weighted-sampling tie breaking;
 - **nested dissection** — recursive multilevel bisection, with each separator
   eliminated after its two sides;
 - **flow-based separation** — balanced cuts for constructing and refining
@@ -86,20 +84,25 @@ seconds on one CPU.
 
 | Solver | Nontrivial | Exact best | Within +1 | Within +4 |
 | --- | ---: | ---: | ---: | ---: |
-| goatd portfolio | **9,345 (99.3%)** | **8,862 (94.1%)** | **9,131 (97.0%)** | **9,200 (97.7%)** |
-| Jdrasil heuristic | 9,095 (96.6%) | 1,078 (11.5%) | 2,509 (26.7%) | 5,591 (59.4%) |
-| Tamaki PACE 2017 | 8,240 (87.5%) | 715 (7.6%) | 1,365 (14.5%) | 3,392 (36.0%) |
-| HTD | 9,139 (97.1%) | 315 (3.3%) | 446 (4.7%) | 1,909 (20.3%) |
-| FlowCutter PACE 2017 | 9,115 (96.8%) | 304 (3.2%) | 459 (4.9%) | 2,118 (22.5%) |
-| NetworkX min-degree | 8,999 (95.6%) | 138 (1.5%) | 153 (1.6%) | 227 (2.4%) |
-| NetworkX min-fill | 8,279 (88.0%) | 58 (0.6%) | 168 (1.8%) | 1,523 (16.2%) |
-| Arboretum heuristic | 5,549 (59.0%) | 32 (0.3%) | 102 (1.1%) | 991 (10.5%) |
+| goatd portfolio | **9,347 (99.3%)** | **8,410 (89.3%)** | **8,996 (95.6%)** | **9,170 (97.4%)** |
+| HTD | 9,203 (97.8%) | 2,253 (23.9%) | 3,742 (39.8%) | 6,738 (71.6%) |
+| Jdrasil heuristic | 9,095 (96.6%) | 1,017 (10.8%) | 2,387 (25.4%) | 5,478 (58.2%) |
+| Tamaki PACE 2017 | 8,240 (87.5%) | 772 (8.2%) | 1,403 (14.9%) | 3,346 (35.5%) |
+| FlowCutter PACE 2017 | 9,115 (96.8%) | 275 (2.9%) | 427 (4.5%) | 2,033 (21.6%) |
+| NetworkX min-degree | 8,999 (95.6%) | 132 (1.4%) | 147 (1.6%) | 229 (2.4%) |
+| NetworkX min-fill | 8,279 (88.0%) | 63 (0.7%) | 178 (1.9%) | 1,507 (16.0%) |
+| Arboretum heuristic | 5,549 (59.0%) | 32 (0.3%) | 110 (1.2%) | 980 (10.4%) |
 
-Every decomposition is checked by the same validator. The default selection
-omits graphs where pinned NetworkX min-degree returns a validated width below
-30. “Nontrivial” means a validated decomposition narrower than `|V| - 1`.
-“Exact best” is the smallest width observed among the displayed solvers, not a
-proven optimum.
+Each solver runs at the setting its own documentation recommends for the
+smallest width inside a fixed time limit, which for HTD is
+`--opt width --iterations 0 --strategy challenge`. The anytime solvers keep
+searching until the ten seconds are up and report whatever decomposition they
+hold when the harness stops them. goatd stops itself at its own hard cutoff
+just under ten seconds and writes what it has. Every decomposition is checked
+by the same validator. The default selection omits graphs where pinned
+NetworkX min-degree returns a validated width below 30. “Nontrivial” means a
+validated decomposition narrower than `|V| - 1`. “Exact best” is the smallest
+width observed among the displayed solvers, not a proven optimum.
 
 ## Building and contributing
 

@@ -45,5 +45,10 @@ path = "src/bin/goatd.rs"
 rand = "0.10"
 rustc-hash = "2"
 
+# The command-line tool's SIGTERM handler. The library itself uses no platform
+# calls; `signal` is the one thing the standard library does not expose.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [build-dependencies]
 cc = "1"
