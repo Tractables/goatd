@@ -429,32 +429,53 @@ fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
     }
 }
 
+/// The window the trailing FlowCutter candidate is given.
+///
+/// `left` is what the hard deadline still has, and `None` on a run without
+/// one. The backend tests its deadline between restarts, so it returns up to
+/// one restart after the timeout it was handed; against a hard deadline the
+/// window therefore stops one estimated restart short of it, so the run ends
+/// inside the time the portfolio actually has. Without a hard deadline there
+/// is nothing to end inside and the configured budget stands.
+fn flowcutter_window(
+    configured_budget: Duration,
+    left: Option<Duration>,
+    one_restart: Duration,
+) -> Duration {
+    match left {
+        Some(left) => left.min(configured_budget).saturating_sub(one_restart),
+        None => configured_budget,
+    }
+}
+
 fn flowcutter_candidate(
     graph: &Graph,
     configured_budget: Duration,
     hard_deadline: Option<Instant>,
 ) -> Result<Option<TreeDecomposition>, Error> {
-    let timeout = hard_deadline
-        .map(crate::deadline::remaining)
-        .unwrap_or(configured_budget)
-        .min(configured_budget);
+    let vertices = u64::from(graph.num_vertices);
+    let edges = graph.edges.len() as u64;
+    // The same work-unit model the metered path charges the backend with.
+    let one_restart = Duration::from_millis(crate::meter::milliseconds_for_units(
+        crate::flowcutter::iteration_work_units(vertices, edges),
+    ));
+    let timeout = flowcutter_window(
+        configured_budget,
+        hard_deadline.map(crate::deadline::remaining),
+        one_restart,
+    );
     // Skip windows too small to seed useful FlowCutter iterations; FFI overhead
     // alone eats tens of ms on small graphs.
     if timeout < Duration::from_millis(MIN_FLOWCUTTER_CANDIDATE_MS) {
         return Ok(None);
     }
-    // Skip windows too small for this graph. The backend tests its deadline
-    // between restarts, so a graph whose setup and first restart already
-    // outlast the window cannot be stopped inside it: the run comes back long
-    // after the portfolio's hard deadline with a result the caller has no time
-    // left to write. Measured at a 4.75-second window: 6.8 seconds on a graph
-    // of 79,000 vertices and 175,000 edges, 115 seconds on one of 92,000 and
-    // 1.08 million. The estimate is the same work-unit model the metered path
-    // charges the backend with.
-    let first_restart = crate::flowcutter::first_restart_units(
-        u64::from(graph.num_vertices),
-        graph.edges.len() as u64,
-    );
+    // Skip windows too small for this graph: a graph whose setup and first
+    // restart already outlast the window cannot be stopped inside it, so the
+    // run comes back long after the portfolio's hard deadline with a result the
+    // caller has no time left to write. Measured at a 4.75-second window: 6.8
+    // seconds on a graph of 79,000 vertices and 175,000 edges, 115 seconds on
+    // one of 92,000 and 1.08 million.
+    let first_restart = crate::flowcutter::first_restart_units(vertices, edges);
     if Duration::from_millis(crate::meter::milliseconds_for_units(first_restart)) > timeout {
         return Ok(None);
     }
@@ -505,6 +526,23 @@ fn restart_deadline(
         Some(reserved) if reserved > soft => Some(reserved),
         _ => Some(soft),
     }
+}
+
+/// Whether another restart is admitted: one projected to cost `projected` and
+/// started at `now` has to end before every deadline it must respect.
+///
+/// A restart that would run into its deadline is stopped part-way and leaves
+/// nothing behind, so starting it only takes time from the trailing FlowCutter
+/// candidate. The projection is what the previous restart cost, which is the
+/// portfolio's own measurement of one restart on this graph.
+fn restart_admitted(now: Instant, projected: Duration, deadlines: [Option<Instant>; 2]) -> bool {
+    let Some(finish) = now.checked_add(projected) else {
+        return false;
+    };
+    deadlines
+        .iter()
+        .flatten()
+        .all(|deadline| finish <= *deadline)
 }
 
 /// Initial candidates may use the complete two-stage window so the first one
@@ -803,6 +841,11 @@ fn run_portfolio(
     let mut stage_budget: Option<StageBudget> = None;
     let mut stage_started = Duration::ZERO;
     let mut sample_index: u64 = 0;
+    // When the last restart ended and what it cost, for the admission rule
+    // below. The first restart of the loop has nothing to be projected from and
+    // runs on the deadline checks alone.
+    let mut restart_finished = crate::meter::now();
+    let mut previous_restart: Option<Duration> = None;
     // Normally the restart deadline fires first; the portfolio hard-deadline
     // check also prevents another sample after an initial candidate used the
     // complete two-stage window.
@@ -850,6 +893,17 @@ fn run_portfolio(
             }
             stage_started = elapsed;
         }
+        // One more restart is only started when the last one's cost still fits
+        // before both deadlines.
+        if let Some(projected) = previous_restart
+            && !restart_admitted(
+                restart_finished,
+                projected,
+                [restart_deadline, hard_deadline],
+            )
+        {
+            break;
+        }
         let candidate = extra_sample(schedule, sample_index)
             .expect("sample index is below the configured total");
         // Extra sampling only runs after the fixed candidates, so at least one prior
@@ -870,12 +924,15 @@ fn run_portfolio(
             },
         );
         let (outcome, _) = candidates.record_elimination(run);
+        let finished = crate::meter::now();
+        previous_restart = Some(finished.saturating_duration_since(restart_finished));
+        restart_finished = finished;
         trace(CandidateTrace {
             stage: candidate.stage,
             seed: candidate.seed,
             pass: candidate.pass,
             outcome,
-            elapsed: crate::meter::now().saturating_duration_since(started),
+            elapsed: finished.saturating_duration_since(started),
         });
         match outcome {
             // No time left for more sampled orders.

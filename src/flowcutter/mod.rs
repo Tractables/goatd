@@ -13,7 +13,7 @@ use crate::{Error, Graph, TreeDecomposition};
 mod native;
 pub mod separator;
 
-pub(crate) use native::first_restart_units;
+pub(crate) use native::{first_restart_units, iteration_work_units};
 
 /// Whether an elapsed-time limit also adapts the search to a short window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

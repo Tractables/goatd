@@ -332,7 +332,7 @@ impl PortfolioConfig {
     ///
     /// The count stops the restarts of a run with no soft deadline, and of
     /// one with [`PortfolioConfig::with_restarts_to_deadline`] off. Under a
-    /// soft deadline with it on, the restarts run on past the count and the
+    /// budget with it on, the restarts run on past the count and the restart
     /// deadline stops them.
     pub fn with_sampling_runs(mut self, runs: u64) -> Self {
         self.sampling_runs = runs;
@@ -394,8 +394,10 @@ impl PortfolioConfig {
     /// the expensive orders they stop at the soft deadline instead. The
     /// sampling count caps how many seeds are drawn, not the clock, and a
     /// graph whose candidates are quick would otherwise finish the schedule
-    /// with budget unspent. [`PortfolioConfig::with_restarts_to_deadline`]
-    /// turned off stops them at the count instead.
+    /// with budget unspent. One more restart starts only while what the
+    /// previous one cost still fits before that stop.
+    /// [`PortfolioConfig::with_restarts_to_deadline`] turned off stops them at
+    /// the count instead.
     pub fn standard_with_budget(budget: Duration) -> Self {
         let extended = budget >= EXTENDED_SAMPLING_MIN_SOFT_BUDGET;
         let sampling_runs = if extended {
@@ -445,10 +447,14 @@ impl PortfolioConfig {
     }
 
     /// Whether the ordinary restarts keep drawing seeds past their count
-    /// while the soft deadline has time left.
+    /// while the restart deadline has time left.
+    ///
+    /// The restart deadline is the hard deadline less the reserve kept for the
+    /// trailing FlowCutter candidate on a residual small enough for the
+    /// expensive orders, and the soft deadline otherwise.
     ///
     /// On, the restarts carry on from the next seed of the same sequence and
-    /// the soft deadline ends them; the count set by
+    /// the restart deadline ends them; the count set by
     /// [`PortfolioConfig::with_sampling_runs`] does not. Off, the restarts stop
     /// at the count or the deadline, whichever comes first. A run with no soft
     /// deadline stops at the count either way, since there is nothing else to

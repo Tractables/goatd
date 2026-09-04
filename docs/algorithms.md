@@ -55,17 +55,24 @@ past the soft deadline: on residuals small enough for the expensive orders,
 more restart time lowers width on many more graphs than a longer FlowCutter
 tail does. On a residual above the 10,000-vertex cutoff, and on a run with no
 hard deadline, the restarts stop at the soft deadline as the initial
-candidates do. An extra sample that reaches the restart deadline stops there;
-the rest of the hard-budget interval is left to the trailing FlowCutter
-candidate. That candidate is skipped when the interval is too short to seed
-it, and also when the graph is large enough that the backend's setup and
-first restart alone outlast the interval: the setup pass runs to the end
-whatever the clock says, so on such a graph the run would return well after
-the hard deadline. The estimate uses the work-unit model in *Flow-based
-separators*. Once the search is under way the backend does test the deadline
-inside it — between the restarts, between the cells of one partition, and
-between the augmentations of one cut — and a search stopped that way returns
-the best decomposition it has already recorded. By default, a 4.75-second soft budget has a 9.5-second hard
+candidates do. An extra sample that reaches the restart deadline stops there,
+and one more restart starts only while what the previous restart cost still
+fits before that deadline: a restart stopped part-way leaves nothing behind,
+so the time is better left to the FlowCutter candidate.
+
+The rest of the hard-budget interval is what the trailing FlowCutter candidate
+gets. The backend tests its deadline between restarts, so it can return one
+restart after the timeout it was handed; the candidate therefore takes what is
+left of the hard-budget interval less one estimated restart, and the run ends
+inside the interval. It is skipped when what remains is too short to seed it,
+and also when the graph is large enough that the backend's setup and first
+restart alone outlast it: the setup pass runs to the end whatever the clock
+says, so on such a graph the run would return well after the hard deadline.
+Both estimates use the work-unit model in *Flow-based separators*. Once the
+search is under way the backend does test the deadline inside it — between the
+restarts, between the cells of one partition, and between the augmentations of
+one cut — and a search stopped that way returns the best decomposition it has
+already recorded. By default, a 4.75-second soft budget has a 9.5-second hard
 deadline. Callers that need more time to write the result can set an earlier
 hard budget independently without changing the soft schedule. Both standard
 configurations hedge, which adds the candidates described under *The hedge*.

@@ -5,7 +5,7 @@ use super::candidates::CandidateSet;
 use super::config::{MAX_DIVERSE_SAMPLING_RUNS, validate};
 use super::{CandidateOutcome, DEFAULT_HEDGE_DIMS, HedgeSeries, HedgeWeights, StageBudget};
 use super::{EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig, Sample, Schedule};
-use super::{FLOWCUTTER_RESERVE, restart_deadline};
+use super::{FLOWCUTTER_RESERVE, restart_admitted, restart_deadline};
 use super::{Stage, elimination_stop, extra_sample, hedge_random_seed, sample_seed};
 use crate::elimination::Order;
 use crate::{Graph, TreeDecomposition};
@@ -867,4 +867,55 @@ fn the_restarts_keep_a_flowcutter_reserve_at_the_end_of_the_hard_window() {
 
     // No budget, so no hard window to run into.
     assert_eq!(restart_deadline(false, None, None), None);
+}
+
+#[test]
+fn a_restart_that_would_not_finish_in_time_is_not_started() {
+    let now = crate::meter::now();
+    let restart = Some(now + Duration::from_millis(500));
+    let hard = Some(now + secs(2));
+
+    assert!(
+        restart_admitted(now, Duration::from_millis(400), [restart, hard]),
+        "a restart that ends before both deadlines is admitted",
+    );
+    assert!(
+        !restart_admitted(now, Duration::from_millis(600), [restart, hard]),
+        "a restart that runs into the restart deadline is not",
+    );
+    assert!(
+        !restart_admitted(now, secs(3), [None, hard]),
+        "nor is one that runs past the hard deadline",
+    );
+    assert!(
+        restart_admitted(now, secs(30), [None, None]),
+        "with no deadline the count is what stops the restarts",
+    );
+}
+
+#[test]
+fn the_flowcutter_window_stops_one_restart_short_of_the_hard_deadline() {
+    let configured = Duration::from_millis(4_750);
+    let one_restart = Duration::from_millis(170);
+
+    assert_eq!(
+        super::flowcutter_window(configured, Some(Duration::from_millis(1_500)), one_restart),
+        Duration::from_millis(1_330),
+        "the backend is stopped a restart before the hard deadline",
+    );
+    assert_eq!(
+        super::flowcutter_window(configured, Some(secs(9)), one_restart),
+        configured - one_restart,
+        "a window wider than the configured budget is capped by it",
+    );
+    assert_eq!(
+        super::flowcutter_window(configured, Some(Duration::from_millis(100)), one_restart),
+        Duration::ZERO,
+        "a window shorter than one restart leaves nothing",
+    );
+    assert_eq!(
+        super::flowcutter_window(configured, None, one_restart),
+        configured,
+        "with no hard deadline the configured budget stands",
+    );
 }
