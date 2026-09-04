@@ -211,23 +211,95 @@ fn the_maximum_cardinality_order_repeats() {
     }
 }
 
+/// The pick a step makes, worked out the way the search used to: a scan of
+/// every unnumbered vertex, taking the highest count and, at a tie, the
+/// smallest index.
+fn scanned_order(adjacency: &[Vec<u32>]) -> Vec<u32> {
+    let n = adjacency.len();
+    let mut numbered = vec![false; n];
+    let mut count = vec![0u32; n];
+    let mut selected = Vec::with_capacity(n);
+    for _ in 0..n {
+        let mut chosen = usize::MAX;
+        for vertex in 0..n {
+            if !numbered[vertex] && (chosen == usize::MAX || count[vertex] > count[chosen]) {
+                chosen = vertex;
+            }
+        }
+        numbered[chosen] = true;
+        selected.push(chosen as u32);
+        for &neighbour in &adjacency[chosen] {
+            if !numbered[neighbour as usize] {
+                count[neighbour as usize] += 1;
+            }
+        }
+    }
+    selected
+}
+
+/// The heap the plain search picks from has to hand back the vertex a scan of
+/// the whole graph would have taken, tie for tie, or the orderings this
+/// candidate has been measured on are not the orderings it produces.
+#[test]
+fn the_plain_search_takes_what_a_scan_would_take() {
+    for graph in [
+        cycle(9),
+        grid(7, 11),
+        complete_bipartite(6, 9),
+        k_tree(40, 4),
+        // Two components, so a step has to choose between vertices whose
+        // counts stay at zero for a while.
+        Graph::new(
+            12,
+            [
+                (0, 1),
+                (1, 2),
+                (2, 0),
+                (3, 4),
+                (4, 5),
+                (5, 6),
+                (6, 3),
+                (7, 8),
+            ],
+        ),
+    ] {
+        let adjacency = adjacency_of(&graph);
+        let selected = cardinality_search(&adjacency, Reach::Neighbours, None)
+            .expect("no deadline to stop the search");
+        assert_eq!(
+            selected,
+            scanned_order(&adjacency),
+            "the heap and the scan disagree on a {}-vertex graph",
+            graph.num_vertices
+        );
+    }
+}
+
 /// Both reaches under a hard deadline, on a grid neither can number inside the
 /// budgets asked for here. The meter is armed, so the budget is a work budget
-/// and the run is the same on any machine.
+/// and the run is the same on any machine. The plain search charges the depth
+/// of a heap rather than a scan of the graph, so it takes a much larger grid
+/// to keep it inside the same budgets.
 #[test]
 fn a_deadline_stops_either_reach_of_the_search() {
-    let graph = grid(160, 160);
-    let adjacency = adjacency_of(&graph);
+    let paths_graph = grid(160, 160);
+    let plain_graph = grid(500, 500);
+    let paths_adjacency = adjacency_of(&paths_graph);
+    let plain_adjacency = adjacency_of(&plain_graph);
     for (name, reach) in [
         ("maximum cardinality search", Reach::Neighbours),
         ("MCS-M", Reach::LowerPaths),
     ] {
+        let adjacency = match reach {
+            Reach::Neighbours => &plain_adjacency,
+            Reach::LowerPaths => &paths_adjacency,
+        };
         for budget_ms in [0, 1, 2, 4, 8] {
             let epoch = Instant::now();
             let guard = crate::meter::arm(epoch);
             let start = crate::meter::units_spent();
             let selected = cardinality_search(
-                &adjacency,
+                adjacency,
                 reach,
                 Some(epoch + Duration::from_millis(budget_ms)),
             );
@@ -238,8 +310,8 @@ fn a_deadline_stops_either_reach_of_the_search() {
                 "{name} at {budget_ms} ms: the search numbered the whole grid"
             );
             // Two milliseconds over the budget: the search reads the clock once
-            // a millisecond's worth of work has been charged, and the step that
-            // reads it has charged its own scan first.
+            // a millisecond's worth of work has been charged, and ordering the
+            // vertices into the heap is charged before the first read.
             let allowed = (budget_ms + 2) * crate::meter::UNITS_PER_MS;
             assert!(
                 spent <= allowed,

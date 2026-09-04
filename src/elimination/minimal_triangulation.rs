@@ -15,6 +15,8 @@
 //! The two searches differ only in how a step collects the vertices whose count
 //! goes up, so they are one function with a switch rather than two.
 
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::time::Instant;
 
 use super::execution::{
@@ -43,11 +45,10 @@ pub(crate) enum Reach {
 /// eliminated first.
 ///
 /// Returns `None` when `hard_deadline` passed before the search finished. Both
-/// reaches read the deadline on the pacer's stride, which counts the scanning
-/// the search charges, so a single step over a dense graph is interrupted
-/// part-way rather than run to its end: the plain search scans every unnumbered
-/// vertex per step and one MCS-M step walks the whole graph in the worst case,
-/// and a caller with milliseconds left cannot afford either.
+/// reaches read the deadline on the pacer's stride, which counts the work the
+/// search charges, so a single step over a dense graph is interrupted part-way
+/// rather than run to its end: one MCS-M step walks the whole graph in the
+/// worst case, and a caller with milliseconds left cannot afford it.
 pub(crate) fn cardinality_search(
     adjacency: &[Vec<u32>],
     reach: Reach,
@@ -59,24 +60,40 @@ pub(crate) fn cardinality_search(
     let mut selected: Vec<u32> = Vec::with_capacity(n);
     // Reached-vertex marks and the buckets the path search walks, both kept
     // across steps and cleared after each one so the search allocates once.
-    let mut reached = vec![false; n];
+    // Only MCS-M walks paths, and at the sizes the plain search now runs on
+    // the bucket row alone is tens of megabytes, so neither is allocated for a
+    // reach that does not use them.
+    let paths = reach == Reach::LowerPaths;
+    let mut reached = vec![false; if paths { n } else { 0 }];
     let mut touched: Vec<u32> = Vec::new();
-    let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); n + 1];
+    let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); if paths { n + 1 } else { 0 }];
     let mut raised: Vec<u32> = Vec::new();
+    // The step's pick, off a max-heap keyed on the count and, at equal counts,
+    // on the smallest index — the vertex a scan of the whole graph would have
+    // taken, without the scan. A count only ever rises, so an entry is stale
+    // exactly when it sits below its vertex's current count, and the entry
+    // carrying that current count is always in the heap; a stale one is
+    // dropped when it surfaces rather than gone looking for.
+    let mut queue: BinaryHeap<(u32, Reverse<u32>)> =
+        (0..n as u32).map(|vertex| (0, Reverse(vertex))).collect();
+    // Ordering the vertices into a heap is linear, and it is the one part of
+    // the search a deadline cannot interrupt.
+    crate::meter::charge(n as u64);
     let mut pacer = DeadlinePacer::new();
 
     for _ in 0..n {
-        // The step's own scan of every vertex, charged before it runs so the
-        // pacer counts a search that reaches nothing else.
-        crate::meter::charge(n as u64);
         if pacer.due() && expired(hard_deadline) {
             return None;
         }
         let mut chosen = usize::MAX;
-        for vertex in 0..n {
-            if !numbered[vertex] && (chosen == usize::MAX || count[vertex] > count[chosen]) {
-                chosen = vertex;
+        while let Some((level, Reverse(vertex))) = queue.pop() {
+            crate::meter::charge(sift_units(queue.len()));
+            let index = vertex as usize;
+            if numbered[index] || count[index] != level {
+                continue;
             }
+            chosen = index;
+            break;
         }
         debug_assert!(chosen < n, "every step has an unnumbered vertex to take");
         numbered[chosen] = true;
@@ -89,7 +106,7 @@ pub(crate) fn cardinality_search(
                 raised.push(neighbour);
             }
         }
-        if reach == Reach::LowerPaths {
+        if paths {
             // The neighbours are the paths of length one; each of them can then
             // carry a path on to a vertex counting higher than it does.
             // Bucket `j` holds the vertices reachable through interior vertices
@@ -130,10 +147,23 @@ pub(crate) fn cardinality_search(
             }
         }
         for &vertex in &raised {
-            count[vertex as usize] += 1;
+            let index = vertex as usize;
+            count[index] += 1;
+            crate::meter::charge(sift_units(queue.len()));
+            queue.push((count[index], Reverse(vertex)));
         }
     }
     Some(selected)
+}
+
+/// What one heap operation costs, in the units the meter charges.
+///
+/// A push or a pop moves one entry along a root-to-leaf path, so the work is
+/// the heap's depth and the whole search charges the `(n + raises) log n` it
+/// actually does. The floor of one keeps a step on an empty heap counted.
+#[inline]
+fn sift_units(len: usize) -> u64 {
+    (usize::BITS - len.leading_zeros()).max(1) as u64
 }
 
 /// Number the active residual with a cardinality search of the given reach and
