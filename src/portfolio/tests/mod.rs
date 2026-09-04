@@ -1091,23 +1091,31 @@ fn the_writeout_reserve_grows_with_the_residual() {
         "a small graph is bagged and written out inside the floor",
     );
 
-    // Bagging the residual is the term that grows faster than the graph, so a
-    // graph whose preprocessing leaves little behind keeps a smaller reserve
-    // than the same graph with all of it left.
-    let large = ring_with_chords(500_000);
-    let whole = super::writeout_reserve(&large, large.num_vertices() as usize);
-    let reduced = super::writeout_reserve(&large, 40_000);
+    // Bagging the residual is the larger of the two terms, so a graph whose
+    // preprocessing leaves little behind keeps a smaller reserve than the same
+    // graph with all of it left.
+    let medium = ring_with_chords(150_000);
+    let whole = super::writeout_reserve(&medium, medium.num_vertices() as usize);
+    let reduced = super::writeout_reserve(&medium, 40_000);
     assert!(
         whole > reduced && reduced > super::MIN_WRITEOUT_RESERVE,
-        "half a million vertices need more than 40,000 of them do, and both more \
+        "150,000 vertices need more than 40,000 of them do, and both more \
          than the floor: {whole:?} against {reduced:?}",
     );
 
-    // The reserve is wider than the second stage of the standard budget on a
-    // residual this size, which is what leaves the schedule where it is there.
+    // The handover stops growing with the graph, so the reserve does too, and
+    // the elimination keeps a share of the second stage however large the
+    // residual is.
+    let large = ring_with_chords(500_000);
+    let capped = super::writeout_reserve(&large, large.num_vertices() as usize);
+    assert_eq!(
+        capped,
+        super::MAX_WRITEOUT_RESERVE,
+        "half a million vertices reserve the ceiling, not more",
+    );
     assert!(
-        whole > Duration::from_millis(4_750),
-        "a 500,000-vertex residual reserves more than the second stage: {whole:?}",
+        capped < Duration::from_millis(4_750),
+        "the ceiling leaves the elimination part of the second stage: {capped:?}",
     );
 }
 

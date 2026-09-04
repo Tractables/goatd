@@ -52,28 +52,36 @@ const RESERVE_RESTARTS: u32 = 2;
 /// vertices the residual holds.
 ///
 /// Bagging the residual and picking the winner out of the candidates grow
-/// faster than the vertex count, because the residual goes into one bag and
-/// every bag beside it is then tested against that one. Measured on
-/// ring-with-chords graphs stopped part-way through min-degree, bagging and
-/// compaction together cost 24 ms at 42,000 vertices, 75 ms at 79,000, 666 ms
-/// at 313,000 and 8.4 seconds at 500,000, which is close to quadratic. Sixty
-/// covers each of those at least three times over, and makes the reserve wider
-/// than the second stage of the standard budget above about 280,000 vertices,
-/// where the elimination keeps the soft deadline it stops at today.
-const WRITEOUT_NANOS_PER_RESIDUAL_KILOVERTEX: u64 = 60;
+/// with the residual, because the residual goes into one bag and every bag
+/// beside it is then tested against that one. Measured across 121 graphs of
+/// 10,000 vertices and up, stopped part-way through min-degree and then handed
+/// over, it came to 1.0 second at 105,000 vertices, 1.6 at 152,000, 2.7 at
+/// 200,000 and 3.3 at 237,000: a little under 15 microseconds a vertex, which
+/// is what this keeps.
+const WRITEOUT_NANOS_PER_RESIDUAL_VERTEX: u64 = 15_000;
 
 /// Nanoseconds [`writeout_reserve`] keeps per vertex and per edge of the whole
 /// graph, for building the decomposition and writing it out. Its bags hold
 /// every vertex once plus the fill the order added, and both are serialised a
 /// vertex at a time: measured at under 30 ns per bag vertex, with the widest
-/// run writing 4 million of them in 127 ms. A hundred leaves room for a caller
-/// that has to get the graph in and the decomposition out around the run, which
-/// on a 36-megabyte graph took another 200 ms.
-const WRITEOUT_NANOS_PER_ELEMENT: u64 = 100;
+/// run writing 4 million of them in 127 ms. Three hundred leaves room for a
+/// caller that has to get the graph in and the decomposition out around the
+/// run, which on a graph of 17 million edges took another 1.2 seconds.
+const WRITEOUT_NANOS_PER_ELEMENT: u64 = 300;
 
-/// Floor under [`writeout_reserve`]. Below about 30,000 vertices the terms
-/// above come to less than the granularity the elimination stops at.
+/// Floor under [`writeout_reserve`]. Below about 3,000 vertices the terms above
+/// come to less than the granularity the elimination stops at.
 const MIN_WRITEOUT_RESERVE: Duration = Duration::from_millis(50);
+
+/// Ceiling on [`writeout_reserve`]. The handover does not keep growing with the
+/// graph: over every corpus graph above 300,000 vertices, up to 2.4 million, it
+/// stayed between 0.2 and 3.9 seconds with no trend in size, because what it
+/// costs follows how many bags the elimination built rather than how many
+/// vertices it started with. Without a ceiling the terms above would price a
+/// graph of a million vertices out of the second stage altogether. Four seconds
+/// covers the widest handover measured and still leaves the elimination a share
+/// of the stage on any graph.
+const MAX_WRITEOUT_RESERVE: Duration = Duration::from_millis(4_000);
 
 fn is_min_degree_variant(order: Order<'_>) -> bool {
     matches!(order, Order::MinDegree | Order::MinDegreeSampled { .. })
@@ -736,19 +744,18 @@ fn restart_deadline(
 /// A candidate stopped by the deadline still has to bag the vertices it never
 /// reached, build the decomposition out of the elimination steps, and give the
 /// caller room to write it. Bagging follows the residual and the rest follows
-/// the whole graph, and neither is a constant: a reserve safe on a graph of
-/// half a million vertices would give most of the window away on one of twelve
-/// thousand, and one sized for the small graph would end the large one with
-/// nothing to return. See [`WRITEOUT_NANOS_PER_RESIDUAL_KILOVERTEX`] and
-/// [`WRITEOUT_NANOS_PER_ELEMENT`].
+/// the whole graph, and neither is a constant: a reserve safe on a graph of a
+/// quarter of a million vertices would give most of the window away on one of
+/// twelve thousand, and one sized for the small graph would end the large one
+/// with nothing to return. Both terms stop at [`MAX_WRITEOUT_RESERVE`], which
+/// is where the measurements stop growing. See
+/// [`WRITEOUT_NANOS_PER_RESIDUAL_VERTEX`] and [`WRITEOUT_NANOS_PER_ELEMENT`].
 fn writeout_reserve(graph: &Graph, residual: usize) -> Duration {
-    let residual = residual as u64;
-    let completion = residual
-        .saturating_mul(residual / 1_000)
-        .saturating_mul(WRITEOUT_NANOS_PER_RESIDUAL_KILOVERTEX);
+    let completion = (residual as u64).saturating_mul(WRITEOUT_NANOS_PER_RESIDUAL_VERTEX);
     let elements = u64::from(graph.num_vertices).saturating_add(graph.edges.len() as u64);
     let writeout = elements.saturating_mul(WRITEOUT_NANOS_PER_ELEMENT);
-    Duration::from_nanos(completion.saturating_add(writeout)).max(MIN_WRITEOUT_RESERVE)
+    Duration::from_nanos(completion.saturating_add(writeout))
+        .clamp(MIN_WRITEOUT_RESERVE, MAX_WRITEOUT_RESERVE)
 }
 
 /// The cutoff an expensive order on an admitted residual runs to: half the time

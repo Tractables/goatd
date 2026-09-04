@@ -80,9 +80,20 @@ would run in the second stage at all, so above the 10,000-vertex boundary the
 elimination takes it: the initial candidates and the restarts run to the hard
 deadline less what the run needs to write its answer out. That reserve is sized
 from the graph rather than fixed, since bagging the residual, building the
-decomposition and writing it all grow with the vertex and edge counts. The
-question is asked with the widest window the schedule could offer and the
-smallest reserve, so a graph refused on those terms is refused on any.
+decomposition and writing it all grow with the vertex and edge counts, and it
+stops at a ceiling, since past a few hundred thousand vertices they stop
+growing: what the handover costs follows how many bags the elimination built,
+not how many vertices it started from. The ceiling is what keeps the exception
+from pricing the largest graphs out of the second stage. The question is asked
+with the widest window the schedule could offer and the smallest reserve, so a
+graph refused on those terms is refused on any.
+
+Running the elimination longer never widens the answer it hands back. Its bags
+are made in order, the residual it never reached goes into one bag, and that
+bag is the widest thing a stopped candidate produces; carrying on can only
+shrink it, and every bag made along the way is smaller than the residual it
+came out of. A later candidate is kept only when its width and total bag size
+are both no worse, so a longer schedule holds whatever the shorter one had.
 
 An extra sample that reaches the restart deadline stops there,
 and one more restart starts only while what the previous restart cost still
