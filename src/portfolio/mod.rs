@@ -56,19 +56,19 @@ fn is_min_fill_variant(order: Order<'_>) -> bool {
     matches!(order, Order::MinFill | Order::MinFillSampled { .. })
 }
 
-/// How the residual left after preprocessing stands against the size rule.
+/// How the residual left after preprocessing stands against the schedule rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Residual {
-    /// At or below [`config::MAX_RESIDUAL_FOR_FULL_SCHEDULE`], so the whole
-    /// schedule runs: every initial order, the diverse pass, the hedge, and
-    /// sampled min-fill restarts.
+    /// A min-fill pass over it fits in the budget, so the whole schedule runs:
+    /// every initial order, the diverse pass, the hedge, and sampled min-fill
+    /// restarts.
     Ordinary,
-    /// Above [`config::MAX_RESIDUAL_FOR_FULL_SCHEDULE`] and at or below the
-    /// limit from [`PortfolioConfig::with_expensive_orders_up_to`]. The
-    /// expensive initial orders run, each on half the time the soft deadline
-    /// has left rather than on the whole window; nested dissection, the diverse
-    /// pass and the hedge do not; and the restarts follow whichever of min-fill
-    /// and min-degree produced a decomposition.
+    /// A min-fill pass does not fit, and the residual is at or below the limit
+    /// from [`PortfolioConfig::with_expensive_orders_up_to`]. The expensive
+    /// initial orders run, each on half the time the soft deadline has left
+    /// rather than on the whole window; nested dissection, the diverse pass and
+    /// the hedge do not; and the restarts follow whichever of min-fill and
+    /// min-degree produced a decomposition.
     Admitted,
     /// Past that limit: min-degree candidates and sampled min-degree restarts,
     /// nothing else.
@@ -76,14 +76,82 @@ enum Residual {
 }
 
 impl Residual {
-    /// Where `active` vertices leave a run whose limit is `limit`.
-    fn classify(active: usize, limit: usize) -> Self {
+    /// Where `active` vertices leave a run whose limit is `limit`, given
+    /// whether the full schedule fits in the budget.
+    fn classify(active: usize, limit: usize, full_schedule_fits: bool) -> Self {
         if active > limit {
             Residual::Large
-        } else if active > config::MAX_RESIDUAL_FOR_FULL_SCHEDULE {
-            Residual::Admitted
-        } else {
+        } else if full_schedule_fits {
             Residual::Ordinary
+        } else {
+            Residual::Admitted
+        }
+    }
+}
+
+/// What one min-fill pass over the residual is expected to cost, from what the
+/// portfolio's first candidate cost on this graph on this machine.
+///
+/// A first candidate that was itself a min-fill order is the estimate. A
+/// min-degree one is the same elimination loop on a cheaper score, so a
+/// min-fill pass costs a multiple of it.
+fn min_fill_estimate(first: Order<'_>, cost: Duration) -> Duration {
+    if is_min_fill_variant(first) {
+        cost
+    } else {
+        cost.mul_f64(config::MIN_FILL_COST_MULTIPLE)
+    }
+}
+
+/// Whether the whole schedule fits in the budget.
+///
+/// The diverse pass, the hedge and the sampled restarts are all min-fill passes
+/// over the residual, so what the schedule costs follows what one such pass
+/// costs. It runs while the time the soft deadline has left holds
+/// [`config::FULL_SCHEDULE_PASSES`] of them; where it holds fewer, the residual
+/// is paced instead.
+///
+/// A run with no soft budget has no window to measure the passes against, so
+/// the vertex line [`config::MAX_RESIDUAL_FOR_FULL_SCHEDULE`] stands there.
+fn full_schedule_fits(active: usize, min_fill: Duration, soft_deadline: Option<Instant>) -> bool {
+    let Some(soft) = soft_deadline else {
+        return active <= config::MAX_RESIDUAL_FOR_FULL_SCHEDULE;
+    };
+    min_fill <= remaining(soft).div_f64(config::FULL_SCHEDULE_PASSES)
+}
+
+/// The residual's class and where the restarts stop on it.
+///
+/// Both are decided once the portfolio's first candidate has run, since the
+/// class rests on what that candidate cost. Nothing before then depends on
+/// either: every class runs that candidate, and it runs on the portfolio's own
+/// deadlines.
+#[derive(Clone, Copy)]
+struct Classified {
+    residual: Residual,
+    /// Where the restart phase stops. The initial candidates keep the soft
+    /// deadline whatever this is.
+    restart_deadline: Option<Instant>,
+}
+
+impl Classified {
+    /// The class of a residual of `active` vertices on a run whose limit is
+    /// `limit`, given `min_fill` as one min-fill pass over it.
+    fn new(
+        active: usize,
+        limit: usize,
+        min_fill: Duration,
+        soft_deadline: Option<Instant>,
+        hard_deadline: Option<Instant>,
+    ) -> Self {
+        let residual = Residual::classify(
+            active,
+            limit,
+            full_schedule_fits(active, min_fill, soft_deadline),
+        );
+        Self {
+            residual,
+            restart_deadline: restart_deadline(residual, soft_deadline, hard_deadline),
         }
     }
 }
@@ -816,49 +884,8 @@ fn run_portfolio(
     let hard_deadline = deadlines.hard;
     let mut prebuilt = engine::prebuild(graph, soft_deadline);
     let mut original = None;
-    let residual = Residual::classify(prebuilt.num_active(), config.expensive_orders_up_to);
-    // Where the restart phase stops. The initial candidates keep the soft
-    // deadline whatever this is.
-    let restart_deadline = restart_deadline(residual, soft_deadline, hard_deadline);
+    let active = prebuilt.num_active();
     let cells: [OnceCell<Vec<u32>>; MAX_HEDGE_PASSES] = std::array::from_fn(|_| OnceCell::new());
-    // Only an ordinary residual hedges. A larger one runs restarts and nothing
-    // else, so there is nothing there for a weighted stage to run against, and
-    // the ranking it would place is work the restarts would rather have. Each
-    // stage's weights are derived when its first candidate asks for them.
-    let modified: Vec<ModifiedWeights<'_>> = match config.hedge.series() {
-        Some(series) if residual == Residual::Ordinary => series
-            .weights()
-            .iter()
-            .zip(&cells)
-            .map(|(entry, cell)| match *entry {
-                HedgeWeights::Eccentricity { dim, rounds } => ModifiedWeights::Ranked {
-                    cell,
-                    graph,
-                    dim,
-                    rounds,
-                    seed,
-                    deadline: restart_deadline,
-                },
-                HedgeWeights::Random { stream } => ModifiedWeights::Random {
-                    cell,
-                    count: graph.num_vertices() as usize,
-                    seed: hedge_random_seed(seed, stream),
-                },
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
-    // Every weighted stage repeats the fixed orders that read weights after the
-    // plain diverse pass. Which orders those are does not depend on the
-    // weights, so the count is known before a ranking is placed.
-    let fixed_runs = if !modified.is_empty() {
-        initial_orders(seed, weights)
-            .iter()
-            .filter(|candidate| reads_weights(candidate.order))
-            .count() as u64
-    } else {
-        0
-    };
     // The builder is needed again for the fixed orders the hedge repeats.
     let order_builder = initial_orders;
     let initial_orders = initial_orders(seed, weights);
@@ -872,9 +899,15 @@ fn run_portfolio(
     let mut hard_deadline_tripped = false;
     // Set by an initial min-fill order that produced a decomposition.
     let mut min_fill_finished = false;
+    // Set by the first candidate, from what that candidate cost.
+    let mut classified: Option<Classified> = None;
 
     for (i, candidate) in initial_orders.iter().copied().enumerate() {
         let order = candidate.order;
+        // The class is not decided until the first candidate has run, and
+        // nothing that candidate does depends on it: it is a min-degree order,
+        // every class runs it, and it runs on the portfolio's own deadlines.
+        let residual = classified.map(|class| class.residual);
         // Honour the deadline between orders (when set), but always run
         // order 0 so we return something even on huge graphs that would
         // otherwise time out inside the first order.
@@ -884,14 +917,14 @@ fn run_portfolio(
         // Past the caller's limit, only min-degree variants reliably complete;
         // nested dissection and min-fill can overrun a short budget.
         let expensive = !is_min_degree_variant(order);
-        if i > 0 && residual == Residual::Large && expensive {
+        if i > 0 && residual == Some(Residual::Large) && expensive {
             continue;
         }
         // Nested dissection reads its deadline between levels, and its
         // bisection of one level on a graph of a million edges takes seconds
         // on its own, so a cutoff does not bound it. An admitted residual does
         // not run it; the slot is traced so a reader can see it was given up.
-        if residual == Residual::Admitted && matches!(order, Order::NestedDissection) {
+        if residual == Some(Residual::Admitted) && matches!(order, Order::NestedDissection) {
             trace(CandidateTrace {
                 stage: Stage::NestedDissection,
                 seed: candidate.seed,
@@ -906,10 +939,14 @@ fn run_portfolio(
         // the restarts still get a share of the budget. The min-degree
         // candidates keep the window they have on any residual, since one of
         // them has to come back with a decomposition.
-        let phase = if residual == Residual::Admitted && expensive {
-            EliminationPhase::AdmittedInitial(admitted_cutoff(restart_deadline, hard_deadline))
-        } else {
-            EliminationPhase::Initial
+        let phase = match classified {
+            Some(class) if class.residual == Residual::Admitted && expensive => {
+                EliminationPhase::AdmittedInitial(admitted_cutoff(
+                    class.restart_deadline,
+                    hard_deadline,
+                ))
+            }
+            _ => EliminationPhase::Initial,
         };
         // Complete the residual only while no candidate has produced a usable
         // decomposition yet. Once one has, completing a later candidate's
@@ -921,6 +958,7 @@ fn run_portfolio(
         } else {
             original.get_or_insert_with(|| engine::prebuild_original(graph))
         };
+        let candidate_started = crate::meter::now();
         let run = engine::run_order_prebuilt(
             candidate_graph,
             engine::RunSpec {
@@ -948,6 +986,19 @@ fn run_portfolio(
             },
         );
         let (outcome, stop) = candidates.record_elimination(run);
+        // The first candidate is the portfolio's own measurement of one
+        // elimination over this graph on this machine, and the schedule for
+        // everything after it rests on it.
+        let cost = crate::meter::now().saturating_duration_since(candidate_started);
+        classified.get_or_insert_with(|| {
+            Classified::new(
+                active,
+                config.expensive_orders_up_to,
+                min_fill_estimate(order, cost),
+                soft_deadline,
+                hard_deadline,
+            )
+        });
         // What the restarts of an admitted residual follow: a min-fill order
         // that came back with a decomposition finished inside its cutoff, so
         // sampled min-fill has a prospect of finishing too.
@@ -989,6 +1040,47 @@ fn run_portfolio(
             break;
         }
     }
+    let class = classified.expect("the first candidate always runs and decides the class");
+    let residual = class.residual;
+    let restart_deadline = class.restart_deadline;
+    // Only an ordinary residual hedges. A larger one runs restarts and nothing
+    // else, so there is nothing there for a weighted stage to run against, and
+    // the ranking it would place is work the restarts would rather have. Each
+    // stage's weights are derived when its first candidate asks for them.
+    let modified: Vec<ModifiedWeights<'_>> = match config.hedge.series() {
+        Some(series) if residual == Residual::Ordinary => series
+            .weights()
+            .iter()
+            .zip(&cells)
+            .map(|(entry, cell)| match *entry {
+                HedgeWeights::Eccentricity { dim, rounds } => ModifiedWeights::Ranked {
+                    cell,
+                    graph,
+                    dim,
+                    rounds,
+                    seed,
+                    deadline: restart_deadline,
+                },
+                HedgeWeights::Random { stream } => ModifiedWeights::Random {
+                    cell,
+                    count: graph.num_vertices() as usize,
+                    seed: hedge_random_seed(seed, stream),
+                },
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    // Every weighted stage repeats the fixed orders that read weights after the
+    // plain diverse pass. Which orders those are does not depend on the
+    // weights, so the count is known before a ranking is placed.
+    let fixed_runs = if !modified.is_empty() {
+        order_builder(seed, weights)
+            .iter()
+            .filter(|candidate| reads_weights(candidate.order))
+            .count() as u64
+    } else {
+        0
+    };
     // Sampling phase: try additional seeds of the full-tie-set sampling
     // order with any remaining budget. Measured ≥79% of min-fill pops have
     // ≥2 tied candidates, so different seeds explore different

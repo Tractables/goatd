@@ -71,15 +71,41 @@ const DEFAULT_HEDGE_RESERVE: f64 = 0.5;
 /// exact minimum.
 const DEFAULT_SAMPLE_BAND: u64 = 3;
 
-/// Residuals of this size or smaller run the whole schedule: every initial
-/// order, the diverse pass, the hedge, and sampled min-fill restarts. Above it
-/// the expensive orders have to be paced, since they can overrun a short
-/// portfolio budget at that scale.
+/// Residuals of this size or smaller run the whole schedule on a run with no
+/// soft budget. Under a budget the schedule is admitted by what a min-fill pass
+/// over the residual is measured to cost, not by a vertex count; see
+/// [`MIN_FILL_COST_MULTIPLE`] and [`FULL_SCHEDULE_PASSES`]. A run with no
+/// budget has no window to measure a pass against, so the vertex line stands
+/// there.
 pub(super) const MAX_RESIDUAL_FOR_FULL_SCHEDULE: usize = 10_000;
 
-/// The default largest residual the expensive orders run on at all. Between
-/// [`MAX_RESIDUAL_FOR_FULL_SCHEDULE`] and this number they run on a paced
-/// schedule; above it the portfolio keeps only its min-degree candidates.
+/// What a min-fill pass over the residual costs, as a multiple of what the
+/// portfolio's first min-degree candidate cost. Both walk the same elimination
+/// loop and differ in the score they keep, so the ratio between them is a
+/// property of the graph rather than of the machine, and the machine's speed
+/// cancels when one is estimated from the other.
+///
+/// Measured on 131 corpus graphs whose initial min-fill candidate finished
+/// inside its window: the pass cost a median 6.7 times the first min-degree
+/// candidate, with the middle eight tenths of them between 5.1 and 13.5.
+pub(super) const MIN_FILL_COST_MULTIPLE: f64 = 6.7;
+
+/// How many min-fill passes over the residual the whole schedule is worth. The
+/// diverse pass alone is [`MAX_DIVERSE_SAMPLING_RUNS`] candidates and the hedge
+/// and the restarts are more, so admitting the schedule wherever one pass fits
+/// would admit it on residuals it cannot get through. The schedule runs while
+/// the time the soft deadline has left holds this many estimated passes.
+///
+/// Fitted on 240 corpus graphs at a 4,750 ms soft budget to admit as many
+/// residuals as the 10,000-vertex line it replaces, 141 against 139. Which ones
+/// changes: 20 sparse residuals of 15,000 to 36,000 vertices, whose pass costs
+/// 140 to 370 ms, now run the schedule, and 18 below 10,000 whose pass costs
+/// 250 ms to 9 s no longer do.
+pub(super) const FULL_SCHEDULE_PASSES: f64 = 15.0;
+
+/// The default largest residual the expensive orders run on at all. Between the
+/// full-schedule rule and this number they run on a paced schedule; above it the
+/// portfolio keeps only its min-degree candidates.
 /// [`PortfolioConfig::with_expensive_orders_up_to`] moves the upper line.
 pub(super) const DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS: usize = 300_000;
 

@@ -791,23 +791,57 @@ fn a_reserve_outside_the_unit_interval_is_refused() {
 }
 
 #[test]
-fn the_size_rule_admits_a_residual_only_between_the_two_boundaries() {
-    let full = super::config::MAX_RESIDUAL_FOR_FULL_SCHEDULE;
+fn a_residual_the_full_schedule_does_not_fit_on_is_admitted_rather_than_ordinary() {
     let limit = super::config::DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS;
-    assert!(limit > full, "the default limit opens a band");
 
-    // The vertices between the two boundaries are admitted.
-    assert_eq!(Residual::classify(full, limit), Residual::Ordinary);
-    assert_eq!(Residual::classify(full + 1, limit), Residual::Admitted);
-    assert_eq!(Residual::classify(limit, limit), Residual::Admitted);
-    assert_eq!(Residual::classify(limit + 1, limit), Residual::Large);
-    // A limit at the lower boundary leaves no band: ordinary or large.
-    assert_eq!(Residual::classify(full, full), Residual::Ordinary);
-    assert_eq!(Residual::classify(full + 1, full), Residual::Large);
-    // Lowered further, everything over the limit is large and nothing is
-    // admitted.
-    assert_eq!(Residual::classify(100, 99), Residual::Large);
-    assert_eq!(Residual::classify(99, 99), Residual::Ordinary);
+    // Inside the caller's limit the measurement decides, whatever the size.
+    assert_eq!(Residual::classify(1, limit, true), Residual::Ordinary);
+    assert_eq!(Residual::classify(1, limit, false), Residual::Admitted);
+    assert_eq!(Residual::classify(limit, limit, true), Residual::Ordinary);
+    assert_eq!(Residual::classify(limit, limit, false), Residual::Admitted);
+    // Past it nothing else is asked: only min-degree runs there.
+    assert_eq!(Residual::classify(limit + 1, limit, true), Residual::Large);
+    assert_eq!(Residual::classify(limit + 1, limit, false), Residual::Large);
+}
+
+#[test]
+fn the_full_schedule_runs_while_the_budget_holds_enough_min_fill_passes() {
+    let passes = super::config::FULL_SCHEDULE_PASSES;
+    let soft = crate::meter::now() + Duration::from_millis(4_750);
+    let fits = Duration::from_millis((4_700.0 / passes) as u64);
+    let over = Duration::from_millis((4_750.0 / passes) as u64 + 100);
+
+    // The size of the residual says nothing on its own; the cost of a pass
+    // over it says everything.
+    assert!(super::full_schedule_fits(1_000_000, fits, Some(soft)));
+    assert!(!super::full_schedule_fits(1, over, Some(soft)));
+
+    // A run with no soft budget has no window to take a share of, so the
+    // vertex line stands there.
+    let full = super::config::MAX_RESIDUAL_FOR_FULL_SCHEDULE;
+    assert!(super::full_schedule_fits(
+        full,
+        Duration::from_secs(3_600),
+        None
+    ));
+    assert!(!super::full_schedule_fits(full + 1, Duration::ZERO, None));
+}
+
+#[test]
+fn a_min_fill_pass_is_a_multiple_of_the_first_min_degree_candidate() {
+    let weights = [1; 4];
+    let cost = Duration::from_millis(100);
+
+    assert_eq!(
+        super::min_fill_estimate(Order::MinDegree, cost),
+        cost.mul_f64(super::config::MIN_FILL_COST_MULTIPLE)
+    );
+    // A portfolio whose first candidate is already a min-fill order has
+    // measured the pass rather than estimated it.
+    assert_eq!(
+        super::min_fill_estimate(Order::MinFillSampled { weights: &weights }, cost),
+        cost
+    );
 }
 
 #[test]
