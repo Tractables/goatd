@@ -73,6 +73,7 @@ fn complete_at_immediate_deadline(graph: &crate::Graph) -> crate::TreeDecomposit
                 width_bound: None,
             },
             complete_on_deadline: true,
+            setup_deadline: None,
         },
     );
     let OrderRun::CompletedAtDeadline(_, decomposition) = run else {
@@ -103,6 +104,7 @@ pub(super) fn run_order(
             update_order_ties: false,
             stop: ElimStop::default(),
             complete_on_deadline: false,
+            setup_deadline: None,
         },
     ) {
         OrderRun::Completed(decomposition) => decomposition,
@@ -135,6 +137,7 @@ fn partial_eliminations_are_never_returned_as_decompositions() {
                     width_bound: None,
                 },
                 complete_on_deadline,
+                setup_deadline: None,
             },
         )
     };
@@ -161,6 +164,7 @@ fn partial_eliminations_are_never_returned_as_decompositions() {
                 width_bound: Some(0),
             },
             complete_on_deadline: false,
+            setup_deadline: None,
         },
     );
     assert!(matches!(width_limited, OrderRun::WidthAborted));
@@ -198,6 +202,7 @@ fn a_soft_cutoff_leaves_the_components_after_it_their_own_orders() {
                 width_bound: None,
             },
             complete_on_deadline: true,
+            setup_deadline: None,
         },
     );
     let OrderRun::CompletedAtDeadline(Cutoff::Soft, decomposition) = run else {

@@ -339,6 +339,14 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--capped-restarts", "--budget"],
         ),
         (
+            &["--expensive-orders-up-to", "50000"],
+            &["--expensive-orders-up-to", "minfill", "portfolio"],
+        ),
+        (
+            &["--order", "flowcutter", "--expensive-orders-up-to", "50000"],
+            &["--expensive-orders-up-to", "flowcutter", "portfolio"],
+        ),
+        (
             &["--order", "flowcutter", "--trace"],
             &["--trace", "flowcutter", "portfolio"],
         ),

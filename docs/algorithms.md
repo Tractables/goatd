@@ -25,9 +25,19 @@ fill-based order needs them, and reused by the rest.
 
 With time left the portfolio keeps going: first a diverse pass over sampled
 fill/degree scores, then further min-fill seeds, which the rest of this page
-calls the restarts. On a residual over 10,000 vertices it runs sampled
-min-degree instead and skips the expensive fixed orders. A trailing candidate
-hands the graph to FlowCutter.
+calls the restarts. A trailing candidate hands the graph to FlowCutter.
+
+The size of the residual after preprocessing picks between three schedules.
+At or below 10,000 vertices all of the above runs. Between 10,000 and 300,000
+vertices the min-fill candidate still runs but stops at half the time the soft
+deadline has left when it starts, so the restarts keep a share of the budget;
+nested dissection, the diverse pass and the hedge are skipped; and the restarts
+are sampled min-fill when the initial min-fill produced a decomposition and
+sampled min-degree when it did not. Above 300,000 vertices only the min-degree
+candidates and sampled min-degree restarts run.
+`PortfolioConfig::with_expensive_orders_up_to` moves the upper boundary; the
+lower one is fixed. The FlowCutter candidate runs on a residual of any size,
+under its own vertex cap.
 
 `portfolio::decompose` returns one decomposition rather than all of them. It
 contracts bags contained in a neighbouring bag, in each candidate that can
