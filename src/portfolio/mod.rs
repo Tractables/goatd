@@ -48,6 +48,10 @@ pub(crate) const SECOND_CANDIDATE_SEED_OFFSET: u64 = 42;
 /// the other orders can overrun a short portfolio budget at this scale.
 const MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS: usize = 10_000;
 
+/// Restarts kept back at the end of the hard window for the trailing FlowCutter
+/// candidate to stop in and hand its result back. See `flowcutter_candidate`.
+const RESERVE_RESTARTS: u32 = 2;
+
 fn is_min_degree_variant(order: Order<'_>) -> bool {
     matches!(order, Order::MinDegree | Order::MinDegreeSampled { .. })
 }
@@ -431,27 +435,51 @@ fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
 
 /// The window the trailing FlowCutter candidate is given.
 ///
-/// `left` is what the hard deadline still has, and `None` on a run without
-/// one. The backend tests its deadline between restarts, so it returns up to
-/// one restart after the timeout it was handed; against a hard deadline the
-/// window therefore stops one estimated restart short of it, so the run ends
-/// inside the time the portfolio actually has. Without a hard deadline there
-/// is nothing to end inside and the configured budget stands.
+/// `left` is what the hard deadline still has, and `None` on a run without one.
+/// Against a hard deadline the window stops `reserve` short of it, so the run
+/// ends inside the time the portfolio actually has. Without a hard deadline
+/// there is nothing to end inside and the configured budget stands.
 fn flowcutter_window(
     configured_budget: Duration,
     left: Option<Duration>,
-    one_restart: Duration,
+    reserve: Duration,
 ) -> Duration {
     match left {
-        Some(left) => left.min(configured_budget).saturating_sub(one_restart),
+        Some(left) => left.min(configured_budget).saturating_sub(reserve),
         None => configured_budget,
     }
+}
+
+/// What the run has spent so far, on both clocks.
+#[derive(Clone, Copy)]
+struct Spent {
+    elapsed: Duration,
+    charged_units: u64,
+}
+
+/// `estimate` at the rate this run has actually been going.
+///
+/// The library charges graph work in the units the FlowCutter estimates are
+/// written in, so the wall time a run has spent divided by the work it has
+/// charged says what one modelled millisecond has cost here. On a box running
+/// one solve per core it is several. The value is never scaled down: the
+/// estimate at the model's own rate is the floor. Under an armed meter both
+/// numbers come from the same clock and the estimate is returned unchanged.
+fn at_observed_rate(estimate: Duration, spent: Spent) -> Duration {
+    let modelled = crate::meter::milliseconds_for_units(spent.charged_units);
+    let elapsed = u64::try_from(spent.elapsed.as_millis()).unwrap_or(u64::MAX);
+    if modelled == 0 || elapsed <= modelled {
+        return estimate;
+    }
+    let estimate_ms = u64::try_from(estimate.as_millis()).unwrap_or(u64::MAX);
+    Duration::from_millis(estimate_ms.saturating_mul(elapsed) / modelled)
 }
 
 fn flowcutter_candidate(
     graph: &Graph,
     configured_budget: Duration,
     hard_deadline: Option<Instant>,
+    spent: Spent,
 ) -> Result<Option<TreeDecomposition>, Error> {
     let vertices = u64::from(graph.num_vertices);
     let edges = graph.edges.len() as u64;
@@ -459,10 +487,19 @@ fn flowcutter_candidate(
     let one_restart = Duration::from_millis(crate::meter::milliseconds_for_units(
         crate::flowcutter::iteration_work_units(vertices, edges),
     ));
+    // What the end of the run costs once the window is up. The backend tests
+    // its deadline between restarts, so it returns up to one restart late, and
+    // the result is then copied out of it a bag at a time. On a 1,728-vertex
+    // primal graph whose result has 114,600 bags the two came to about 200 ms
+    // against a modelled restart of 172, so the reserve is two restarts. Both
+    // are taken at the rate the run has been going: at the model's own rate the
+    // reserve is a fraction of what a loaded machine spends here, and the
+    // candidate then returns after the deadline it was sized for.
+    let reserve = at_observed_rate(RESERVE_RESTARTS * one_restart, spent);
     let timeout = flowcutter_window(
         configured_budget,
         hard_deadline.map(crate::deadline::remaining),
-        one_restart,
+        reserve,
     );
     // Skip windows too small to seed useful FlowCutter iterations; FFI overhead
     // alone eats tens of ms on small graphs.
@@ -665,6 +702,9 @@ fn run_portfolio(
 ) -> Result<CandidateSet, crate::Error> {
     config::validate(config)?;
     let started = crate::meter::now();
+    // Where the run stands on the work clock, so estimates written in work
+    // units can be read at the rate this machine is actually running them.
+    let started_units = crate::meter::units_spent();
     let deadlines =
         crate::deadline::staged(started, config.soft_budget, config.hard_budget, "portfolio")?;
     let soft_deadline = deadlines.soft;
@@ -958,7 +998,15 @@ fn run_portfolio(
     if let Some(configured_budget) = config
         .flowcutter_budget
         .filter(|_| !hard_deadline_tripped && !expired(hard_deadline))
-        && let Some(decomposition) = flowcutter_candidate(graph, configured_budget, hard_deadline)?
+        && let Some(decomposition) = flowcutter_candidate(
+            graph,
+            configured_budget,
+            hard_deadline,
+            Spent {
+                elapsed: crate::meter::now().saturating_duration_since(started),
+                charged_units: crate::meter::units_spent().saturating_sub(started_units),
+            },
+        )?
     {
         let outcome = candidates.push(decomposition);
         trace(CandidateTrace {

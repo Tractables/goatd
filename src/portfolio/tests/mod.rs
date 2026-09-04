@@ -825,19 +825,31 @@ fn ring_with_chords(vertices: u32) -> Graph {
     Graph::new(vertices, edges)
 }
 
+/// A run that has charged nothing has no rate to read, so estimates stand at
+/// the model's own rate.
+fn unmeasured() -> super::Spent {
+    super::Spent {
+        elapsed: Duration::ZERO,
+        charged_units: 0,
+    }
+}
+
 #[test]
 fn the_flowcutter_slot_declines_a_graph_it_could_not_stop_on() {
     // A 20x20 grid needs a few milliseconds of setup and a restart, so even a
     // 200-millisecond window is enough for it.
     let small = grid(20);
-    let candidate = super::flowcutter_candidate(&small, Duration::from_millis(200), None).unwrap();
+    let candidate =
+        super::flowcutter_candidate(&small, Duration::from_millis(200), None, unmeasured())
+            .unwrap();
     assert!(candidate.is_some(), "a small graph fits a short window");
 
     // 60,000 vertices and 180,000 edges put setup and one restart at about
     // nine seconds, and the backend cannot stop before finishing that restart.
     let large = ring_with_chords(60_000);
     let candidate =
-        super::flowcutter_candidate(&large, Duration::from_millis(4_750), None).unwrap();
+        super::flowcutter_candidate(&large, Duration::from_millis(4_750), None, unmeasured())
+            .unwrap();
     assert!(
         candidate.is_none(),
         "a graph whose first restart outlasts the window is declined"
@@ -894,28 +906,53 @@ fn a_restart_that_would_not_finish_in_time_is_not_started() {
 }
 
 #[test]
-fn the_flowcutter_window_stops_one_restart_short_of_the_hard_deadline() {
+fn the_flowcutter_window_stops_the_reserve_short_of_the_hard_deadline() {
     let configured = Duration::from_millis(4_750);
-    let one_restart = Duration::from_millis(170);
+    let reserve = Duration::from_millis(340);
 
     assert_eq!(
-        super::flowcutter_window(configured, Some(Duration::from_millis(1_500)), one_restart),
-        Duration::from_millis(1_330),
-        "the backend is stopped a restart before the hard deadline",
+        super::flowcutter_window(configured, Some(Duration::from_millis(1_500)), reserve),
+        Duration::from_millis(1_160),
+        "the backend is stopped the reserve before the hard deadline",
     );
     assert_eq!(
-        super::flowcutter_window(configured, Some(secs(9)), one_restart),
-        configured - one_restart,
+        super::flowcutter_window(configured, Some(secs(9)), reserve),
+        configured - reserve,
         "a window wider than the configured budget is capped by it",
     );
     assert_eq!(
-        super::flowcutter_window(configured, Some(Duration::from_millis(100)), one_restart),
+        super::flowcutter_window(configured, Some(Duration::from_millis(100)), reserve),
         Duration::ZERO,
-        "a window shorter than one restart leaves nothing",
+        "a window shorter than the reserve leaves nothing",
     );
     assert_eq!(
-        super::flowcutter_window(configured, None, one_restart),
+        super::flowcutter_window(configured, None, reserve),
         configured,
         "with no hard deadline the configured budget stands",
+    );
+}
+
+#[test]
+fn an_estimate_grows_with_the_rate_the_run_is_actually_going_at() {
+    let estimate = Duration::from_millis(340);
+    let spent = |elapsed_ms, charged_ms: u64| super::Spent {
+        elapsed: Duration::from_millis(elapsed_ms),
+        charged_units: charged_ms * crate::meter::UNITS_PER_MS,
+    };
+
+    assert_eq!(
+        super::at_observed_rate(estimate, spent(8_000, 2_000)),
+        Duration::from_millis(1_360),
+        "a run taking four times the modelled work reserves four times as much",
+    );
+    assert_eq!(
+        super::at_observed_rate(estimate, spent(6_000, 8_000)),
+        estimate,
+        "a run beating the model keeps the estimate; it is never scaled down",
+    );
+    assert_eq!(
+        super::at_observed_rate(estimate, spent(6_000, 0)),
+        estimate,
+        "with nothing charged there is no rate to read",
     );
 }

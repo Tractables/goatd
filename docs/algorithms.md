@@ -61,20 +61,30 @@ fits before that deadline: a restart stopped part-way leaves nothing behind,
 so the time is better left to the FlowCutter candidate.
 
 The rest of the hard-budget interval is what the trailing FlowCutter candidate
-gets. The backend tests its deadline between restarts, so it can return one
-restart after the timeout it was handed; the candidate therefore takes what is
-left of the hard-budget interval less one estimated restart, and the run ends
-inside the interval. It is skipped when what remains is too short to seed it,
-and also when the graph is large enough that the backend's setup and first
-restart alone outlast it: the setup pass runs to the end whatever the clock
-says, so on such a graph the run would return well after the hard deadline.
+gets, less a reserve for the end of the run. The backend tests its deadline
+between restarts, so it can return one restart after the timeout it was handed,
+and the result is then copied out of it a bag at a time; the reserve is two
+estimated restarts, which covers both. The reserve is taken at the rate the run
+has actually been going, which is the wall time it has spent divided by the
+graph work it has charged: on a machine running one solve per core a restart
+costs several times what the model says, and a reserve at the model's own rate
+leaves the candidate returning after the deadline it was sized for. The
+candidate is skipped when what remains is too short to seed it, and also when
+the graph is large enough that the backend's setup and first restart alone
+outlast it: the setup pass runs to the end whatever the clock says, so on such
+a graph the run would return well after the hard deadline.
 Both estimates use the work-unit model in *Flow-based separators*. Once the
 search is under way the backend does test the deadline inside it — between the
 restarts, between the cells of one partition, and between the augmentations of
 one cut — and a search stopped that way returns the best decomposition it has
 already recorded. By default, a 4.75-second soft budget has a 9.5-second hard
 deadline. Callers that need more time to write the result can set an earlier
-hard budget independently without changing the soft schedule. Both standard
+hard budget independently without changing the soft schedule. `stop_flag` ends
+a run from outside it: once set, every deadline check in the library answers as
+an expired hard deadline does, in the vendored backend as well as in the Rust
+code, and the caller gets the best decomposition found so far. The command-line
+tool sets it from a `SIGTERM` handler, so a caller that runs the tool under a
+wall clock of its own still gets a decomposition. Both standard
 configurations hedge, which adds the candidates described under *The hedge*.
 The library remains single-threaded throughout.
 
