@@ -947,10 +947,7 @@ fn ring_with_chords(vertices: u32) -> Graph {
 /// A run that has charged nothing has no rate to read, so estimates stand at
 /// the model's own rate.
 fn unmeasured() -> super::Spent {
-    super::Spent {
-        elapsed: Duration::ZERO,
-        charged_units: 0,
-    }
+    super::Spent::unmeasured()
 }
 
 #[test]
@@ -984,18 +981,18 @@ fn the_restarts_keep_a_flowcutter_reserve_at_the_end_of_the_hard_window() {
     // An ordinary residual: the restarts run into the hard window and stop a
     // reserve short of its end.
     assert_eq!(
-        restart_deadline(Residual::Ordinary, Some(soft), Some(hard)),
+        restart_deadline(Residual::Ordinary, Some(soft), Some(hard), None),
         Some(hard - FLOWCUTTER_RESERVE),
     );
 
-    // Both larger classes keep the soft deadline, so the second stage stays
-    // with the trailing FlowCutter candidate.
+    // Both larger classes keep the soft deadline while FlowCutter holds the
+    // second stage, so it is there for the trailing candidate.
     assert_eq!(
-        restart_deadline(Residual::Admitted, Some(soft), Some(hard)),
+        restart_deadline(Residual::Admitted, Some(soft), Some(hard), None),
         Some(soft),
     );
     assert_eq!(
-        restart_deadline(Residual::Large, Some(soft), Some(hard)),
+        restart_deadline(Residual::Large, Some(soft), Some(hard), None),
         Some(soft),
     );
 
@@ -1003,12 +1000,123 @@ fn the_restarts_keep_a_flowcutter_reserve_at_the_end_of_the_hard_window() {
     // soft deadline, so the soft deadline stands.
     let tight = start + Duration::from_millis(5_500);
     assert_eq!(
-        restart_deadline(Residual::Ordinary, Some(soft), Some(tight)),
+        restart_deadline(Residual::Ordinary, Some(soft), Some(tight), None),
         Some(soft),
     );
 
     // No budget, so no hard window to run into.
-    assert_eq!(restart_deadline(Residual::Ordinary, None, None), None);
+    assert_eq!(restart_deadline(Residual::Ordinary, None, None, None), None);
+}
+
+#[test]
+fn a_large_residual_takes_the_second_stage_flowcutter_declined() {
+    let start = crate::meter::now();
+    let soft = start + secs(5);
+    let hard = start + secs(10);
+    let writeout = Duration::from_millis(200);
+
+    // FlowCutter will not run at this size, so both larger classes eliminate to
+    // the end of the hard window instead of stopping half way through it.
+    assert_eq!(
+        restart_deadline(Residual::Admitted, Some(soft), Some(hard), Some(writeout)),
+        Some(hard - writeout),
+    );
+    assert_eq!(
+        restart_deadline(Residual::Large, Some(soft), Some(hard), Some(writeout)),
+        Some(hard - writeout),
+    );
+
+    // An ordinary residual keeps the FlowCutter reserve whatever the writeout
+    // reserve says, since the trailing candidate does run at that size.
+    assert_eq!(
+        restart_deadline(Residual::Ordinary, Some(soft), Some(hard), Some(writeout)),
+        Some(hard - FLOWCUTTER_RESERVE),
+    );
+
+    // A writeout reserve wider than the whole second stage leaves the soft
+    // deadline where it was.
+    assert_eq!(
+        restart_deadline(Residual::Large, Some(soft), Some(hard), Some(secs(6))),
+        Some(soft),
+    );
+}
+
+#[test]
+fn the_second_stage_is_declined_for_a_graph_flowcutter_cannot_stop_on() {
+    let start = crate::meter::now();
+    let soft = start + Duration::from_millis(4_750);
+    let hard = start + Duration::from_millis(9_500);
+    let config = PortfolioConfig::standard_with_budget(Duration::from_millis(4_750));
+
+    // The same 60,000-vertex graph the trailing candidate declines when it is
+    // finally reached: asking before the schedule is fixed gives the same
+    // answer, which is what lets the elimination have the second stage.
+    let large = ring_with_chords(60_000);
+    assert!(
+        super::flowcutter_declines_second_stage(&large, config, Some(soft), Some(hard)),
+        "a graph whose first restart outlasts the second stage is declined up front",
+    );
+
+    // A 20x20 grid runs in a fraction of it, so the second stage is FlowCutter's
+    // and the elimination does not take it.
+    assert!(
+        !super::flowcutter_declines_second_stage(&grid(20), config, Some(soft), Some(hard)),
+        "a small graph is admitted, so the second stage stays with FlowCutter",
+    );
+
+    // With no trailing candidate configured nothing else wants the second stage.
+    assert!(
+        super::flowcutter_declines_second_stage(
+            &grid(20),
+            PortfolioConfig::standard(),
+            Some(soft),
+            Some(hard),
+        ),
+        "a portfolio without the trailing candidate declines it",
+    );
+
+    // With no hard deadline there is no second stage to hand over.
+    assert!(
+        !super::flowcutter_declines_second_stage(&grid(20), config, None, None),
+        "an unbudgeted run leaves the schedule alone",
+    );
+}
+
+#[test]
+fn the_writeout_reserve_grows_with_the_residual() {
+    let small = grid(20);
+    assert_eq!(
+        super::writeout_reserve(&small, small.num_vertices() as usize),
+        super::MIN_WRITEOUT_RESERVE,
+        "a small graph is bagged and written out inside the floor",
+    );
+
+    // Bagging the residual is the larger of the two terms, so a graph whose
+    // preprocessing leaves little behind keeps a smaller reserve than the same
+    // graph with all of it left.
+    let medium = ring_with_chords(150_000);
+    let whole = super::writeout_reserve(&medium, medium.num_vertices() as usize);
+    let reduced = super::writeout_reserve(&medium, 40_000);
+    assert!(
+        whole > reduced && reduced > super::MIN_WRITEOUT_RESERVE,
+        "150,000 vertices need more than 40,000 of them do, and both more \
+         than the floor: {whole:?} against {reduced:?}",
+    );
+
+    // The handover stops growing with the graph, so the reserve does too, and
+    // the elimination keeps a share of the second stage however large the
+    // residual is.
+    let large = ring_with_chords(500_000);
+    let capped = super::writeout_reserve(&large, large.num_vertices() as usize);
+    assert_eq!(
+        capped,
+        super::MAX_WRITEOUT_RESERVE,
+        "half a million vertices reserve the ceiling, not more",
+    );
+    assert!(
+        capped < Duration::from_millis(4_750),
+        "the ceiling leaves the elimination part of the second stage: {capped:?}",
+    );
 }
 
 #[test]
