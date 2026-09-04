@@ -83,11 +83,10 @@ pub enum CandidateOutcome {
     /// No later candidate starts.
     DeadlineReached,
     /// A candidate the portfolio did not start, and so has no result for. The
-    /// trailing FlowCutter candidate reports this on a residual admitted by a
-    /// raised size limit (see
-    /// [`PortfolioConfig`](crate::portfolio::PortfolioConfig)): the backend
-    /// tests its deadline between restarts, and at that size one restart can
-    /// run past the portfolio's hard deadline.
+    /// nested-dissection slot reports this on a residual in the middle band
+    /// (see [`PortfolioConfig`](crate::portfolio::PortfolioConfig)): it reads
+    /// its deadline between levels, and at that size one level can run past the
+    /// portfolio's hard deadline.
     NotStarted,
     /// A weighted stage the budget rule did not start: what one more stage was
     /// projected to cost did not fit in what the stages may spend, so the

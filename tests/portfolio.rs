@@ -200,7 +200,7 @@ fn the_expensive_orders_stop_at_the_configured_residual() {
     // A limit of zero puts every graph above the line, whatever its size.
     let min_degree_only = traced_stages(&graph, config.with_expensive_orders_up_to(0));
     // The grid is far below the default limit, so naming it changes nothing.
-    let at_the_default = traced_stages(&graph, config.with_expensive_orders_up_to(10_000));
+    let at_the_default = traced_stages(&graph, config.with_expensive_orders_up_to(300_000));
 
     assert!(
         ordinary.iter().any(|&(stage, _)| stage == Stage::MinFill),
@@ -222,7 +222,7 @@ fn the_expensive_orders_stop_at_the_configured_residual() {
             .all(|&(stage, pass)| stage == Stage::MinDegree && pass == Pass::Only),
         "above the limit only min-degree runs: {min_degree_only:?}"
     );
-    assert_eq!(at_the_default, ordinary, "10,000 is the default limit");
+    assert_eq!(at_the_default, ordinary, "300,000 is the default limit");
 }
 
 #[test]

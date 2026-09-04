@@ -747,27 +747,21 @@ fn a_reserve_outside_the_unit_interval_is_refused() {
 }
 
 #[test]
-fn the_size_rule_admits_a_residual_only_between_the_default_and_the_limit() {
-    let default = super::config::DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS;
+fn the_size_rule_admits_a_residual_only_between_the_two_boundaries() {
+    let full = super::config::MAX_RESIDUAL_FOR_FULL_SCHEDULE;
+    let limit = super::config::DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS;
+    assert!(limit > full, "the default limit opens a band");
 
-    // Left at the default there is no band: a residual is ordinary or large.
-    assert_eq!(Residual::classify(default, default), Residual::Ordinary);
-    assert_eq!(Residual::classify(default + 1, default), Residual::Large);
-    // Raised, the vertices between the two are admitted.
-    assert_eq!(Residual::classify(default, default * 5), Residual::Ordinary);
-    assert_eq!(
-        Residual::classify(default + 1, default * 5),
-        Residual::Admitted
-    );
-    assert_eq!(
-        Residual::classify(default * 5, default * 5),
-        Residual::Admitted
-    );
-    assert_eq!(
-        Residual::classify(default * 5 + 1, default * 5),
-        Residual::Large
-    );
-    // Lowered, everything over the limit is large and nothing is admitted.
+    // The vertices between the two boundaries are admitted.
+    assert_eq!(Residual::classify(full, limit), Residual::Ordinary);
+    assert_eq!(Residual::classify(full + 1, limit), Residual::Admitted);
+    assert_eq!(Residual::classify(limit, limit), Residual::Admitted);
+    assert_eq!(Residual::classify(limit + 1, limit), Residual::Large);
+    // A limit at the lower boundary leaves no band: ordinary or large.
+    assert_eq!(Residual::classify(full, full), Residual::Ordinary);
+    assert_eq!(Residual::classify(full + 1, full), Residual::Large);
+    // Lowered further, everything over the limit is large and nothing is
+    // admitted.
     assert_eq!(Residual::classify(100, 99), Residual::Large);
     assert_eq!(Residual::classify(99, 99), Residual::Ordinary);
 }

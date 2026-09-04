@@ -55,18 +55,19 @@ fn is_min_fill_variant(order: Order<'_>) -> bool {
 /// How the residual left after preprocessing stands against the size rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Residual {
-    /// Small enough for the whole schedule: every initial order, the diverse
-    /// pass, the hedge, and sampled min-fill restarts.
+    /// At or below [`config::MAX_RESIDUAL_FOR_FULL_SCHEDULE`], so the whole
+    /// schedule runs: every initial order, the diverse pass, the hedge, and
+    /// sampled min-fill restarts.
     Ordinary,
-    /// Past the size the expensive orders are trusted at, but inside the limit
-    /// the caller raised with
-    /// [`PortfolioConfig::with_expensive_orders_up_to`]. The expensive initial
-    /// orders run, each on half the time the soft deadline has left rather than
-    /// on the whole window; the diverse pass and the hedge do not; and the
-    /// restarts follow whichever of min-fill and min-degree finished.
+    /// Above [`config::MAX_RESIDUAL_FOR_FULL_SCHEDULE`] and at or below the
+    /// limit from [`PortfolioConfig::with_expensive_orders_up_to`]. The
+    /// expensive initial orders run, each on half the time the soft deadline
+    /// has left rather than on the whole window; nested dissection, the diverse
+    /// pass and the hedge do not; and the restarts follow whichever of min-fill
+    /// and min-degree produced a decomposition.
     Admitted,
-    /// Past the caller's limit: min-degree candidates and sampled min-degree
-    /// restarts, nothing else.
+    /// Past that limit: min-degree candidates and sampled min-degree restarts,
+    /// nothing else.
     Large,
 }
 
@@ -75,7 +76,7 @@ impl Residual {
     fn classify(active: usize, limit: usize) -> Self {
         if active > limit {
             Residual::Large
-        } else if active > config::DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS {
+        } else if active > config::MAX_RESIDUAL_FOR_FULL_SCHEDULE {
             Residual::Admitted
         } else {
             Residual::Ordinary
@@ -979,7 +980,7 @@ fn run_portfolio(
             // back from a candidate.
             //
             // A candidate that ran has a result, so it never reports
-            // `NotStarted`; only the trailing FlowCutter slot does.
+            // `NotStarted`; only a slot the size rule gave up does.
             CandidateOutcome::Produced { .. }
             | CandidateOutcome::WidthAborted
             | CandidateOutcome::NotStarted

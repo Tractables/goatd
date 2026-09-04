@@ -76,16 +76,16 @@ options:
                         what stops them anyway
   --expensive-orders-up-to <n>
                         portfolio only: the largest residual, in vertices left
-                        after preprocessing, that still runs min-fill and
-                        nested dissection (default 10000). Above the default
-                        and at or below this, those orders run but each stops
-                        at half the time --budget has left when it starts, so
-                        the restarts keep a share of it; the diverse pass and
-                        the hedge stay off; the restarts follow min-fill if the
-                        initial min-fill finished and min-degree if it did not;
-                        and there is no trailing FlowCutter candidate. Above
+                        after preprocessing, that still runs min-fill (default
+                        300000). At or below 10000 vertices the whole schedule
+                        runs. Above 10000 and at or below this, min-fill runs
+                        but stops at half the time --budget has left when it
+                        starts, so the restarts keep a share of it; nested
+                        dissection, the diverse pass and the hedge stay off;
+                        and the restarts follow min-fill if the initial
+                        min-fill finished and min-degree if it did not. Above
                         this the portfolio keeps only its min-degree
-                        candidates, as it always has
+                        candidates
   --trace               portfolio only: write one line per candidate and one
                         for the winner to stderr as they complete
   --steps <n>           flowcutter only: a step budget in place of a clock,
