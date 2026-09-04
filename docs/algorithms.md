@@ -338,15 +338,14 @@ preprocessed residual and eliminates along the result. It reads no seed and no
 weights, so it is one candidate rather than a family of them, and so is the
 plain search above it. It costs one traversal of the residual per vertex, which
 is why `PortfolioConfig::with_minimal_triangulation` gates it on the residual's
-vertex count. Both candidates run against the soft deadline and give up
-part-way rather than taking the restarts' time — except on a residual above the
-full-schedule size, where the elimination rather than FlowCutter owns the second
-stage of the window and a candidate held to the soft deadline would never start,
-since the first greedy order there regularly runs past it. There the searches
-run into the second stage on a cutoff of half what the restarts' deadline has
-left. One step of MCS-M can walk the whole residual, so the shared search reads
-the clock while it walks rather than only between steps; both reaches stop the
-same way. On most graphs the greedy
+vertex count. Both candidates belong to the restart phase and read its
+deadline, each on a cutoff of half what that deadline has left when it starts,
+so a search that cannot finish gives up part-way rather than taking the rest of
+the restarts' time. Held to the soft deadline instead they would never start on
+the graphs whose first greedy candidate runs past it, which are the graphs
+where the greedy orders leave the most behind. One step of MCS-M can walk the
+whole residual, so the shared search reads the clock while it walks rather than
+only between steps; both reaches stop the same way. On most graphs the greedy
 orders are narrower and the portfolio keeps them.
 
 **Dropping fill the bags do not need.** Removing one edge `uv` from a chordal

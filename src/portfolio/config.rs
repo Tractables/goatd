@@ -628,12 +628,10 @@ impl PortfolioConfig {
     /// vertex with the most numbered neighbours, and the candidate eliminates
     /// along that numbering reversed. It reads no seed and no weights, so it is
     /// one candidate; it runs before the MCS-M candidate and before the
-    /// restarts, and it stops at the soft deadline rather than taking their
-    /// time, except on a residual above the full-schedule size, where the
-    /// elimination owns the rest of the window and the candidate takes half of
-    /// what is left of it. It adds no fill on a chordal residual and no
-    /// minimality guarantee on any other, so it is a cheap construction to race
-    /// against the greedy orders rather than a better one.
+    /// restarts, on half of what the restarts' own deadline has left, so it
+    /// cannot take all of their time. It adds no fill on a chordal residual and
+    /// no minimality guarantee on any other, so it is a cheap construction to
+    /// race against the greedy orders rather than a better one.
     ///
     /// The default admits every size, because the search takes its vertex off a
     /// heap rather than by scanning and so costs a pass over the edges however
@@ -658,8 +656,9 @@ impl PortfolioConfig {
     ///
     /// MCS-M eliminates along a numbering that fills the residual to a minimal
     /// triangulation. It is one deterministic candidate, it runs after the
-    /// fixed orders and before the restarts, and it stops at the soft deadline
-    /// with nothing rather than taking their time. On most graphs it is wider
+    /// fixed orders and before the restarts, on half of what the restarts' own
+    /// deadline has left, and gives up with nothing rather than taking the
+    /// rest of their time. On most graphs it is wider
     /// than the greedy orders and the portfolio keeps whichever is narrower;
     /// where it wins it wins by several.
     ///

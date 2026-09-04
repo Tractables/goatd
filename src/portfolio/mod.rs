@@ -1147,26 +1147,21 @@ fn run_portfolio(
     // cheaper one goes first, which also leaves MCS-M a tighter width bound to
     // abort on.
     //
-    // Which clock: the one the initial candidates read. Below the full-schedule
-    // size that is the soft deadline, as it always was. Above it, where the
-    // elimination rather than FlowCutter holds the second stage of the window,
-    // a search held to the soft deadline never starts at all — those are the
-    // graphs whose first greedy candidate runs past it — and they are also the
-    // graphs where the greedy orders leave the most behind. So there the
-    // searches run into the second stage as well, on a cutoff of half what the
-    // restarts' deadline has left, the same share an expensive order on an
-    // admitted residual takes, so a search that cannot finish cannot take all
-    // of the restarts' time either.
+    // Which clock: the restarts', which is the phase these candidates belong
+    // to. Held to the soft deadline instead, they are the only part of the
+    // phase that is, and on a graph whose first greedy candidate runs past that
+    // deadline they never start at all while the restarts behind them run on
+    // for seconds. Those are the graphs where the greedy orders leave the most
+    // behind. Each takes a cutoff of half what the restarts' deadline has left,
+    // the share an expensive order on an admitted residual takes, so a search
+    // that cannot finish cannot take all of the restarts' time either.
     //
     // What they cost, which the hedge's model of a stage leaves out: the stages
     // repeat the plain pass on other weights, and neither candidate is part of
     // either.
     let mut cardinality_search_cost = Duration::ZERO;
-    let cardinality_phase = if residual == Residual::Ordinary {
-        EliminationPhase::ExtraSampling
-    } else {
-        EliminationPhase::AdmittedInitial(admitted_cutoff(restart_deadline, hard_deadline))
-    };
+    let cardinality_phase =
+        EliminationPhase::AdmittedInitial(admitted_cutoff(restart_deadline, hard_deadline));
     for (gate, order) in [
         (config.maximum_cardinality, Order::MaximumCardinality),
         (config.minimal_triangulation, Order::MinimalTriangulation),
@@ -1177,7 +1172,7 @@ fn run_portfolio(
         let Some(gate) = gate else { continue };
         if hard_deadline_tripped
             || prebuilt.num_active() > gate as usize
-            || expired(initial_deadline)
+            || expired(restart_deadline)
             || expired(hard_deadline)
         {
             continue;
@@ -1195,7 +1190,7 @@ fn run_portfolio(
                 update_order_ties: false,
                 stop: elimination_stop(
                     cardinality_phase,
-                    initial_deadline,
+                    restart_deadline,
                     hard_deadline,
                     candidates.best_width(),
                 ),
