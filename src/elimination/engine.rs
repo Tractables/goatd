@@ -50,18 +50,7 @@ pub(crate) struct Prebuilt {
 /// across every order in a portfolio.
 pub(crate) fn prebuild(input: &crate::Graph, soft_deadline: Option<Instant>) -> Prebuilt {
     let graph = EliminationGraph::from_edges(input.num_vertices, &input.edges);
-    finish_prebuild(preprocess(graph, soft_deadline))
-}
-
-/// Build the elimination representation without applying reduction rules.
-pub(crate) fn prebuild_original(input: &crate::Graph) -> Prebuilt {
-    finish_prebuild(Reduced {
-        graph: EliminationGraph::from_edges(input.num_vertices, &input.edges),
-        prefix: ElimSteps::default(),
-    })
-}
-
-fn finish_prebuild(reduced: Reduced) -> Prebuilt {
+    let reduced = preprocess(graph, soft_deadline);
     let components = find_connected_components(&reduced.graph);
     Prebuilt {
         reduced,
