@@ -65,10 +65,11 @@ enum Residual {
     Ordinary,
     /// Above [`config::MAX_RESIDUAL_FOR_FULL_SCHEDULE`] and at or below the
     /// limit from [`PortfolioConfig::with_expensive_orders_up_to`]. The
-    /// expensive initial orders run, each on half the time the soft deadline
+    /// expensive initial orders run, each on half the time the restart deadline
     /// has left rather than on the whole window; nested dissection, the diverse
-    /// pass and the hedge do not; and the restarts follow whichever of min-fill
-    /// and min-degree produced a decomposition.
+    /// pass and the hedge do not; the initial candidates and the restarts both
+    /// run to the restart deadline; and the restarts follow whichever of
+    /// min-fill and min-degree produced a decomposition.
     Admitted,
     /// Past that limit: min-degree candidates and sampled min-degree restarts,
     /// nothing else.
@@ -614,24 +615,26 @@ enum EliminationPhase {
 
 /// Where the sampled restarts stop.
 ///
-/// On a residual that runs the whole schedule they run past the soft deadline
+/// On a residual at or below the caller's limit they run past the soft deadline
 /// into the hard window, keeping [`FLOWCUTTER_RESERVE`] at the end of it for
 /// the trailing FlowCutter candidate. More restart time is worth more than a
-/// longer FlowCutter tail on these graphs.
+/// longer FlowCutter tail on these graphs, and an admitted residual that spent
+/// its soft budget on the first candidate has nothing else to do with the
+/// second stage: a restart projected to run into the deadline is never started,
+/// so the wider window only adds restarts that fit.
 ///
-/// Above the full-schedule size the soft deadline stands, so the second stage
-/// stays with FlowCutter. That covers both larger classes, the admitted
-/// residuals as well as the ones past the caller's limit: a restart there
-/// costs a large fraction of the window, and on graphs of that size FlowCutter
-/// is regularly the widest margin the portfolio has. The soft deadline also
-/// stands on a run with no hard deadline, and where the reserve would put the
-/// stop before the soft deadline on a hard window shorter than the reserve.
+/// Past the caller's limit the soft deadline stands, so the second stage stays
+/// with FlowCutter: a restart there costs a large fraction of the window, and
+/// on graphs of that size FlowCutter is regularly the widest margin the
+/// portfolio has. The soft deadline also stands on a run with no hard deadline,
+/// and where the reserve would put the stop before the soft deadline on a hard
+/// window shorter than the reserve.
 fn restart_deadline(
     residual: Residual,
     soft_deadline: Option<Instant>,
     hard_deadline: Option<Instant>,
 ) -> Option<Instant> {
-    if residual != Residual::Ordinary {
+    if residual == Residual::Large {
         return soft_deadline;
     }
     let (Some(soft), Some(hard)) = (soft_deadline, hard_deadline) else {
@@ -647,12 +650,11 @@ fn restart_deadline(
 /// the restarts' own deadline has left when the order starts.
 ///
 /// Each order gives back at least what it does not use, so however many of them
-/// run, the restarts still start with time in hand. An admitted residual keeps
-/// the soft deadline as its restart deadline, so today this halves the soft
-/// window; taking the restart deadline rather than the soft one is what the
-/// rule means, and it stays right if the restart phase is ever widened here.
-/// With no restart deadline there is nothing to halve and the order runs to the
-/// portfolio's hard deadline, as it does below the band.
+/// run, the restarts still start with time in hand. An admitted residual's
+/// restart deadline sits a reserve short of the hard deadline, so this halves
+/// what is left of both stages. With no restart deadline there is nothing to
+/// halve and the order runs to the portfolio's hard deadline, as it does below
+/// the band.
 fn admitted_cutoff(
     restart_deadline: Option<Instant>,
     hard_deadline: Option<Instant>,
@@ -661,6 +663,35 @@ fn admitted_cutoff(
         return hard_deadline;
     };
     Some(crate::meter::now() + remaining(restart) / 2)
+}
+
+/// The deadline the initial loop reads between candidates: once it has passed,
+/// whatever has already returned is the answer.
+///
+/// An admitted residual reads the deadline its restarts stop at, the hard
+/// window less the FlowCutter reserve. On graphs of that size the first
+/// min-degree pass often spends the whole soft budget on its own, and stopping
+/// there hands back its answer with half the window unspent; the paced min-fill
+/// behind it is usually the narrower of the two.
+///
+/// The soft deadline still does its two other jobs there: preprocessing stops
+/// at it, and a deterministic greedy order that reaches it switches to cheaper
+/// scoring for the rest of its elimination. It just does not decide whether the
+/// next candidate starts.
+///
+/// Below and above the band the soft deadline stands. An ordinary residual has
+/// a schedule of cheap candidates that finish well inside it, and past the
+/// caller's limit only min-degree candidates run and the second stage belongs
+/// to FlowCutter.
+fn initial_candidate_deadline(
+    residual: Residual,
+    soft_deadline: Option<Instant>,
+    restart_deadline: Option<Instant>,
+) -> Option<Instant> {
+    match residual {
+        Residual::Admitted => restart_deadline,
+        Residual::Ordinary | Residual::Large => soft_deadline,
+    }
 }
 
 /// Whether another restart is admitted: one projected to cost `projected` and
@@ -817,9 +848,10 @@ fn run_portfolio(
     let mut prebuilt = engine::prebuild(graph, soft_deadline);
     let mut original = None;
     let residual = Residual::classify(prebuilt.num_active(), config.expensive_orders_up_to);
-    // Where the restart phase stops. The initial candidates keep the soft
-    // deadline whatever this is.
+    // Where the restart phase stops, and where the initial loop stops starting
+    // another candidate.
     let restart_deadline = restart_deadline(residual, soft_deadline, hard_deadline);
+    let initial_deadline = initial_candidate_deadline(residual, soft_deadline, restart_deadline);
     let cells: [OnceCell<Vec<u32>>; MAX_HEDGE_PASSES] = std::array::from_fn(|_| OnceCell::new());
     // Only an ordinary residual hedges. A larger one runs restarts and nothing
     // else, so there is nothing there for a weighted stage to run against, and
@@ -878,7 +910,7 @@ fn run_portfolio(
         // Honour the deadline between orders (when set), but always run
         // order 0 so we return something even on huge graphs that would
         // otherwise time out inside the first order.
-        if i > 0 && expired(soft_deadline) {
+        if i > 0 && expired(initial_deadline) {
             break;
         }
         // Past the caller's limit, only min-degree variants reliably complete;
@@ -1170,8 +1202,8 @@ fn run_portfolio(
     }
     // Runs vanilla FlowCutter once as a final portfolio candidate. Placed after
     // the extra-sampling loop so it runs in whatever is left of the hard
-    // window: the restart reserve on an ordinary residual, and up to the whole
-    // second stage on the larger ones, where the restarts stopped at the soft
+    // window: the restart reserve at or below the caller's limit, and up to the
+    // whole second stage past it, where the restarts stopped at the soft
     // deadline. FlowCutter already returns a complete decomposition, so no
     // separator-refinement pass is applied to it. It runs on every residual;
     // on the large ones it is often the best candidate by a wide margin, and
