@@ -19,8 +19,10 @@ const DIVERSE_REPLAY_SEEDS: u64 = 9;
 pub const MAX_DIVERSE_SAMPLING_RUNS: u64 = DIVERSE_INITIAL_COEFFICIENTS.len() as u64
     + DIVERSE_REPLAY_COEFFICIENTS.len() as u64 * DIVERSE_REPLAY_SEEDS;
 // A 4.75 s soft budget reaches the two-stage hard deadline at 9.5 s, leaving
-// output headroom under a ten-second process limit.
-const EXTENDED_SAMPLING_MIN_SOFT_BUDGET: Duration = Duration::from_millis(4_750);
+// output headroom under a ten-second process limit. It is also the smallest
+// budget that runs a trailing FlowCutter candidate at all, which is why
+// `FLOWCUTTER_CANDIDATE_BASE_WINDOW` reads it.
+pub(super) const EXTENDED_SAMPLING_MIN_SOFT_BUDGET: Duration = Duration::from_millis(4_750);
 
 /// Default soft deadline for the sampled-min-fill portfolio. The hard deadline
 /// inside the elimination core is twice this.

@@ -24,7 +24,7 @@ use crate::embedding::{self, Embedding};
 use crate::flowcutter::{Budget, decompose as flowcutter_decompose};
 use crate::{Error, Graph, TreeDecomposition};
 use candidates::{CandidateSet, ScheduleStop};
-use config::{FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS};
+use config::{EXTENDED_SAMPLING_MIN_SOFT_BUDGET, FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS};
 
 pub use config::{
     DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, HedgeWeights, MAX_DIVERSE_SAMPLING_RUNS,
@@ -32,10 +32,22 @@ pub use config::{
 };
 pub use trace::{CandidateOutcome, CandidateTrace, Pass, Stage};
 
-/// Exit early if FlowCutter hasn't improved treewidth for this long. Caps
-/// per-graph overhead where FlowCutter converges fast.
+/// Exit early if FlowCutter hasn't improved treewidth for this long, on a
+/// window of [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] or less. Caps per-graph
+/// overhead where FlowCutter converges fast.
 const FLOWCUTTER_CANDIDATE_PATIENCE: Duration = Duration::from_millis(500);
+/// Restarts the trailing candidate may run on a window of
+/// [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] or less.
 const FLOWCUTTER_CANDIDATE_ITERATIONS: u32 = 50;
+/// The window up to which the trailing FlowCutter candidate runs under the two
+/// limits above; over it the window is what ends it. See
+/// [`flowcutter_candidate_limits`].
+///
+/// It is the smallest soft budget that runs a trailing candidate at all:
+/// [`PortfolioConfig::standard_with_budget`] gives the slot a budget only from
+/// here up, and the window is at most that budget, so at that budget the two
+/// constants above are exactly what the candidate runs with.
+const FLOWCUTTER_CANDIDATE_BASE_WINDOW: Duration = EXTENDED_SAMPLING_MIN_SOFT_BUDGET;
 const SAMPLE_SEED_OFFSET: u64 = 100;
 const SAMPLE_SEED_STRIDE: u64 = 7919;
 /// Separates a random hedge weighting from the run's other draws.
@@ -509,15 +521,60 @@ fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
 /// Against a hard deadline the window stops `reserve` short of it, so the run
 /// ends inside the time the portfolio actually has. Without a hard deadline
 /// there is nothing to end inside and the configured budget stands.
+///
+/// Over [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] the reserve is capped at half of
+/// what is left. The reserve is an estimate of two restarts at the rate the run
+/// has been going, and on a graph whose restarts are expensive it can be the
+/// whole window, so the candidate is declined although the portfolio has tens of
+/// seconds in hand and this is the graph FlowCutter is worth the most on. Half
+/// is still a full window of overshoot: a run given the first half that comes
+/// back one restart late is inside the hard deadline as long as that restart is
+/// no longer than the window itself.
 fn flowcutter_window(
     configured_budget: Duration,
     left: Option<Duration>,
     reserve: Duration,
 ) -> Duration {
     match left {
-        Some(left) => left.min(configured_budget).saturating_sub(reserve),
+        Some(left) => {
+            let window = left.min(configured_budget);
+            let reserve = if window > FLOWCUTTER_CANDIDATE_BASE_WINDOW {
+                reserve.min(window / 2)
+            } else {
+                reserve
+            };
+            window.saturating_sub(reserve)
+        }
         None => configured_budget,
     }
+}
+
+/// How long the trailing FlowCutter candidate may go without finding a
+/// narrower decomposition before it stops, and how many restarts it may run,
+/// given the window it has.
+///
+/// At [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] and below both are what the slot has
+/// always used, which is what a window that short was tuned for.
+///
+/// Above it neither applies: the window ends the run. The candidate is the last
+/// thing the portfolio does, so the time it does not use goes to nobody, and the
+/// backend keeps the narrowest decomposition it has found, so a restart it does
+/// not make can only leave width behind. What the two limits are for is a short
+/// window, where a run that has stopped improving is better ended than carried
+/// to the deadline; over the base window the deadline is the bound, together
+/// with the restart cap a timed run carries elsewhere in the library, which is
+/// high enough that the clock reaches it first.
+///
+/// Both read the window rather than the configured budget, since the window is
+/// already the smaller of that budget and what the hard deadline has left.
+fn flowcutter_candidate_limits(window: Duration) -> (Option<Duration>, u32) {
+    if window <= FLOWCUTTER_CANDIDATE_BASE_WINDOW {
+        return (
+            Some(FLOWCUTTER_CANDIDATE_PATIENCE),
+            FLOWCUTTER_CANDIDATE_ITERATIONS,
+        );
+    }
+    (None, crate::flowcutter::TIMED_ITERATIONS)
 }
 
 /// What the run has spent so far, on both clocks.
@@ -586,14 +643,8 @@ fn flowcutter_candidate(
     if Duration::from_millis(crate::meter::milliseconds_for_units(first_restart)) > timeout {
         return Ok(None);
     }
-    match flowcutter_decompose(
-        graph,
-        Budget::timed(
-            timeout,
-            Some(FLOWCUTTER_CANDIDATE_PATIENCE),
-            FLOWCUTTER_CANDIDATE_ITERATIONS,
-        ),
-    ) {
+    let (patience, iterations) = flowcutter_candidate_limits(timeout);
+    match flowcutter_decompose(graph, Budget::timed(timeout, patience, iterations)) {
         Ok(decomposition) => Ok(Some(decomposition)),
         // A timed backend run may end before it has a result. The elimination
         // candidates already make the portfolio complete, so this one can be
