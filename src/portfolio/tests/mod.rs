@@ -106,27 +106,79 @@ fn best_only_candidate_storage_compares_compacted_bag_size() {
 }
 
 #[test]
-fn a_short_standard_budget_keeps_the_fast_sampling_cap() {
-    let budget = Duration::from_millis(4_749);
-    let config = PortfolioConfig::standard_with_budget(budget);
+fn a_budgeted_portfolio_asks_for_the_same_schedule_at_every_budget() {
+    // The whole schedule is offered on any budget; what a short one can
+    // afford is decided against the clock when the run gets there.
+    for milliseconds in [1, 300, 1_000, 4_749, 4_750, 30_000] {
+        let budget = Duration::from_millis(milliseconds);
+        let config = PortfolioConfig::standard_with_budget(budget);
 
-    assert_eq!(config.soft_budget, Some(budget));
-    assert_eq!(config.sampling_runs, 100);
-    assert_eq!(config.diverse_sampling_runs, 0);
-    assert_eq!(config.flowcutter_budget, None);
-    assert!(config.restarts_to_deadline);
+        assert_eq!(config.soft_budget, Some(budget));
+        assert_eq!(config.sampling_runs, 100);
+        assert_eq!(config.diverse_sampling_runs, MAX_DIVERSE_SAMPLING_RUNS);
+        assert_eq!(config.diverse_sampling_runs, 46);
+        assert_eq!(config.flowcutter_budget, Some(budget));
+        assert!(config.restarts_to_deadline);
+    }
 }
 
 #[test]
-fn a_ten_second_outer_window_with_output_headroom_raises_the_sampling_cap() {
-    let budget = Duration::from_millis(4_750);
-    let config = PortfolioConfig::standard_with_budget(budget);
+fn the_restart_count_is_out_of_the_way_under_a_budget() {
+    // A budgeted run stops its restarts at the restart deadline, so the count
+    // it carries never decides anything and the schedule does not need a
+    // second one for longer budgets.
+    let deadline = crate::meter::now() + secs(1);
+    let budgeted = PortfolioConfig::standard_with_budget(Duration::from_millis(4_750));
 
-    assert_eq!(config.soft_budget, Some(budget));
-    assert_eq!(config.sampling_runs, 1_000);
-    assert_eq!(config.diverse_sampling_runs, 46);
-    assert_eq!(config.flowcutter_budget, Some(budget));
-    assert!(config.restarts_to_deadline);
+    assert_eq!(super::restart_count(budgeted, Some(deadline)), u64::MAX);
+    assert_eq!(
+        super::restart_count(budgeted.with_restarts_to_deadline(false), Some(deadline)),
+        100,
+        "capped, the count stops them",
+    );
+    assert_eq!(
+        super::restart_count(PortfolioConfig::standard(), None),
+        100,
+        "with no deadline to run to, the count is all there is",
+    );
+}
+
+#[test]
+fn the_diverse_pass_is_admitted_at_the_evaluation_budget_whatever_the_orders_cost() {
+    // A 4,750 ms soft budget takes its hard deadline at 9,500 ms, and on an
+    // ordinary residual the restarts stop 1.5 s before that, so the restart
+    // deadline is 8,000 ms into the run. The six initial orders end at the
+    // soft deadline at the latest, and the pass is admitted anywhere in that
+    // range.
+    let admitted = |spent: u64, restart_window: u64| {
+        super::diverse_pass_fits(
+            Duration::from_millis(spent),
+            6,
+            Some(crate::meter::now() + Duration::from_millis(restart_window - spent)),
+        )
+    };
+    for spent in (0..=4_750).step_by(50) {
+        assert!(
+            admitted(spent, 8_000),
+            "the initial orders costing {spent} ms of the restarts' 8,000 leaves room for the pass",
+        );
+    }
+
+    // Past the soft deadline the rule bites: initial orders that ran 7 s into
+    // an 8-second restart window project a candidate the last second cannot
+    // hold.
+    assert!(!admitted(7_000, 8_000));
+
+    // The same holds at every soft budget from about 2.25 s up, where a
+    // default hard deadline puts the restart deadline far enough past the soft
+    // one. Below that a run whose initial orders take the whole soft budget has
+    // too little left to start the pass, which is the answer either way.
+    assert!(admitted(2_500, 3_500), "a 2.5 s soft budget");
+    assert!(admitted(30_000, 58_500), "a 30 s soft budget");
+    assert!(!admitted(2_000, 2_500), "a 2 s soft budget");
+
+    // No restart deadline, so the pass takes its time from nothing.
+    assert!(super::diverse_pass_fits(secs(600), 6, None));
 }
 
 #[test]
@@ -196,7 +248,7 @@ fn an_explicit_hard_budget_does_not_change_the_soft_schedule() {
 
     assert_eq!(config.soft_budget, Some(soft));
     assert_eq!(config.hard_budget, Some(hard));
-    assert_eq!(config.sampling_runs, 1_000);
+    assert_eq!(config.sampling_runs, 100);
     assert_eq!(config.diverse_sampling_runs, 46);
     assert_eq!(config.flowcutter_budget, Some(soft));
 }
@@ -929,6 +981,32 @@ fn a_candidate_stopped_at_the_soft_cutoff_does_not_end_the_portfolio() {
     assert!(
         seen.iter().any(|(stage, _)| *stage == Stage::FlowCutter),
         "the trailing FlowCutter slot still has the rest of the hard budget: {seen:?}"
+    );
+}
+
+#[test]
+fn a_short_budget_still_runs_the_diverse_pass_and_the_flowcutter_candidate() {
+    // A hundred vertices, so the initial orders cost a fraction of a
+    // millisecond of the 300 the budget gives them and both admissions hold.
+    let graph = grid(10);
+    let weights = vec![1u32; graph.num_vertices() as usize];
+    let config = PortfolioConfig::standard_with_budget(Duration::from_millis(300));
+
+    let mut seen: Vec<Stage> = Vec::new();
+    let decomposition = super::decompose_traced(&graph, &weights, 0, config, &mut |candidate| {
+        seen.push(candidate.stage);
+    })
+    .unwrap();
+
+    decomposition.validate(&graph).unwrap();
+    assert!(
+        seen.iter()
+            .any(|stage| matches!(stage, Stage::Diverse { .. })),
+        "the diverse pass fits in what the restarts have: {seen:?}"
+    );
+    assert!(
+        seen.contains(&Stage::FlowCutter),
+        "the trailing FlowCutter candidate has a window it can be seeded in: {seen:?}"
     );
 }
 

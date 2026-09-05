@@ -8,8 +8,6 @@ use crate::embedding::{DEFAULT_MAX_ROUNDS, MAX_DIM};
 /// costs construction time without improving the decomposition.
 pub(super) const MAX_SAMPLING_RUNS: u64 = 100;
 
-/// Larger budgeted runs keep exploring after the short-run sample cap.
-const EXTENDED_SAMPLING_RUNS: u64 = 1_000;
 pub(super) const DIVERSE_INITIAL_COEFFICIENTS: [i8; 10] = [1, -1, -2, -3, -4, -5, -8, -7, -16, -32];
 pub(super) const DIVERSE_REPLAY_COEFFICIENTS: [i8; 4] = [-3, -5, -8, -16];
 const DIVERSE_REPLAY_SEEDS: u64 = 9;
@@ -18,9 +16,6 @@ const DIVERSE_REPLAY_SEEDS: u64 = 9;
 /// [`PortfolioConfig::with_diverse_sampling_runs`] rejects anything above it.
 pub const MAX_DIVERSE_SAMPLING_RUNS: u64 = DIVERSE_INITIAL_COEFFICIENTS.len() as u64
     + DIVERSE_REPLAY_COEFFICIENTS.len() as u64 * DIVERSE_REPLAY_SEEDS;
-// A 4.75 s soft budget reaches the two-stage hard deadline at 9.5 s, leaving
-// output headroom under a ten-second process limit.
-const EXTENDED_SAMPLING_MIN_SOFT_BUDGET: Duration = Duration::from_millis(4_750);
 
 /// Default soft deadline for the sampled-min-fill portfolio. The hard deadline
 /// inside the elimination core is twice this.
@@ -62,6 +57,15 @@ const DEFAULT_HEDGE: Hedge = Hedge::eccentricity();
 /// A run with no soft budget has nothing to protect and runs every stage of the
 /// series, whatever this says.
 const DEFAULT_HEDGE_RESERVE: f64 = 0.5;
+
+/// How much of the time the restart deadline has left the diverse pass is
+/// admitted against: it runs while one more elimination of the kind the
+/// initial orders just ran fits in this share of it. The same shape as the
+/// hedge's reserve, and half for the same reason — a pass whose candidates
+/// cost about what the initial orders cost gets a few of them in before the
+/// restarts, and one whose candidates would fill the rest of the window does
+/// not start.
+pub(super) const DIVERSE_PASS_RESERVE: f64 = 0.5;
 
 /// How far above the minimum fill the ordinary restarts draw their tie set, in
 /// fill edges. Drawing only from the vertices tied at the minimum leaves a
@@ -375,9 +379,11 @@ impl PortfolioConfig {
     /// not. Large residuals run sampled min-degree instead and ignore this.
     ///
     /// Capped at [`MAX_DIVERSE_SAMPLING_RUNS`]; a larger value is rejected when
-    /// the portfolio runs. [`PortfolioConfig::standard_with_budget`] sets this
-    /// along with a larger ordinary sample cap and a trailing FlowCutter
-    /// candidate; set it here to take the diverse orders on their own.
+    /// the portfolio runs. This is how many candidates the pass has when it
+    /// runs, not whether it runs: under a soft budget it also has to fit in
+    /// the time the restart deadline has left.
+    /// [`PortfolioConfig::standard_with_budget`] asks for the whole pass; set
+    /// it here to take the diverse orders on their own.
     pub fn with_diverse_sampling_runs(mut self, runs: u64) -> Self {
         self.diverse_sampling_runs = runs;
         self
@@ -412,43 +418,36 @@ impl PortfolioConfig {
         }
     }
 
-    /// Standard candidates under a soft wall-clock budget, with sampling
-    /// effort and the trailing FlowCutter slot scaled for the corresponding
-    /// hard window.
+    /// Standard candidates under a soft wall-clock budget. Every part of the
+    /// schedule is offered on any budget and each decides against the clock
+    /// whether it runs, so nothing here is switched by the size of the budget
+    /// itself.
     ///
     /// The hedge runs its first weighted stage on any budget and one more for
     /// as long as half of what the plain pass left holds another; what does not
     /// fit stays with the ordinary restarts. [`PortfolioConfig::with_hedge_reserve`]
-    /// changes that fraction.
+    /// changes that fraction. The diverse pass runs while one more elimination
+    /// of the kind the initial orders just ran fits in half the time the
+    /// restart deadline has left. The trailing FlowCutter candidate runs while
+    /// the window it is left is long enough to seed it and long enough for the
+    /// backend's setup and first restart on this graph.
     ///
     /// The ordinary restarts run past the soft deadline into the hard window,
     /// stopping 1.5 s before the hard deadline so the trailing FlowCutter
     /// candidate still has that much to run in. Only a residual that runs the
     /// whole schedule does that; above 10,000 vertices the restarts stop at the
-    /// soft deadline and the second stage stays with FlowCutter. The
-    /// sampling count caps how many seeds are drawn, not the clock, and a
-    /// graph whose candidates are quick would otherwise finish the schedule
-    /// with budget unspent. One more restart starts only while what the
-    /// previous one cost still fits before that stop.
-    /// [`PortfolioConfig::with_restarts_to_deadline`] turned off stops them at
-    /// the count instead.
+    /// soft deadline and the second stage stays with FlowCutter. One more
+    /// restart starts only while what the previous one cost still fits before
+    /// that stop, so the deadline rather than the count is what ends them; the
+    /// count is what a run stops at with
+    /// [`PortfolioConfig::with_restarts_to_deadline`] turned off.
     pub fn standard_with_budget(budget: Duration) -> Self {
-        let extended = budget >= EXTENDED_SAMPLING_MIN_SOFT_BUDGET;
-        let sampling_runs = if extended {
-            EXTENDED_SAMPLING_RUNS
-        } else {
-            MAX_SAMPLING_RUNS
-        };
         Self {
             soft_budget: Some(budget),
             hard_budget: None,
-            sampling_runs,
-            diverse_sampling_runs: if extended {
-                MAX_DIVERSE_SAMPLING_RUNS
-            } else {
-                0
-            },
-            flowcutter_budget: extended.then_some(budget),
+            sampling_runs: MAX_SAMPLING_RUNS,
+            diverse_sampling_runs: MAX_DIVERSE_SAMPLING_RUNS,
+            flowcutter_budget: Some(budget),
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: true,
