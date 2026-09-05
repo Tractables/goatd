@@ -791,43 +791,53 @@ fn a_reserve_outside_the_unit_interval_is_refused() {
 }
 
 #[test]
-fn a_residual_the_full_schedule_does_not_fit_on_is_admitted_rather_than_ordinary() {
+fn the_sizes_settle_the_class_outside_the_band_and_leave_it_open_inside() {
+    let full = super::config::MAX_RESIDUAL_FOR_FULL_SCHEDULE;
     let limit = super::config::DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS;
+    assert!(limit > full, "the default limit opens a band");
 
-    // Inside the caller's limit the measurement decides, whatever the size.
-    assert_eq!(Residual::classify(1, limit, true), Residual::Ordinary);
-    assert_eq!(Residual::classify(1, limit, false), Residual::Admitted);
-    assert_eq!(Residual::classify(limit, limit, true), Residual::Ordinary);
-    assert_eq!(Residual::classify(limit, limit, false), Residual::Admitted);
-    // Past it nothing else is asked: only min-degree runs there.
-    assert_eq!(Residual::classify(limit + 1, limit, true), Residual::Large);
-    assert_eq!(Residual::classify(limit + 1, limit, false), Residual::Large);
+    // Up to the line the whole schedule runs however expensive a pass looks, so
+    // a budget can only add residuals to the ones the line already took.
+    assert_eq!(Residual::from_size(1, limit), Some(Residual::Ordinary));
+    assert_eq!(Residual::from_size(full, limit), Some(Residual::Ordinary));
+    // Past the caller's limit nothing else is asked: only min-degree runs
+    // there, whatever a pass would cost.
+    assert_eq!(Residual::from_size(limit + 1, limit), Some(Residual::Large));
+    // In between the first candidate decides.
+    assert_eq!(Residual::from_size(full + 1, limit), None);
+    assert_eq!(Residual::from_size(limit, limit), None);
+
+    // A limit at the line leaves no band, and lowered further everything over
+    // it is large.
+    assert_eq!(Residual::from_size(full, full), Some(Residual::Ordinary));
+    assert_eq!(Residual::from_size(full + 1, full), Some(Residual::Large));
+    assert_eq!(Residual::from_size(99, 99), Some(Residual::Ordinary));
+    assert_eq!(Residual::from_size(100, 99), Some(Residual::Large));
 }
 
 #[test]
 fn the_full_schedule_runs_while_the_budget_holds_enough_min_fill_passes() {
     let passes = super::config::FULL_SCHEDULE_PASSES;
-    let full = super::config::MAX_RESIDUAL_FOR_FULL_SCHEDULE;
     let soft = crate::meter::now() + Duration::from_millis(4_750);
     let fits = Duration::from_millis((4_700.0 / passes) as u64);
     let over = Duration::from_millis((4_750.0 / passes) as u64 + 100);
 
-    // Above the vertex line the cost of a pass decides, whatever the size.
-    assert!(super::full_schedule_fits(1_000_000, fits, Some(soft)));
-    assert!(!super::full_schedule_fits(full + 1, over, Some(soft)));
+    // In the band the cost of a pass decides.
+    assert_eq!(
+        Residual::from_measurement(fits, Some(soft)),
+        Residual::Ordinary
+    );
+    assert_eq!(
+        Residual::from_measurement(over, Some(soft)),
+        Residual::Admitted
+    );
 
-    // Up to the line the schedule runs however expensive the pass looks, so a
-    // budget can only add residuals to the ones the line already took.
-    assert!(super::full_schedule_fits(full, over, Some(soft)));
-
-    // A run with no soft budget has no window to take a share of, so the line
-    // is all there is.
-    assert!(super::full_schedule_fits(
-        full,
-        Duration::from_secs(3_600),
-        None
-    ));
-    assert!(!super::full_schedule_fits(full + 1, Duration::ZERO, None));
+    // A run with no soft budget has no window to take a share of, so nothing
+    // in the band runs the schedule.
+    assert_eq!(
+        Residual::from_measurement(Duration::ZERO, None),
+        Residual::Admitted
+    );
 }
 
 #[test]
@@ -984,10 +994,7 @@ fn ring_with_chords(vertices: u32) -> Graph {
 /// A run that has charged nothing has no rate to read, so estimates stand at
 /// the model's own rate.
 fn unmeasured() -> super::Spent {
-    super::Spent {
-        elapsed: Duration::ZERO,
-        charged_units: 0,
-    }
+    super::Spent::unmeasured()
 }
 
 #[test]
@@ -1021,18 +1028,18 @@ fn the_restarts_keep_a_flowcutter_reserve_at_the_end_of_the_hard_window() {
     // An ordinary residual: the restarts run into the hard window and stop a
     // reserve short of its end.
     assert_eq!(
-        restart_deadline(Residual::Ordinary, Some(soft), Some(hard)),
+        restart_deadline(Residual::Ordinary, Some(soft), Some(hard), None),
         Some(hard - FLOWCUTTER_RESERVE),
     );
 
-    // Both larger classes keep the soft deadline, so the second stage stays
-    // with the trailing FlowCutter candidate.
+    // Both larger classes keep the soft deadline while FlowCutter holds the
+    // second stage, so it is there for the trailing candidate.
     assert_eq!(
-        restart_deadline(Residual::Admitted, Some(soft), Some(hard)),
+        restart_deadline(Residual::Admitted, Some(soft), Some(hard), None),
         Some(soft),
     );
     assert_eq!(
-        restart_deadline(Residual::Large, Some(soft), Some(hard)),
+        restart_deadline(Residual::Large, Some(soft), Some(hard), None),
         Some(soft),
     );
 
@@ -1040,12 +1047,153 @@ fn the_restarts_keep_a_flowcutter_reserve_at_the_end_of_the_hard_window() {
     // soft deadline, so the soft deadline stands.
     let tight = start + Duration::from_millis(5_500);
     assert_eq!(
-        restart_deadline(Residual::Ordinary, Some(soft), Some(tight)),
+        restart_deadline(Residual::Ordinary, Some(soft), Some(tight), None),
         Some(soft),
     );
 
     // No budget, so no hard window to run into.
-    assert_eq!(restart_deadline(Residual::Ordinary, None, None), None);
+    assert_eq!(restart_deadline(Residual::Ordinary, None, None, None), None);
+}
+
+#[test]
+fn a_large_residual_takes_the_second_stage_flowcutter_declined() {
+    let start = crate::meter::now();
+    let soft = start + secs(5);
+    let hard = start + secs(10);
+    let writeout = Duration::from_millis(200);
+
+    // FlowCutter will not run at this size, so both larger classes eliminate to
+    // the end of the hard window instead of stopping half way through it.
+    assert_eq!(
+        restart_deadline(Residual::Admitted, Some(soft), Some(hard), Some(writeout)),
+        Some(hard - writeout),
+    );
+    assert_eq!(
+        restart_deadline(Residual::Large, Some(soft), Some(hard), Some(writeout)),
+        Some(hard - writeout),
+    );
+
+    // An ordinary residual keeps the FlowCutter reserve whatever the writeout
+    // reserve says, since the trailing candidate does run at that size.
+    assert_eq!(
+        restart_deadline(Residual::Ordinary, Some(soft), Some(hard), Some(writeout)),
+        Some(hard - FLOWCUTTER_RESERVE),
+    );
+
+    // A writeout reserve wider than the whole second stage leaves the soft
+    // deadline where it was.
+    assert_eq!(
+        restart_deadline(Residual::Large, Some(soft), Some(hard), Some(secs(6))),
+        Some(soft),
+    );
+}
+
+#[test]
+fn the_measurement_decides_which_run_keeps_the_flowcutter_reserve() {
+    let start = crate::meter::now();
+    let soft = start + secs(5);
+    let hard = start + secs(10);
+    let writeout = Duration::from_millis(200);
+
+    // A residual above the vertex line that the measurement puts on the whole
+    // schedule leaves the second stage to the trailing FlowCutter candidate,
+    // and its initial candidates stop at the soft deadline, whatever the
+    // handover asked before the class was known.
+    let promoted =
+        super::Classified::new(Residual::Ordinary, Some(writeout), Some(soft), Some(hard));
+    assert_eq!(promoted.restart_deadline, Some(hard - FLOWCUTTER_RESERVE));
+    assert_eq!(promoted.initial_deadline, Some(soft));
+
+    // A paced residual on a graph FlowCutter declined takes the second stage,
+    // and the initial candidates stop where the restarts do.
+    let handed_over =
+        super::Classified::new(Residual::Admitted, Some(writeout), Some(soft), Some(hard));
+    assert_eq!(handed_over.restart_deadline, Some(hard - writeout));
+    assert_eq!(handed_over.initial_deadline, Some(hard - writeout));
+
+    // A paced residual FlowCutter will run on stops at the soft deadline
+    // throughout.
+    let paced = super::Classified::new(Residual::Admitted, None, Some(soft), Some(hard));
+    assert_eq!(paced.restart_deadline, Some(soft));
+    assert_eq!(paced.initial_deadline, Some(soft));
+}
+
+#[test]
+fn the_second_stage_is_declined_for_a_graph_flowcutter_cannot_stop_on() {
+    let start = crate::meter::now();
+    let soft = start + Duration::from_millis(4_750);
+    let hard = start + Duration::from_millis(9_500);
+    let config = PortfolioConfig::standard_with_budget(Duration::from_millis(4_750));
+
+    // The same 60,000-vertex graph the trailing candidate declines when it is
+    // finally reached: asking before the schedule is fixed gives the same
+    // answer, which is what lets the elimination have the second stage.
+    let large = ring_with_chords(60_000);
+    assert!(
+        super::flowcutter_declines_second_stage(&large, config, Some(soft), Some(hard)),
+        "a graph whose first restart outlasts the second stage is declined up front",
+    );
+
+    // A 20x20 grid runs in a fraction of it, so the second stage is FlowCutter's
+    // and the elimination does not take it.
+    assert!(
+        !super::flowcutter_declines_second_stage(&grid(20), config, Some(soft), Some(hard)),
+        "a small graph is admitted, so the second stage stays with FlowCutter",
+    );
+
+    // With no trailing candidate configured nothing else wants the second stage.
+    assert!(
+        super::flowcutter_declines_second_stage(
+            &grid(20),
+            PortfolioConfig::standard(),
+            Some(soft),
+            Some(hard),
+        ),
+        "a portfolio without the trailing candidate declines it",
+    );
+
+    // With no hard deadline there is no second stage to hand over.
+    assert!(
+        !super::flowcutter_declines_second_stage(&grid(20), config, None, None),
+        "an unbudgeted run leaves the schedule alone",
+    );
+}
+
+#[test]
+fn the_writeout_reserve_grows_with_the_residual() {
+    let small = grid(20);
+    assert_eq!(
+        super::writeout_reserve(&small, small.num_vertices() as usize),
+        super::MIN_WRITEOUT_RESERVE,
+        "a small graph is bagged and written out inside the floor",
+    );
+
+    // Bagging the residual is the larger of the two terms, so a graph whose
+    // preprocessing leaves little behind keeps a smaller reserve than the same
+    // graph with all of it left.
+    let medium = ring_with_chords(150_000);
+    let whole = super::writeout_reserve(&medium, medium.num_vertices() as usize);
+    let reduced = super::writeout_reserve(&medium, 40_000);
+    assert!(
+        whole > reduced && reduced > super::MIN_WRITEOUT_RESERVE,
+        "150,000 vertices need more than 40,000 of them do, and both more \
+         than the floor: {whole:?} against {reduced:?}",
+    );
+
+    // The handover stops growing with the graph, so the reserve does too, and
+    // the elimination keeps a share of the second stage however large the
+    // residual is.
+    let large = ring_with_chords(500_000);
+    let capped = super::writeout_reserve(&large, large.num_vertices() as usize);
+    assert_eq!(
+        capped,
+        super::MAX_WRITEOUT_RESERVE,
+        "half a million vertices reserve the ceiling, not more",
+    );
+    assert!(
+        capped < Duration::from_millis(4_750),
+        "the ceiling leaves the elimination part of the second stage: {capped:?}",
+    );
 }
 
 #[test]

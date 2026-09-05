@@ -27,17 +27,22 @@ With time left the portfolio keeps going: first a diverse pass over sampled
 fill/degree scores, then further min-fill seeds, which the rest of this page
 calls the restarts. A trailing candidate hands the graph to FlowCutter.
 
-The size of the residual after preprocessing picks between three schedules.
-At or below 10,000 vertices all of the above runs. Between 10,000 and 300,000
-vertices the min-fill candidate still runs but stops at half the time the soft
-deadline has left when it starts, so the restarts keep a share of the budget;
-nested dissection, the diverse pass and the hedge are skipped; and the restarts
-are sampled min-fill when the initial min-fill produced a decomposition and
-sampled min-degree when it did not. Above 300,000 vertices only the min-degree
-candidates and sampled min-degree restarts run.
-`PortfolioConfig::with_expensive_orders_up_to` moves the upper boundary; the
-lower one is fixed. The FlowCutter candidate runs on a residual of any size,
-under its own vertex cap.
+The residual left after preprocessing picks between three schedules. At or
+below 10,000 vertices all of the above runs. Above that line it runs where the
+budget is wide enough for it: the portfolio times its first candidate, prices
+one min-fill pass over the residual from that, and runs the whole schedule
+while the time the soft deadline has left holds fifteen such passes. Where it
+does not, and up to 300,000 vertices, the min-fill candidate still runs but
+stops at half the time the restarts' own deadline has left when it starts, so
+the restarts keep a share of the budget; nested dissection, the diverse pass
+and the hedge are skipped; and the restarts are sampled min-fill when the
+initial min-fill produced a decomposition and sampled min-degree when it did
+not. Above 300,000 vertices only the min-degree candidates and sampled
+min-degree restarts run. `PortfolioConfig::with_expensive_orders_up_to` moves
+the upper boundary; the 10,000-vertex line is fixed, and a run with no soft
+budget has no window to price a pass against, so there that line is the whole
+rule. The FlowCutter candidate runs on a residual of any size, under its own
+vertex cap.
 
 `portfolio::decompose` returns one decomposition rather than all of them. It
 contracts bags contained in a neighbouring bag, in each candidate that can
@@ -56,19 +61,26 @@ on its own.
 
 A run returns a decomposition whatever the clock does. The first candidate to
 run out of time puts each unfinished residual component in a bag of its own and
-attaches the elimination bags it did build, at a cost linear in the residual;
-later candidates just stop, since a valid decomposition already exists. At the
-soft deadline that completion covers only the component in hand, and the ones
-behind it get their own orders against the hard deadline.
+attaches the elimination bags it did build, at a cost linear in the residual.
+On a residual running the whole schedule later candidates just stop, since a
+valid decomposition already exists; on a paced one every candidate completes,
+and the one that left the smallest residual wins. At the soft deadline that completion
+covers only the component in hand, and the ones behind it get their own orders
+against the hard deadline.
 
 The restarts run past the soft deadline into the hard window, stopping 1.5
 seconds short of it to leave the FlowCutter candidate that much to run in.
 `PortfolioConfig::standard_with_budget` allows 100 extra seeds below a
 4.75-second soft budget and 1,000 at or above it, but the count caps how many
 seeds are drawn, not how long they run, and one more restart starts only while
-what the previous one cost still fits. On a residual over the 10,000-vertex
-cutoff, and on a run with no hard deadline, the restarts stop at the soft
-deadline as the initial candidates do. `PortfolioConfig::with_restarts_to_deadline` turned off stops
+what the previous one cost still fits. On a paced residual the restarts stop at
+the soft deadline as the initial candidates do,
+unless the FlowCutter candidate's own work model says it could not start and
+stop inside the hard window on a graph this size; then the initial candidates
+and the restarts run to the hard deadline less a reserve for bagging the
+residual and writing the result, which grows with the vertex and edge counts
+and is held between 50 ms and 4 s. On a run with no hard deadline they stop at
+the soft deadline. `PortfolioConfig::with_restarts_to_deadline` turned off stops
 them at the count, which is what `standard()` and `sampled_min_fill()` do.
 
 The FlowCutter candidate takes what is left, less two estimated restarts, since
