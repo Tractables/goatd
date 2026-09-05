@@ -105,15 +105,42 @@ pub(super) const DIVERSE_PASS_RESERVE: f64 = 0.5;
 /// exact minimum.
 const DEFAULT_SAMPLE_BAND: u64 = 3;
 
-/// Residuals of this size or smaller run the whole schedule: every initial
-/// order, the diverse pass, the hedge, and sampled min-fill restarts. Above it
-/// the expensive orders have to be paced, since they can overrun a short
-/// portfolio budget at that scale.
+/// Residuals of this size or smaller run the whole schedule whatever the budget
+/// is. Above the line the measurement decides: the schedule runs where a
+/// min-fill pass over the residual is cheap enough for the budget to hold the
+/// whole of it; see [`MIN_FILL_COST_MULTIPLE`] and [`FULL_SCHEDULE_PASSES`]. A
+/// run with no soft budget has no window to measure a pass against, so the line
+/// is the whole rule there.
 pub(super) const MAX_RESIDUAL_FOR_FULL_SCHEDULE: usize = 10_000;
 
-/// The default largest residual the expensive orders run on at all. Between
-/// [`MAX_RESIDUAL_FOR_FULL_SCHEDULE`] and this number they run on a paced
-/// schedule; above it the portfolio keeps only its min-degree candidates.
+/// What a min-fill pass over the residual costs, as a multiple of what the
+/// portfolio's first min-degree candidate cost. Both walk the same elimination
+/// loop and differ in the score they keep, so the ratio between them is a
+/// property of the graph rather than of the machine, and the machine's speed
+/// cancels when one is estimated from the other.
+///
+/// Measured on 131 corpus graphs whose initial min-fill candidate finished
+/// inside its window: the pass cost a median 6.7 times the first min-degree
+/// candidate, with the middle eight tenths of them between 5.1 and 13.5.
+pub(super) const MIN_FILL_COST_MULTIPLE: f64 = 6.7;
+
+/// How many min-fill passes over the residual the whole schedule is worth. The
+/// diverse pass alone is [`MAX_DIVERSE_SAMPLING_RUNS`] candidates and the hedge
+/// and the restarts are more, so admitting the schedule wherever one pass fits
+/// would admit it on residuals it cannot get through. The schedule runs while
+/// the time the soft deadline has left holds this many estimated passes.
+///
+/// Fitted on 240 corpus graphs: at a 4,750 ms soft budget it adds 20 residuals
+/// of 10,307 to 35,786 vertices, sparse enough that a pass over them is
+/// estimated at 107 to 309 ms, to the 139 the vertex line already took. A
+/// smaller number here admits residuals the schedule cannot get through; at the
+/// same budget halving it takes those 20 additions to 32 and quartering it to
+/// 39.
+pub(super) const FULL_SCHEDULE_PASSES: f64 = 15.0;
+
+/// The default largest residual the expensive orders run on at all. Between the
+/// full-schedule rule and this number they run on a paced schedule; above it the
+/// portfolio keeps only its min-degree candidates.
 /// [`PortfolioConfig::with_expensive_orders_up_to`] moves the upper line.
 pub(super) const DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS: usize = 300_000;
 
@@ -468,14 +495,16 @@ impl PortfolioConfig {
     /// The hedge runs its first weighted stage on any budget and one more for
     /// as long as half of what the plain pass left holds another; what does not
     /// fit stays with the ordinary restarts. [`PortfolioConfig::with_hedge_reserve`]
-    /// changes that fraction. The diverse pass runs while one more elimination
-    /// of the kind the initial orders just ran fits in half the time the
-    /// restart deadline has left. The trailing FlowCutter candidate runs while
-    /// the window it is left is long enough to seed it and long enough for the
-    /// backend's setup and first restart on this graph; on a window over
-    /// 4.75 seconds that window is also what ends it, and on a shorter one it
-    /// stops early once it has gone half a second without a narrower
-    /// decomposition, or after 50 restarts.
+    /// changes that fraction. The diverse pass runs on a residual the schedule
+    /// admits — 10,000 vertices or fewer, or above that line with a min-fill
+    /// pass cheap enough for the budget to hold the passes the schedule is made
+    /// of — and there while one more elimination of the kind the initial orders
+    /// just ran fits in half the time the restart deadline has left. The
+    /// trailing FlowCutter candidate runs while the window it is left is long
+    /// enough to seed it and long enough for the backend's setup and first
+    /// restart on this graph; on a window over 4.75 seconds that window is also
+    /// what ends it, and on a shorter one it stops early once it has gone half a
+    /// second without a narrower decomposition, or after 50 restarts.
     ///
     /// The ordinary restarts run past the soft deadline into the hard window,
     /// stopping 1.5 s before the hard deadline so the trailing FlowCutter

@@ -842,23 +842,70 @@ fn a_reserve_outside_the_unit_interval_is_refused() {
 }
 
 #[test]
-fn the_size_rule_admits_a_residual_only_between_the_two_boundaries() {
+fn the_sizes_settle_the_class_outside_the_band_and_leave_it_open_inside() {
     let full = super::config::MAX_RESIDUAL_FOR_FULL_SCHEDULE;
     let limit = super::config::DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS;
     assert!(limit > full, "the default limit opens a band");
 
-    // The vertices between the two boundaries are admitted.
-    assert_eq!(Residual::classify(full, limit), Residual::Ordinary);
-    assert_eq!(Residual::classify(full + 1, limit), Residual::Admitted);
-    assert_eq!(Residual::classify(limit, limit), Residual::Admitted);
-    assert_eq!(Residual::classify(limit + 1, limit), Residual::Large);
-    // A limit at the lower boundary leaves no band: ordinary or large.
-    assert_eq!(Residual::classify(full, full), Residual::Ordinary);
-    assert_eq!(Residual::classify(full + 1, full), Residual::Large);
-    // Lowered further, everything over the limit is large and nothing is
-    // admitted.
-    assert_eq!(Residual::classify(100, 99), Residual::Large);
-    assert_eq!(Residual::classify(99, 99), Residual::Ordinary);
+    // Up to the line the whole schedule runs however expensive a pass looks, so
+    // a budget can only add residuals to the ones the line already took.
+    assert_eq!(Residual::from_size(1, limit), Some(Residual::Ordinary));
+    assert_eq!(Residual::from_size(full, limit), Some(Residual::Ordinary));
+    // Past the caller's limit nothing else is asked: only min-degree runs
+    // there, whatever a pass would cost.
+    assert_eq!(Residual::from_size(limit + 1, limit), Some(Residual::Large));
+    // In between the first candidate decides.
+    assert_eq!(Residual::from_size(full + 1, limit), None);
+    assert_eq!(Residual::from_size(limit, limit), None);
+
+    // A limit at the line leaves no band, and lowered further everything over
+    // it is large.
+    assert_eq!(Residual::from_size(full, full), Some(Residual::Ordinary));
+    assert_eq!(Residual::from_size(full + 1, full), Some(Residual::Large));
+    assert_eq!(Residual::from_size(99, 99), Some(Residual::Ordinary));
+    assert_eq!(Residual::from_size(100, 99), Some(Residual::Large));
+}
+
+#[test]
+fn the_full_schedule_runs_while_the_budget_holds_enough_min_fill_passes() {
+    let passes = super::config::FULL_SCHEDULE_PASSES;
+    let soft = crate::meter::now() + Duration::from_millis(4_750);
+    let fits = Duration::from_millis((4_700.0 / passes) as u64);
+    let over = Duration::from_millis((4_750.0 / passes) as u64 + 100);
+
+    // In the band the cost of a pass decides.
+    assert_eq!(
+        Residual::from_measurement(fits, Some(soft)),
+        Residual::Ordinary
+    );
+    assert_eq!(
+        Residual::from_measurement(over, Some(soft)),
+        Residual::Admitted
+    );
+
+    // A run with no soft budget has no window to take a share of, so nothing
+    // in the band runs the schedule.
+    assert_eq!(
+        Residual::from_measurement(Duration::ZERO, None),
+        Residual::Admitted
+    );
+}
+
+#[test]
+fn a_min_fill_pass_is_a_multiple_of_the_first_min_degree_candidate() {
+    let weights = [1; 4];
+    let cost = Duration::from_millis(100);
+
+    assert_eq!(
+        super::min_fill_estimate(Order::MinDegree, cost),
+        cost.mul_f64(super::config::MIN_FILL_COST_MULTIPLE)
+    );
+    // A portfolio whose first candidate is already a min-fill order has
+    // measured the pass rather than estimated it.
+    assert_eq!(
+        super::min_fill_estimate(Order::MinFillSampled { weights: &weights }, cost),
+        cost
+    );
 }
 
 #[test]
@@ -1119,6 +1166,64 @@ fn a_large_residual_takes_the_second_stage_flowcutter_declined() {
         restart_deadline(Residual::Large, Some(soft), Some(hard), Some(secs(6))),
         Some(soft),
     );
+}
+
+#[test]
+fn the_measurement_decides_where_the_initial_loop_stops() {
+    let start = crate::meter::now();
+    let soft = start + secs(5);
+    let hard = start + secs(10);
+    let writeout = Duration::from_millis(200);
+
+    // A residual above the vertex line that the measurement puts on the whole
+    // schedule: its cheap candidates finish inside the soft deadline and the
+    // loop stops there, leaving the rest of the window to the restarts and the
+    // trailing FlowCutter candidate, whose reserve stands whatever the handover
+    // asked before the class was known.
+    let promoted =
+        super::Classified::new(Residual::Ordinary, Some(writeout), Some(soft), Some(hard));
+    assert_eq!(promoted.restart_deadline, Some(hard - FLOWCUTTER_RESERVE));
+    assert_eq!(promoted.initial_deadline, Some(soft));
+    assert_eq!(promoted.initial_cutoff, Some(soft));
+
+    // The same residual paced: the loop keeps starting candidates as long as
+    // the restarts run, while each candidate's own search still ends at the
+    // soft deadline. That is what the measurement decides between.
+    let paced = super::Classified::new(Residual::Admitted, None, Some(soft), Some(hard));
+    assert_eq!(paced.restart_deadline, Some(hard - FLOWCUTTER_RESERVE));
+    assert_eq!(paced.initial_deadline, Some(hard - FLOWCUTTER_RESERVE));
+    assert_eq!(paced.initial_cutoff, Some(soft));
+
+    // Paced, on a graph FlowCutter declined: the elimination has the second
+    // stage and keeps back only the handover.
+    let handed_over =
+        super::Classified::new(Residual::Admitted, Some(writeout), Some(soft), Some(hard));
+    assert_eq!(handed_over.restart_deadline, Some(hard - writeout));
+    assert_eq!(handed_over.initial_deadline, Some(hard - writeout));
+    assert_eq!(handed_over.initial_cutoff, Some(soft));
+}
+
+#[test]
+fn a_promoted_residual_prices_the_diverse_pass_against_the_restarts_window() {
+    // A run 4,000 ms into a 4,750 ms soft budget and its 9,500 ms hard one,
+    // with six initial orders behind it. Promoted to the whole schedule, the
+    // pass is offered at all, and what it is priced against is the restarts'
+    // deadline out in the hard window rather than the 750 ms the soft one has
+    // left.
+    let now = crate::meter::now();
+    let soft = now + Duration::from_millis(750);
+    let hard = now + Duration::from_millis(5_500);
+    let spent = Duration::from_millis(4_000);
+
+    let promoted = super::Classified::new(Residual::Ordinary, None, Some(soft), Some(hard));
+    assert_eq!(promoted.restart_deadline, Some(hard - FLOWCUTTER_RESERVE));
+
+    assert!(super::diverse_pass_fits(
+        spent,
+        6,
+        promoted.restart_deadline
+    ));
+    assert!(!super::diverse_pass_fits(spent, 6, Some(soft)));
 }
 
 #[test]
