@@ -106,7 +106,8 @@ enum Residual {
     /// min-degree produced a decomposition.
     Admitted,
     /// Past that limit: min-degree candidates and sampled min-degree restarts,
-    /// nothing else.
+    /// and nothing else this classification chooses. The candidates with a
+    /// vertex cap of their own ask that cap instead.
     Large,
 }
 
@@ -535,6 +536,8 @@ fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
             },
             _,
         ) => Stage::Diverse { degree_coefficient },
+        (Order::MinimalTriangulation, _) => Stage::MinimalTriangulation,
+        (Order::MaximumCardinality, _) => Stage::MaximumCardinality,
     }
 }
 
@@ -1132,6 +1135,77 @@ fn run_portfolio(
             break;
         }
     }
+    // The cardinality-search candidates, between the fixed orders and the
+    // restarts: first the plain maximum cardinality search, then MCS-M, which
+    // is the same search with a longer reach. Both eliminate along a numbering
+    // rather than a greedy score, so they win on graphs where the greedy scores
+    // agree with each other. Both are deterministic, so each runs once; each
+    // runs only on a residual its own gate admits, since the plain search
+    // affords a residual an order of magnitude larger than the path search
+    // does; and both run against the soft deadline, which the search reads as
+    // it walks, so a graph where one does not finish gives up part-way and
+    // loses nothing but the time it spent. The cheaper one goes first, which
+    // also leaves MCS-M a tighter width bound to abort on.
+    //
+    // What they cost, which the hedge's model of a stage leaves out: the stages
+    // repeat the plain pass on other weights, and neither candidate is part of
+    // either.
+    let mut cardinality_search_cost = Duration::ZERO;
+    for (gate, order) in [
+        (config.maximum_cardinality, Order::MaximumCardinality),
+        (config.minimal_triangulation, Order::MinimalTriangulation),
+    ] {
+        // Each gate is the one place that decides how large a residual its own
+        // search runs on, so the schedule's residual classification does not
+        // gate them as well.
+        let Some(gate) = gate else { continue };
+        if hard_deadline_tripped
+            || prebuilt.num_active() > gate as usize
+            || expired(soft_deadline)
+            || expired(hard_deadline)
+        {
+            continue;
+        }
+        let before = crate::meter::now();
+        let run = engine::run_order_prebuilt(
+            &mut prebuilt,
+            engine::RunSpec {
+                order,
+                seed,
+                // Neither search samples a tie set, so the band means nothing
+                // to it, and neither reads the initial fill counts, so there
+                // is no setup for a deadline to pace.
+                sample_band: 0,
+                update_order_ties: false,
+                // The soft deadline, not the wider one the initial candidates
+                // get where the elimination keeps the second stage: a search
+                // that does not finish returns no numbering at all, so running
+                // it into the second stage would spend that stage to produce
+                // nothing, and the restarts use it instead.
+                stop: elimination_stop(
+                    EliminationPhase::ExtraSampling,
+                    soft_deadline,
+                    hard_deadline,
+                    candidates.best_width(),
+                ),
+                // Nothing to complete: a search stopped by its deadline hands
+                // back no order, so the elimination never started and there
+                // are no bags for a residual to be attached to.
+                complete_on_deadline: false,
+                setup_deadline: None,
+            },
+        );
+        let (outcome, _) = candidates.record_elimination(run);
+        let now = crate::meter::now();
+        cardinality_search_cost += now.saturating_duration_since(before);
+        trace(CandidateTrace {
+            stage: stage_of(order, EliminationPhase::ExtraSampling),
+            seed,
+            pass: Pass::Only,
+            outcome,
+            elapsed: now.saturating_duration_since(started),
+        });
+    }
     // Sampling phase: try additional seeds of the full-tie-set sampling
     // order with any remaining budget. Measured ≥79% of min-fill pops have
     // ≥2 tied candidates, so different seeds explore different
@@ -1223,7 +1297,7 @@ fn run_portfolio(
             let stage_index = (sample_index - stages_start) / stage_length;
             let budget = stage_budget.get_or_insert_with(|| {
                 StageBudget::new(
-                    elapsed,
+                    elapsed.saturating_sub(cardinality_search_cost),
                     restart_deadline.map(remaining),
                     config.hedge_reserve,
                 )
@@ -1335,6 +1409,46 @@ fn run_portfolio(
         let outcome = candidates.push(decomposition);
         trace(CandidateTrace {
             stage: Stage::FlowCutter,
+            seed,
+            pass: Pass::Only,
+            outcome,
+            elapsed: crate::meter::now().saturating_duration_since(started),
+        });
+    }
+    // Last, the fill edges the winner's bags do not need. The pass rebuilds the
+    // decomposition on a minimal triangulation of the same graph, which is
+    // never wider, and hands the result back as one more candidate so the set
+    // compares it the way it compares every other.
+    //
+    // The vertex gate is the cheap filter, for the two bitsets the pass holds.
+    // What it costs in time follows the bags rather than the vertices, so the
+    // clock rule is the winner's own size against what is left of the hard
+    // deadline, asked before the winner is copied.
+    if let Some(gate) = config.triangulation_refinement
+        && graph.num_vertices() <= gate
+        && let Some(best) = candidates
+            .best()
+            .filter(|best| decomposition::minimalize_fits(best, graph, hard_deadline))
+            .cloned()
+    {
+        let before = best.quality_key();
+        let minimalized = decomposition::minimalize_at(best, graph, hard_deadline);
+        let (width, total_bag_size) = minimalized.quality_key();
+        // The pass returns its input where it found nothing to drop, and the
+        // set holds that decomposition already, so only an improvement is
+        // recorded. The trace reports the pass either way, so a caller can see
+        // what it cost on a graph where it changed nothing.
+        let outcome = if (width, total_bag_size) < before {
+            candidates.push(minimalized)
+        } else {
+            CandidateOutcome::Produced {
+                width,
+                total_bag_size,
+                best: false,
+            }
+        };
+        trace(CandidateTrace {
+            stage: Stage::Minimalized,
             seed,
             pass: Pass::Only,
             outcome,

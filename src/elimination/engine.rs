@@ -11,6 +11,7 @@ use super::greedy::{
     self, SampleDraw, eliminate_min_degree, eliminate_min_fill, eliminate_sampled_fill_degree,
     eliminate_sampled_min_degree, eliminate_sampled_min_fill,
 };
+use super::minimal_triangulation::{Reach, eliminate_cardinality_search};
 use super::nested_dissection::eliminate_nested_dissection;
 use super::preprocess::{Reduced, preprocess};
 use crate::TreeDecomposition;
@@ -280,6 +281,12 @@ fn run_elimination_raw(
         ),
         Order::NestedDissection => {
             eliminate_nested_dissection(&mut g, salt, spec.seed, steps.sink(), spec.stop)
+        }
+        Order::MinimalTriangulation => {
+            eliminate_cardinality_search(&mut g, Reach::LowerPaths, steps.sink(), spec.stop)
+        }
+        Order::MaximumCardinality => {
+            eliminate_cardinality_search(&mut g, Reach::Neighbours, steps.sink(), spec.stop)
         }
     };
 

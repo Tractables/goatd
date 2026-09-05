@@ -216,11 +216,27 @@ fn the_expensive_orders_stop_at_the_configured_residual() {
             .any(|&(_, pass)| matches!(pass, Pass::Modified { .. })),
         "and the hedge runs: {ordinary:?}"
     );
+    // What the limit governs is the schedule's own choice of candidates. The
+    // ones carrying a vertex cap of their own answer that cap instead, so they
+    // are still traced here; the grid is far below every one of those caps.
+    assert!(
+        min_degree_only.iter().all(|&(stage, pass)| {
+            matches!(
+                stage,
+                Stage::MinDegree
+                    | Stage::MaximumCardinality
+                    | Stage::MinimalTriangulation
+                    | Stage::Minimalized
+                    | Stage::FlowCutter
+            ) && pass == Pass::Only
+        }),
+        "above the limit min-degree runs, plus the self-gated candidates: {min_degree_only:?}"
+    );
     assert!(
         min_degree_only
             .iter()
-            .all(|&(stage, pass)| stage == Stage::MinDegree && pass == Pass::Only),
-        "above the limit only min-degree runs: {min_degree_only:?}"
+            .any(|&(stage, _)| stage == Stage::MinDegree),
+        "and min-degree is among them: {min_degree_only:?}"
     );
     assert_eq!(at_the_default, ordinary, "300,000 is the default limit");
 }
@@ -247,4 +263,104 @@ fn the_portfolio_winner_has_no_bag_subsumed_by_a_neighbour() {
             );
         }
     }
+}
+
+#[test]
+fn the_minimal_triangulation_candidate_can_be_gated_off_and_on() {
+    let graph = grid(5);
+    let weight = vec![1; graph.num_vertices() as usize];
+    let mut stages = Vec::new();
+    decompose_traced(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard(),
+        &mut |candidate| stages.push(candidate.stage),
+    )
+    .unwrap();
+    assert!(
+        stages.contains(&Stage::MinimalTriangulation),
+        "the standard portfolio runs the candidate on a graph this size"
+    );
+
+    stages.clear();
+    decompose_traced(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard().without_minimal_triangulation(),
+        &mut |candidate| stages.push(candidate.stage),
+    )
+    .unwrap();
+    assert!(!stages.contains(&Stage::MinimalTriangulation));
+}
+
+#[test]
+fn dropping_fill_never_widens_the_portfolio_winner() {
+    let graph = grid(6);
+    let weight = vec![1; graph.num_vertices() as usize];
+    let kept = decompose(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard().without_triangulation_refinement(),
+    )
+    .unwrap();
+    let dropped = decompose(&graph, &weight, 0, PortfolioConfig::standard()).unwrap();
+    dropped.validate(&graph).unwrap();
+    assert!(dropped.treewidth() <= kept.treewidth());
+}
+
+#[test]
+fn the_maximum_cardinality_candidate_can_be_gated_off_and_on() {
+    let graph = grid(5);
+    let weight = vec![1; graph.num_vertices() as usize];
+    let mut stages = Vec::new();
+    decompose_traced(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard(),
+        &mut |candidate| stages.push(candidate.stage),
+    )
+    .unwrap();
+    assert!(
+        stages.contains(&Stage::MaximumCardinality),
+        "the standard portfolio runs the candidate on a graph this size"
+    );
+    let plain = stages
+        .iter()
+        .position(|stage| *stage == Stage::MaximumCardinality);
+    let paths = stages
+        .iter()
+        .position(|stage| *stage == Stage::MinimalTriangulation);
+    assert!(plain < paths, "the cheaper search runs first: {stages:?}");
+
+    stages.clear();
+    decompose_traced(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard().without_maximum_cardinality(),
+        &mut |candidate| stages.push(candidate.stage),
+    )
+    .unwrap();
+    assert!(!stages.contains(&Stage::MaximumCardinality));
+    assert!(stages.contains(&Stage::MinimalTriangulation));
+}
+
+#[test]
+fn a_gate_below_the_residual_leaves_the_maximum_cardinality_candidate_unrun() {
+    let graph = grid(5);
+    let weight = vec![1; graph.num_vertices() as usize];
+    let mut stages = Vec::new();
+    decompose_traced(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard().with_maximum_cardinality(0),
+        &mut |candidate| stages.push(candidate.stage),
+    )
+    .unwrap();
+    assert!(!stages.contains(&Stage::MaximumCardinality));
 }
