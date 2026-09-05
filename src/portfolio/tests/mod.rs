@@ -1025,7 +1025,7 @@ fn an_admitted_residual_runs_its_candidates_and_restarts_to_the_hard_window() {
 
     // The initial loop starts another candidate for as long as that same
     // deadline has time left, so a first candidate that spends the whole soft
-    // budget no longer ends the schedule.
+    // budget does not end the schedule.
     assert_eq!(
         super::initial_candidate_deadline(Residual::Admitted, Some(soft), restart),
         restart,

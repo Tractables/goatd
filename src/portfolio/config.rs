@@ -547,7 +547,7 @@ impl PortfolioConfig {
     ///   back, and the restarts always start with time in hand;
     /// - the initial candidates run to the restart deadline rather than to the
     ///   soft deadline, so a first candidate that spends the whole soft budget
-    ///   no longer ends the schedule;
+    ///   does not end the schedule;
     /// - nested dissection does not run: it reads its deadline between levels,
     ///   and one level's bisection of a graph with a million edges takes
     ///   seconds on its own;
