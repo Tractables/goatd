@@ -424,12 +424,15 @@ impl PortfolioConfig {
     /// The ordinary restarts run past the soft deadline into the hard window,
     /// stopping 1.5 s before the hard deadline so the trailing FlowCutter
     /// candidate still has that much to run in. Only a residual that runs the
-    /// whole schedule does that; above 10,000 vertices the restarts stop at the
-    /// soft deadline and the second stage stays with FlowCutter. The
-    /// sampling count caps how many seeds are drawn, not the clock, and a
-    /// graph whose candidates are quick would otherwise finish the schedule
-    /// with budget unspent. One more restart starts only while what the
-    /// previous one cost still fits before that stop.
+    /// whole schedule does that; above 10,000 vertices the second stage stays
+    /// with FlowCutter, and the restarts stop at the soft deadline — unless
+    /// FlowCutter's own work model says it cannot start and stop inside the
+    /// second stage on a graph this size, in which case the elimination keeps
+    /// the whole window and gives back only the time it needs to write its
+    /// answer out. The sampling count caps how many seeds are drawn, not the
+    /// clock, and a graph whose candidates are quick would otherwise finish the
+    /// schedule with budget unspent. One more restart starts only while what
+    /// the previous one cost still fits before that stop.
     /// [`PortfolioConfig::with_restarts_to_deadline`] turned off stops them at
     /// the count instead.
     pub fn standard_with_budget(budget: Duration) -> Self {
