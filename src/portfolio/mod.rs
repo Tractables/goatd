@@ -24,7 +24,7 @@ use crate::embedding::{self, Embedding};
 use crate::flowcutter::{Budget, decompose as flowcutter_decompose};
 use crate::{Error, Graph, TreeDecomposition};
 use candidates::{CandidateSet, ScheduleStop};
-use config::{FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS};
+use config::{EXTENDED_SAMPLING_MIN_SOFT_BUDGET, FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS};
 
 pub use config::{
     DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, HedgeWeights, MAX_DIVERSE_SAMPLING_RUNS,
@@ -32,10 +32,22 @@ pub use config::{
 };
 pub use trace::{CandidateOutcome, CandidateTrace, Pass, Stage};
 
-/// Exit early if FlowCutter hasn't improved treewidth for this long. Caps
-/// per-graph overhead where FlowCutter converges fast.
+/// Exit early if FlowCutter hasn't improved treewidth for this long, on a
+/// window of [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] or less. Caps per-graph
+/// overhead where FlowCutter converges fast. See
+/// [`flowcutter_candidate_limits`] for what a longer window gets.
 const FLOWCUTTER_CANDIDATE_PATIENCE: Duration = Duration::from_millis(500);
+/// Restarts the trailing candidate may run on a window of
+/// [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] or less.
 const FLOWCUTTER_CANDIDATE_ITERATIONS: u32 = 50;
+/// The window up to which the trailing FlowCutter candidate keeps the patience
+/// and restart cap above.
+///
+/// It is the smallest soft budget that runs a trailing candidate at all:
+/// [`PortfolioConfig::standard_with_budget`] gives the slot a budget only from
+/// here up, and the window is at most that budget, so at that budget the two
+/// constants above are exactly what the candidate runs with.
+const FLOWCUTTER_CANDIDATE_BASE_WINDOW: Duration = EXTENDED_SAMPLING_MIN_SOFT_BUDGET;
 const SAMPLE_SEED_OFFSET: u64 = 100;
 const SAMPLE_SEED_STRIDE: u64 = 7919;
 /// Separates a random hedge weighting from the run's other draws.
@@ -520,6 +532,41 @@ fn flowcutter_window(
     }
 }
 
+/// How long the trailing FlowCutter candidate may go without finding a
+/// narrower decomposition before it stops, and how many restarts it may run,
+/// given the window it has.
+///
+/// At [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] and below both are what the slot has
+/// always used, so a run at the budget the portfolio was tuned at is unchanged.
+/// Above it the patience keeps the share of the window it has there, 500 ms of
+/// 4.75 s. Patience is what ends the candidate on most graphs, and what a
+/// stretch without an improvement says depends on how long the run may go: a
+/// second of no progress is most of a five-second window and very little of a
+/// five-minute one.
+///
+/// The restart cap is a count, not a time, and it is there to bound per-graph
+/// overhead. Above the base window the patience and the window itself bound it,
+/// so the cap becomes the one a timed run carries elsewhere in the library.
+///
+/// Both read the window rather than the configured budget, since the window is
+/// already the smaller of that budget and what the hard deadline has left.
+fn flowcutter_candidate_limits(window: Duration) -> (Duration, u32) {
+    if window <= FLOWCUTTER_CANDIDATE_BASE_WINDOW {
+        return (
+            FLOWCUTTER_CANDIDATE_PATIENCE,
+            FLOWCUTTER_CANDIDATE_ITERATIONS,
+        );
+    }
+    let window_ms = u64::try_from(window.as_millis()).unwrap_or(u64::MAX);
+    let base_ms = u64::try_from(FLOWCUTTER_CANDIDATE_BASE_WINDOW.as_millis()).unwrap_or(u64::MAX);
+    let base_patience_ms = u64::try_from(FLOWCUTTER_CANDIDATE_PATIENCE.as_millis()).unwrap_or(0);
+    let patience_ms = window_ms.saturating_mul(base_patience_ms) / base_ms.max(1);
+    (
+        Duration::from_millis(patience_ms),
+        crate::flowcutter::TIMED_ITERATIONS,
+    )
+}
+
 /// What the run has spent so far, on both clocks.
 #[derive(Clone, Copy)]
 struct Spent {
@@ -586,14 +633,8 @@ fn flowcutter_candidate(
     if Duration::from_millis(crate::meter::milliseconds_for_units(first_restart)) > timeout {
         return Ok(None);
     }
-    match flowcutter_decompose(
-        graph,
-        Budget::timed(
-            timeout,
-            Some(FLOWCUTTER_CANDIDATE_PATIENCE),
-            FLOWCUTTER_CANDIDATE_ITERATIONS,
-        ),
-    ) {
+    let (patience, iterations) = flowcutter_candidate_limits(timeout);
+    match flowcutter_decompose(graph, Budget::timed(timeout, Some(patience), iterations)) {
         Ok(decomposition) => Ok(Some(decomposition)),
         // A timed backend run may end before it has a result. The elimination
         // candidates already make the portfolio complete, so this one can be

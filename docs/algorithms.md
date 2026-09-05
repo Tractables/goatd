@@ -74,7 +74,11 @@ them at the count, which is what `standard()` and `sampled_min_fill()` do.
 The FlowCutter candidate takes what is left, less two estimated restarts, since
 the vendored backend tests its deadline only between restarts and the result
 still has to be copied out. It is skipped when what remains is too short to
-seed it, or when the backend's setup and first restart would outlast it.
+seed it, or when the backend's setup and first restart would outlast it. On a
+window of 4.75 seconds or less it also stops once it has gone 500 milliseconds
+without finding a narrower decomposition, or after 50 restarts. On a longer
+window the patience keeps the same share of it, a tenth and a bit, and the
+restart count no longer bounds the run, so the clock is what ends it.
 
 `stop_flag` ends a run from outside it: every deadline check in the library and
 in the vendored backend then answers as an expired hard deadline, and the
