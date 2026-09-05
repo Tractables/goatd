@@ -109,7 +109,7 @@ pub(super) const MAX_RESIDUAL_FOR_FULL_SCHEDULE: usize = 10_000;
 
 /// The default largest residual the expensive orders run on at all. Between
 /// [`MAX_RESIDUAL_FOR_FULL_SCHEDULE`] and this number they run on a paced
-/// schedule; above it they do not run at all.
+/// schedule; above it the portfolio keeps only its min-degree candidates.
 /// [`PortfolioConfig::with_expensive_orders_up_to`] moves the upper line.
 pub(super) const DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS: usize = 300_000;
 
@@ -603,14 +603,14 @@ impl PortfolioConfig {
     /// - the trailing FlowCutter candidate runs as on any residual, under its
     ///   own vertex cap.
     ///
-    /// Above the number given here the expensive orders stop: the initial list
-    /// drops min-fill and nested dissection after the first candidate, the
-    /// diverse pass and the hedge do not run, and the ordinary restarts are
-    /// sampled min-degree. The candidates carrying a vertex cap of their own
-    /// are not part of this choice, the way the trailing FlowCutter candidate
-    /// already was not: the two cardinality searches and the fill-dropping pass
-    /// each answer their own gate, and every one of those gates sits far below
-    /// the default limit here.
+    /// Above the number given here the portfolio keeps only its min-degree
+    /// candidates: the initial list drops min-fill and nested dissection after
+    /// the first candidate, the diverse pass and the hedge do not run, and the
+    /// ordinary restarts are sampled min-degree. The candidates carrying a
+    /// vertex cap of their own are not part of this choice, the way the
+    /// trailing FlowCutter candidate already was not: the two cardinality
+    /// searches and the fill-dropping pass each answer their own gate, and
+    /// every one of those gates sits far below the default limit here.
     ///
     /// Setting it to 10,000 or lower leaves no middle band, and every residual
     /// over the number runs min-degree plus whatever those gates admit.
