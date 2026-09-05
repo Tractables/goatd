@@ -3,6 +3,7 @@
 use std::time::Instant;
 
 use super::graph::EliminationGraph;
+use crate::deadline::expired;
 
 /// Ceiling on the number of loop iterations between deadline reads, for a loop
 /// whose work the meter is not charged for.
@@ -23,13 +24,17 @@ const DEADLINE_CHECK_UNITS: u64 = crate::meter::UNITS_PER_MS;
 /// once a millisecond's worth of it has been charged. The iteration count stays
 /// as a ceiling, so a loop that charges nothing still reads the clock as often
 /// as it used to.
-pub(super) struct DeadlinePacer {
+///
+/// The elimination loops are not the only users:
+/// [`crate::decomposition::minimalize_triangulation`] paces its own loops with
+/// this so every construction in the library reads the clock on the same rule.
+pub(crate) struct DeadlinePacer {
     steps: u32,
     mark: u64,
 }
 
 impl DeadlinePacer {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             steps: 0,
             mark: crate::meter::units_spent(),
@@ -38,7 +43,7 @@ impl DeadlinePacer {
 
     /// Count one iteration and report whether the deadline should be read.
     #[inline]
-    pub(super) fn due(&mut self) -> bool {
+    pub(crate) fn due(&mut self) -> bool {
         self.steps += 1;
         let spent = crate::meter::units_spent();
         if self.steps >= DEADLINE_CHECK_STRIDE
@@ -156,4 +161,64 @@ pub(super) fn active_vertices(graph: &EliminationGraph) -> Vec<u32> {
     (0..graph.len() as u32)
         .filter(|&v| graph.active[v as usize])
         .collect()
+}
+
+/// The active residual as its own graph: the active vertices in index order,
+/// and one adjacency list per vertex over positions in that list.
+///
+/// Preprocessing may leave the list representation stale after switching to
+/// bitsets, so the neighbours are read through the representation-neutral
+/// accessor rather than from `adj`.
+pub(super) fn residual_edges(graph: &EliminationGraph) -> (Vec<u32>, Vec<Vec<u32>>) {
+    let active = active_vertices(graph);
+    let mut local_of = vec![u32::MAX; graph.len()];
+    for (index, &vertex) in active.iter().enumerate() {
+        local_of[vertex as usize] = index as u32;
+    }
+    let mut neighbours = Vec::new();
+    let adjacency = active
+        .iter()
+        .map(|&vertex| {
+            neighbours.clear();
+            graph.collect_live_nbrs_into(vertex, &mut neighbours);
+            neighbours
+                .iter()
+                .map(|&neighbour| local_of[neighbour as usize])
+                .collect()
+        })
+        .collect();
+    (active, adjacency)
+}
+
+/// Eliminate the active vertices in the given order, recording one bag per
+/// step. Vertices already gone are skipped, so a caller may hand over an order
+/// covering more than the residual.
+pub(super) fn eliminate_in_order(
+    graph: &mut EliminationGraph,
+    order: impl IntoIterator<Item = u32>,
+    sink: &mut ElimSink<'_>,
+    stop: ElimStop,
+) -> ElimExit {
+    let mut pacer = DeadlinePacer::new();
+    let mut neighbours = Vec::new();
+    for vertex in order {
+        if !graph.active[vertex as usize] {
+            continue;
+        }
+        if pacer.due() && expired(stop.hard_deadline) {
+            return ElimExit::DeadlineReached(Cutoff::Hard);
+        }
+        neighbours.clear();
+        graph.collect_live_nbrs_into(vertex, &mut neighbours);
+        let mut bag = Vec::with_capacity(neighbours.len() + 1);
+        bag.push(vertex);
+        bag.extend_from_slice(&neighbours);
+        let bag_len = bag.len();
+        graph.eliminate_with_nbrs(vertex, &neighbours);
+        sink.record(vertex, bag);
+        if exceeds_width_bound(bag_len, stop.width_bound) {
+            return ElimExit::WidthLimitExceeded;
+        }
+    }
+    ElimExit::Complete
 }

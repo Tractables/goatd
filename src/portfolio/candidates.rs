@@ -56,6 +56,14 @@ impl CandidateSet {
         self.decompositions.is_empty()
     }
 
+    /// The decomposition the set would return, or `None` before any candidate
+    /// has produced one.
+    pub(super) fn best(&self) -> Option<&TreeDecomposition> {
+        self.decompositions
+            .iter()
+            .min_by_key(|decomposition| decomposition.quality_key())
+    }
+
     /// Record a decomposition and report what it is worth. `best` says whether
     /// the set would now return this one: in best-only mode that is whether it
     /// was retained, and in all-candidates mode whether its quality key is the
