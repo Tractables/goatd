@@ -669,15 +669,15 @@ fn admitted_cutoff(
 /// whatever has already returned is the answer.
 ///
 /// An admitted residual reads the deadline its restarts stop at, the hard
-/// window less the FlowCutter reserve, so a first candidate that spends the
-/// whole soft budget by itself no longer ends the schedule. On graphs of that
-/// size that was the common case, and the paced min-fill that follows is the
-/// candidate most likely to be narrower than the min-degree pass that answered.
+/// window less the FlowCutter reserve. On graphs of that size the first
+/// min-degree pass often spends the whole soft budget on its own, and stopping
+/// there hands back its answer with half the window unspent; the paced min-fill
+/// behind it is usually the narrower of the two.
 ///
 /// The soft deadline still does its two other jobs there: preprocessing stops
 /// at it, and a deterministic greedy order that reaches it switches to cheaper
-/// scoring for the rest of its elimination. What the change moves is only
-/// whether the next candidate starts.
+/// scoring for the rest of its elimination. It just does not decide whether the
+/// next candidate starts.
 ///
 /// Below and above the band the soft deadline stands. An ordinary residual has
 /// a schedule of cheap candidates that finish well inside it, and past the
