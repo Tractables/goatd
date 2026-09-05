@@ -16,8 +16,8 @@ it produces:
 5. sampled min-degree, second seed;
 6. nested dissection, second seed.
 
-The first runs on the original graph. The other five share one graph build and
-one preprocessing pass, then compute their own order for the residual.
+All six share one graph build and one preprocessing pass, then compute their
+own order for the residual.
 Min-degree goes first so that a valid decomposition exists early, and every
 later candidate is handed the best width so far and stops as soon as one of its
 bags is too wide to win. Fill counts are computed once, when the first

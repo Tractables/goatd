@@ -736,12 +736,12 @@ fn elimination_stop(
     }
 }
 
-/// One candidate before the restart phase.
+/// One candidate before the restart phase. Every one of them runs on the
+/// preprocessed residual the portfolio builds once.
 #[derive(Clone, Copy)]
 struct InitialCandidate<'a> {
     order: Order<'a>,
     seed: u64,
-    preprocess: bool,
     update_order_ties: bool,
 }
 
@@ -762,37 +762,31 @@ fn standard_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandidate<'_>>
         InitialCandidate {
             order: Order::MinDegree,
             seed: base_seed,
-            preprocess: false,
             update_order_ties: true,
         },
         InitialCandidate {
             order: Order::MinDegreeSampled { weights },
             seed: base_seed,
-            preprocess: true,
             update_order_ties: false,
         },
         InitialCandidate {
             order: Order::NestedDissection,
             seed: base_seed,
-            preprocess: true,
             update_order_ties: false,
         },
         InitialCandidate {
             order: Order::MinFillSampled { weights },
             seed: base_seed,
-            preprocess: true,
             update_order_ties: false,
         },
         InitialCandidate {
             order: Order::MinDegreeSampled { weights },
             seed: second_seed,
-            preprocess: true,
             update_order_ties: false,
         },
         InitialCandidate {
             order: Order::NestedDissection,
             seed: second_seed,
-            preprocess: true,
             update_order_ties: false,
         },
     ]
@@ -809,7 +803,6 @@ fn sampled_min_fill_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandid
     vec![InitialCandidate {
         order: Order::MinFillSampled { weights },
         seed: base_seed,
-        preprocess: true,
         update_order_ties: false,
     }]
 }
@@ -846,7 +839,6 @@ fn run_portfolio(
     let soft_deadline = deadlines.soft;
     let hard_deadline = deadlines.hard;
     let mut prebuilt = engine::prebuild(graph, soft_deadline);
-    let mut original = None;
     let residual = Residual::classify(prebuilt.num_active(), config.expensive_orders_up_to);
     // Where the restart phase stops, and where the initial loop stops starting
     // another candidate.
@@ -948,13 +940,8 @@ fn run_portfolio(
         // residual would be wasted work: its wide decomposition would lose on
         // width and total bag size to the existing winner.
         let complete_on_deadline = candidates.is_empty();
-        let candidate_graph = if candidate.preprocess {
-            &mut prebuilt
-        } else {
-            original.get_or_insert_with(|| engine::prebuild_original(graph))
-        };
         let run = engine::run_order_prebuilt(
-            candidate_graph,
+            &mut prebuilt,
             engine::RunSpec {
                 order,
                 seed: candidate.seed,

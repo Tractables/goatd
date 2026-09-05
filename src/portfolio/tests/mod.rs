@@ -153,12 +153,11 @@ fn the_standard_portfolio_starts_with_update_order_minimum_degree() {
     assert_eq!(candidates.len(), 6);
     let candidate = candidates[0];
     assert_eq!(candidate.order, Order::MinDegree);
-    assert!(!candidate.preprocess);
     assert!(candidate.update_order_ties);
     assert!(
         candidates[1..]
             .iter()
-            .all(|candidate| candidate.preprocess && !candidate.update_order_ties)
+            .all(|candidate| !candidate.update_order_ties)
     );
 }
 
