@@ -425,11 +425,14 @@ impl PortfolioConfig {
     /// stopping 1.5 s before the hard deadline so the trailing FlowCutter
     /// candidate still has that much to run in. A residual past
     /// [`PortfolioConfig::with_expensive_orders_up_to`] does not: its restarts
-    /// stop at the soft deadline and the second stage stays with FlowCutter. The
-    /// sampling count caps how many seeds are drawn, not the clock, and a
-    /// graph whose candidates are quick would otherwise finish the schedule
-    /// with budget unspent. One more restart starts only while what the
-    /// previous one cost still fits before that stop.
+    /// stop at the soft deadline and the second stage stays with FlowCutter —
+    /// unless FlowCutter's own work model says it cannot start and stop inside
+    /// that stage on a graph this size, in which case the elimination keeps the
+    /// whole window and gives back only the time it needs to write its answer
+    /// out. The sampling count caps how many seeds are drawn, not the clock,
+    /// and a graph whose candidates are quick would otherwise finish the
+    /// schedule with budget unspent. One more restart starts only while what
+    /// the previous one cost still fits before that stop.
     /// [`PortfolioConfig::with_restarts_to_deadline`] turned off stops them at
     /// the count instead.
     pub fn standard_with_budget(budget: Duration) -> Self {
@@ -487,8 +490,10 @@ impl PortfolioConfig {
     /// while the restart deadline has time left.
     ///
     /// The restart deadline is the hard deadline less the reserve kept for the
-    /// trailing FlowCutter candidate, and the soft deadline on a residual past
-    /// [`PortfolioConfig::with_expensive_orders_up_to`].
+    /// trailing FlowCutter candidate. On a residual past
+    /// [`PortfolioConfig::with_expensive_orders_up_to`] it is the soft deadline
+    /// instead, unless FlowCutter has declined the second stage, in which case
+    /// it is the hard deadline less what handing the answer over costs.
     ///
     /// On, the restarts carry on from the next seed of the same sequence and
     /// the restart deadline ends them; the count set by
@@ -545,9 +550,11 @@ impl PortfolioConfig {
     ///   starts, rather than to the whole window, with the incumbent width
     ///   cutoff as everywhere else. An order that cannot finish gives the rest
     ///   back, and the restarts always start with time in hand;
-    /// - the initial candidates run to the restart deadline rather than to the
-    ///   soft deadline, so a first candidate that spends the whole soft budget
-    ///   does not end the schedule;
+    /// - the loop over the initial candidates runs to the restart deadline
+    ///   rather than to the soft one, so a first candidate that spends the
+    ///   whole soft budget does not end the schedule. Each candidate's own
+    ///   search still stops at the soft deadline, which is what leaves the
+    ///   next one room;
     /// - nested dissection does not run: it reads its deadline between levels,
     ///   and one level's bisection of a graph with a million edges takes
     ///   seconds on its own;
