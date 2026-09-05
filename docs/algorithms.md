@@ -38,16 +38,18 @@ budget is wide enough for it: the portfolio times its first candidate, prices
 one min-fill pass over the residual from that, and runs the whole schedule
 while the time the soft deadline has left holds fifteen such passes. Where it
 does not, and up to 300,000 vertices, the min-fill candidate still runs but
-stops at half the time the restarts' own deadline has left when it starts, so
-the restarts keep a share of the budget; nested dissection, the diverse pass
-and the hedge are skipped; and the restarts are sampled min-fill when the
-initial min-fill produced a decomposition and sampled min-degree when it did
-not. Above 300,000 vertices only the min-degree candidates and sampled
-min-degree restarts run. `PortfolioConfig::with_expensive_orders_up_to` moves
-the upper boundary; the 10,000-vertex line is fixed, and a run with no soft
-budget has no window to price a pass against, so there that line is the whole
-rule. The FlowCutter candidate runs on a residual of any size, under its own
-vertex cap.
+stops at half the time the restart deadline has left when it starts, so the
+restarts keep a share of the budget; nested dissection, the diverse pass and
+the hedge are skipped; a candidate that reaches the soft deadline stops there
+as everywhere else, but the portfolio keeps starting candidates and restarts
+until the restart deadline rather than the soft one; and the restarts are
+sampled min-fill when the initial min-fill produced a decomposition and sampled
+min-degree when it did not. Above 300,000 vertices only the min-degree
+candidates and sampled min-degree restarts run.
+`PortfolioConfig::with_expensive_orders_up_to` moves the upper boundary; the
+10,000-vertex line is fixed, and a run with no soft budget has no window to
+price a pass against, so there that line is the whole rule. The FlowCutter
+candidate runs on a residual of any size, under its own vertex cap.
 
 `portfolio::decompose` returns one decomposition rather than all of them. It
 contracts bags contained in a neighbouring bag, in each candidate that can
@@ -80,23 +82,24 @@ them: one more starts only while what the previous one cost still fits before
 it. The sampling count caps how many seeds are drawn, not how long they run, so
 it is what stops the restarts of a run with no deadline to run to, which is
 `standard()`, `sampled_min_fill()`, and any configuration with
-`PortfolioConfig::with_restarts_to_deadline` turned off. On a paced residual
-the restarts stop at the soft deadline as the initial candidates do, unless the
-FlowCutter candidate's own work model says it could not start and stop inside
-the hard window on a graph this size; then the
-initial candidates and the restarts run to the hard deadline less a reserve for
-bagging the residual and writing the result, which grows with the vertex and
-edge counts and is held between 50 ms and 4 s. On a run with no hard deadline
-they stop at the soft deadline.
+`PortfolioConfig::with_restarts_to_deadline` turned off. On a residual over the
+300,000-vertex limit the restarts stop at the soft deadline as the initial
+candidates do, unless the FlowCutter candidate's own work model says it could
+not start and stop inside the hard window on a graph this size; then they run to
+the hard deadline less a reserve for bagging the residual and writing the
+result, which grows with the vertex and edge counts and is held between 50 ms
+and 4 s. That reserve replaces the 1.5 seconds between 10,000 and 300,000
+vertices too, on a graph the model declines. On a run with no hard deadline they
+stop at the soft deadline.
 
 `standard_with_budget` asks for the whole schedule at every budget. What a
 short one can afford is decided when the run gets there: the diverse pass runs
-while what the initial orders cost, divided between them, projects one more
-candidate of that shape to fit in half the time the restart deadline has left,
-and the FlowCutter candidate runs when the window it is left passes the test in
-the next paragraph. That test is what decides the second stage of a short
-budget too, so a paced residual keeps it only where the trailing candidate
-would not have used it.
+on a residual the schedule admits, and there while what the initial orders cost,
+divided between them, projects one more candidate of that shape to fit in half
+the time the restart deadline has left; and the FlowCutter candidate runs when
+the window it is left passes the test in the next paragraph. That test is what
+decides the second stage of a short budget too, so a residual over the limit
+keeps it only where the trailing candidate would not have used it.
 
 The FlowCutter candidate takes what is left, less two estimated restarts, since
 the vendored backend tests its deadline only between restarts and the result

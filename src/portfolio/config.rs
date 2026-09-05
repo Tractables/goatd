@@ -495,25 +495,26 @@ impl PortfolioConfig {
     /// The hedge runs its first weighted stage on any budget and one more for
     /// as long as half of what the plain pass left holds another; what does not
     /// fit stays with the ordinary restarts. [`PortfolioConfig::with_hedge_reserve`]
-    /// changes that fraction. The diverse pass runs while one more elimination
-    /// of the kind the initial orders just ran fits in half the time the
-    /// restart deadline has left. The trailing FlowCutter candidate runs while
-    /// the window it is left is long enough to seed it and long enough for the
-    /// backend's setup and first restart on this graph.
+    /// changes that fraction. The diverse pass runs on a residual the schedule
+    /// admits — 10,000 vertices or fewer, or above that line with a min-fill
+    /// pass cheap enough for the budget to hold the passes the schedule is made
+    /// of — and there while one more elimination of the kind the initial orders
+    /// just ran fits in half the time the restart deadline has left. The
+    /// trailing FlowCutter candidate runs while the window it is left is long
+    /// enough to seed it and long enough for the backend's setup and first
+    /// restart on this graph.
     ///
     /// The ordinary restarts run past the soft deadline into the hard window,
     /// stopping 1.5 s before the hard deadline so the trailing FlowCutter
-    /// candidate still has that much to run in. Only a residual that runs the
-    /// whole schedule does that: 10,000 vertices or fewer, or above that line
-    /// and cheap enough for the budget to hold the min-fill passes the schedule
-    /// is made of. On the rest the second stage stays with FlowCutter, and the
-    /// restarts stop at the soft deadline — unless FlowCutter's own work model
-    /// says it cannot start and stop inside the second stage on a graph this
-    /// size, in which case the elimination keeps the whole window and gives
-    /// back only the time it needs to write its answer out. One more restart
-    /// starts only while what the previous one cost still fits before that
-    /// stop, so the deadline rather than the count is what ends them; the count
-    /// is what a run stops at with
+    /// candidate still has that much to run in. A residual past
+    /// [`PortfolioConfig::with_expensive_orders_up_to`] does not: its restarts
+    /// stop at the soft deadline and the second stage stays with FlowCutter —
+    /// unless FlowCutter's own work model says it cannot start and stop inside
+    /// that stage on a graph this size, in which case the elimination keeps the
+    /// whole window and gives back only the time it needs to write its answer
+    /// out. One more restart starts only while what the previous one cost still
+    /// fits before that stop, so the deadline rather than the count is what
+    /// ends them; the count is what a run stops at with
     /// [`PortfolioConfig::with_restarts_to_deadline`] turned off.
     pub fn standard_with_budget(budget: Duration) -> Self {
         Self {
@@ -563,8 +564,10 @@ impl PortfolioConfig {
     /// while the restart deadline has time left.
     ///
     /// The restart deadline is the hard deadline less the reserve kept for the
-    /// trailing FlowCutter candidate on a residual that runs the whole
-    /// schedule, and the soft deadline on any larger one.
+    /// trailing FlowCutter candidate. On a residual past
+    /// [`PortfolioConfig::with_expensive_orders_up_to`] it is the soft deadline
+    /// instead, unless FlowCutter has declined the second stage, in which case
+    /// it is the hard deadline less what handing the answer over costs.
     ///
     /// On, the restarts carry on from the next seed of the same sequence and
     /// the restart deadline ends them; the count set by
@@ -617,17 +620,22 @@ impl PortfolioConfig {
     /// Between 10,000 and the number given here the expensive orders still run,
     /// on terms that suit the size:
     ///
-    /// - min-fill runs to half the time the soft deadline has left when it
+    /// - min-fill runs to half the time the restart deadline has left when it
     ///   starts, rather than to the whole window, with the incumbent width
     ///   cutoff as everywhere else. An order that cannot finish gives the rest
     ///   back, and the restarts always start with time in hand;
+    /// - the loop over the initial candidates runs to the restart deadline
+    ///   rather than to the soft one, so a first candidate that spends the
+    ///   whole soft budget does not end the schedule. Each candidate's own
+    ///   search still stops at the soft deadline, which is what leaves the
+    ///   next one room;
     /// - nested dissection does not run: it reads its deadline between levels,
     ///   and one level's bisection of a graph with a million edges takes
     ///   seconds on its own;
     /// - the diverse pass and the hedge do not run;
     /// - the restarts are sampled min-fill when an initial min-fill produced a
-    ///   decomposition and sampled min-degree when none did, and stop at the
-    ///   soft deadline either way;
+    ///   decomposition and sampled min-degree when none did, and run to the
+    ///   restart deadline either way;
     /// - the trailing FlowCutter candidate runs as on any residual, under its
     ///   own vertex cap.
     ///

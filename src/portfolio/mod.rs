@@ -102,10 +102,12 @@ enum Residual {
     Ordinary,
     /// A min-fill pass does not fit, and the residual is at or below the limit
     /// from [`PortfolioConfig::with_expensive_orders_up_to`]. The expensive
-    /// initial orders run, each on half the time the elimination has left
-    /// rather than on all of it; nested dissection, the diverse pass and
-    /// the hedge do not; and the restarts follow whichever of min-fill and
-    /// min-degree produced a decomposition.
+    /// initial orders run, each on half the time the restart deadline has left
+    /// rather than on all of it; nested dissection, the diverse pass and the
+    /// hedge do not; the initial loop and the restarts both run to the restart
+    /// deadline, though each candidate's own search still stops at the soft
+    /// one; and the restarts follow whichever of min-fill and min-degree
+    /// produced a decomposition.
     Admitted,
     /// Past that limit: min-degree candidates and sampled min-degree restarts,
     /// and nothing else this classification chooses. The candidates with a
@@ -164,50 +166,45 @@ fn min_fill_estimate(first: Order<'_>, cost: Duration) -> Duration {
     }
 }
 
-/// The residual's class and the two deadlines that follow from it.
+/// The residual's class and the three deadlines that follow from it:
+/// [`restart_deadline`], [`initial_candidate_deadline`] and
+/// [`initial_search_cutoff`].
 ///
 /// Outside the band the sizes settle the class before any candidate runs; in
 /// the band it waits on what the first candidate cost. Nothing the first
 /// candidate does depends on the class: it is a min-degree order, every class
-/// runs it, and while the class is unsettled it runs to the soft deadline.
+/// runs it, and while the class is unsettled it runs to the soft deadline,
+/// which is the cutoff every class but `Large` gives it and `Large` is settled
+/// by size.
 #[derive(Clone, Copy)]
 struct Classified {
     residual: Residual,
     /// Where the restart phase stops.
     restart_deadline: Option<Instant>,
-    /// Where an initial candidate's own search stops.
+    /// Where the initial loop stops starting another candidate.
     initial_deadline: Option<Instant>,
+    /// Where an initial candidate's own search ends.
+    initial_cutoff: Option<Instant>,
 }
 
 impl Classified {
     /// `writeout` is what the elimination keeps back at the end of the hard
     /// window to hand its answer over, set where the trailing FlowCutter
     /// candidate has declined the second stage. A residual running the whole
-    /// schedule keeps the FlowCutter reserve there instead, so the handover is
-    /// for the other two classes only.
+    /// schedule keeps the FlowCutter reserve there instead, which is what
+    /// [`restart_deadline`] does with it.
     fn new(
         residual: Residual,
         writeout: Option<Duration>,
         soft_deadline: Option<Instant>,
         hard_deadline: Option<Instant>,
     ) -> Self {
-        let handover = if residual == Residual::Ordinary {
-            None
-        } else {
-            writeout
-        };
-        let restart_deadline = restart_deadline(residual, soft_deadline, hard_deadline, handover);
+        let restart_deadline = restart_deadline(residual, soft_deadline, hard_deadline, writeout);
         Self {
             residual,
             restart_deadline,
-            // The initial candidates keep the soft deadline, except where the
-            // elimination has the second stage as well: then they stop where
-            // the restarts do.
-            initial_deadline: if handover.is_some() {
-                restart_deadline
-            } else {
-                soft_deadline
-            },
+            initial_deadline: initial_candidate_deadline(residual, soft_deadline, restart_deadline),
+            initial_cutoff: initial_search_cutoff(residual, soft_deadline, restart_deadline),
         }
     }
 }
@@ -793,17 +790,22 @@ enum EliminationPhase {
 
 /// Where the elimination phases stop.
 ///
-/// On a residual that runs the whole schedule the restarts run past the soft
-/// deadline into the hard window, keeping [`FLOWCUTTER_RESERVE`] at the end of
-/// it for the trailing FlowCutter candidate. More restart time is worth more
-/// than a longer FlowCutter tail on these graphs.
+/// At or below the caller's limit the restarts run past the soft deadline into
+/// the hard window, keeping [`FLOWCUTTER_RESERVE`] at the end of it for the
+/// trailing FlowCutter candidate. More restart time is worth more than a longer
+/// FlowCutter tail on these graphs, and an admitted residual that spent its soft
+/// budget on the first candidate has nothing else to do with the second stage: a
+/// restart projected to run into the deadline is never started, so the wider
+/// window only adds restarts that fit.
 ///
-/// On a paced residual the second stage is nominally FlowCutter's: a restart
+/// Past the caller's limit the second stage is nominally FlowCutter's: a restart
 /// there costs a large fraction of the window, and on graphs of that size
 /// FlowCutter is regularly the widest margin the portfolio has. So the soft
-/// deadline stands unless FlowCutter has already declined the second stage, in
-/// which case nothing else would use it and `writeout` is what the elimination
-/// keeps back to hand its answer over.
+/// deadline stands there unless FlowCutter has already declined the second
+/// stage, in which case nothing else would use it and `writeout` is what the
+/// elimination keeps back to hand its answer over. A declined second stage takes
+/// the place of the FlowCutter reserve on an admitted residual too, since there
+/// is no trailing candidate left to keep that reserve for.
 ///
 /// The soft deadline also stands on a run with no hard deadline, and where the
 /// reserve would put the stop before the soft deadline on a hard window shorter
@@ -814,12 +816,18 @@ fn restart_deadline(
     hard_deadline: Option<Instant>,
     writeout: Option<Duration>,
 ) -> Option<Instant> {
-    let reserve = match residual {
-        Residual::Ordinary => FLOWCUTTER_RESERVE,
-        _ => match writeout {
-            Some(reserve) => reserve,
-            None => return soft_deadline,
-        },
+    let reserve = match (residual, writeout) {
+        // The trailing candidate runs at this size, so its reserve stands
+        // whatever the handover would cost.
+        (Residual::Ordinary, _) => FLOWCUTTER_RESERVE,
+        // A second stage FlowCutter declined belongs to the elimination, and
+        // all it has to keep back there is the handover.
+        (_, Some(writeout)) => writeout,
+        // The admitted restarts run into the hard window on the same terms as
+        // an ordinary residual's.
+        (Residual::Admitted, None) => FLOWCUTTER_RESERVE,
+        // Past the caller's limit the second stage stays with FlowCutter.
+        (Residual::Large, None) => return soft_deadline,
     };
     let (Some(soft), Some(hard)) = (soft_deadline, hard_deadline) else {
         return soft_deadline;
@@ -854,9 +862,10 @@ fn writeout_reserve(graph: &Graph, residual: usize) -> Duration {
 ///
 /// Each order gives back at least what it does not use, so however many of them
 /// run, the restarts still get a share of what is left. Taking the restart
-/// deadline rather than the soft one is what the rule means: where the restarts
-/// keep the soft deadline this halves the soft window, and where they run to
-/// the end of the hard one it halves that instead. With no restart deadline
+/// deadline rather than the soft one is what the rule means: an admitted
+/// residual's restart deadline sits a reserve short of the hard deadline, so
+/// this halves what is left of both stages, and where the restarts do keep the
+/// soft deadline it halves the soft window instead. With no restart deadline
 /// there is nothing to halve and the order runs to the portfolio's hard
 /// deadline, as it does below the band.
 fn admitted_cutoff(
@@ -867,6 +876,61 @@ fn admitted_cutoff(
         return hard_deadline;
     };
     Some(crate::meter::now() + remaining(restart) / 2)
+}
+
+/// The deadline the initial loop reads between candidates: once it has passed,
+/// whatever has already returned is the answer.
+///
+/// Above the full-schedule size the loop runs as long as the restarts do. On an
+/// admitted residual that is the hard window less the FlowCutter reserve, or
+/// less the handover where FlowCutter has declined the second stage. The first
+/// min-degree pass on graphs of that size often spends the whole soft budget on
+/// its own, and stopping there hands its answer back with half the window
+/// unspent; the paced min-fill behind it is usually the narrower of the two.
+/// Past the caller's limit the restarts keep the soft deadline unless the second
+/// stage was declined, and the loop follows either way.
+///
+/// An ordinary residual keeps the soft deadline. Its schedule of cheap
+/// candidates finishes well inside it, and the rest of the window is the
+/// restarts' and the trailing candidate's.
+///
+/// This is not where a candidate's own search ends: that is
+/// [`initial_search_cutoff`], and on an admitted residual the two differ.
+fn initial_candidate_deadline(
+    residual: Residual,
+    soft_deadline: Option<Instant>,
+    restart_deadline: Option<Instant>,
+) -> Option<Instant> {
+    match residual {
+        Residual::Ordinary => soft_deadline,
+        Residual::Admitted | Residual::Large => restart_deadline,
+    }
+}
+
+/// Where an initial candidate's own search ends, which [`elimination_stop`]
+/// hands the core as its soft cutoff.
+///
+/// The soft deadline at or below the caller's limit. A candidate that reaches it
+/// stops there with the residual it has left, and on an admitted residual that
+/// is the point: the first pass gives up the rest of the window and the next
+/// candidate runs in it, up to [`initial_candidate_deadline`]. The soft deadline
+/// keeps its two other jobs there as well — preprocessing stops at it, and a
+/// deterministic greedy order that reaches it switches to cheaper scoring for
+/// the rest of its elimination.
+///
+/// Past the caller's limit only min-degree candidates run and there is no
+/// cheaper one behind the first, so the search runs to the restart deadline:
+/// the soft deadline where FlowCutter holds the second stage, and the end of the
+/// hard window less the handover where it has declined it.
+fn initial_search_cutoff(
+    residual: Residual,
+    soft_deadline: Option<Instant>,
+    restart_deadline: Option<Instant>,
+) -> Option<Instant> {
+    match residual {
+        Residual::Ordinary | Residual::Admitted => soft_deadline,
+        Residual::Large => restart_deadline,
+    }
 }
 
 /// Whether another restart is admitted: one projected to cost `projected` and
@@ -924,10 +988,10 @@ fn restart_count(config: PortfolioConfig, restart_deadline: Option<Instant>) -> 
 /// can always return a decomposition. Extra samples stop at the restart
 /// deadline; the rest of the hard window belongs to FlowCutter.
 ///
-/// `cutoff` is where the phase's own search ends: the soft deadline for the
-/// initial candidates, or the restart deadline where the whole window is
-/// theirs, and the restart deadline for the extra samples. A core on a residual
-/// too large for cheap mode bails there rather than eliminating on past it.
+/// `cutoff` is where the phase's own search ends: [`initial_search_cutoff`] for
+/// the initial candidates, the restart deadline for the extra samples. A core on
+/// a residual too large for cheap mode bails there rather than eliminating on
+/// past it.
 ///
 /// An expensive order on an admitted residual stops at a cutoff of its own,
 /// half the time the restart deadline had left when it started. At that size it
@@ -1104,10 +1168,12 @@ fn run_portfolio(
         // run, and nothing that candidate does depends on it: it is a
         // min-degree order and every class runs it.
         let residual = classified.map(|class| class.residual);
-        // What ends this candidate's search: the soft deadline, or the end of
-        // the hard window less the handover where the elimination has the
-        // second stage too.
+        // Where the loop stops starting another candidate, and where this one's
+        // own search ends. Until the class is settled both are the soft
+        // deadline, which is the cutoff every class but `Large` gives a
+        // candidate anyway, and `Large` is settled before the loop.
         let initial_deadline = classified.map_or(soft_deadline, |class| class.initial_deadline);
+        let initial_cutoff = classified.map_or(soft_deadline, |class| class.initial_cutoff);
         // Honour the deadline between orders (when set), but always run
         // order 0 so we return something even on huge graphs that would
         // otherwise time out inside the first order.
@@ -1175,7 +1241,7 @@ fn run_portfolio(
                 update_order_ties: candidate.update_order_ties,
                 stop: elimination_stop(
                     phase,
-                    initial_deadline,
+                    initial_cutoff,
                     hard_deadline,
                     candidates.best_width(),
                 ),
@@ -1537,11 +1603,13 @@ fn run_portfolio(
     }
     // Runs vanilla FlowCutter once as a final portfolio candidate. Placed after
     // the extra-sampling loop so it runs in whatever is left of the hard
-    // window: the restart reserve on an ordinary residual, and up to the whole
-    // second stage on the larger ones, where the restarts stopped at the soft
-    // deadline. FlowCutter already returns a complete decomposition, so no
-    // separator-refinement pass is applied to it. It runs on every residual;
-    // on the large ones it is often the best candidate by a wide margin, and
+    // window: the restart reserve at or below the caller's limit, and up to the
+    // whole second stage past it, where the restarts stopped at the soft
+    // deadline. On a graph whose second stage it declined up front there is
+    // nothing left here, which is what let the elimination take that stage.
+    // FlowCutter already returns a complete decomposition, so no
+    // separator-refinement pass is applied to it. It runs on every residual; on
+    // the large ones it is often the best candidate by a wide margin, and
     // `flowcutter_candidate` has its own vertex cap.
     if let Some(configured_budget) = config
         .flowcutter_budget
