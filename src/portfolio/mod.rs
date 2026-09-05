@@ -32,10 +32,24 @@ pub use config::{
 };
 pub use trace::{CandidateOutcome, CandidateTrace, Pass, Stage};
 
-/// Exit early if FlowCutter hasn't improved treewidth for this long. Caps
-/// per-graph overhead where FlowCutter converges fast.
+/// Exit early if FlowCutter hasn't improved treewidth for this long, on a
+/// window of [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] or less. Caps per-graph
+/// overhead where FlowCutter converges fast.
 const FLOWCUTTER_CANDIDATE_PATIENCE: Duration = Duration::from_millis(500);
+/// Restarts the trailing candidate may run on a window of
+/// [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] or less.
 const FLOWCUTTER_CANDIDATE_ITERATIONS: u32 = 50;
+/// The window the trailing FlowCutter candidate keeps the two limits above on,
+/// and the window [`flowcutter_window`] takes its whole exit reserve out of.
+/// Over it neither limit applies and the reserve is capped at half the window.
+///
+/// The value is the largest window a 4.75-second soft budget produces, since
+/// the window is at most the configured FlowCutter budget and that is the
+/// budget here. A 4.75-second soft budget reaches the two-stage hard deadline
+/// at 9.5 s, leaving output headroom under a ten-second process limit, and it
+/// is the budget the patience and the restart cap were measured on. Only a
+/// longer budget puts the candidate on the other side of this.
+const FLOWCUTTER_CANDIDATE_BASE_WINDOW: Duration = Duration::from_millis(4_750);
 const SAMPLE_SEED_OFFSET: u64 = 100;
 const SAMPLE_SEED_STRIDE: u64 = 7919;
 /// Separates a random hedge weighting from the run's other draws.
@@ -632,15 +646,69 @@ fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
 /// Against a hard deadline the window stops `reserve` short of it, so the run
 /// ends inside the time the portfolio actually has. Without a hard deadline
 /// there is nothing to end inside and the configured budget stands.
+///
+/// `reserve` is an estimate of two restarts at the rate the run has been going,
+/// and what happens to it depends on how long the window is:
+///
+/// * At [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] and below it comes off whole. On a
+///   graph whose restarts are expensive that is the whole window, and the
+///   candidate is declined.
+/// * Over that window the reserve is capped at half of it, so the same graph
+///   gets a candidate on half the window rather than none, and that is the graph
+///   FlowCutter is worth the most on. Half is still a full window of overshoot:
+///   a run given the first half that comes back one restart late is inside the
+///   hard deadline as long as that restart is no longer than the window itself.
+///
+/// On either side of that switch a candidate the window leaves no room for is
+/// declined, and above the full-schedule size the window it declines goes to the
+/// elimination candidates: [`flowcutter_declines_second_stage`] puts the same
+/// question to this function before the schedule is fixed, so it reads the
+/// capped reserve on a long window as the candidate itself will.
 fn flowcutter_window(
     configured_budget: Duration,
     left: Option<Duration>,
     reserve: Duration,
 ) -> Duration {
     match left {
-        Some(left) => left.min(configured_budget).saturating_sub(reserve),
+        Some(left) => {
+            let window = left.min(configured_budget);
+            let reserve = if window > FLOWCUTTER_CANDIDATE_BASE_WINDOW {
+                reserve.min(window / 2)
+            } else {
+                reserve
+            };
+            window.saturating_sub(reserve)
+        }
         None => configured_budget,
     }
+}
+
+/// How long the trailing FlowCutter candidate may go without finding a
+/// narrower decomposition before it stops, and how many restarts it may run,
+/// given the window it has.
+///
+/// At [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] and below both are what the slot has
+/// always used, which is what a window that short was tuned for.
+///
+/// Above it neither applies: the window ends the run. The candidate is the last
+/// thing the portfolio does, so the time it does not use goes to nobody, and the
+/// backend keeps the narrowest decomposition it has found, so a restart it does
+/// not make can only leave width behind. What the two limits are for is a short
+/// window, where a run that has stopped improving is better ended than carried
+/// to the deadline; over the base window the deadline is the bound, together
+/// with the restart cap a timed run carries elsewhere in the library, which is
+/// high enough that the clock reaches it first.
+///
+/// Both read the window rather than the configured budget, since the window is
+/// already the smaller of that budget and what the hard deadline has left.
+fn flowcutter_candidate_limits(window: Duration) -> (Option<Duration>, u32) {
+    if window <= FLOWCUTTER_CANDIDATE_BASE_WINDOW {
+        return (
+            Some(FLOWCUTTER_CANDIDATE_PATIENCE),
+            FLOWCUTTER_CANDIDATE_ITERATIONS,
+        );
+    }
+    (None, crate::flowcutter::TIMED_ITERATIONS)
 }
 
 /// What the run has spent so far, on both clocks.
@@ -724,10 +792,10 @@ fn flowcutter_runs_in(graph: &Graph, timeout: Duration) -> bool {
 ///
 /// The candidate runs after the restarts, so the widest window the schedule can
 /// hand it is what the hard deadline has left when they stop at the soft one,
-/// less its own reserve; the reserve is smallest at the model's own rate, which
-/// is where a run that has spent nothing yet reads it. A graph declined on
-/// those terms is declined on any, so the second stage is free and the
-/// elimination candidates can have it.
+/// less its own reserve as [`flowcutter_window`] takes it, cap and all; the
+/// reserve is smallest at the model's own rate, which is where a run that has
+/// spent nothing yet reads it. A graph declined on those terms is declined on
+/// any, so the second stage is free and the elimination candidates can have it.
 fn flowcutter_declines_second_stage(
     graph: &Graph,
     config: PortfolioConfig,
@@ -762,14 +830,8 @@ fn flowcutter_candidate(
     if !flowcutter_runs_in(graph, timeout) {
         return Ok(None);
     }
-    match flowcutter_decompose(
-        graph,
-        Budget::timed(
-            timeout,
-            Some(FLOWCUTTER_CANDIDATE_PATIENCE),
-            FLOWCUTTER_CANDIDATE_ITERATIONS,
-        ),
-    ) {
+    let (patience, iterations) = flowcutter_candidate_limits(timeout);
+    match flowcutter_decompose(graph, Budget::timed(timeout, patience, iterations)) {
         Ok(decomposition) => Ok(Some(decomposition)),
         // A timed backend run may end before it has a result. The elimination
         // candidates already make the portfolio complete, so this one can be

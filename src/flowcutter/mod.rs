@@ -64,12 +64,18 @@ enum BudgetKind {
 /// ends the search first.
 pub(crate) const FC_TIMED_STEPS: u64 = 1_000_000;
 
-// The limits of [`Budget::standalone`]. The values are quoted in its doc
-// comment; change both.
+// The timeout and patience of [`Budget::standalone`]. The values are quoted in
+// its doc comment; change both.
 const STANDALONE_TIMEOUT: Duration = Duration::from_millis(200);
 const STANDALONE_PATIENCE: Duration = Duration::from_millis(150);
-const STANDALONE_TIMED_ITERATIONS: u32 = 100_000;
 const STANDALONE_STEP_ITERATIONS: u32 = 900;
+
+/// Restarts a timed run may make. High enough that the timeout and the patience
+/// are what stop such a run; a run bounded by a count of restarts instead uses
+/// [`Budget::steps`]. Quoted in the doc comment of [`Budget::standalone`], which
+/// is one of the two callers; the portfolio's trailing candidate is the other,
+/// on a window long enough for the clock to end it.
+pub(crate) const TIMED_ITERATIONS: u32 = 100_000;
 
 impl Budget {
     /// Create an elapsed-time budget. `patience` stops a run that has not
@@ -106,15 +112,13 @@ impl Budget {
     pub const fn standalone(budget: Option<Duration>, steps: Option<u64>) -> Self {
         match (steps, budget) {
             (Some(steps), _) => Self::steps(steps, STANDALONE_STEP_ITERATIONS),
-            (None, Some(budget)) => Self::timed(
-                budget,
-                Some(STANDALONE_PATIENCE),
-                STANDALONE_TIMED_ITERATIONS,
-            ),
+            (None, Some(budget)) => {
+                Self::timed(budget, Some(STANDALONE_PATIENCE), TIMED_ITERATIONS)
+            }
             (None, None) => Self::timed(
                 STANDALONE_TIMEOUT,
                 Some(STANDALONE_PATIENCE),
-                STANDALONE_TIMED_ITERATIONS,
+                TIMED_ITERATIONS,
             ),
         }
     }

@@ -502,7 +502,9 @@ impl PortfolioConfig {
     /// just ran fits in half the time the restart deadline has left. The
     /// trailing FlowCutter candidate runs while the window it is left is long
     /// enough to seed it and long enough for the backend's setup and first
-    /// restart on this graph.
+    /// restart on this graph; on a window over 4.75 seconds that window is also
+    /// what ends it, and on a shorter one it stops early once it has gone half a
+    /// second without a narrower decomposition, or after 50 restarts.
     ///
     /// The ordinary restarts run past the soft deadline into the hard window,
     /// stopping 1.5 s before the hard deadline so the trailing FlowCutter
