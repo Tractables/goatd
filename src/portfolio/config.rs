@@ -71,12 +71,12 @@ const DEFAULT_HEDGE_RESERVE: f64 = 0.5;
 /// exact minimum.
 const DEFAULT_SAMPLE_BAND: u64 = 3;
 
-/// Residuals of this size or smaller run the whole schedule on a run with no
-/// soft budget. Under a budget the schedule is admitted by what a min-fill pass
-/// over the residual is measured to cost, not by a vertex count; see
-/// [`MIN_FILL_COST_MULTIPLE`] and [`FULL_SCHEDULE_PASSES`]. A run with no
-/// budget has no window to measure a pass against, so the vertex line stands
-/// there.
+/// Residuals of this size or smaller run the whole schedule whatever the budget
+/// is. Above the line the measurement decides: the schedule runs where a
+/// min-fill pass over the residual is cheap enough for the budget to hold the
+/// whole of it; see [`MIN_FILL_COST_MULTIPLE`] and [`FULL_SCHEDULE_PASSES`]. A
+/// run with no soft budget has no window to measure a pass against, so the line
+/// is the whole rule there.
 pub(super) const MAX_RESIDUAL_FOR_FULL_SCHEDULE: usize = 10_000;
 
 /// What a min-fill pass over the residual costs, as a multiple of what the
@@ -96,11 +96,12 @@ pub(super) const MIN_FILL_COST_MULTIPLE: f64 = 6.7;
 /// would admit it on residuals it cannot get through. The schedule runs while
 /// the time the soft deadline has left holds this many estimated passes.
 ///
-/// Fitted on 240 corpus graphs at a 4,750 ms soft budget to admit as many
-/// residuals as the 10,000-vertex line it replaces, 141 against 139. Which ones
-/// changes: 20 sparse residuals of 15,000 to 36,000 vertices, whose pass costs
-/// 140 to 370 ms, now run the schedule, and 18 below 10,000 whose pass costs
-/// 250 ms to 9 s no longer do.
+/// Fitted on 240 corpus graphs: at a 4,750 ms soft budget it adds 20 residuals
+/// of 10,307 to 35,786 vertices, sparse enough that a pass over them is
+/// estimated at 107 to 309 ms, to the 139 the vertex line already took. A
+/// smaller number here admits residuals the schedule cannot get through; at the
+/// same budget halving it takes those 20 additions to 32 and quartering it to
+/// 39.
 pub(super) const FULL_SCHEDULE_PASSES: f64 = 15.0;
 
 /// The default largest residual the expensive orders run on at all. Between the

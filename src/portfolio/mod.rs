@@ -105,17 +105,22 @@ fn min_fill_estimate(first: Order<'_>, cost: Duration) -> Duration {
 
 /// Whether the whole schedule fits in the budget.
 ///
-/// The diverse pass, the hedge and the sampled restarts are all min-fill passes
-/// over the residual, so what the schedule costs follows what one such pass
-/// costs. It runs while the time the soft deadline has left holds
-/// [`config::FULL_SCHEDULE_PASSES`] of them; where it holds fewer, the residual
-/// is paced instead.
+/// A residual of [`config::MAX_RESIDUAL_FOR_FULL_SCHEDULE`] vertices or fewer
+/// runs the schedule whatever the budget is. Above that line the measurement
+/// decides. The diverse pass, the hedge and the sampled restarts are all
+/// min-fill passes over the residual, so what the schedule costs follows what
+/// one such pass costs: it runs while the time the soft deadline has left holds
+/// [`config::FULL_SCHEDULE_PASSES`] of them, and where it holds fewer the
+/// residual is paced instead.
 ///
 /// A run with no soft budget has no window to measure the passes against, so
-/// the vertex line [`config::MAX_RESIDUAL_FOR_FULL_SCHEDULE`] stands there.
+/// the line is the whole rule there.
 fn full_schedule_fits(active: usize, min_fill: Duration, soft_deadline: Option<Instant>) -> bool {
+    if active <= config::MAX_RESIDUAL_FOR_FULL_SCHEDULE {
+        return true;
+    }
     let Some(soft) = soft_deadline else {
-        return active <= config::MAX_RESIDUAL_FOR_FULL_SCHEDULE;
+        return false;
     };
     min_fill <= remaining(soft).div_f64(config::FULL_SCHEDULE_PASSES)
 }

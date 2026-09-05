@@ -807,18 +807,21 @@ fn a_residual_the_full_schedule_does_not_fit_on_is_admitted_rather_than_ordinary
 #[test]
 fn the_full_schedule_runs_while_the_budget_holds_enough_min_fill_passes() {
     let passes = super::config::FULL_SCHEDULE_PASSES;
+    let full = super::config::MAX_RESIDUAL_FOR_FULL_SCHEDULE;
     let soft = crate::meter::now() + Duration::from_millis(4_750);
     let fits = Duration::from_millis((4_700.0 / passes) as u64);
     let over = Duration::from_millis((4_750.0 / passes) as u64 + 100);
 
-    // The size of the residual says nothing on its own; the cost of a pass
-    // over it says everything.
+    // Above the vertex line the cost of a pass decides, whatever the size.
     assert!(super::full_schedule_fits(1_000_000, fits, Some(soft)));
-    assert!(!super::full_schedule_fits(1, over, Some(soft)));
+    assert!(!super::full_schedule_fits(full + 1, over, Some(soft)));
 
-    // A run with no soft budget has no window to take a share of, so the
-    // vertex line stands there.
-    let full = super::config::MAX_RESIDUAL_FOR_FULL_SCHEDULE;
+    // Up to the line the schedule runs however expensive the pass looks, so a
+    // budget can only add residuals to the ones the line already took.
+    assert!(super::full_schedule_fits(full, over, Some(soft)));
+
+    // A run with no soft budget has no window to take a share of, so the line
+    // is all there is.
     assert!(super::full_schedule_fits(
         full,
         Duration::from_secs(3_600),
