@@ -566,7 +566,10 @@ impl PortfolioConfig {
     /// while the restart deadline has time left.
     ///
     /// The restart deadline is the hard deadline less the reserve kept for the
-    /// trailing FlowCutter candidate. On a residual past
+    /// trailing FlowCutter candidate. Over 10,000 vertices and under a soft
+    /// budget over 4.75 seconds that reserve is the whole second stage, since
+    /// the trailing candidate then runs to its window, so the restarts stop at
+    /// the soft deadline there. On a residual past
     /// [`PortfolioConfig::with_expensive_orders_up_to`] it is the soft deadline
     /// instead, unless FlowCutter has declined the second stage, in which case
     /// it is the hard deadline less what handing the answer over costs.
@@ -640,6 +643,14 @@ impl PortfolioConfig {
     ///   restart deadline either way;
     /// - the trailing FlowCutter candidate runs as on any residual, under its
     ///   own vertex cap.
+    ///
+    /// The restart deadline those first two read is the hard deadline less what
+    /// the trailing FlowCutter candidate can use. Up to a 4.75-second soft
+    /// budget that candidate stops long before its window and the reserve is
+    /// 1.5 seconds, so the schedule gets the rest of the second stage. Over it
+    /// the window is what ends the candidate and the reserve is the whole
+    /// second stage, so the schedule stops at the soft deadline and the stage is
+    /// the candidate's.
     ///
     /// Above the number given here the portfolio keeps only its min-degree
     /// candidates: the initial list drops min-fill and nested dissection after

@@ -42,9 +42,10 @@ stops at half the time the restart deadline has left when it starts, so the
 restarts keep a share of the budget; nested dissection, the diverse pass and
 the hedge are skipped; a candidate that reaches the soft deadline stops there
 as everywhere else, but the portfolio keeps starting candidates and restarts
-until the restart deadline rather than the soft one; and the restarts are
-sampled min-fill when the initial min-fill produced a decomposition and sampled
-min-degree when it did not. Above 300,000 vertices only the min-degree
+until the restart deadline rather than the soft one, which on a budget over
+4.75 seconds is the soft deadline anyway, since the second stage then goes to
+the FlowCutter candidate; and the restarts are sampled min-fill when the initial
+min-fill produced a decomposition and sampled min-degree when it did not. Above 300,000 vertices only the min-degree
 candidates and sampled min-degree restarts run.
 `PortfolioConfig::with_expensive_orders_up_to` moves the upper boundary; the
 10,000-vertex line is fixed, and a run with no soft budget has no window to
@@ -84,7 +85,11 @@ it is what stops the restarts of a run with no deadline to run to, which is
 `standard()`, `sampled_min_fill()`, and any configuration with
 `PortfolioConfig::with_restarts_to_deadline` turned off. On a residual over the
 300,000-vertex limit the restarts stop at the soft deadline as the initial
-candidates do, unless the FlowCutter candidate's own work model says it could
+candidates do, and between 10,000 and 300,000 vertices they stop there too
+under a soft budget over 4.75 seconds, where the FlowCutter candidate runs to
+its window and the second stage is worth more to it than to more restarts.
+Over 300,000 vertices there is one exception: the FlowCutter candidate's own
+work model may say it could
 not start and stop inside the hard window on a graph this size; then they run to
 the hard deadline less a reserve for bagging the residual and writing the
 result, which grows with the vertex and edge counts and is held between 50 ms
