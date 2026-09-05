@@ -24,7 +24,7 @@ use crate::embedding::{self, Embedding};
 use crate::flowcutter::{Budget, decompose as flowcutter_decompose};
 use crate::{Error, Graph, TreeDecomposition};
 use candidates::{CandidateSet, ScheduleStop};
-use config::{FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS};
+use config::{DIVERSE_PASS_RESERVE, FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS};
 
 pub use config::{
     DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, HedgeWeights, MAX_DIVERSE_SAMPLING_RUNS,
@@ -108,7 +108,8 @@ enum Residual {
     /// produced a decomposition.
     Admitted,
     /// Past that limit: min-degree candidates and sampled min-degree restarts,
-    /// nothing else.
+    /// and nothing else this classification chooses. The candidates with a
+    /// vertex cap of their own ask that cap instead.
     Large,
 }
 
@@ -537,6 +538,8 @@ fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
             },
             _,
         ) => Stage::Diverse { degree_coefficient },
+        (Order::MinimalTriangulation, _) => Stage::MinimalTriangulation,
+        (Order::MaximumCardinality, _) => Stage::MaximumCardinality,
     }
 }
 
@@ -864,6 +867,40 @@ fn restart_admitted(now: Instant, projected: Duration, deadlines: [Option<Instan
         .all(|deadline| finish <= *deadline)
 }
 
+/// Whether the diverse pass runs, given what the initial orders cost.
+///
+/// The pass is eliminations of the same shape as the initial orders on the
+/// same residual, so what those orders cost, divided between them, is what one
+/// candidate of the pass costs on this graph on this machine. It runs while
+/// that fits in [`DIVERSE_PASS_RESERVE`] of the time the restart deadline has
+/// left, which is the hedge's rule for a weighted stage asked one candidate at
+/// a time: the restart admission stops the pass part-way where the deadline
+/// catches up with it, so what is decided here is whether it is worth starting.
+///
+/// A run with no restart deadline is taking the time from nothing and runs the
+/// pass.
+fn diverse_pass_fits(plain: Duration, orders: u32, restart_deadline: Option<Instant>) -> bool {
+    let Some(deadline) = restart_deadline else {
+        return true;
+    };
+    plain / orders.max(1) <= remaining(deadline).mul_f64(DIVERSE_PASS_RESERVE)
+}
+
+/// How many restart seeds the schedule draws.
+///
+/// The count caps how many seeds are drawn, not how long they run, so a graph
+/// whose candidates are quick would finish the schedule with budget unspent.
+/// Configured to, the restarts carry on from the next seed of the same
+/// sequence and the restart deadline ends them. Without a deadline there is
+/// nothing else to stop at, so the count stands.
+fn restart_count(config: PortfolioConfig, restart_deadline: Option<Instant>) -> u64 {
+    if config.restarts_to_deadline && restart_deadline.is_some() {
+        u64::MAX
+    } else {
+        config.sampling_runs
+    }
+}
+
 /// Initial candidates may use the complete two-stage window so the first one
 /// can always return a decomposition. Extra samples stop at the restart
 /// deadline; the rest of the hard window belongs to FlowCutter.
@@ -1065,6 +1102,9 @@ fn run_portfolio(
     let mut hard_deadline_tripped = false;
     // Set by an initial min-fill order that produced a decomposition.
     let mut min_fill_finished = false;
+    // Initial orders that ran an elimination, so that what they cost between
+    // them says what one more of that shape costs.
+    let mut initial_runs: u32 = 0;
 
     for (i, candidate) in initial_orders.iter().copied().enumerate() {
         let order = candidate.order;
@@ -1141,6 +1181,7 @@ fn run_portfolio(
             },
         );
         let (outcome, stop) = candidates.record_elimination(run);
+        initial_runs += 1;
         // What the restarts of an admitted residual follow: a min-fill order
         // that came back with a decomposition finished inside its cutoff, so
         // sampled min-fill has a prospect of finishing too.
@@ -1182,6 +1223,77 @@ fn run_portfolio(
             break;
         }
     }
+    // The cardinality-search candidates, between the fixed orders and the
+    // restarts: first the plain maximum cardinality search, then MCS-M, which
+    // is the same search with a longer reach. Both eliminate along a numbering
+    // rather than a greedy score, so they win on graphs where the greedy scores
+    // agree with each other. Both are deterministic, so each runs once; each
+    // runs only on a residual its own gate admits, since the plain search
+    // affords a residual an order of magnitude larger than the path search
+    // does; and both run against the soft deadline, which the search reads as
+    // it walks, so a graph where one does not finish gives up part-way and
+    // loses nothing but the time it spent. The cheaper one goes first, which
+    // also leaves MCS-M a tighter width bound to abort on.
+    //
+    // What they cost, which the hedge's model of a stage leaves out: the stages
+    // repeat the plain pass on other weights, and neither candidate is part of
+    // either.
+    let mut cardinality_search_cost = Duration::ZERO;
+    for (gate, order) in [
+        (config.maximum_cardinality, Order::MaximumCardinality),
+        (config.minimal_triangulation, Order::MinimalTriangulation),
+    ] {
+        // Each gate is the one place that decides how large a residual its own
+        // search runs on, so the schedule's residual classification does not
+        // gate them as well.
+        let Some(gate) = gate else { continue };
+        if hard_deadline_tripped
+            || prebuilt.num_active() > gate as usize
+            || expired(soft_deadline)
+            || expired(hard_deadline)
+        {
+            continue;
+        }
+        let before = crate::meter::now();
+        let run = engine::run_order_prebuilt(
+            &mut prebuilt,
+            engine::RunSpec {
+                order,
+                seed,
+                // Neither search samples a tie set, so the band means nothing
+                // to it, and neither reads the initial fill counts, so there
+                // is no setup for a deadline to pace.
+                sample_band: 0,
+                update_order_ties: false,
+                // The soft deadline, not the wider one the initial candidates
+                // get where the elimination keeps the second stage: a search
+                // that does not finish returns no numbering at all, so running
+                // it into the second stage would spend that stage to produce
+                // nothing, and the restarts use it instead.
+                stop: elimination_stop(
+                    EliminationPhase::ExtraSampling,
+                    soft_deadline,
+                    hard_deadline,
+                    candidates.best_width(),
+                ),
+                // Nothing to complete: a search stopped by its deadline hands
+                // back no order, so the elimination never started and there
+                // are no bags for a residual to be attached to.
+                complete_on_deadline: false,
+                setup_deadline: None,
+            },
+        );
+        let (outcome, _) = candidates.record_elimination(run);
+        let now = crate::meter::now();
+        cardinality_search_cost += now.saturating_duration_since(before);
+        trace(CandidateTrace {
+            stage: stage_of(order, EliminationPhase::ExtraSampling),
+            seed,
+            pass: Pass::Only,
+            outcome,
+            elapsed: now.saturating_duration_since(started),
+        });
+    }
     // Sampling phase: try additional seeds of the full-tie-set sampling
     // order with any remaining budget. Measured ≥79% of min-fill pops have
     // ≥2 tied candidates, so different seeds explore different
@@ -1191,23 +1303,21 @@ fn run_portfolio(
     // matching the main loop's skip rule, and on an admitted residual whose
     // initial min-fill did not come back. A started extra
     // sample stops at the restart deadline so it cannot consume the trailing
-    // FlowCutter and output interval. On extended small/medium runs, diverse
+    // FlowCutter and output interval. Where the diverse pass is admitted, its
     // fill-degree scores precede the complete ordinary min-fill seed sequence.
     // A hedge adds one weighted stage per weighting between the two — the fixed
     // orders that read weights and the diverse pass again — and leaves the
     // restarts where they were.
-    //
-    // The sampling count caps how many seeds are drawn, not the clock, so a
-    // graph whose candidates are quick can finish the schedule with budget
-    // left. Configured to, the restarts carry on from the next seed of the
-    // same sequence and the restart deadline ends them. Without a deadline
-    // there is nothing else to stop at, so the count stands.
-    let ordinary_runs = if config.restarts_to_deadline && restart_deadline.is_some() {
-        u64::MAX
-    } else {
-        config.sampling_runs
-    };
-    let diverse_samples = if residual == Residual::Ordinary {
+    let ordinary_runs = restart_count(config, restart_deadline);
+    // The diverse pass runs on the residuals the size rule leaves it, while
+    // what the initial orders cost projects one more candidate to fit in the
+    // time the restarts have.
+    let diverse_samples = if residual == Residual::Ordinary
+        && diverse_pass_fits(
+            crate::meter::now().saturating_duration_since(started),
+            initial_runs,
+            restart_deadline,
+        ) {
         config.diverse_sampling_runs
     } else {
         0
@@ -1273,7 +1383,7 @@ fn run_portfolio(
             let stage_index = (sample_index - stages_start) / stage_length;
             let budget = stage_budget.get_or_insert_with(|| {
                 StageBudget::new(
-                    elapsed,
+                    elapsed.saturating_sub(cardinality_search_cost),
                     restart_deadline.map(remaining),
                     config.hedge_reserve,
                 )
@@ -1387,6 +1497,46 @@ fn run_portfolio(
         let outcome = candidates.push(decomposition);
         trace(CandidateTrace {
             stage: Stage::FlowCutter,
+            seed,
+            pass: Pass::Only,
+            outcome,
+            elapsed: crate::meter::now().saturating_duration_since(started),
+        });
+    }
+    // Last, the fill edges the winner's bags do not need. The pass rebuilds the
+    // decomposition on a minimal triangulation of the same graph, which is
+    // never wider, and hands the result back as one more candidate so the set
+    // compares it the way it compares every other.
+    //
+    // The vertex gate is the cheap filter, for the two bitsets the pass holds.
+    // What it costs in time follows the bags rather than the vertices, so the
+    // clock rule is the winner's own size against what is left of the hard
+    // deadline, asked before the winner is copied.
+    if let Some(gate) = config.triangulation_refinement
+        && graph.num_vertices() <= gate
+        && let Some(best) = candidates
+            .best()
+            .filter(|best| decomposition::minimalize_fits(best, graph, hard_deadline))
+            .cloned()
+    {
+        let before = best.quality_key();
+        let minimalized = decomposition::minimalize_at(best, graph, hard_deadline);
+        let (width, total_bag_size) = minimalized.quality_key();
+        // The pass returns its input where it found nothing to drop, and the
+        // set holds that decomposition already, so only an improvement is
+        // recorded. The trace reports the pass either way, so a caller can see
+        // what it cost on a graph where it changed nothing.
+        let outcome = if (width, total_bag_size) < before {
+            candidates.push(minimalized)
+        } else {
+            CandidateOutcome::Produced {
+                width,
+                total_bag_size,
+                best: false,
+            }
+        };
+        trace(CandidateTrace {
+            stage: Stage::Minimalized,
             seed,
             pass: Pass::Only,
             outcome,

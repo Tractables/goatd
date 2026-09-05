@@ -8,8 +8,6 @@ use crate::embedding::{DEFAULT_MAX_ROUNDS, MAX_DIM};
 /// costs construction time without improving the decomposition.
 pub(super) const MAX_SAMPLING_RUNS: u64 = 100;
 
-/// Larger budgeted runs keep exploring after the short-run sample cap.
-const EXTENDED_SAMPLING_RUNS: u64 = 1_000;
 pub(super) const DIVERSE_INITIAL_COEFFICIENTS: [i8; 10] = [1, -1, -2, -3, -4, -5, -8, -7, -16, -32];
 pub(super) const DIVERSE_REPLAY_COEFFICIENTS: [i8; 4] = [-3, -5, -8, -16];
 const DIVERSE_REPLAY_SEEDS: u64 = 9;
@@ -18,9 +16,6 @@ const DIVERSE_REPLAY_SEEDS: u64 = 9;
 /// [`PortfolioConfig::with_diverse_sampling_runs`] rejects anything above it.
 pub const MAX_DIVERSE_SAMPLING_RUNS: u64 = DIVERSE_INITIAL_COEFFICIENTS.len() as u64
     + DIVERSE_REPLAY_COEFFICIENTS.len() as u64 * DIVERSE_REPLAY_SEEDS;
-// A 4.75 s soft budget reaches the two-stage hard deadline at 9.5 s, leaving
-// output headroom under a ten-second process limit.
-const EXTENDED_SAMPLING_MIN_SOFT_BUDGET: Duration = Duration::from_millis(4_750);
 
 /// Default soft deadline for the sampled-min-fill portfolio. The hard deadline
 /// inside the elimination core is twice this.
@@ -31,6 +26,36 @@ pub(super) const MIN_FLOWCUTTER_CANDIDATE_MS: u64 = 50;
 /// What the sampled restarts leave of the hard window for the trailing
 /// FlowCutter candidate when they run past the soft deadline.
 pub(super) const FLOWCUTTER_RESERVE: Duration = Duration::from_millis(1_500);
+
+/// Residual size at or below which the standard portfolio runs the MCS-M
+/// candidate. MCS-M costs one search per vertex over the whole residual, so its
+/// cost grows with the vertex count times the edge count; above this it takes
+/// more of the budget than the restarts it displaces are worth. On a corpus of
+/// formula graphs it stays under a tenth of a second at this size and wins the
+/// portfolio often; on larger residuals it costs a second or more and the
+/// greedy orders were narrower anyway.
+const DEFAULT_MINIMAL_TRIANGULATION_VERTICES: u32 = 1_000;
+
+/// Residual size at or below which the standard portfolio runs the maximum
+/// cardinality search candidate. The plain search has no path walk to pay for,
+/// so it costs one scan of the unnumbered vertices per vertex plus one pass
+/// over the edges, and stays affordable on residuals far larger than MCS-M can
+/// be run on: on a corpus of formula graphs it takes a couple of milliseconds
+/// up to ten thousand vertices and about half a second above that, against a
+/// budget of several seconds. Gates of two, ten and forty thousand were
+/// compared on that corpus and the widest was the best on every reading,
+/// because most of what the candidate wins is on residuals too large for the
+/// greedy orders to run on at all.
+const DEFAULT_MAXIMUM_CARDINALITY_VERTICES: u32 = 40_000;
+
+/// Graph size at or below which the standard portfolio minimalizes the
+/// triangulation behind its winner. The pass holds two bitsets over the
+/// vertices, so its memory grows with the square of this, which is what the
+/// gate is for. What the pass costs in time is not a function of the vertex
+/// count at all — it follows the bags of the decomposition being rebuilt — so
+/// the clock is what keeps it inside the budget, and this only keeps the memory
+/// bounded.
+const DEFAULT_TRIANGULATION_REFINEMENT_VERTICES: u32 = 2_000;
 
 /// Dimensions the hedge places the vertices in, one weighted stage each, in
 /// this order. Which graphs a dimension improves is close to arbitrary and two
@@ -62,6 +87,15 @@ const DEFAULT_HEDGE: Hedge = Hedge::eccentricity();
 /// A run with no soft budget has nothing to protect and runs every stage of the
 /// series, whatever this says.
 const DEFAULT_HEDGE_RESERVE: f64 = 0.5;
+
+/// How much of the time the restart deadline has left the diverse pass is
+/// admitted against: it runs while one more elimination of the kind the
+/// initial orders just ran fits in this share of it. The same shape as the
+/// hedge's reserve, and half for the same reason — a pass whose candidates
+/// cost about what the initial orders cost gets a few of them in before the
+/// restarts, and one whose candidates would fill the rest of the window does
+/// not start.
+pub(super) const DIVERSE_PASS_RESERVE: f64 = 0.5;
 
 /// How far above the minimum fill the ordinary restarts draw their tie set, in
 /// fill edges. Drawing only from the vertices tied at the minimum leaves a
@@ -288,6 +322,9 @@ pub struct PortfolioConfig {
     pub(super) sample_band: u64,
     pub(super) sample_band_alternate: bool,
     pub(super) expensive_orders_up_to: usize,
+    pub(super) maximum_cardinality: Option<u32>,
+    pub(super) minimal_triangulation: Option<u32>,
+    pub(super) triangulation_refinement: Option<u32>,
 }
 
 /// Two configurations are equal when they ask for the same run, the reserve
@@ -306,6 +343,9 @@ impl PartialEq for PortfolioConfig {
             && self.sample_band == other.sample_band
             && self.sample_band_alternate == other.sample_band_alternate
             && self.expensive_orders_up_to == other.expensive_orders_up_to
+            && self.maximum_cardinality == other.maximum_cardinality
+            && self.minimal_triangulation == other.minimal_triangulation
+            && self.triangulation_refinement == other.triangulation_refinement
     }
 }
 
@@ -329,6 +369,9 @@ impl PortfolioConfig {
             sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
+            maximum_cardinality: None,
+            minimal_triangulation: None,
+            triangulation_refinement: None,
         }
     }
 
@@ -375,9 +418,11 @@ impl PortfolioConfig {
     /// not. Large residuals run sampled min-degree instead and ignore this.
     ///
     /// Capped at [`MAX_DIVERSE_SAMPLING_RUNS`]; a larger value is rejected when
-    /// the portfolio runs. [`PortfolioConfig::standard_with_budget`] sets this
-    /// along with a larger ordinary sample cap and a trailing FlowCutter
-    /// candidate; set it here to take the diverse orders on their own.
+    /// the portfolio runs. This is how many candidates the pass has when it
+    /// runs, not whether it runs: under a soft budget it also has to fit in
+    /// the time the restart deadline has left.
+    /// [`PortfolioConfig::standard_with_budget`] asks for the whole pass; set
+    /// it here to take the diverse orders on their own.
     pub fn with_diverse_sampling_runs(mut self, runs: u64) -> Self {
         self.diverse_sampling_runs = runs;
         self
@@ -409,17 +454,25 @@ impl PortfolioConfig {
             sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
+            maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
+            minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
+            triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
         }
     }
 
-    /// Standard candidates under a soft wall-clock budget, with sampling
-    /// effort and the trailing FlowCutter slot scaled for the corresponding
-    /// hard window.
+    /// Standard candidates under a soft wall-clock budget. Every part of the
+    /// schedule is offered on any budget and each decides against the clock
+    /// whether it runs, so nothing here is switched by the size of the budget
+    /// itself.
     ///
     /// The hedge runs its first weighted stage on any budget and one more for
     /// as long as half of what the plain pass left holds another; what does not
     /// fit stays with the ordinary restarts. [`PortfolioConfig::with_hedge_reserve`]
-    /// changes that fraction.
+    /// changes that fraction. The diverse pass runs while one more elimination
+    /// of the kind the initial orders just ran fits in half the time the
+    /// restart deadline has left. The trailing FlowCutter candidate runs while
+    /// the window it is left is long enough to seed it and long enough for the
+    /// backend's setup and first restart on this graph.
     ///
     /// The ordinary restarts run past the soft deadline into the hard window,
     /// stopping 1.5 s before the hard deadline so the trailing FlowCutter
@@ -429,35 +482,26 @@ impl PortfolioConfig {
     /// unless FlowCutter's own work model says it cannot start and stop inside
     /// that stage on a graph this size, in which case the elimination keeps the
     /// whole window and gives back only the time it needs to write its answer
-    /// out. The sampling count caps how many seeds are drawn, not the clock,
-    /// and a graph whose candidates are quick would otherwise finish the
-    /// schedule with budget unspent. One more restart starts only while what
-    /// the previous one cost still fits before that stop.
-    /// [`PortfolioConfig::with_restarts_to_deadline`] turned off stops them at
-    /// the count instead.
+    /// out. One more restart starts only while what the previous one cost still
+    /// fits before that stop, so the deadline rather than the count is what
+    /// ends them; the count is what a run stops at with
+    /// [`PortfolioConfig::with_restarts_to_deadline`] turned off.
     pub fn standard_with_budget(budget: Duration) -> Self {
-        let extended = budget >= EXTENDED_SAMPLING_MIN_SOFT_BUDGET;
-        let sampling_runs = if extended {
-            EXTENDED_SAMPLING_RUNS
-        } else {
-            MAX_SAMPLING_RUNS
-        };
         Self {
             soft_budget: Some(budget),
             hard_budget: None,
-            sampling_runs,
-            diverse_sampling_runs: if extended {
-                MAX_DIVERSE_SAMPLING_RUNS
-            } else {
-                0
-            },
-            flowcutter_budget: extended.then_some(budget),
+            sampling_runs: MAX_SAMPLING_RUNS,
+            diverse_sampling_runs: MAX_DIVERSE_SAMPLING_RUNS,
+            flowcutter_budget: Some(budget),
             hedge: DEFAULT_HEDGE,
             hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: true,
             sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
+            maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
+            minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
+            triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
         }
     }
 
@@ -568,12 +612,97 @@ impl PortfolioConfig {
     /// Above the number given here the portfolio keeps only its min-degree
     /// candidates: the initial list drops min-fill and nested dissection after
     /// the first candidate, the diverse pass and the hedge do not run, and the
-    /// ordinary restarts are sampled min-degree.
+    /// ordinary restarts are sampled min-degree. The candidates carrying a
+    /// vertex cap of their own are not part of this choice, the way the
+    /// trailing FlowCutter candidate already was not: the two cardinality
+    /// searches and the fill-dropping pass each answer their own gate, and
+    /// every one of those gates sits far below the default limit here.
     ///
     /// Setting it to 10,000 or lower leaves no middle band, and every residual
-    /// over the number runs min-degree only.
+    /// over the number runs min-degree plus whatever those gates admit.
     pub fn with_expensive_orders_up_to(mut self, vertices: usize) -> Self {
         self.expensive_orders_up_to = vertices;
+        self
+    }
+
+    /// Run the maximum cardinality search candidate while the preprocessed
+    /// residual has at most `max_residual_vertices` vertices.
+    ///
+    /// The search numbers the residual from `n` down to 1, always taking a
+    /// vertex with the most numbered neighbours, and the candidate eliminates
+    /// along that numbering reversed. It reads no seed and no weights, so it is
+    /// one candidate; it runs before the MCS-M candidate and before the
+    /// restarts, and it stops at the soft deadline rather than taking their
+    /// time. It adds no fill on a chordal residual and no minimality guarantee
+    /// on any other, so it is a cheap construction to race against the greedy
+    /// orders rather than a better one.
+    ///
+    /// The gate is a vertex count because the search scans the unnumbered
+    /// vertices once per vertex. The soft deadline is what stops it: the search
+    /// reads the clock while it walks, so a residual the gate lets through but
+    /// the budget cannot finish gives up part-way and the portfolio keeps what
+    /// the other candidates found.
+    pub fn with_maximum_cardinality(mut self, max_residual_vertices: u32) -> Self {
+        self.maximum_cardinality = Some(max_residual_vertices);
+        self
+    }
+
+    /// Run no maximum cardinality search candidate.
+    pub fn without_maximum_cardinality(mut self) -> Self {
+        self.maximum_cardinality = None;
+        self
+    }
+
+    /// Run the MCS-M candidate while the preprocessed residual has at most
+    /// `max_residual_vertices` vertices.
+    ///
+    /// MCS-M eliminates along a numbering that fills the residual to a minimal
+    /// triangulation. It is one deterministic candidate, it runs after the
+    /// fixed orders and before the restarts, and it stops at the soft deadline
+    /// with nothing rather than taking their time. On most graphs it is wider
+    /// than the greedy orders and the portfolio keeps whichever is narrower;
+    /// where it wins it wins by several.
+    ///
+    /// The gate is a vertex count because the search costs one traversal of the
+    /// residual per vertex. The soft deadline is what stops it: the search reads
+    /// the clock while it walks, so a residual the gate lets through but the
+    /// budget cannot finish gives up part-way and the portfolio keeps what the
+    /// other candidates found.
+    pub fn with_minimal_triangulation(mut self, max_residual_vertices: u32) -> Self {
+        self.minimal_triangulation = Some(max_residual_vertices);
+        self
+    }
+
+    /// Run no MCS-M candidate.
+    pub fn without_minimal_triangulation(mut self) -> Self {
+        self.minimal_triangulation = None;
+        self
+    }
+
+    /// Minimalize the triangulation behind the portfolio's winner on graphs of
+    /// at most `max_vertices` vertices.
+    ///
+    /// The winner's bags are completed to cliques, the added edges that can go
+    /// without breaking chordality are dropped, and the cliques of what remains
+    /// become the new bags. The pass never widens the decomposition; where it
+    /// drops nothing, or improves neither the width nor the total bag size, the
+    /// winner is returned unchanged.
+    ///
+    /// The gate is a vertex count because the pass holds two bitsets over the
+    /// graph's vertices. It is not what keeps the pass inside the budget: the
+    /// pass costs about what completing the winner's bags costs, which the
+    /// winner says in advance, so the portfolio runs it only while that fits in
+    /// what is left of the hard deadline and stops it there if the sweeps run
+    /// long.
+    pub fn with_triangulation_refinement(mut self, max_vertices: u32) -> Self {
+        self.triangulation_refinement = Some(max_vertices);
+        self
+    }
+
+    /// Leave the winner's triangulation as the candidate that produced it left
+    /// it.
+    pub fn without_triangulation_refinement(mut self) -> Self {
+        self.triangulation_refinement = None;
         self
     }
 }
