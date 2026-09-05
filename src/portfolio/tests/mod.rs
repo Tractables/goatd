@@ -1184,6 +1184,45 @@ fn the_second_stage_is_declined_for_a_graph_flowcutter_cannot_stop_on() {
 }
 
 #[test]
+fn a_long_second_stage_goes_back_to_the_candidate_the_whole_reserve_would_decline() {
+    let start = crate::meter::now();
+    // Two restarts of this graph are modelled at 17.4 seconds and its setup
+    // plus first restart at 13.5, so the whole reserve declines it on any
+    // window shorter than 30.9 seconds.
+    let graph = ring_with_chords(82_000);
+    let reserve = super::flowcutter_reserve(&graph, unmeasured());
+    assert!(
+        !super::flowcutter_runs_in(&graph, secs(30) - reserve),
+        "the whole reserve leaves too little of a 30-second stage to start in",
+    );
+
+    // At the ten-second protocol the window is the base window, the whole
+    // reserve comes off it, and the elimination candidates take the stage.
+    assert!(
+        super::flowcutter_declines_second_stage(
+            &graph,
+            PortfolioConfig::standard_with_budget(Duration::from_millis(4_750)),
+            Some(start + Duration::from_millis(4_750)),
+            Some(start + Duration::from_millis(9_500)),
+        ),
+        "a 4.75-second stage is declined, so the elimination has it",
+    );
+
+    // Over the base window the reserve stops at half the stage, which leaves
+    // more than the graph needs, so the candidate keeps the stage and the
+    // elimination stops at the soft deadline.
+    assert!(
+        !super::flowcutter_declines_second_stage(
+            &graph,
+            PortfolioConfig::standard_with_budget(secs(30)),
+            Some(start + secs(30)),
+            Some(start + secs(60)),
+        ),
+        "half of a 30-second stage is enough, so the candidate keeps it",
+    );
+}
+
+#[test]
 fn the_writeout_reserve_grows_with_the_residual() {
     let small = grid(20);
     assert_eq!(
@@ -1342,6 +1381,68 @@ fn the_flowcutter_window_stops_the_reserve_short_of_the_hard_deadline() {
         configured,
         "with no hard deadline the configured budget stands",
     );
+}
+
+#[test]
+fn a_long_flowcutter_window_keeps_at_least_half_of_what_is_left() {
+    let configured = secs(30);
+    let base = super::FLOWCUTTER_CANDIDATE_BASE_WINDOW;
+
+    assert_eq!(
+        super::flowcutter_window(configured, Some(secs(29)), secs(28)),
+        Duration::from_millis(14_500),
+        "an estimate that would take the whole window is capped at half of it",
+    );
+    assert_eq!(
+        super::flowcutter_window(configured, Some(secs(29)), secs(4)),
+        secs(25),
+        "an estimate below half the window is what it was",
+    );
+    assert_eq!(
+        super::flowcutter_window(base, Some(base), base),
+        Duration::ZERO,
+        "at the base window the estimate still stands, whatever it leaves",
+    );
+    assert_eq!(
+        super::flowcutter_window(secs(1), Some(secs(1)), Duration::from_millis(900)),
+        Duration::from_millis(100),
+        "a budget below the base window keeps the whole estimate too",
+    );
+}
+
+#[test]
+fn the_flowcutter_candidate_limits_hold_only_up_to_the_base_window() {
+    let base = super::FLOWCUTTER_CANDIDATE_BASE_WINDOW;
+    let short = [
+        Duration::from_millis(50),
+        Duration::from_millis(1_160),
+        base - Duration::from_millis(1),
+        base,
+    ];
+    for window in short {
+        assert_eq!(
+            super::flowcutter_candidate_limits(window),
+            (
+                Some(super::FLOWCUTTER_CANDIDATE_PATIENCE),
+                super::FLOWCUTTER_CANDIDATE_ITERATIONS
+            ),
+            "a window of {window:?} is at or below the base window, so nothing moves",
+        );
+    }
+
+    let long = [
+        base + Duration::from_millis(1),
+        base + Duration::from_millis(950),
+        secs(28),
+        secs(297),
+    ];
+    for window in long {
+        assert_eq!(
+            super::flowcutter_candidate_limits(window),
+            (None, crate::flowcutter::TIMED_ITERATIONS),
+            "over the base window a window of {window:?} is what ends the run",
+        );
+    }
 }
 
 #[test]
