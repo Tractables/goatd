@@ -34,12 +34,15 @@ trailing candidate hands the graph to FlowCutter.
 
 The size of the residual after preprocessing picks between three schedules.
 At or below 10,000 vertices all of the above runs. Between 10,000 and 300,000
-vertices the min-fill candidate still runs but stops at half the time the soft
-deadline has left when it starts, so the restarts keep a share of the budget;
-nested dissection, the diverse pass and the hedge are skipped; and the restarts
-are sampled min-fill when the initial min-fill produced a decomposition and
-sampled min-degree when it did not. Above 300,000 vertices only the min-degree
-candidates and sampled min-degree restarts run.
+vertices the min-fill candidate still runs but stops at half the time the
+restart deadline has left when it starts, so the restarts keep a share of the
+budget; nested dissection, the diverse pass and the hedge are skipped; a
+candidate that reaches the soft deadline stops there as everywhere else, but
+the portfolio keeps starting candidates and restarts until the restart deadline
+rather than the soft one; and the restarts are sampled min-fill when the initial
+min-fill produced a decomposition and sampled min-degree when it did not. Above
+300,000 vertices only the min-degree candidates and sampled min-degree restarts
+run.
 `PortfolioConfig::with_expensive_orders_up_to` moves the upper boundary; the
 lower one is fixed. The FlowCutter candidate runs on a residual of any size,
 under its own vertex cap.
@@ -76,13 +79,14 @@ it. The sampling count caps how many seeds are drawn, not how long they run, so
 it is what stops the restarts of a run with no deadline to run to, which is
 `standard()`, `sampled_min_fill()`, and any configuration with
 `PortfolioConfig::with_restarts_to_deadline` turned off. On a residual over the
-10,000-vertex cutoff the restarts stop at the soft deadline as the initial
+300,000-vertex limit the restarts stop at the soft deadline as the initial
 candidates do, unless the FlowCutter candidate's own work model says it could
-not start and stop inside the hard window on a graph this size; then the
-initial candidates and the restarts run to the hard deadline less a reserve for
-bagging the residual and writing the result, which grows with the vertex and
-edge counts and is held between 50 ms and 4 s. On a run with no hard deadline
-they stop at the soft deadline.
+not start and stop inside the hard window on a graph this size; then they run to
+the hard deadline less a reserve for bagging the residual and writing the
+result, which grows with the vertex and edge counts and is held between 50 ms
+and 4 s. That reserve replaces the 1.5 seconds between 10,000 and 300,000
+vertices too, on a graph the model declines. On a run with no hard deadline they
+stop at the soft deadline.
 
 `standard_with_budget` asks for the whole schedule at every budget. What a
 short one can afford is decided when the run gets there: the diverse pass runs

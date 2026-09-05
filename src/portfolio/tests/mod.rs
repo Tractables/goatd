@@ -869,7 +869,8 @@ fn an_expensive_initial_order_on_an_admitted_residual_stops_at_half_the_budget_l
     let hard_deadline = soft_deadline + Duration::from_secs(1);
 
     // Half of what the restarts' own deadline has left, so the restarts keep
-    // the rest. An admitted residual keeps the soft deadline as that deadline.
+    // the rest. The first argument is that deadline, whatever the size rule
+    // made it; here a one-second window stands in for it.
     let cutoff = super::admitted_cutoff(Some(soft_deadline), Some(hard_deadline))
         .expect("a restart deadline gives a cutoff");
     let allowed = cutoff.saturating_duration_since(before);
@@ -1056,19 +1057,19 @@ fn the_restarts_keep_a_flowcutter_reserve_at_the_end_of_the_hard_window() {
     let soft = start + secs(5);
     let hard = start + secs(10);
 
-    // An ordinary residual: the restarts run into the hard window and stop a
-    // reserve short of its end.
+    // At or below the caller's limit the restarts run into the hard window and
+    // stop a reserve short of its end.
     assert_eq!(
         restart_deadline(Residual::Ordinary, Some(soft), Some(hard), None),
         Some(hard - FLOWCUTTER_RESERVE),
     );
-
-    // Both larger classes keep the soft deadline while FlowCutter holds the
-    // second stage, so it is there for the trailing candidate.
     assert_eq!(
         restart_deadline(Residual::Admitted, Some(soft), Some(hard), None),
-        Some(soft),
+        Some(hard - FLOWCUTTER_RESERVE),
     );
+
+    // Past the limit the soft deadline stands, so the second stage stays with
+    // the trailing FlowCutter candidate.
     assert_eq!(
         restart_deadline(Residual::Large, Some(soft), Some(hard), None),
         Some(soft),
@@ -1093,8 +1094,10 @@ fn a_large_residual_takes_the_second_stage_flowcutter_declined() {
     let hard = start + secs(10);
     let writeout = Duration::from_millis(200);
 
-    // FlowCutter will not run at this size, so both larger classes eliminate to
-    // the end of the hard window instead of stopping half way through it.
+    // FlowCutter will not run at this size, so the handover is all either of
+    // the larger classes keeps back: an admitted residual reserves it instead
+    // of the wider FlowCutter window, and a large one instead of stopping at
+    // the soft deadline half way through the window.
     assert_eq!(
         restart_deadline(Residual::Admitted, Some(soft), Some(hard), Some(writeout)),
         Some(hard - writeout),
@@ -1214,6 +1217,79 @@ fn the_writeout_reserve_grows_with_the_residual() {
     assert!(
         capped < Duration::from_millis(4_750),
         "the ceiling leaves the elimination part of the second stage: {capped:?}",
+    );
+}
+
+#[test]
+fn an_admitted_residual_runs_its_candidates_and_restarts_to_the_hard_window() {
+    let start = crate::meter::now();
+    let soft = start + secs(5);
+    let hard = start + secs(10);
+
+    // The restarts stop a reserve short of the hard deadline, as they do below
+    // the band.
+    let restart = restart_deadline(Residual::Admitted, Some(soft), Some(hard), None);
+    assert_eq!(restart, Some(hard - FLOWCUTTER_RESERVE));
+
+    // The initial loop starts another candidate for as long as that same
+    // deadline has time left, so a first candidate that spends the whole soft
+    // budget does not end the schedule.
+    assert_eq!(
+        super::initial_candidate_deadline(Residual::Admitted, Some(soft), restart),
+        restart,
+    );
+
+    // What leaves room for that second candidate: the first one's own search
+    // still ends at the soft deadline.
+    assert_eq!(
+        super::initial_search_cutoff(Residual::Admitted, Some(soft), restart),
+        Some(soft),
+    );
+
+    // Below the band both are the soft deadline: the schedule of cheap
+    // candidates finishes inside it and the rest of the window is the restarts'.
+    assert_eq!(
+        super::initial_candidate_deadline(Residual::Ordinary, Some(soft), restart),
+        Some(soft),
+    );
+    assert_eq!(
+        super::initial_search_cutoff(Residual::Ordinary, Some(soft), restart),
+        Some(soft),
+    );
+}
+
+#[test]
+fn a_large_residual_reads_the_restart_deadline_for_both() {
+    let start = crate::meter::now();
+    let soft = start + secs(5);
+    let hard = start + secs(10);
+    let writeout = Duration::from_millis(200);
+
+    // Past the caller's limit there is no cheaper candidate waiting behind the
+    // first, so its search runs as long as the loop does. While FlowCutter
+    // holds the second stage that is the soft deadline.
+    let held = restart_deadline(Residual::Large, Some(soft), Some(hard), None);
+    assert_eq!(held, Some(soft));
+    assert_eq!(
+        super::initial_candidate_deadline(Residual::Large, Some(soft), held),
+        Some(soft),
+    );
+    assert_eq!(
+        super::initial_search_cutoff(Residual::Large, Some(soft), held),
+        Some(soft),
+    );
+
+    // On a graph FlowCutter declined, both run to the end of the hard window
+    // less the handover.
+    let declined = restart_deadline(Residual::Large, Some(soft), Some(hard), Some(writeout));
+    assert_eq!(declined, Some(hard - writeout));
+    assert_eq!(
+        super::initial_candidate_deadline(Residual::Large, Some(soft), declined),
+        declined,
+    );
+    assert_eq!(
+        super::initial_search_cutoff(Residual::Large, Some(soft), declined),
+        declined,
     );
 }
 
