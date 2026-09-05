@@ -41,9 +41,9 @@ options:
                         line; a smaller weight is eliminated earlier
                         (default: every vertex weighs the same)
   --budget <ms>         wall-clock budget: the elimination orders' soft
-                        deadline, flowcutter's run time, the portfolio's
-                        soft deadline, sampling effort, and trailing
-                        FlowCutter slot, and the refinement's deadline
+                        deadline, flowcutter's run time, the portfolio's soft
+                        deadline and the length of its trailing FlowCutter
+                        slot, and the refinement's deadline
   --hard-budget <ms>    portfolio only: hard wall-clock cutoff; defaults to
                         twice --budget
   --hedge-dims <list>   portfolio only: run the hedge's weighted stage once per

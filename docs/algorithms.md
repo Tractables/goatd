@@ -28,8 +28,9 @@ small enough for it. Neither is part of the schedule choice below: each has a
 vertex gate of its own. They are described under *Cardinality searches*.
 
 With time left the portfolio keeps going: first a diverse pass over sampled
-fill/degree scores, then further min-fill seeds, which the rest of this page
-calls the restarts. A trailing candidate hands the graph to FlowCutter.
+fill/degree scores, where what the candidates above cost says it fits, then
+further min-fill seeds, which the rest of this page calls the restarts. A
+trailing candidate hands the graph to FlowCutter.
 
 The size of the residual after preprocessing picks between three schedules.
 At or below 10,000 vertices all of the above runs. Between 10,000 and 300,000
@@ -69,18 +70,28 @@ against the hard deadline.
 
 The restarts run past the soft deadline into the hard window, stopping 1.5
 seconds short of it to leave the FlowCutter candidate that much to run in.
-`PortfolioConfig::standard_with_budget` allows 100 extra seeds below a
-4.75-second soft budget and 1,000 at or above it, but the count caps how many
-seeds are drawn, not how long they run, and one more restart starts only while
-what the previous one cost still fits. On a residual over the 10,000-vertex
-cutoff the restarts stop at the soft deadline as the initial candidates do,
-unless the FlowCutter candidate's own work model says it could not start and
-stop inside the hard window on a graph this size; then the initial candidates
-and the restarts run to the hard deadline less a reserve for bagging the
-residual and writing the result, which grows with the vertex and edge counts
-and is held between 50 ms and 4 s. On a run with no hard deadline they stop at
-the soft deadline. `PortfolioConfig::with_restarts_to_deadline` turned off stops
-them at the count, which is what `standard()` and `sampled_min_fill()` do.
+Under `PortfolioConfig::standard_with_budget` the restart deadline is what ends
+them: one more starts only while what the previous one cost still fits before
+it. The sampling count caps how many seeds are drawn, not how long they run, so
+it is what stops the restarts of a run with no deadline to run to, which is
+`standard()`, `sampled_min_fill()`, and any configuration with
+`PortfolioConfig::with_restarts_to_deadline` turned off. On a residual over the
+10,000-vertex cutoff the restarts stop at the soft deadline as the initial
+candidates do, unless the FlowCutter candidate's own work model says it could
+not start and stop inside the hard window on a graph this size; then the
+initial candidates and the restarts run to the hard deadline less a reserve for
+bagging the residual and writing the result, which grows with the vertex and
+edge counts and is held between 50 ms and 4 s. On a run with no hard deadline
+they stop at the soft deadline.
+
+`standard_with_budget` asks for the whole schedule at every budget. What a
+short one can afford is decided when the run gets there: the diverse pass runs
+while what the initial orders cost, divided between them, projects one more
+candidate of that shape to fit in half the time the restart deadline has left,
+and the FlowCutter candidate runs when the window it is left passes the test in
+the next paragraph. That test is what decides the second stage of a short
+budget too, so a large residual keeps it only where the trailing candidate
+would not have used it.
 
 The FlowCutter candidate takes what is left, less two estimated restarts, since
 the vendored backend tests its deadline only between restarts and the result
