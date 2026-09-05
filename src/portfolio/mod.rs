@@ -34,14 +34,14 @@ pub use trace::{CandidateOutcome, CandidateTrace, Pass, Stage};
 
 /// Exit early if FlowCutter hasn't improved treewidth for this long, on a
 /// window of [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] or less. Caps per-graph
-/// overhead where FlowCutter converges fast. See
-/// [`flowcutter_candidate_limits`] for what a longer window gets.
+/// overhead where FlowCutter converges fast.
 const FLOWCUTTER_CANDIDATE_PATIENCE: Duration = Duration::from_millis(500);
 /// Restarts the trailing candidate may run on a window of
 /// [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] or less.
 const FLOWCUTTER_CANDIDATE_ITERATIONS: u32 = 50;
-/// The window up to which the trailing FlowCutter candidate keeps the patience
-/// and restart cap above.
+/// The window up to which the trailing FlowCutter candidate runs under the two
+/// limits above; over it the window is what ends it. See
+/// [`flowcutter_candidate_limits`].
 ///
 /// It is the smallest soft budget that runs a trailing candidate at all:
 /// [`PortfolioConfig::standard_with_budget`] gives the slot a budget only from
@@ -537,34 +537,27 @@ fn flowcutter_window(
 /// given the window it has.
 ///
 /// At [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] and below both are what the slot has
-/// always used, so a run at the budget the portfolio was tuned at is unchanged.
-/// Above it the patience keeps the share of the window it has there, 500 ms of
-/// 4.75 s. Patience is what ends the candidate on most graphs, and what a
-/// stretch without an improvement says depends on how long the run may go: a
-/// second of no progress is most of a five-second window and very little of a
-/// five-minute one.
+/// always used, which is what a window that short was tuned for.
 ///
-/// The restart cap is a count, not a time, and it is there to bound per-graph
-/// overhead. Above the base window the patience and the window itself bound it,
-/// so the cap becomes the one a timed run carries elsewhere in the library.
+/// Above it neither applies: the window ends the run. The candidate is the last
+/// thing the portfolio does, so the time it does not use goes to nobody, and the
+/// backend keeps the narrowest decomposition it has found, so a restart it does
+/// not make can only leave width behind. What the two limits are for is a short
+/// window, where a run that has stopped improving is better ended than carried
+/// to the deadline; over the base window the deadline is the bound, together
+/// with the restart cap a timed run carries elsewhere in the library, which is
+/// high enough that the clock reaches it first.
 ///
 /// Both read the window rather than the configured budget, since the window is
 /// already the smaller of that budget and what the hard deadline has left.
-fn flowcutter_candidate_limits(window: Duration) -> (Duration, u32) {
+fn flowcutter_candidate_limits(window: Duration) -> (Option<Duration>, u32) {
     if window <= FLOWCUTTER_CANDIDATE_BASE_WINDOW {
         return (
-            FLOWCUTTER_CANDIDATE_PATIENCE,
+            Some(FLOWCUTTER_CANDIDATE_PATIENCE),
             FLOWCUTTER_CANDIDATE_ITERATIONS,
         );
     }
-    let window_ms = u64::try_from(window.as_millis()).unwrap_or(u64::MAX);
-    let base_ms = u64::try_from(FLOWCUTTER_CANDIDATE_BASE_WINDOW.as_millis()).unwrap_or(u64::MAX);
-    let base_patience_ms = u64::try_from(FLOWCUTTER_CANDIDATE_PATIENCE.as_millis()).unwrap_or(0);
-    let patience_ms = window_ms.saturating_mul(base_patience_ms) / base_ms.max(1);
-    (
-        Duration::from_millis(patience_ms),
-        crate::flowcutter::TIMED_ITERATIONS,
-    )
+    (None, crate::flowcutter::TIMED_ITERATIONS)
 }
 
 /// What the run has spent so far, on both clocks.
@@ -634,7 +627,7 @@ fn flowcutter_candidate(
         return Ok(None);
     }
     let (patience, iterations) = flowcutter_candidate_limits(timeout);
-    match flowcutter_decompose(graph, Budget::timed(timeout, Some(patience), iterations)) {
+    match flowcutter_decompose(graph, Budget::timed(timeout, patience, iterations)) {
         Ok(decomposition) => Ok(Some(decomposition)),
         // A timed backend run may end before it has a result. The elimination
         // candidates already make the portfolio complete, so this one can be

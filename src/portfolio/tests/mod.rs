@@ -1063,7 +1063,7 @@ fn the_flowcutter_window_stops_the_reserve_short_of_the_hard_deadline() {
 }
 
 #[test]
-fn the_flowcutter_candidate_limits_grow_with_the_window() {
+fn the_flowcutter_candidate_limits_hold_only_up_to_the_base_window() {
     let base = super::FLOWCUTTER_CANDIDATE_BASE_WINDOW;
     let short = [
         Duration::from_millis(50),
@@ -1075,7 +1075,7 @@ fn the_flowcutter_candidate_limits_grow_with_the_window() {
         assert_eq!(
             super::flowcutter_candidate_limits(window),
             (
-                super::FLOWCUTTER_CANDIDATE_PATIENCE,
+                Some(super::FLOWCUTTER_CANDIDATE_PATIENCE),
                 super::FLOWCUTTER_CANDIDATE_ITERATIONS
             ),
             "a window of {window:?} is at or below the base window, so nothing moves",
@@ -1083,28 +1083,18 @@ fn the_flowcutter_candidate_limits_grow_with_the_window() {
     }
 
     let long = [
-        (
-            base + Duration::from_millis(950),
-            Duration::from_millis(600),
-        ),
-        (secs(28), Duration::from_millis(2_947)),
-        (secs(297), Duration::from_millis(31_263)),
+        base + Duration::from_millis(1),
+        base + Duration::from_millis(950),
+        secs(28),
+        secs(297),
     ];
-    for (window, patience) in long {
+    for window in long {
         assert_eq!(
             super::flowcutter_candidate_limits(window),
-            (patience, crate::flowcutter::TIMED_ITERATIONS),
-            "above the base window the patience is the window's {:?} in {:?}",
-            super::FLOWCUTTER_CANDIDATE_PATIENCE,
-            base,
+            (None, crate::flowcutter::TIMED_ITERATIONS),
+            "over the base window a window of {window:?} is what ends the run",
         );
     }
-
-    let (patience, _) = super::flowcutter_candidate_limits(secs(28));
-    assert!(
-        patience * 10 > secs(28) && patience * 10 < secs(31),
-        "the patience is about a tenth of the window it scales with",
-    );
 }
 
 #[test]
