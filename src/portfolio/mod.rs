@@ -521,13 +521,30 @@ fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
 /// Against a hard deadline the window stops `reserve` short of it, so the run
 /// ends inside the time the portfolio actually has. Without a hard deadline
 /// there is nothing to end inside and the configured budget stands.
+///
+/// Over [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] the reserve is capped at half of
+/// what is left. The reserve is an estimate of two restarts at the rate the run
+/// has been going, and on a graph whose restarts are expensive it can be the
+/// whole window, so the candidate is declined although the portfolio has tens of
+/// seconds in hand and this is the graph FlowCutter is worth the most on. Half
+/// is still a full window of overshoot: a run given the first half that comes
+/// back one restart late is inside the hard deadline as long as that restart is
+/// no longer than the window itself.
 fn flowcutter_window(
     configured_budget: Duration,
     left: Option<Duration>,
     reserve: Duration,
 ) -> Duration {
     match left {
-        Some(left) => left.min(configured_budget).saturating_sub(reserve),
+        Some(left) => {
+            let window = left.min(configured_budget);
+            let reserve = if window > FLOWCUTTER_CANDIDATE_BASE_WINDOW {
+                reserve.min(window / 2)
+            } else {
+                reserve
+            };
+            window.saturating_sub(reserve)
+        }
         None => configured_budget,
     }
 }

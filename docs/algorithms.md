@@ -73,7 +73,9 @@ them at the count, which is what `standard()` and `sampled_min_fill()` do.
 
 The FlowCutter candidate takes what is left, less two estimated restarts, since
 the vendored backend tests its deadline only between restarts and the result
-still has to be copied out. It is skipped when what remains is too short to
+still has to be copied out; over a 4.75-second window that estimate is capped at
+half of what is left, so a graph whose restarts are expensive still gets a
+candidate rather than none. It is skipped when what remains is too short to
 seed it, or when the backend's setup and first restart would outlast it. On a
 window of 4.75 seconds or less it also stops once it has gone 500 milliseconds
 without finding a narrower decomposition, or after 50 restarts. On a longer

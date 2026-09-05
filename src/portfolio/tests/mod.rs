@@ -1063,6 +1063,28 @@ fn the_flowcutter_window_stops_the_reserve_short_of_the_hard_deadline() {
 }
 
 #[test]
+fn a_long_flowcutter_window_keeps_at_least_half_of_what_is_left() {
+    let configured = secs(30);
+    let base = super::FLOWCUTTER_CANDIDATE_BASE_WINDOW;
+
+    assert_eq!(
+        super::flowcutter_window(configured, Some(secs(29)), secs(28)),
+        Duration::from_millis(14_500),
+        "an estimate that would take the whole window is capped at half of it",
+    );
+    assert_eq!(
+        super::flowcutter_window(configured, Some(secs(29)), secs(4)),
+        secs(25),
+        "an estimate below half the window is what it was",
+    );
+    assert_eq!(
+        super::flowcutter_window(base, Some(base), base),
+        Duration::ZERO,
+        "at the base window the estimate still stands, whatever it leaves",
+    );
+}
+
+#[test]
 fn the_flowcutter_candidate_limits_hold_only_up_to_the_base_window() {
     let base = super::FLOWCUTTER_CANDIDATE_BASE_WINDOW;
     let short = [
