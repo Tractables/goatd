@@ -398,8 +398,8 @@ fn the_trace_names_the_candidate_the_decomposition_came_from() {
         candidates.iter().any(|line| line.starts_with("min-fill ")),
         "{err}"
     );
-    // A 500 ms budget is below the extended-sampling threshold, so the
-    // schedule is the fixed candidates and ordinary restarts.
+    // A graph this size costs nothing, so a 500 ms budget reaches the
+    // restarts whatever else the schedule admits.
     assert!(
         candidates.iter().any(|line| line.starts_with("sample ")),
         "{err}"
@@ -434,6 +434,7 @@ fn the_default_portfolio_hedges_and_no_hedge_turns_that_off() {
     assert!(out.status.success(), "{}", stderr_of(&out));
     let err = stderr_of(&out);
     let mut modified: Vec<&str> = Vec::new();
+    let mut diverse = 0usize;
     for line in err.lines() {
         let Some(rest) = line.strip_prefix("c trace candidate=") else {
             continue;
@@ -444,7 +445,12 @@ fn the_default_portfolio_hedges_and_no_hedge_turns_that_off() {
                 "every restart stays plain: {line}"
             );
         } else if rest.contains(" pass=modified") {
-            modified.push(rest.split(' ').next().expect("a stage name"));
+            let stage = rest.split(' ').next().expect("a stage name");
+            if stage.starts_with("diverse:") {
+                diverse += 1;
+            } else {
+                modified.push(stage);
+            }
         }
     }
     assert_eq!(
@@ -452,6 +458,11 @@ fn the_default_portfolio_hedges_and_no_hedge_turns_that_off() {
         ["min-degree", "min-fill", "min-degree"].repeat(8),
         "each of the eight default stages runs the fixed orders that read \
          weights again on its own ranking: {err}"
+    );
+    assert_eq!(
+        diverse,
+        8 * 46,
+        "and the diverse pass again on that ranking: {err}"
     );
 
     let out = goatd(
@@ -491,8 +502,11 @@ fn trace_candidates(out: &Output) -> Vec<String> {
         .collect()
 }
 
-/// The stage names of the candidates of weighted stage `index`, in order.
-fn modified_stages(out: &Output, index: usize) -> Vec<String> {
+/// The stage names of the fixed orders weighted stage `index` repeated, in
+/// order. The diverse candidates of the stage are left out, since there are 46
+/// of them and they say nothing the three fixed orders do not;
+/// `the_default_portfolio_hedges_and_no_hedge_turns_that_off` counts them.
+fn modified_fixed_orders(out: &Output, index: usize) -> Vec<String> {
     let label = if index == 0 {
         " pass=modified ".to_string()
     } else {
@@ -503,8 +517,7 @@ fn modified_stages(out: &Output, index: usize) -> Vec<String> {
         .filter_map(|line| {
             let rest = line.strip_prefix("c trace candidate=")?;
             let (stage, tail) = rest.split_once(' ')?;
-            format!(" {tail} ")
-                .contains(&label)
+            (format!(" {tail} ").contains(&label) && !stage.starts_with("diverse:"))
                 .then(|| stage.to_string())
         })
         .collect()
@@ -551,14 +564,14 @@ fn hedge_dims_spelling_the_default_series_runs_the_default_hedge() {
     assert_eq!(trace_candidates(&default), trace_candidates(&spelled));
     for index in 0..8 {
         assert_eq!(
-            modified_stages(&default, index),
+            modified_fixed_orders(&default, index),
             ["min-degree", "min-fill", "min-degree"],
             "stage {index} of the default series: {}",
             stderr_of(&default)
         );
     }
     assert!(
-        modified_stages(&default, 8).is_empty(),
+        modified_fixed_orders(&default, 8).is_empty(),
         "the default series is eight stages: {}",
         stderr_of(&default)
     );
@@ -582,13 +595,13 @@ fn one_dimension_in_hedge_dims_runs_that_dimension_and_nothing_else() {
 
     assert!(three.status.success(), "{}", stderr_of(&three));
     assert_eq!(
-        modified_stages(&three, 0),
+        modified_fixed_orders(&three, 0),
         ["min-degree", "min-fill", "min-degree"],
         "one dimension runs its weighted stage: {}",
         stderr_of(&three)
     );
     assert!(
-        modified_stages(&three, 1).is_empty(),
+        modified_fixed_orders(&three, 1).is_empty(),
         "one dimension is one weighted stage: {}",
         stderr_of(&three)
     );
@@ -616,13 +629,13 @@ fn hedge_dims_runs_one_weighted_stage_per_dimension() {
     // stay plain whatever the stages do.
     for index in 0..3 {
         assert_eq!(
-            modified_stages(&out, index),
+            modified_fixed_orders(&out, index),
             ["min-degree", "min-fill", "min-degree"],
             "stage {index} of the series: {err}"
         );
     }
     assert!(
-        modified_stages(&out, 3).is_empty(),
+        modified_fixed_orders(&out, 3).is_empty(),
         "three dimensions are three stages: {err}"
     );
     for line in err.lines() {
@@ -674,14 +687,14 @@ fn hedge_random_runs_one_stage_per_draw_and_costs_what_the_rankings_cost() {
     assert!(ranked.status.success(), "{}", stderr_of(&ranked));
     for index in 0..2 {
         assert_eq!(
-            modified_stages(&random, index),
+            modified_fixed_orders(&random, index),
             ["min-degree", "min-fill", "min-degree"],
             "stage {index} of the control: {}",
             stderr_of(&random)
         );
     }
     assert!(
-        modified_stages(&random, 2).is_empty(),
+        modified_fixed_orders(&random, 2).is_empty(),
         "two draws are two stages: {}",
         stderr_of(&random)
     );
@@ -751,13 +764,13 @@ fn a_reserve_the_stages_cannot_fit_in_leaves_the_budget_to_the_restarts() {
         );
     }
     assert_eq!(
-        modified_stages(&reserved, 0),
+        modified_fixed_orders(&reserved, 0),
         ["min-degree", "min-fill", "min-degree"],
         "the first stage ran its candidates: {err}"
     );
     for index in 1..3 {
         assert!(
-            modified_stages(&reserved, index)
+            modified_fixed_orders(&reserved, index)
                 .iter()
                 .all(|stage| stage == "weighted-stage"),
             "a refused stage ran a candidate: {err}"
@@ -797,7 +810,7 @@ fn the_reserve_applies_to_the_default_series_without_a_dimension_flag() {
     assert!(reserved.status.success(), "{}", stderr_of(&reserved));
     for index in 0..8 {
         assert_eq!(
-            modified_stages(&reserved, index),
+            modified_fixed_orders(&reserved, index),
             ["min-degree", "min-fill", "min-degree"],
             "stage {index} of the default series: {}",
             stderr_of(&reserved)
@@ -843,7 +856,7 @@ fn a_reserve_that_holds_the_stages_runs_all_of_them() {
     assert!(reserved.status.success(), "{}", stderr_of(&reserved));
     for index in 0..3 {
         assert_eq!(
-            modified_stages(&reserved, index),
+            modified_fixed_orders(&reserved, index),
             ["min-degree", "min-fill", "min-degree"],
             "stage {index} ran under the whole reserve: {}",
             stderr_of(&reserved)

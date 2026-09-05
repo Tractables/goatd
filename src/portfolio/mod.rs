@@ -24,7 +24,7 @@ use crate::embedding::{self, Embedding};
 use crate::flowcutter::{Budget, decompose as flowcutter_decompose};
 use crate::{Error, Graph, TreeDecomposition};
 use candidates::{CandidateSet, ScheduleStop};
-use config::{FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS};
+use config::{DIVERSE_PASS_RESERVE, FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS};
 
 pub use config::{
     DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, HedgeWeights, MAX_DIVERSE_SAMPLING_RUNS,
@@ -680,6 +680,40 @@ fn restart_admitted(now: Instant, projected: Duration, deadlines: [Option<Instan
         .all(|deadline| finish <= *deadline)
 }
 
+/// Whether the diverse pass runs, given what the initial orders cost.
+///
+/// The pass is eliminations of the same shape as the initial orders on the
+/// same residual, so what those orders cost, divided between them, is what one
+/// candidate of the pass costs on this graph on this machine. It runs while
+/// that fits in [`DIVERSE_PASS_RESERVE`] of the time the restart deadline has
+/// left, which is the hedge's rule for a weighted stage asked one candidate at
+/// a time: the restart admission stops the pass part-way where the deadline
+/// catches up with it, so what is decided here is whether it is worth starting.
+///
+/// A run with no restart deadline is taking the time from nothing and runs the
+/// pass.
+fn diverse_pass_fits(plain: Duration, orders: u32, restart_deadline: Option<Instant>) -> bool {
+    let Some(deadline) = restart_deadline else {
+        return true;
+    };
+    plain / orders.max(1) <= remaining(deadline).mul_f64(DIVERSE_PASS_RESERVE)
+}
+
+/// How many restart seeds the schedule draws.
+///
+/// The count caps how many seeds are drawn, not how long they run, so a graph
+/// whose candidates are quick would finish the schedule with budget unspent.
+/// Configured to, the restarts carry on from the next seed of the same
+/// sequence and the restart deadline ends them. Without a deadline there is
+/// nothing else to stop at, so the count stands.
+fn restart_count(config: PortfolioConfig, restart_deadline: Option<Instant>) -> u64 {
+    if config.restarts_to_deadline && restart_deadline.is_some() {
+        u64::MAX
+    } else {
+        config.sampling_runs
+    }
+}
+
 /// Initial candidates may use the complete two-stage window so the first one
 /// can always return a decomposition. Extra samples stop at the restart
 /// deadline; the rest of the hard window belongs to FlowCutter.
@@ -872,6 +906,9 @@ fn run_portfolio(
     let mut hard_deadline_tripped = false;
     // Set by an initial min-fill order that produced a decomposition.
     let mut min_fill_finished = false;
+    // Initial orders that ran an elimination, so that what they cost between
+    // them says what one more of that shape costs.
+    let mut initial_runs: u32 = 0;
 
     for (i, candidate) in initial_orders.iter().copied().enumerate() {
         let order = candidate.order;
@@ -948,6 +985,7 @@ fn run_portfolio(
             },
         );
         let (outcome, stop) = candidates.record_elimination(run);
+        initial_runs += 1;
         // What the restarts of an admitted residual follow: a min-fill order
         // that came back with a decomposition finished inside its cutoff, so
         // sampled min-fill has a prospect of finishing too.
@@ -998,23 +1036,21 @@ fn run_portfolio(
     // matching the main loop's skip rule, and on an admitted residual whose
     // initial min-fill did not come back. A started extra
     // sample stops at the restart deadline so it cannot consume the trailing
-    // FlowCutter and output interval. On extended small/medium runs, diverse
+    // FlowCutter and output interval. Where the diverse pass is admitted, its
     // fill-degree scores precede the complete ordinary min-fill seed sequence.
     // A hedge adds one weighted stage per weighting between the two — the fixed
     // orders that read weights and the diverse pass again — and leaves the
     // restarts where they were.
-    //
-    // The sampling count caps how many seeds are drawn, not the clock, so a
-    // graph whose candidates are quick can finish the schedule with budget
-    // left. Configured to, the restarts carry on from the next seed of the
-    // same sequence and the restart deadline ends them. Without a deadline
-    // there is nothing else to stop at, so the count stands.
-    let ordinary_runs = if config.restarts_to_deadline && restart_deadline.is_some() {
-        u64::MAX
-    } else {
-        config.sampling_runs
-    };
-    let diverse_samples = if residual == Residual::Ordinary {
+    let ordinary_runs = restart_count(config, restart_deadline);
+    // The diverse pass runs on the residuals the size rule leaves it, while
+    // what the initial orders cost projects one more candidate to fit in the
+    // time the restarts have.
+    let diverse_samples = if residual == Residual::Ordinary
+        && diverse_pass_fits(
+            crate::meter::now().saturating_duration_since(started),
+            initial_runs,
+            restart_deadline,
+        ) {
         config.diverse_sampling_runs
     } else {
         0
