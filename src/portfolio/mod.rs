@@ -23,6 +23,7 @@ use crate::elimination::execution::ElimStop;
 use crate::embedding::{self, Embedding};
 use crate::flowcutter::{Budget, decompose as flowcutter_decompose};
 use crate::{Error, Graph, TreeDecomposition};
+pub use candidates::Candidate;
 use candidates::{CandidateSet, ScheduleStop};
 use config::{DIVERSE_PASS_RESERVE, FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS};
 
@@ -30,7 +31,7 @@ pub use config::{
     DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, HedgeWeights, MAX_DIVERSE_SAMPLING_RUNS,
     MAX_HEDGE_PASSES, PortfolioConfig,
 };
-pub use trace::{CandidateOutcome, CandidateTrace, Pass, Stage};
+pub use trace::{CandidateOrigin, CandidateOutcome, CandidateTrace, Pass, Stage};
 
 /// Exit early if FlowCutter hasn't improved treewidth for this long, on a
 /// window of [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] or less. Caps per-graph
@@ -1407,7 +1408,12 @@ fn run_portfolio(
                 },
             },
         );
-        let (outcome, stop) = candidates.record_elimination(run);
+        let origin = CandidateOrigin {
+            stage: stage_of(order, phase),
+            seed: candidate.seed,
+            pass: Pass::Only,
+        };
+        let (outcome, stop) = candidates.record_elimination(run, origin);
         initial_runs += 1;
         // The first candidate is the portfolio's own measurement of one
         // elimination over this residual on this machine, and the schedule for
@@ -1580,7 +1586,12 @@ fn run_portfolio(
                 setup_deadline: None,
             },
         );
-        let (outcome, _) = candidates.record_elimination(run);
+        let origin = CandidateOrigin {
+            stage: stage_of(order, EliminationPhase::ExtraSampling),
+            seed,
+            pass: Pass::Only,
+        };
+        let (outcome, _) = candidates.record_elimination(run, origin);
         let now = crate::meter::now();
         cardinality_search_cost += now.saturating_duration_since(before);
         trace(CandidateTrace {
@@ -1739,7 +1750,12 @@ fn run_portfolio(
                 setup_deadline: None,
             },
         );
-        let (outcome, _) = candidates.record_elimination(run);
+        let origin = CandidateOrigin {
+            stage: candidate.stage,
+            seed: candidate.seed,
+            pass: candidate.pass,
+        };
+        let (outcome, _) = candidates.record_elimination(run, origin);
         let finished = crate::meter::now();
         previous_restart = Some(finished.saturating_duration_since(restart_finished));
         restart_finished = finished;
@@ -1791,7 +1807,12 @@ fn run_portfolio(
             },
         )?
     {
-        let outcome = candidates.push(decomposition);
+        let origin = CandidateOrigin {
+            stage: Stage::FlowCutter,
+            seed,
+            pass: Pass::Only,
+        };
+        let outcome = candidates.push(decomposition, origin);
         trace(CandidateTrace {
             stage: Stage::FlowCutter,
             seed,
@@ -1824,7 +1845,14 @@ fn run_portfolio(
         // recorded. The trace reports the pass either way, so a caller can see
         // what it cost on a graph where it changed nothing.
         let outcome = if (width, total_bag_size) < before {
-            candidates.push(minimalized)
+            candidates.push(
+                minimalized,
+                CandidateOrigin {
+                    stage: Stage::Minimalized,
+                    seed,
+                    pass: Pass::Only,
+                },
+            )
         } else {
             CandidateOutcome::Produced {
                 width,
@@ -1845,8 +1873,8 @@ fn run_portfolio(
 
 /// Run one sampled min-fill order, then up to
 /// the configured number of further seeds, then an optional trailing
-/// FlowCutter candidate — and return every decomposition produced, in candidate
-/// order. Never empty: the first candidate always produces one.
+/// FlowCutter candidate — and return every decomposition produced, sorted as
+/// [`candidates`] sorts. Never empty: the first candidate always produces one.
 ///
 /// The caller picks among them, commonly by width and then total bag size.
 ///
@@ -1894,9 +1922,12 @@ fn standard_candidate_set(
     )
 }
 
-/// Run the standard portfolio and return every decomposition it produced,
-/// sorted ascending by width and total bag size, with ties kept in candidate order
-/// (a stable sort), so the first is the portfolio's winner. Never empty.
+/// Run the standard portfolio and return every decomposition it produced.
+/// Bags contained in an adjacent bag are contracted in each, as [`decompose`]
+/// contracts them in the one it returns, and the list is sorted ascending by
+/// width and then total bag size of the contracted form, with ties kept in
+/// candidate order (a stable sort), so the first is the decomposition
+/// [`decompose`] returns. Never empty.
 ///
 /// # Errors
 ///
@@ -1909,7 +1940,7 @@ pub fn candidates(
     seed: u64,
     config: PortfolioConfig,
 ) -> Result<Vec<TreeDecomposition>, crate::Error> {
-    let mut decompositions = standard_candidate_set(
+    Ok(standard_candidate_set(
         graph,
         weights,
         seed,
@@ -1917,9 +1948,31 @@ pub fn candidates(
         CandidateRetention::All,
         &mut |_| {},
     )?
-    .into_decompositions();
-    decompositions.sort_by_key(TreeDecomposition::quality_key);
-    Ok(decompositions)
+    .into_decompositions())
+}
+
+/// [`candidates`], each with the candidate of the schedule that produced it,
+/// reporting every candidate to `trace` as it finishes.
+///
+/// The list is what [`candidates`] returns, so its first entry is the
+/// decomposition [`decompose`] returns; the origins say which stage, seed and
+/// pass of the schedule each one came from, which is what a caller that ranks
+/// the candidates itself needs to attribute its choice.
+///
+/// # Errors
+///
+/// Returns the same errors as [`candidates`].
+pub fn candidates_traced(
+    graph: &Graph,
+    weights: &[u32],
+    seed: u64,
+    config: PortfolioConfig,
+    trace: &mut dyn FnMut(CandidateTrace),
+) -> Result<Vec<Candidate>, crate::Error> {
+    Ok(
+        standard_candidate_set(graph, weights, seed, config, CandidateRetention::All, trace)?
+            .into_candidates(),
+    )
 }
 
 /// Return the standard portfolio's best candidate by width, then total bag

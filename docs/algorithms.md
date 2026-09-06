@@ -7,7 +7,10 @@ or from the vendored upstream code.
 ## The portfolio
 
 `portfolio::candidates` runs a fixed schedule and returns every decomposition
-it produces:
+it produces, each with the bags an adjacent bag contains contracted and the
+list sorted by width and then total bag size, so its head is what
+`portfolio::decompose` returns; `portfolio::candidates_traced` adds to each the
+stage, seed and pass that produced it. The schedule:
 
 1. deterministic min-degree;
 2. sampled min-degree;

@@ -113,6 +113,17 @@ pub enum CandidateOutcome {
     },
 }
 
+/// Which candidate of the schedule a decomposition came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CandidateOrigin {
+    /// Which candidate of the schedule this was.
+    pub stage: Stage,
+    /// The seed it ran on.
+    pub seed: u64,
+    /// Which pass of a hedged schedule it belongs to.
+    pub pass: Pass,
+}
+
 /// One candidate the portfolio ran.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CandidateTrace {

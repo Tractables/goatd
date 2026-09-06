@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use goatd::Graph;
 use goatd::portfolio::{
-    Hedge, Pass, PortfolioConfig, Stage, candidates, decompose, decompose_and_refine,
-    decompose_traced, sampled_min_fill_candidates,
+    CandidateOutcome, Hedge, Pass, PortfolioConfig, Stage, candidates, candidates_traced,
+    decompose, decompose_and_refine, decompose_traced, sampled_min_fill_candidates,
 };
 
 fn grid(side: u32) -> Graph {
@@ -37,6 +37,11 @@ fn every_portfolio_entry_point_decomposes_a_grid() {
         .map(|td| (td.treewidth(), td.total_bag_size()))
         .collect();
     assert!(quality.windows(2).all(|pair| pair[0] <= pair[1]));
+
+    // The list's head is the decomposition `decompose` returns: both are
+    // compared on the compacted key, and both contract the same bags.
+    let winner = decompose(&graph, &weight, 0, PortfolioConfig::standard()).unwrap();
+    assert_eq!(candidates[0].bags(), winner.bags());
 
     let refined =
         decompose_and_refine(&graph, &weight, 0, PortfolioConfig::standard(), None).unwrap();
@@ -363,4 +368,60 @@ fn a_gate_below_the_residual_leaves_the_maximum_cardinality_candidate_unrun() {
     )
     .unwrap();
     assert!(!stages.contains(&Stage::MaximumCardinality));
+}
+
+/// Every candidate comes back with the bags an adjacent bag contains
+/// contracted, as the winner always did, and with the stage, seed and pass
+/// that produced it, which the trace reported as it finished.
+#[test]
+fn every_candidate_is_compacted_and_names_the_stage_that_made_it() {
+    let graph = grid(5);
+    let weight = vec![1; graph.num_vertices() as usize];
+    let mut produced = Vec::new();
+    let traced = candidates_traced(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard(),
+        &mut |trace| {
+            if matches!(trace.outcome, CandidateOutcome::Produced { .. }) {
+                produced.push((trace.stage, trace.seed, trace.pass));
+            }
+        },
+    )
+    .unwrap();
+    assert!(!traced.is_empty());
+    let plain = candidates(&graph, &weight, 0, PortfolioConfig::standard()).unwrap();
+    assert_eq!(traced.len(), plain.len());
+    for (candidate, decomposition) in traced.iter().zip(&plain) {
+        assert_eq!(candidate.decomposition.bags(), decomposition.bags());
+        candidate.decomposition.validate(&graph).unwrap();
+        let origin = candidate.origin;
+        assert!(
+            produced.contains(&(origin.stage, origin.seed, origin.pass)),
+            "origin {origin:?} was never reported as produced"
+        );
+        // No bag is contained in a neighbouring bag.
+        let bags = candidate.decomposition.bags();
+        for (index, bag) in bags.iter().enumerate() {
+            for &neighbour in &candidate.decomposition.adjacency()[index] {
+                let other = &bags[neighbour];
+                assert!(
+                    !bag.vertices().iter().all(|v| other.vertices().contains(v)),
+                    "bag {index} is contained in its neighbour {neighbour}"
+                );
+            }
+        }
+    }
+    let keys: Vec<(u32, usize)> = traced
+        .iter()
+        .map(|c| {
+            (
+                c.decomposition.treewidth(),
+                c.decomposition.total_bag_size(),
+            )
+        })
+        .collect();
+    assert!(keys.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert!(traced.iter().any(|c| c.origin.stage == Stage::MinDegree));
 }
