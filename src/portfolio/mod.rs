@@ -114,29 +114,35 @@ enum Residual {
     /// hedge, and sampled min-fill restarts. The diverse pass has a clock test
     /// of its own on top of this; see [`diverse_pass_fits`].
     Ordinary,
-    /// A min-fill pass does not fit, and the residual is at or below the limit
-    /// from [`PortfolioConfig::with_expensive_orders_up_to`]. The expensive
-    /// initial orders run, each on half the time the restart deadline has left
-    /// rather than on all of it; nested dissection, the diverse pass and the
-    /// hedge do not; the initial loop and the restarts both run to the restart
-    /// deadline, though each candidate's own search still stops at the soft
-    /// one; and the restarts follow whichever of min-fill and min-degree
-    /// produced a decomposition.
+    /// A min-fill pass does not fit the whole schedule, but the budget holds
+    /// the paced one: either the residual is at or below the limit from
+    /// [`PortfolioConfig::with_expensive_orders_up_to`], or it is above the
+    /// limit and the budget pays for a pass there; see
+    /// [`Residual::paced_above_the_limit`]. The expensive initial orders run,
+    /// each on half the time the restart deadline has left rather than on all
+    /// of it; nested dissection, the diverse pass and the hedge do not; the
+    /// initial loop and the restarts both run to the restart deadline, though
+    /// each candidate's own search still stops at the soft one; and the
+    /// restarts follow whichever of min-fill and min-degree produced a
+    /// decomposition.
     Admitted,
-    /// Past that limit: min-degree candidates and sampled min-degree restarts,
-    /// and nothing else this classification chooses. The candidates with a
-    /// vertex cap of their own ask that cap instead.
+    /// Past that limit, on a budget that does not hold a paced min-fill pass:
+    /// min-degree candidates and sampled min-degree restarts, and nothing else
+    /// this classification chooses. The candidates with a vertex cap of their
+    /// own ask that cap instead.
     Large,
 }
 
 impl Residual {
-    /// The class as far as the sizes settle it on their own. Past `limit` the
-    /// schedule keeps only its min-degree candidates whatever the budget is,
-    /// and a residual of [`config::MAX_RESIDUAL_FOR_FULL_SCHEDULE`] vertices or
-    /// fewer is open to the whole schedule whatever the budget is. Between the
-    /// two the class waits on what a min-fill pass over the residual is going
-    /// to cost. The candidates carrying a vertex gate of their own answer that
-    /// gate rather than this.
+    /// The class as far as the sizes settle it before any candidate has run. A
+    /// residual of [`config::MAX_RESIDUAL_FOR_FULL_SCHEDULE`] vertices or fewer
+    /// is open to the whole schedule whatever the budget is; between that line
+    /// and `limit` the class waits on what a min-fill pass over the residual is
+    /// going to cost. Past `limit` the paced schedule is declined here, and the
+    /// first candidate hands it back where the budget pays for a pass, so what
+    /// this returns there is where the first candidate runs rather than the
+    /// last word; see [`Residual::paced_above_the_limit`]. The candidates
+    /// carrying a vertex gate of their own answer that gate rather than this.
     fn from_size(active: usize, limit: usize) -> Option<Self> {
         if active > limit {
             Some(Residual::Large)
@@ -154,15 +160,42 @@ impl Residual {
     /// passes over the residual, so what the schedule costs follows what one
     /// pass costs: the schedule runs while the time the soft deadline has left
     /// holds [`config::FULL_SCHEDULE_PASSES`] of them, and where it holds fewer
-    /// the residual is paced instead. A run with no soft budget has no window
-    /// to measure the passes against, so nothing in the band runs the schedule.
+    /// the residual is paced instead.
     fn from_measurement(min_fill: Duration, soft_deadline: Option<Instant>) -> Self {
-        match soft_deadline {
-            Some(soft) if min_fill <= remaining(soft).div_f64(config::FULL_SCHEDULE_PASSES) => {
-                Residual::Ordinary
-            }
-            _ => Residual::Admitted,
+        if budget_holds_passes(min_fill, soft_deadline, config::FULL_SCHEDULE_PASSES) {
+            Residual::Ordinary
+        } else {
+            Residual::Admitted
         }
+    }
+
+    /// Whether a residual past the caller's limit runs the paced schedule after
+    /// all, priced from the same first candidate.
+    ///
+    /// The limit is where the paced schedule stops being admitted by size, and
+    /// above it the price decides: the min-fill order there runs to half of
+    /// what the restart deadline has left, so a pass the budget cannot hold
+    /// [`config::PACED_SCHEDULE_PASSES`] times over returns nothing, and the
+    /// residual keeps the min-degree candidates it has always had.
+    fn paced_above_the_limit(min_fill: Duration, soft_deadline: Option<Instant>) -> Self {
+        if budget_holds_passes(min_fill, soft_deadline, config::PACED_SCHEDULE_PASSES) {
+            Residual::Admitted
+        } else {
+            Residual::Large
+        }
+    }
+}
+
+/// Whether the time the soft deadline has left holds `passes` min-fill passes
+/// over the residual, one pass costing `min_fill`.
+///
+/// This is the one test both schedule lines make; they differ in how many
+/// passes the schedule they admit is worth. A run with no soft budget has no
+/// window to measure passes against, so neither line admits anything on one.
+fn budget_holds_passes(min_fill: Duration, soft_deadline: Option<Instant>, passes: f64) -> bool {
+    match soft_deadline {
+        Some(soft) => min_fill <= remaining(soft).div_f64(passes),
+        None => false,
     }
 }
 
@@ -1267,7 +1300,11 @@ fn run_portfolio(
     // whether the second stage is the schedule's or the tail's.
     let tail_budget = config.flowcutter_budget;
     // Settled here where the sizes decide it, and otherwise by the first
-    // candidate, from what that candidate cost.
+    // candidate, from what that candidate cost. Past the caller's limit what
+    // the sizes say is where the first candidate runs rather than the last
+    // word: the measurement below hands the paced schedule back where the
+    // budget pays for it, and the first candidate keeps the window a residual
+    // that size has always given it.
     let mut classified: Option<Classified> = by_size.map(|residual| {
         Classified::new(
             residual,
@@ -1376,15 +1413,31 @@ fn run_portfolio(
         // elimination over this residual on this machine, and the schedule for
         // everything after it rests on it.
         let cost = crate::meter::now().saturating_duration_since(candidate_started);
-        classified.get_or_insert_with(|| {
-            Classified::new(
-                Residual::from_measurement(min_fill_estimate(order, cost), soft_deadline),
-                writeout,
-                tail_budget,
-                soft_deadline,
-                hard_deadline,
-            )
-        });
+        if initial_runs == 1 {
+            let min_fill = min_fill_estimate(order, cost);
+            let settled = match classified.map(|class| class.residual) {
+                // In the band the sizes leave open, the measurement says
+                // whether the whole schedule runs or the paced one.
+                None => Some(Residual::from_measurement(min_fill, soft_deadline)),
+                // Past the caller's limit the size declined the paced schedule
+                // before this candidate ran. The measurement hands it back
+                // where the budget pays for a pass over a residual that size.
+                Some(Residual::Large) => {
+                    Some(Residual::paced_above_the_limit(min_fill, soft_deadline))
+                }
+                // Below the line the sizes have settled it already.
+                Some(_) => None,
+            };
+            if let Some(residual) = settled {
+                classified = Some(Classified::new(
+                    residual,
+                    writeout,
+                    tail_budget,
+                    soft_deadline,
+                    hard_deadline,
+                ));
+            }
+        }
         // What the restarts of an admitted residual follow: a min-fill order
         // that came back with a decomposition finished inside its cutoff, so
         // sampled min-fill has a prospect of finishing too.
