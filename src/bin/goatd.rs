@@ -122,8 +122,11 @@ options:
                         dissection, the diverse pass and the hedge stay off;
                         and the restarts follow min-fill if the initial
                         min-fill finished and min-degree if it did not. Above
-                        this the portfolio keeps only its min-degree
-                        candidates
+                        this the same schedule runs where --budget pays for
+                        it: the portfolio times its first candidate, prices a
+                        min-fill pass over the residual from that, and keeps
+                        only its min-degree candidates unless the time left
+                        holds two such passes
   --trace               portfolio only: write one line per candidate and one
                         for the winner to stderr as they complete
   --steps <n>           flowcutter only: a step budget in place of a clock,
