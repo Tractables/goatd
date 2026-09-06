@@ -851,8 +851,8 @@ fn the_sizes_settle_the_class_outside_the_band_and_leave_it_open_inside() {
     // a budget can only add residuals to the ones the line already took.
     assert_eq!(Residual::from_size(1, limit), Some(Residual::Ordinary));
     assert_eq!(Residual::from_size(full, limit), Some(Residual::Ordinary));
-    // Past the caller's limit nothing else is asked: only min-degree runs
-    // there, whatever a pass would cost.
+    // Past the caller's limit the paced schedule is declined by size, which is
+    // where the first candidate runs; what a pass costs can still hand it back.
     assert_eq!(Residual::from_size(limit + 1, limit), Some(Residual::Large));
     // In between the first candidate decides.
     assert_eq!(Residual::from_size(full + 1, limit), None);
@@ -888,6 +888,60 @@ fn the_full_schedule_runs_while_the_budget_holds_enough_min_fill_passes() {
     assert_eq!(
         Residual::from_measurement(Duration::ZERO, None),
         Residual::Admitted
+    );
+}
+
+#[test]
+fn the_paced_schedule_runs_past_the_limit_while_the_budget_holds_two_passes() {
+    let passes = super::config::PACED_SCHEDULE_PASSES;
+
+    // The soft budgets a sixty-second and a five-minute wall give the library
+    // at the comparison protocol, which halves the wall and keeps 250 ms back
+    // to write the answer out.
+    for budget in [29_750.0, 149_750.0] {
+        let soft = crate::meter::now() + Duration::from_millis(budget as u64);
+        let fits = Duration::from_millis((0.9 * budget / passes) as u64);
+        let over = Duration::from_millis((budget / passes) as u64 + 200);
+        assert_eq!(
+            Residual::paced_above_the_limit(fits, Some(soft)),
+            Residual::Admitted,
+            "a {budget} ms budget holds two passes of {fits:?}",
+        );
+        assert_eq!(
+            Residual::paced_above_the_limit(over, Some(soft)),
+            Residual::Large,
+            "a {budget} ms budget does not hold two passes of {over:?}",
+        );
+    }
+
+    // A run with no soft budget has no window to price a pass against, so the
+    // size is the whole rule, as it was before the budget was consulted here.
+    assert_eq!(
+        Residual::paced_above_the_limit(Duration::ZERO, None),
+        Residual::Large,
+    );
+}
+
+#[test]
+fn the_ten_second_protocol_admits_nothing_past_the_limit() {
+    // 400 ms is well under what a first min-degree candidate costs over a
+    // residual past the line at this budget: the largest corpus graphs spend
+    // most of the 4,750 ms on that candidate. Even so the estimated pass is
+    // more than half of what is left, so the schedule stays what it was.
+    let cost = Duration::from_millis(400);
+    let estimate = super::min_fill_estimate(Order::MinDegree, cost);
+    let soft = crate::meter::now() + Duration::from_millis(4_750 - 400);
+    assert_eq!(
+        Residual::paced_above_the_limit(estimate, Some(soft)),
+        Residual::Large,
+        "a {estimate:?} pass does not fit half of what a ten-second wall leaves",
+    );
+
+    // The same candidate at a five-minute wall pays for the pass.
+    let soft = crate::meter::now() + Duration::from_millis(149_750 - 400);
+    assert_eq!(
+        Residual::paced_above_the_limit(estimate, Some(soft)),
+        Residual::Admitted,
     );
 }
 
@@ -1100,37 +1154,59 @@ fn the_flowcutter_slot_declines_a_graph_it_could_not_stop_on() {
 #[test]
 fn the_restarts_keep_a_flowcutter_reserve_at_the_end_of_the_hard_window() {
     let start = crate::meter::now();
-    let soft = start + secs(5);
-    let hard = start + secs(10);
+    // The ten-second protocol: a soft budget the trailing candidate stops well
+    // short of, and its hard window of twice that.
+    let base = super::FLOWCUTTER_CANDIDATE_BASE_WINDOW;
+    let soft = start + base;
+    let hard = soft + base;
+    let tail = Some(base);
 
     // At or below the caller's limit the restarts run into the hard window and
     // stop a reserve short of its end.
     assert_eq!(
-        restart_deadline(Residual::Ordinary, Some(soft), Some(hard), None),
+        restart_deadline(Residual::Ordinary, Some(soft), Some(hard), None, tail),
         Some(hard - FLOWCUTTER_RESERVE),
     );
     assert_eq!(
-        restart_deadline(Residual::Admitted, Some(soft), Some(hard), None),
+        restart_deadline(Residual::Admitted, Some(soft), Some(hard), None, tail),
         Some(hard - FLOWCUTTER_RESERVE),
     );
 
     // Past the limit the soft deadline stands, so the second stage stays with
     // the trailing FlowCutter candidate.
     assert_eq!(
-        restart_deadline(Residual::Large, Some(soft), Some(hard), None),
+        restart_deadline(Residual::Large, Some(soft), Some(hard), None, tail),
         Some(soft),
+    );
+
+    // An ordinary residual keeps the fixed reserve whatever the tail's budget
+    // is: only the admitted class hands the tail the second stage.
+    let long_soft = start + secs(30);
+    let long_hard = long_soft + secs(30);
+    assert_eq!(
+        restart_deadline(
+            Residual::Ordinary,
+            Some(long_soft),
+            Some(long_hard),
+            None,
+            Some(secs(30)),
+        ),
+        Some(long_hard - FLOWCUTTER_RESERVE),
     );
 
     // A hard window shorter than the reserve would put the restarts before the
     // soft deadline, so the soft deadline stands.
-    let tight = start + Duration::from_millis(5_500);
+    let tight = soft + Duration::from_millis(750);
     assert_eq!(
-        restart_deadline(Residual::Ordinary, Some(soft), Some(tight), None),
+        restart_deadline(Residual::Ordinary, Some(soft), Some(tight), None, tail),
         Some(soft),
     );
 
     // No budget, so no hard window to run into.
-    assert_eq!(restart_deadline(Residual::Ordinary, None, None, None), None);
+    assert_eq!(
+        restart_deadline(Residual::Ordinary, None, None, None, tail),
+        None,
+    );
 }
 
 #[test]
@@ -1139,31 +1215,52 @@ fn a_large_residual_takes_the_second_stage_flowcutter_declined() {
     let soft = start + secs(5);
     let hard = start + secs(10);
     let writeout = Duration::from_millis(200);
+    // Long enough that an admitted residual would hand the tail the second
+    // stage, had the tail not declined it.
+    let tail = Some(secs(5));
 
     // FlowCutter will not run at this size, so the handover is all either of
     // the larger classes keeps back: an admitted residual reserves it instead
     // of the wider FlowCutter window, and a large one instead of stopping at
     // the soft deadline half way through the window.
     assert_eq!(
-        restart_deadline(Residual::Admitted, Some(soft), Some(hard), Some(writeout)),
+        restart_deadline(
+            Residual::Admitted,
+            Some(soft),
+            Some(hard),
+            Some(writeout),
+            tail
+        ),
         Some(hard - writeout),
     );
     assert_eq!(
-        restart_deadline(Residual::Large, Some(soft), Some(hard), Some(writeout)),
+        restart_deadline(
+            Residual::Large,
+            Some(soft),
+            Some(hard),
+            Some(writeout),
+            tail
+        ),
         Some(hard - writeout),
     );
 
     // An ordinary residual keeps the FlowCutter reserve whatever the writeout
     // reserve says, since the trailing candidate does run at that size.
     assert_eq!(
-        restart_deadline(Residual::Ordinary, Some(soft), Some(hard), Some(writeout)),
+        restart_deadline(
+            Residual::Ordinary,
+            Some(soft),
+            Some(hard),
+            Some(writeout),
+            tail
+        ),
         Some(hard - FLOWCUTTER_RESERVE),
     );
 
     // A writeout reserve wider than the whole second stage leaves the soft
     // deadline where it was.
     assert_eq!(
-        restart_deadline(Residual::Large, Some(soft), Some(hard), Some(secs(6))),
+        restart_deadline(Residual::Large, Some(soft), Some(hard), Some(secs(6)), tail),
         Some(soft),
     );
 }
@@ -1180,8 +1277,14 @@ fn the_measurement_decides_where_the_initial_loop_stops() {
     // loop stops there, leaving the rest of the window to the restarts and the
     // trailing FlowCutter candidate, whose reserve stands whatever the handover
     // asked before the class was known.
-    let promoted =
-        super::Classified::new(Residual::Ordinary, Some(writeout), Some(soft), Some(hard));
+    let tail = Some(super::FLOWCUTTER_CANDIDATE_BASE_WINDOW);
+    let promoted = super::Classified::new(
+        Residual::Ordinary,
+        Some(writeout),
+        tail,
+        Some(soft),
+        Some(hard),
+    );
     assert_eq!(promoted.restart_deadline, Some(hard - FLOWCUTTER_RESERVE));
     assert_eq!(promoted.initial_deadline, Some(soft));
     assert_eq!(promoted.initial_cutoff, Some(soft));
@@ -1189,15 +1292,20 @@ fn the_measurement_decides_where_the_initial_loop_stops() {
     // The same residual paced: the loop keeps starting candidates as long as
     // the restarts run, while each candidate's own search still ends at the
     // soft deadline. That is what the measurement decides between.
-    let paced = super::Classified::new(Residual::Admitted, None, Some(soft), Some(hard));
+    let paced = super::Classified::new(Residual::Admitted, None, tail, Some(soft), Some(hard));
     assert_eq!(paced.restart_deadline, Some(hard - FLOWCUTTER_RESERVE));
     assert_eq!(paced.initial_deadline, Some(hard - FLOWCUTTER_RESERVE));
     assert_eq!(paced.initial_cutoff, Some(soft));
 
     // Paced, on a graph FlowCutter declined: the elimination has the second
     // stage and keeps back only the handover.
-    let handed_over =
-        super::Classified::new(Residual::Admitted, Some(writeout), Some(soft), Some(hard));
+    let handed_over = super::Classified::new(
+        Residual::Admitted,
+        Some(writeout),
+        tail,
+        Some(soft),
+        Some(hard),
+    );
     assert_eq!(handed_over.restart_deadline, Some(hard - writeout));
     assert_eq!(handed_over.initial_deadline, Some(hard - writeout));
     assert_eq!(handed_over.initial_cutoff, Some(soft));
@@ -1215,7 +1323,13 @@ fn a_promoted_residual_prices_the_diverse_pass_against_the_restarts_window() {
     let hard = now + Duration::from_millis(5_500);
     let spent = Duration::from_millis(4_000);
 
-    let promoted = super::Classified::new(Residual::Ordinary, None, Some(soft), Some(hard));
+    let promoted = super::Classified::new(
+        Residual::Ordinary,
+        None,
+        Some(Duration::from_millis(4_750)),
+        Some(soft),
+        Some(hard),
+    );
     assert_eq!(promoted.restart_deadline, Some(hard - FLOWCUTTER_RESERVE));
 
     assert!(super::diverse_pass_fits(
@@ -1366,12 +1480,13 @@ fn the_writeout_reserve_grows_with_the_residual() {
 #[test]
 fn an_admitted_residual_runs_its_candidates_and_restarts_to_the_hard_window() {
     let start = crate::meter::now();
-    let soft = start + secs(5);
-    let hard = start + secs(10);
+    let base = super::FLOWCUTTER_CANDIDATE_BASE_WINDOW;
+    let soft = start + base;
+    let hard = soft + base;
 
-    // The restarts stop a reserve short of the hard deadline, as they do below
-    // the band.
-    let restart = restart_deadline(Residual::Admitted, Some(soft), Some(hard), None);
+    // On a budget the trailing candidate stops well short of, the restarts stop
+    // a reserve short of the hard deadline, as they do below the band.
+    let restart = restart_deadline(Residual::Admitted, Some(soft), Some(hard), None, Some(base));
     assert_eq!(restart, Some(hard - FLOWCUTTER_RESERVE));
 
     // The initial loop starts another candidate for as long as that same
@@ -1402,6 +1517,61 @@ fn an_admitted_residual_runs_its_candidates_and_restarts_to_the_hard_window() {
 }
 
 #[test]
+fn an_admitted_residual_leaves_a_long_tail_the_whole_second_stage() {
+    let start = crate::meter::now();
+    let base = super::FLOWCUTTER_CANDIDATE_BASE_WINDOW;
+
+    // A budget the trailing candidate would run to the end of: the restarts and
+    // the initial loop both stop at the soft deadline and the second stage is
+    // the tail's.
+    let soft = start + secs(30);
+    let hard = soft + secs(30);
+    let restart = restart_deadline(
+        Residual::Admitted,
+        Some(soft),
+        Some(hard),
+        None,
+        Some(secs(30)),
+    );
+    assert_eq!(restart, Some(soft));
+    assert_eq!(
+        super::initial_candidate_deadline(Residual::Admitted, Some(soft), restart),
+        Some(soft),
+    );
+
+    // The switch is the base window itself, read from the tail's budget.
+    let short_soft = start + base;
+    let short_hard = short_soft + base;
+    for (budget, reserve) in [
+        (None, FLOWCUTTER_RESERVE),
+        (Some(base), FLOWCUTTER_RESERVE),
+        (Some(base - Duration::from_millis(1)), FLOWCUTTER_RESERVE),
+        (Some(base + Duration::from_millis(1)), base),
+    ] {
+        assert_eq!(
+            super::admitted_flowcutter_reserve(base, budget),
+            reserve,
+            "a tail budget of {budget:?}",
+        );
+        let expected = match short_hard.checked_sub(reserve) {
+            Some(stop) if stop > short_soft => stop,
+            _ => short_soft,
+        };
+        assert_eq!(
+            restart_deadline(
+                Residual::Admitted,
+                Some(short_soft),
+                Some(short_hard),
+                None,
+                budget,
+            ),
+            Some(expected),
+            "a tail budget of {budget:?}",
+        );
+    }
+}
+
+#[test]
 fn a_large_residual_reads_the_restart_deadline_for_both() {
     let start = crate::meter::now();
     let soft = start + secs(5);
@@ -1411,7 +1581,7 @@ fn a_large_residual_reads_the_restart_deadline_for_both() {
     // Past the caller's limit there is no cheaper candidate waiting behind the
     // first, so its search runs as long as the loop does. While FlowCutter
     // holds the second stage that is the soft deadline.
-    let held = restart_deadline(Residual::Large, Some(soft), Some(hard), None);
+    let held = restart_deadline(Residual::Large, Some(soft), Some(hard), None, Some(secs(5)));
     assert_eq!(held, Some(soft));
     assert_eq!(
         super::initial_candidate_deadline(Residual::Large, Some(soft), held),
@@ -1424,7 +1594,13 @@ fn a_large_residual_reads_the_restart_deadline_for_both() {
 
     // On a graph FlowCutter declined, both run to the end of the hard window
     // less the handover.
-    let declined = restart_deadline(Residual::Large, Some(soft), Some(hard), Some(writeout));
+    let declined = restart_deadline(
+        Residual::Large,
+        Some(soft),
+        Some(hard),
+        Some(writeout),
+        Some(secs(5)),
+    );
     assert_eq!(declined, Some(hard - writeout));
     assert_eq!(
         super::initial_candidate_deadline(Residual::Large, Some(soft), declined),

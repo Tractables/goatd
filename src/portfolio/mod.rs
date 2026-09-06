@@ -114,29 +114,35 @@ enum Residual {
     /// hedge, and sampled min-fill restarts. The diverse pass has a clock test
     /// of its own on top of this; see [`diverse_pass_fits`].
     Ordinary,
-    /// A min-fill pass does not fit, and the residual is at or below the limit
-    /// from [`PortfolioConfig::with_expensive_orders_up_to`]. The expensive
-    /// initial orders run, each on half the time the restart deadline has left
-    /// rather than on all of it; nested dissection, the diverse pass and the
-    /// hedge do not; the initial loop and the restarts both run to the restart
-    /// deadline, though each candidate's own search still stops at the soft
-    /// one; and the restarts follow whichever of min-fill and min-degree
-    /// produced a decomposition.
+    /// A min-fill pass does not fit the whole schedule, but the budget holds
+    /// the paced one: either the residual is at or below the limit from
+    /// [`PortfolioConfig::with_expensive_orders_up_to`], or it is above the
+    /// limit and the budget pays for a pass there; see
+    /// [`Residual::paced_above_the_limit`]. The expensive initial orders run,
+    /// each on half the time the restart deadline has left rather than on all
+    /// of it; nested dissection, the diverse pass and the hedge do not; the
+    /// initial loop and the restarts both run to the restart deadline, though
+    /// each candidate's own search still stops at the soft one; and the
+    /// restarts follow whichever of min-fill and min-degree produced a
+    /// decomposition.
     Admitted,
-    /// Past that limit: min-degree candidates and sampled min-degree restarts,
-    /// and nothing else this classification chooses. The candidates with a
-    /// vertex cap of their own ask that cap instead.
+    /// Past that limit, on a budget that does not hold a paced min-fill pass:
+    /// min-degree candidates and sampled min-degree restarts, and nothing else
+    /// this classification chooses. The candidates with a vertex cap of their
+    /// own ask that cap instead.
     Large,
 }
 
 impl Residual {
-    /// The class as far as the sizes settle it on their own. Past `limit` the
-    /// schedule keeps only its min-degree candidates whatever the budget is,
-    /// and a residual of [`config::MAX_RESIDUAL_FOR_FULL_SCHEDULE`] vertices or
-    /// fewer is open to the whole schedule whatever the budget is. Between the
-    /// two the class waits on what a min-fill pass over the residual is going
-    /// to cost. The candidates carrying a vertex gate of their own answer that
-    /// gate rather than this.
+    /// The class as far as the sizes settle it before any candidate has run. A
+    /// residual of [`config::MAX_RESIDUAL_FOR_FULL_SCHEDULE`] vertices or fewer
+    /// is open to the whole schedule whatever the budget is; between that line
+    /// and `limit` the class waits on what a min-fill pass over the residual is
+    /// going to cost. Past `limit` the paced schedule is declined here, and the
+    /// first candidate hands it back where the budget pays for a pass, so what
+    /// this returns there is where the first candidate runs rather than the
+    /// last word; see [`Residual::paced_above_the_limit`]. The candidates
+    /// carrying a vertex gate of their own answer that gate rather than this.
     fn from_size(active: usize, limit: usize) -> Option<Self> {
         if active > limit {
             Some(Residual::Large)
@@ -154,15 +160,42 @@ impl Residual {
     /// passes over the residual, so what the schedule costs follows what one
     /// pass costs: the schedule runs while the time the soft deadline has left
     /// holds [`config::FULL_SCHEDULE_PASSES`] of them, and where it holds fewer
-    /// the residual is paced instead. A run with no soft budget has no window
-    /// to measure the passes against, so nothing in the band runs the schedule.
+    /// the residual is paced instead.
     fn from_measurement(min_fill: Duration, soft_deadline: Option<Instant>) -> Self {
-        match soft_deadline {
-            Some(soft) if min_fill <= remaining(soft).div_f64(config::FULL_SCHEDULE_PASSES) => {
-                Residual::Ordinary
-            }
-            _ => Residual::Admitted,
+        if budget_holds_passes(min_fill, soft_deadline, config::FULL_SCHEDULE_PASSES) {
+            Residual::Ordinary
+        } else {
+            Residual::Admitted
         }
+    }
+
+    /// Whether a residual past the caller's limit runs the paced schedule after
+    /// all, priced from the same first candidate.
+    ///
+    /// The limit is where the paced schedule stops being admitted by size, and
+    /// above it the price decides: the min-fill order there runs to half of
+    /// what the restart deadline has left, so a pass the budget cannot hold
+    /// [`config::PACED_SCHEDULE_PASSES`] times over returns nothing, and the
+    /// residual keeps the min-degree candidates it has always had.
+    fn paced_above_the_limit(min_fill: Duration, soft_deadline: Option<Instant>) -> Self {
+        if budget_holds_passes(min_fill, soft_deadline, config::PACED_SCHEDULE_PASSES) {
+            Residual::Admitted
+        } else {
+            Residual::Large
+        }
+    }
+}
+
+/// Whether the time the soft deadline has left holds `passes` min-fill passes
+/// over the residual, one pass costing `min_fill`.
+///
+/// This is the one test both schedule lines make; they differ in how many
+/// passes the schedule they admit is worth. A run with no soft budget has no
+/// window to measure passes against, so neither line admits anything on one.
+fn budget_holds_passes(min_fill: Duration, soft_deadline: Option<Instant>, passes: f64) -> bool {
+    match soft_deadline {
+        Some(soft) => min_fill <= remaining(soft).div_f64(passes),
+        None => false,
     }
 }
 
@@ -207,15 +240,26 @@ impl Classified {
     /// `writeout` is what the elimination keeps back at the end of the hard
     /// window to hand its answer over, set where the trailing FlowCutter
     /// candidate has declined the second stage. A residual running the whole
-    /// schedule keeps the FlowCutter reserve there instead, which is what
+    /// schedule keeps a FlowCutter reserve there instead, which is what
     /// [`restart_deadline`] does with it.
+    ///
+    /// `tail_budget` is the budget the trailing FlowCutter slot is configured
+    /// with, and `None` where there is no such slot;
+    /// [`admitted_flowcutter_reserve`] reads it.
     fn new(
         residual: Residual,
         writeout: Option<Duration>,
+        tail_budget: Option<Duration>,
         soft_deadline: Option<Instant>,
         hard_deadline: Option<Instant>,
     ) -> Self {
-        let restart_deadline = restart_deadline(residual, soft_deadline, hard_deadline, writeout);
+        let restart_deadline = restart_deadline(
+            residual,
+            soft_deadline,
+            hard_deadline,
+            writeout,
+            tail_budget,
+        );
         Self {
             residual,
             restart_deadline,
@@ -852,15 +896,52 @@ enum EliminationPhase {
     ExtraSampling,
 }
 
+/// What an admitted residual's schedule keeps at the end of the hard window for
+/// the trailing FlowCutter candidate: either the fixed [`FLOWCUTTER_RESERVE`],
+/// which leaves the schedule the rest of the second stage, or the whole
+/// `second_stage`, which leaves the schedule nothing past the soft deadline.
+///
+/// `tail_budget` is what the trailing slot is configured with, and `None` where
+/// there is no trailing slot. Its window is at most that budget, so this is the
+/// same [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] switch [`flowcutter_window`] and
+/// [`flowcutter_candidate_limits`] make on the window itself, read here from the
+/// budget because the schedule is fixed before the tail is reached.
+///
+/// Up to the base window the tail keeps the patience and the restart cap that
+/// window was tuned for, so it stops well short of the window it is given and
+/// the fixed reserve is all it uses. The rest of the second stage is worth more
+/// to the schedule, which on a residual this size often spends the whole soft
+/// budget on its first candidate: at a ten-second budget, giving it back took a
+/// 9,413-graph comparison corpus from 8,616 to 8,629 graphs at the best width
+/// the field reached, and moved nothing below 10,000 residual vertices.
+///
+/// Above the base window the window is what ends the tail, and then the second
+/// stage is worth much more to the tail than to the schedule. At a sixty-second
+/// wall on 215 graphs of 10,000 to 100,000 residual vertices, against a schedule
+/// and a tail that both stop at the soft deadline: the tail given the whole
+/// second stage is narrower on 93 and wider on 14, the schedule given it instead
+/// is narrower on 49 and wider on 65, and the two sharing it read as the
+/// schedule alone does — the schedule spends the stage before the tail is
+/// reached, so there is nothing left to enlarge. The same-binary repeat on those
+/// graphs moves 27 one way and 32 the other.
+fn admitted_flowcutter_reserve(second_stage: Duration, tail_budget: Option<Duration>) -> Duration {
+    match tail_budget {
+        Some(budget) if budget > FLOWCUTTER_CANDIDATE_BASE_WINDOW => second_stage,
+        _ => FLOWCUTTER_RESERVE,
+    }
+}
+
 /// Where the elimination phases stop.
 ///
 /// At or below the caller's limit the restarts run past the soft deadline into
-/// the hard window, keeping [`FLOWCUTTER_RESERVE`] at the end of it for the
-/// trailing FlowCutter candidate. More restart time is worth more than a longer
-/// FlowCutter tail on these graphs, and an admitted residual that spent its soft
-/// budget on the first candidate has nothing else to do with the second stage: a
-/// restart projected to run into the deadline is never started, so the wider
-/// window only adds restarts that fit.
+/// the hard window, keeping a reserve at the end of it for the trailing
+/// FlowCutter candidate. An ordinary residual keeps [`FLOWCUTTER_RESERVE`]:
+/// more restart time is worth more than a longer FlowCutter tail on these
+/// graphs, and a restart projected to run into the deadline is never started, so
+/// the wider window only adds restarts that fit. An admitted residual keeps
+/// whatever [`admitted_flowcutter_reserve`] says the tail can use, which on a
+/// budget long enough for the tail to run to its window is the whole second
+/// stage, and the restarts then stop at the soft deadline.
 ///
 /// Past the caller's limit the second stage is nominally FlowCutter's: a restart
 /// there costs a large fraction of the window, and on graphs of that size
@@ -879,7 +960,11 @@ fn restart_deadline(
     soft_deadline: Option<Instant>,
     hard_deadline: Option<Instant>,
     writeout: Option<Duration>,
+    tail_budget: Option<Duration>,
 ) -> Option<Instant> {
+    let (Some(soft), Some(hard)) = (soft_deadline, hard_deadline) else {
+        return soft_deadline;
+    };
     let reserve = match (residual, writeout) {
         // The trailing candidate runs at this size, so its reserve stands
         // whatever the handover would cost.
@@ -887,14 +972,13 @@ fn restart_deadline(
         // A second stage FlowCutter declined belongs to the elimination, and
         // all it has to keep back there is the handover.
         (_, Some(writeout)) => writeout,
-        // The admitted restarts run into the hard window on the same terms as
-        // an ordinary residual's.
-        (Residual::Admitted, None) => FLOWCUTTER_RESERVE,
+        // The admitted restarts run into the hard window, up to whatever the
+        // trailing candidate can use of it.
+        (Residual::Admitted, None) => {
+            admitted_flowcutter_reserve(hard.saturating_duration_since(soft), tail_budget)
+        }
         // Past the caller's limit the second stage stays with FlowCutter.
-        (Residual::Large, None) => return soft_deadline,
-    };
-    let (Some(soft), Some(hard)) = (soft_deadline, hard_deadline) else {
-        return soft_deadline;
+        (Residual::Large, None) => return Some(soft),
     };
     match hard.checked_sub(reserve) {
         Some(reserved) if reserved > soft => Some(reserved),
@@ -926,12 +1010,12 @@ fn writeout_reserve(graph: &Graph, residual: usize) -> Duration {
 ///
 /// Each order gives back at least what it does not use, so however many of them
 /// run, the restarts still get a share of what is left. Taking the restart
-/// deadline rather than the soft one is what the rule means: an admitted
-/// residual's restart deadline sits a reserve short of the hard deadline, so
-/// this halves what is left of both stages, and where the restarts do keep the
-/// soft deadline it halves the soft window instead. With no restart deadline
-/// there is nothing to halve and the order runs to the portfolio's hard
-/// deadline, as it does below the band.
+/// deadline rather than the soft one is what the rule means: this halves what is
+/// left of whatever that deadline covers — both stages where the restarts run
+/// into the hard window, the soft budget alone where the second stage went to
+/// the trailing FlowCutter candidate or the restarts keep the soft deadline for
+/// another reason. With no restart deadline there is nothing to halve and the
+/// order runs to the portfolio's hard deadline, as it does below the band.
 fn admitted_cutoff(
     restart_deadline: Option<Instant>,
     hard_deadline: Option<Instant>,
@@ -945,14 +1029,16 @@ fn admitted_cutoff(
 /// The deadline the initial loop reads between candidates: once it has passed,
 /// whatever has already returned is the answer.
 ///
-/// Above the full-schedule size the loop runs as long as the restarts do. On an
-/// admitted residual that is the hard window less the FlowCutter reserve, or
-/// less the handover where FlowCutter has declined the second stage. The first
-/// min-degree pass on graphs of that size often spends the whole soft budget on
-/// its own, and stopping there hands its answer back with half the window
-/// unspent; the paced min-fill behind it is usually the narrower of the two.
-/// Past the caller's limit the restarts keep the soft deadline unless the second
-/// stage was declined, and the loop follows either way.
+/// Above the full-schedule size the loop runs as long as the restarts do, so the
+/// schedule moves as one piece. On an admitted residual that is the hard window
+/// less the FlowCutter reserve, less the handover where FlowCutter has declined
+/// the second stage, or the soft deadline where the second stage went to the
+/// trailing candidate. The first min-degree pass on graphs of that size often
+/// spends the whole soft budget on its own, and stopping there hands its answer
+/// back with half the window unspent; the paced min-fill behind it is usually
+/// the narrower of the two. Past the caller's limit the restarts keep the soft
+/// deadline unless the second stage was declined, and the loop follows either
+/// way.
 ///
 /// An ordinary residual keeps the soft deadline. Its schedule of cheap
 /// candidates finishes well inside it, and the rest of the window is the
@@ -1210,10 +1296,24 @@ fn run_portfolio(
     let mut hard_deadline_tripped = false;
     // Set by an initial min-fill order that produced a decomposition.
     let mut min_fill_finished = false;
+    // What the trailing FlowCutter slot is configured with, which is what says
+    // whether the second stage is the schedule's or the tail's.
+    let tail_budget = config.flowcutter_budget;
     // Settled here where the sizes decide it, and otherwise by the first
-    // candidate, from what that candidate cost.
-    let mut classified: Option<Classified> =
-        by_size.map(|residual| Classified::new(residual, writeout, soft_deadline, hard_deadline));
+    // candidate, from what that candidate cost. Past the caller's limit what
+    // the sizes say is where the first candidate runs rather than the last
+    // word: the measurement below hands the paced schedule back where the
+    // budget pays for it, and the first candidate keeps the window a residual
+    // that size has always given it.
+    let mut classified: Option<Classified> = by_size.map(|residual| {
+        Classified::new(
+            residual,
+            writeout,
+            tail_budget,
+            soft_deadline,
+            hard_deadline,
+        )
+    });
     // Initial orders that ran an elimination, so that what they cost between
     // them says what one more of that shape costs.
     let mut initial_runs: u32 = 0;
@@ -1313,14 +1413,31 @@ fn run_portfolio(
         // elimination over this residual on this machine, and the schedule for
         // everything after it rests on it.
         let cost = crate::meter::now().saturating_duration_since(candidate_started);
-        classified.get_or_insert_with(|| {
-            Classified::new(
-                Residual::from_measurement(min_fill_estimate(order, cost), soft_deadline),
-                writeout,
-                soft_deadline,
-                hard_deadline,
-            )
-        });
+        if initial_runs == 1 {
+            let min_fill = min_fill_estimate(order, cost);
+            let settled = match classified.map(|class| class.residual) {
+                // In the band the sizes leave open, the measurement says
+                // whether the whole schedule runs or the paced one.
+                None => Some(Residual::from_measurement(min_fill, soft_deadline)),
+                // Past the caller's limit the size declined the paced schedule
+                // before this candidate ran. The measurement hands it back
+                // where the budget pays for a pass over a residual that size.
+                Some(Residual::Large) => {
+                    Some(Residual::paced_above_the_limit(min_fill, soft_deadline))
+                }
+                // Below the line the sizes have settled it already.
+                Some(_) => None,
+            };
+            if let Some(residual) = settled {
+                classified = Some(Classified::new(
+                    residual,
+                    writeout,
+                    tail_budget,
+                    soft_deadline,
+                    hard_deadline,
+                ));
+            }
+        }
         // What the restarts of an admitted residual follow: a min-fill order
         // that came back with a decomposition finished inside its cutoff, so
         // sampled min-fill has a prospect of finishing too.
@@ -1654,9 +1771,8 @@ fn run_portfolio(
     }
     // Runs vanilla FlowCutter once as a final portfolio candidate. Placed after
     // the extra-sampling loop so it runs in whatever is left of the hard
-    // window: the restart reserve at or below the caller's limit, and up to the
-    // whole second stage past it, where the restarts stopped at the soft
-    // deadline. On a graph whose second stage it declined up front there is
+    // window: the restart reserve where the restarts ran into that window, and
+    // up to the whole second stage where they stopped at the soft deadline. On a graph whose second stage it declined up front there is
     // nothing left here, which is what let the elimination take that stage.
     // FlowCutter already returns a complete decomposition, so no
     // separator-refinement pass is applied to it. It runs on every residual; on

@@ -138,11 +138,29 @@ pub(super) const MIN_FILL_COST_MULTIPLE: f64 = 6.7;
 /// 39.
 pub(super) const FULL_SCHEDULE_PASSES: f64 = 15.0;
 
-/// The default largest residual the expensive orders run on at all. Between the
-/// full-schedule rule and this number they run on a paced schedule; above it the
-/// portfolio keeps only its min-degree candidates.
+/// The default largest residual the expensive orders run on by size alone.
+/// Between the full-schedule rule and this number they run on a paced schedule
+/// whatever a pass costs; above it they run where the budget pays for one, which
+/// is [`PACED_SCHEDULE_PASSES`].
 /// [`PortfolioConfig::with_expensive_orders_up_to`] moves the upper line.
 pub(super) const DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS: usize = 300_000;
+
+/// How many min-fill passes over the residual the paced schedule is worth: the
+/// same test [`FULL_SCHEDULE_PASSES`] makes, at the fraction of the window the
+/// paced schedule gets.
+///
+/// Above the line the paced schedule adds one min-fill order to the initial
+/// loop, and the restarts follow it where it finished. That order runs to half
+/// of what the restart deadline has left, so a pass the window cannot hold twice
+/// is a pass that returns nothing, and the residual keeps the min-degree
+/// candidates it has always had.
+///
+/// The line stays a floor: below it the paced schedule runs whatever a pass
+/// costs, so this can only add residuals to the ones the line already took. It
+/// adds none at the ten-second protocol, where a first min-degree candidate over
+/// a residual of that size costs seconds of a 4.75-second budget and the
+/// estimate is several times that again.
+pub(super) const PACED_SCHEDULE_PASSES: f64 = 2.0;
 
 /// Where one weighted stage takes its sampling weights from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -566,7 +584,10 @@ impl PortfolioConfig {
     /// while the restart deadline has time left.
     ///
     /// The restart deadline is the hard deadline less the reserve kept for the
-    /// trailing FlowCutter candidate. On a residual past
+    /// trailing FlowCutter candidate. Over 10,000 vertices and under a soft
+    /// budget over 4.75 seconds that reserve is the whole second stage, since
+    /// the trailing candidate then runs to its window, so the restarts stop at
+    /// the soft deadline there. On a residual past
     /// [`PortfolioConfig::with_expensive_orders_up_to`] it is the soft deadline
     /// instead, unless FlowCutter has declined the second stage, in which case
     /// it is the hard deadline less what handing the answer over costs.
@@ -641,17 +662,33 @@ impl PortfolioConfig {
     /// - the trailing FlowCutter candidate runs as on any residual, under its
     ///   own vertex cap.
     ///
-    /// Above the number given here the portfolio keeps only its min-degree
-    /// candidates: the initial list drops min-fill and nested dissection after
-    /// the first candidate, the diverse pass and the hedge do not run, and the
-    /// ordinary restarts are sampled min-degree. The candidates carrying a
-    /// vertex cap of their own are not part of this choice, the way the
-    /// trailing FlowCutter candidate already was not: the two cardinality
-    /// searches and the fill-dropping pass each answer their own gate, and
-    /// every one of those gates sits far below the default limit here.
+    /// The restart deadline those first two read is the hard deadline less what
+    /// the trailing FlowCutter candidate can use. Up to a 4.75-second soft
+    /// budget that candidate stops long before its window and the reserve is
+    /// 1.5 seconds, so the schedule gets the rest of the second stage. Over it
+    /// the window is what ends the candidate and the reserve is the whole
+    /// second stage, so the schedule stops at the soft deadline and the stage is
+    /// the candidate's.
+    ///
+    /// Above the number given here the size does not settle the schedule on its
+    /// own: the portfolio runs its first min-degree candidate, prices a min-fill pass
+    /// over the residual from what that cost, and runs the paced schedule where
+    /// the time the soft deadline has left holds two of those passes, which is
+    /// what the min-fill order it adds would run to. Where it does not, only the
+    /// min-degree candidates are left: the initial list drops min-fill and
+    /// nested dissection after the first candidate, the diverse pass and the
+    /// hedge do not run, and the ordinary restarts are sampled min-degree. A run
+    /// with no soft budget has no window to price a pass against, so the number
+    /// given here is the whole rule there.
+    ///
+    /// The candidates carrying a vertex cap of their own are not part of this
+    /// choice, the way the trailing FlowCutter candidate already was not: the
+    /// two cardinality searches and the fill-dropping pass each answer their own
+    /// gate, and every one of those gates sits far below the default limit here.
     ///
     /// Setting it to 10,000 or lower leaves no middle band, and every residual
-    /// over the number runs min-degree plus whatever those gates admit.
+    /// over the number runs min-degree plus whatever those gates admit, unless
+    /// the budget pays for a paced pass over it.
     pub fn with_expensive_orders_up_to(mut self, vertices: usize) -> Self {
         self.expensive_orders_up_to = vertices;
         self
