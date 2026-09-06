@@ -167,7 +167,9 @@ impl Residual {
 }
 
 /// What one min-fill pass over the residual is expected to cost, from what the
-/// portfolio's first candidate cost on this graph on this machine.
+/// portfolio's first candidate cost on this machine. That candidate eliminates
+/// the same preprocessed residual, so the cost is timed over the graph the
+/// estimate is about.
 ///
 /// A first candidate that was itself a min-fill order is the estimate. A
 /// min-degree one is the same elimination loop on a cheaper score, so a
@@ -1129,12 +1131,12 @@ fn elimination_stop(
     }
 }
 
-/// One candidate before the restart phase.
+/// One candidate before the restart phase. Every one of them runs on the
+/// preprocessed residual the portfolio builds once.
 #[derive(Clone, Copy)]
 struct InitialCandidate<'a> {
     order: Order<'a>,
     seed: u64,
-    preprocess: bool,
     update_order_ties: bool,
 }
 
@@ -1155,37 +1157,31 @@ fn standard_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandidate<'_>>
         InitialCandidate {
             order: Order::MinDegree,
             seed: base_seed,
-            preprocess: false,
             update_order_ties: true,
         },
         InitialCandidate {
             order: Order::MinDegreeSampled { weights },
             seed: base_seed,
-            preprocess: true,
             update_order_ties: false,
         },
         InitialCandidate {
             order: Order::NestedDissection,
             seed: base_seed,
-            preprocess: true,
             update_order_ties: false,
         },
         InitialCandidate {
             order: Order::MinFillSampled { weights },
             seed: base_seed,
-            preprocess: true,
             update_order_ties: false,
         },
         InitialCandidate {
             order: Order::MinDegreeSampled { weights },
             seed: second_seed,
-            preprocess: true,
             update_order_ties: false,
         },
         InitialCandidate {
             order: Order::NestedDissection,
             seed: second_seed,
-            preprocess: true,
             update_order_ties: false,
         },
     ]
@@ -1202,7 +1198,6 @@ fn sampled_min_fill_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandid
     vec![InitialCandidate {
         order: Order::MinFillSampled { weights },
         seed: base_seed,
-        preprocess: true,
         update_order_ties: false,
     }]
 }
@@ -1239,7 +1234,6 @@ fn run_portfolio(
     let soft_deadline = deadlines.soft;
     let hard_deadline = deadlines.hard;
     let mut prebuilt = engine::prebuild(graph, soft_deadline);
-    let mut original = None;
     let active = prebuilt.num_active();
     // The class where the sizes settle it on their own. In the band between
     // them it waits on what the first candidate costs.
@@ -1349,14 +1343,9 @@ fn run_portfolio(
         // is the one with the smallest residual left to bag, so completing them
         // is how the portfolio picks between them at all.
         let complete_on_deadline = candidates.is_empty() || residual != Some(Residual::Ordinary);
-        let candidate_graph = if candidate.preprocess {
-            &mut prebuilt
-        } else {
-            original.get_or_insert_with(|| engine::prebuild_original(graph))
-        };
         let candidate_started = crate::meter::now();
         let run = engine::run_order_prebuilt(
-            candidate_graph,
+            &mut prebuilt,
             engine::RunSpec {
                 order,
                 seed: candidate.seed,
@@ -1384,7 +1373,7 @@ fn run_portfolio(
         let (outcome, stop) = candidates.record_elimination(run);
         initial_runs += 1;
         // The first candidate is the portfolio's own measurement of one
-        // elimination over this graph on this machine, and the schedule for
+        // elimination over this residual on this machine, and the schedule for
         // everything after it rests on it.
         let cost = crate::meter::now().saturating_duration_since(candidate_started);
         classified.get_or_insert_with(|| {
