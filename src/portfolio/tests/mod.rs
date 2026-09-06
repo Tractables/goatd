@@ -852,8 +852,8 @@ fn the_sizes_settle_the_class_outside_the_band_and_leave_it_open_inside() {
     // a budget can only add residuals to the ones the line already took.
     assert_eq!(Residual::from_size(1, limit), Some(Residual::Ordinary));
     assert_eq!(Residual::from_size(full, limit), Some(Residual::Ordinary));
-    // Past the caller's limit nothing else is asked: only min-degree runs
-    // there, whatever a pass would cost.
+    // Past the caller's limit the paced schedule is declined by size, which is
+    // where the first candidate runs; what a pass costs can still hand it back.
     assert_eq!(Residual::from_size(limit + 1, limit), Some(Residual::Large));
     // In between the first candidate decides.
     assert_eq!(Residual::from_size(full + 1, limit), None);
@@ -889,6 +889,60 @@ fn the_full_schedule_runs_while_the_budget_holds_enough_min_fill_passes() {
     assert_eq!(
         Residual::from_measurement(Duration::ZERO, None),
         Residual::Admitted
+    );
+}
+
+#[test]
+fn the_paced_schedule_runs_past_the_limit_while_the_budget_holds_two_passes() {
+    let passes = super::config::PACED_SCHEDULE_PASSES;
+
+    // The soft budgets a sixty-second and a five-minute wall give the library
+    // at the comparison protocol, which halves the wall and keeps 250 ms back
+    // to write the answer out.
+    for budget in [29_750.0, 149_750.0] {
+        let soft = crate::meter::now() + Duration::from_millis(budget as u64);
+        let fits = Duration::from_millis((0.9 * budget / passes) as u64);
+        let over = Duration::from_millis((budget / passes) as u64 + 200);
+        assert_eq!(
+            Residual::paced_above_the_limit(fits, Some(soft)),
+            Residual::Admitted,
+            "a {budget} ms budget holds two passes of {fits:?}",
+        );
+        assert_eq!(
+            Residual::paced_above_the_limit(over, Some(soft)),
+            Residual::Large,
+            "a {budget} ms budget does not hold two passes of {over:?}",
+        );
+    }
+
+    // A run with no soft budget has no window to price a pass against, so the
+    // size is the whole rule, as it was before the budget was consulted here.
+    assert_eq!(
+        Residual::paced_above_the_limit(Duration::ZERO, None),
+        Residual::Large,
+    );
+}
+
+#[test]
+fn the_ten_second_protocol_admits_nothing_past_the_limit() {
+    // 400 ms is well under what a first min-degree candidate costs over a
+    // residual past the line at this budget: the largest corpus graphs spend
+    // most of the 4,750 ms on that candidate. Even so the estimated pass is
+    // more than half of what is left, so the schedule stays what it was.
+    let cost = Duration::from_millis(400);
+    let estimate = super::min_fill_estimate(Order::MinDegree, cost);
+    let soft = crate::meter::now() + Duration::from_millis(4_750 - 400);
+    assert_eq!(
+        Residual::paced_above_the_limit(estimate, Some(soft)),
+        Residual::Large,
+        "a {estimate:?} pass does not fit half of what a ten-second wall leaves",
+    );
+
+    // The same candidate at a five-minute wall pays for the pass.
+    let soft = crate::meter::now() + Duration::from_millis(149_750 - 400);
+    assert_eq!(
+        Residual::paced_above_the_limit(estimate, Some(soft)),
+        Residual::Admitted,
     );
 }
 

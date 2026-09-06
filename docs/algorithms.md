@@ -45,8 +45,11 @@ as everywhere else, but the portfolio keeps starting candidates and restarts
 until the restart deadline rather than the soft one, which on a budget over
 4.75 seconds is the soft deadline anyway, since the second stage then goes to
 the FlowCutter candidate; and the restarts are sampled min-fill when the initial
-min-fill produced a decomposition and sampled min-degree when it did not. Above 300,000 vertices only the min-degree
-candidates and sampled min-degree restarts run.
+min-fill produced a decomposition and sampled min-degree when it did not.
+Above 300,000 vertices the same price decides again at a different fraction:
+the paced schedule runs where the time the soft deadline has left holds two of
+those passes, which is what the min-fill candidate there would run to, and
+otherwise only the min-degree candidates and sampled min-degree restarts run.
 `PortfolioConfig::with_expensive_orders_up_to` moves the upper boundary; the
 10,000-vertex line is fixed, and a run with no soft budget has no window to
 price a pass against, so there that line is the whole rule. The FlowCutter
@@ -84,10 +87,11 @@ it. The sampling count caps how many seeds are drawn, not how long they run, so
 it is what stops the restarts of a run with no deadline to run to, which is
 `standard()`, `sampled_min_fill()`, and any configuration with
 `PortfolioConfig::with_restarts_to_deadline` turned off. On a residual over the
-300,000-vertex limit the restarts stop at the soft deadline as the initial
-candidates do, and between 10,000 and 300,000 vertices they stop there too
-under a soft budget over 4.75 seconds, where the FlowCutter candidate runs to
-its window and the second stage is worth more to it than to more restarts.
+300,000-vertex limit that the budget leaves with min-degree alone, the restarts
+stop at the soft deadline as the initial candidates do, and between 10,000 and
+300,000 vertices they stop there too under a soft budget over 4.75 seconds,
+where the FlowCutter candidate runs to its window and the second stage is worth
+more to it than to more restarts.
 Over 300,000 vertices there is one exception: the FlowCutter candidate's own
 work model may say it could
 not start and stop inside the hard window on a graph this size; then they run to
