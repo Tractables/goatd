@@ -56,14 +56,29 @@ fn disjoint_grids(side: u32) -> crate::Graph {
     crate::Graph::new(2 * component_size, edges)
 }
 
-fn complete_at_immediate_deadline(graph: &crate::Graph) -> crate::TreeDecomposition {
+/// A chorded ring: degree six at every vertex and no simplicial one, so
+/// preprocessing hands the whole graph on to the elimination.
+fn chorded_ring(vertices: u32) -> crate::Graph {
+    let mut edges = Vec::with_capacity(3 * vertices as usize);
+    for vertex in 0..vertices {
+        edges.push((vertex, (vertex + 1) % vertices));
+        edges.push((vertex, (vertex + 7) % vertices));
+        edges.push((vertex, (vertex + 53) % vertices));
+    }
+    crate::Graph::new(vertices, edges)
+}
+
+fn complete_at_immediate_deadline(
+    graph: &crate::Graph,
+    order: Order<'_>,
+) -> crate::TreeDecomposition {
     let mut prebuilt = prebuild(graph, None);
     let epoch = std::time::Instant::now();
     let _meter = crate::meter::arm(epoch);
     let run = run_order_prebuilt(
         &mut prebuilt,
         RunSpec {
-            order: Order::MinDegree,
+            order,
             seed: 0,
             sample_band: 0,
             update_order_ties: false,
@@ -173,7 +188,7 @@ fn partial_eliminations_are_never_returned_as_decompositions() {
 #[test]
 fn deadline_completion_does_not_emit_one_bag_per_residual_vertex() {
     let graph = complete_bipartite(40);
-    let decomposition = complete_at_immediate_deadline(&graph);
+    let decomposition = complete_at_immediate_deadline(&graph, Order::MinDegree);
 
     decomposition.validate(&graph).unwrap();
     assert!(decomposition.bags().len() < graph.num_vertices() as usize);
@@ -229,9 +244,24 @@ fn a_soft_cutoff_leaves_the_components_after_it_their_own_orders() {
 #[test]
 fn deadline_completion_keeps_unfinished_components_in_separate_bags() {
     let graph = disjoint_complete_bipartite(40);
-    let decomposition = complete_at_immediate_deadline(&graph);
+    let decomposition = complete_at_immediate_deadline(&graph, Order::MinDegree);
 
     decomposition.validate(&graph).unwrap();
     assert!(decomposition.bags().len() < graph.num_vertices() as usize);
     assert_eq!(decomposition.bags().last().unwrap().vertices().len(), 80);
+}
+
+#[test]
+fn a_sampled_order_stopped_after_an_elimination_still_bags_that_vertex() {
+    // Sampled min-fill removes a vertex, then repairs the fill scores of its
+    // neighbours, and reads the deadline while it does. A run stopped there has
+    // already taken the vertex out of the graph, so the engine's residual bag
+    // does not cover it and the bag it was about to record is the only place it
+    // would appear.
+    let graph = chorded_ring(2_000);
+    let weights = vec![1u32; graph.num_vertices() as usize];
+    let decomposition =
+        complete_at_immediate_deadline(&graph, Order::MinFillSampled { weights: &weights });
+
+    decomposition.validate(&graph).unwrap();
 }

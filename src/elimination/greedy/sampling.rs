@@ -210,6 +210,13 @@ fn eliminate_sampled_fill_based(
         buckets.remove_vertex(v);
 
         let bag = take_bag(graph, v, &mut live_nbrs);
+        let bag_len = bag.len();
+        // Recorded before the elimination below removes `v`, because the score
+        // repair that follows reads the deadline and returns from the middle of
+        // it. A return after the removal and before the record left `v` out of
+        // the bags entirely, and the engine's residual bag does not catch it:
+        // that bag holds what is still in the graph, which `v` no longer is.
+        sink.record(v, bag);
 
         if sampled_fill == 0 {
             // Bitset mode: exact Δfill update in O(w) before removing v.
@@ -297,9 +304,6 @@ fn eliminate_sampled_fill_based(
                 }
             }
         }
-        let bag_len = bag.len();
-        sink.record(v, bag);
-
         if exceeds_width_bound(bag_len, width_bound) {
             return ElimExit::WidthLimitExceeded;
         }
