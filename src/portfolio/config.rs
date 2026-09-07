@@ -107,9 +107,10 @@ const DEFAULT_SAMPLE_BAND: u64 = 3;
 
 /// The share of its window the trailing FlowCutter candidate goes without
 /// improving before the stall rule ends it, with
-/// [`super::FLOWCUTTER_CANDIDATE_PATIENCE`] as the floor. Half, so the tail is
-/// read the way the restarts are: what it has already spent says how long it
-/// waits.
+/// [`super::FLOWCUTTER_CANDIDATE_PATIENCE`] as the floor and the smaller of
+/// what the rest of the schedule spent and
+/// [`super::FLOWCUTTER_CANDIDATE_BASE_WINDOW`] as the ceiling. Half, so the tail is read the way the
+/// restarts are: what it has already spent says how long it waits.
 const TAIL_PATIENCE_SHARE: f64 = 0.5;
 
 /// Whether the ordinary restarts give up on their own. See
@@ -187,13 +188,26 @@ impl SamplingPatience {
     /// `None` leaves it running to the end of its window, which is what it does
     /// with the rule off.
     ///
+    /// Half the window, and never longer than either what the rest of the
+    /// schedule took before it or
+    /// [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`]. Without those two bounds a
+    /// deadline an hour away leaves the tail an hour-long window and half an
+    /// hour of patience, so the run spends the clock on a candidate that
+    /// stopped improving in its first seconds. The schedule's own time is what
+    /// keeps a quick graph quick; the base window is the absolute that does not
+    /// grow with the deadline at all, and on a traced hour-long run of a 900
+    /// vertex grid it is the one that matters — the restarts took 32.6 s there,
+    /// so that bound alone would have left the tail another 34.8 s.
+    ///
     /// [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`]: super::FLOWCUTTER_CANDIDATE_BASE_WINDOW
-    pub(super) fn tail_patience(self, window: Duration) -> Option<Duration> {
+    pub(super) fn tail_patience(self, window: Duration, spent: Duration) -> Option<Duration> {
         match self {
             SamplingPatience::Off => None,
             SamplingPatience::Halving { .. } => Some(
                 window
                     .mul_f64(TAIL_PATIENCE_SHARE)
+                    .min(spent)
+                    .min(super::FLOWCUTTER_CANDIDATE_BASE_WINDOW)
                     .max(super::FLOWCUTTER_CANDIDATE_PATIENCE),
             ),
         }

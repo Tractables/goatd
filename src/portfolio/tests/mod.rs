@@ -1060,21 +1060,49 @@ fn the_trailing_candidate_keeps_its_window_until_the_rule_is_asked_for() {
     let long = super::FLOWCUTTER_CANDIDATE_BASE_WINDOW * 4;
     let short = super::FLOWCUTTER_CANDIDATE_BASE_WINDOW;
     let rule = SamplingPatience::Halving { min_restarts: 200 };
+    // What the rest of the schedule took, longer than the window here so the
+    // share is what binds.
+    let spent = long;
 
     assert_eq!(
-        super::flowcutter_candidate_limits(long, SamplingPatience::Off).0,
+        super::flowcutter_candidate_limits(long, SamplingPatience::Off, spent).0,
         None,
         "off, a long window is what ends the tail"
     );
     assert_eq!(
-        super::flowcutter_candidate_limits(long, rule).0,
-        Some(long / 2),
-        "on, it stops after half the window without improving"
+        super::flowcutter_candidate_limits(long, rule, spent).0,
+        Some(super::FLOWCUTTER_CANDIDATE_BASE_WINDOW),
+        "on, a long window is cut to the base window"
     );
     assert_eq!(
-        super::flowcutter_candidate_limits(short, rule).0,
-        super::flowcutter_candidate_limits(short, SamplingPatience::Off).0,
+        super::flowcutter_candidate_limits(short, rule, spent).0,
+        super::flowcutter_candidate_limits(short, SamplingPatience::Off, spent).0,
         "a short window carries its own patience either way"
+    );
+}
+
+#[test]
+fn a_far_deadline_leaves_the_tail_no_more_patience_than_the_schedule_took() {
+    let rule = SamplingPatience::Halving { min_restarts: 200 };
+    let hour = Duration::from_secs(3_600);
+    // The restarts stalled after two seconds, so the tail waits two seconds
+    // rather than half the hour it was handed.
+    let spent = Duration::from_secs(2);
+
+    assert_eq!(
+        super::flowcutter_candidate_limits(hour, rule, spent).0,
+        Some(spent),
+        "the schedule's own time caps the patience where it is the smaller"
+    );
+    assert_eq!(
+        super::flowcutter_candidate_limits(hour, rule, hour).0,
+        Some(super::FLOWCUTTER_CANDIDATE_BASE_WINDOW),
+        "and the base window caps it where the schedule was long"
+    );
+    assert_eq!(
+        super::flowcutter_candidate_limits(hour, rule, Duration::from_millis(1)).0,
+        Some(super::FLOWCUTTER_CANDIDATE_PATIENCE),
+        "and the floor still stands under it"
     );
 }
 
@@ -1790,7 +1818,7 @@ fn the_flowcutter_candidate_limits_hold_only_up_to_the_base_window() {
     ];
     for window in short {
         assert_eq!(
-            super::flowcutter_candidate_limits(window, SamplingPatience::Off),
+            super::flowcutter_candidate_limits(window, SamplingPatience::Off, window),
             (
                 Some(super::FLOWCUTTER_CANDIDATE_PATIENCE),
                 super::FLOWCUTTER_CANDIDATE_ITERATIONS
@@ -1807,7 +1835,7 @@ fn the_flowcutter_candidate_limits_hold_only_up_to_the_base_window() {
     ];
     for window in long {
         assert_eq!(
-            super::flowcutter_candidate_limits(window, SamplingPatience::Off),
+            super::flowcutter_candidate_limits(window, SamplingPatience::Off, window),
             (None, crate::flowcutter::TIMED_ITERATIONS),
             "over the base window a window of {window:?} is what ends the run",
         );

@@ -761,6 +761,7 @@ fn flowcutter_window(
 fn flowcutter_candidate_limits(
     window: Duration,
     patience: SamplingPatience,
+    spent: Duration,
 ) -> (Option<Duration>, u32) {
     if window <= FLOWCUTTER_CANDIDATE_BASE_WINDOW {
         return (
@@ -769,7 +770,7 @@ fn flowcutter_candidate_limits(
         );
     }
     (
-        patience.tail_patience(window),
+        patience.tail_patience(window, spent),
         crate::flowcutter::TIMED_ITERATIONS,
     )
 }
@@ -894,7 +895,8 @@ fn flowcutter_candidate(
     if !flowcutter_runs_in(graph, timeout) {
         return Ok(None);
     }
-    let (patience, iterations) = flowcutter_candidate_limits(timeout, sampling_patience);
+    let (patience, iterations) =
+        flowcutter_candidate_limits(timeout, sampling_patience, spent.elapsed);
     match flowcutter_decompose(graph, Budget::timed(timeout, patience, iterations)) {
         Ok(decomposition) => Ok(Some((decomposition, timeout, patience))),
         // A timed backend run may end before it has a result. The elimination
