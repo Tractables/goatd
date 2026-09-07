@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::TreeDecomposition;
 use crate::decomposition::SubsumedBagCompaction;
 use crate::elimination::engine::OrderRun;
@@ -163,16 +165,20 @@ impl CandidateSet {
 
     /// Every retained decomposition, compacted, with its origin, sorted
     /// ascending by width and then total bag size with ties kept in candidate
-    /// order. In best-only mode this is the winner alone.
+    /// order. A decomposition several candidates produced is listed once,
+    /// with the origin of the first of them in that order. In best-only mode
+    /// this is the winner alone.
     pub(super) fn into_candidates(self) -> Vec<Candidate> {
         let mut retained = self.retained;
         retained.sort_by_key(|retained| retained.quality_key);
+        let mut seen = HashSet::with_capacity(retained.len());
         retained
             .into_iter()
             .map(|retained| Candidate {
                 decomposition: retained.compaction.apply(retained.decomposition),
                 origin: retained.origin,
             })
+            .filter(|candidate| seen.insert(bag_tree(&candidate.decomposition)))
             .collect()
     }
 
@@ -183,4 +189,45 @@ impl CandidateSet {
             .map(|candidate| candidate.decomposition)
             .collect()
     }
+}
+
+/// The bags and bag tree of a decomposition in a form that does not depend on
+/// the order an algorithm listed its bags or their vertices in: each bag
+/// sorted, the bags sorted, and the tree's edges over the sorted positions.
+/// Two orders that eliminate the same vertices in a different sequence often
+/// build the same bags under the same tree, and this is what says so.
+fn bag_tree(decomposition: &TreeDecomposition) -> (Vec<Vec<u32>>, Vec<(usize, usize)>) {
+    let mut bags: Vec<(Vec<u32>, usize)> = decomposition
+        .bags()
+        .iter()
+        .enumerate()
+        .map(|(index, bag)| {
+            let mut vertices = bag.vertices().to_vec();
+            vertices.sort_unstable();
+            (vertices, index)
+        })
+        .collect();
+    bags.sort_unstable();
+    let mut position = vec![0; bags.len()];
+    for (sorted, &(_, index)) in bags.iter().enumerate() {
+        position[index] = sorted;
+    }
+    let position = &position;
+    let mut edges: Vec<(usize, usize)> = decomposition
+        .adjacency()
+        .iter()
+        .enumerate()
+        .flat_map(|(left, neighbours)| {
+            neighbours.iter().map(move |&right| {
+                let (left, right) = (position[left], position[right]);
+                (left.min(right), left.max(right))
+            })
+        })
+        .collect();
+    edges.sort_unstable();
+    edges.dedup();
+    (
+        bags.into_iter().map(|(vertices, _)| vertices).collect(),
+        edges,
+    )
 }

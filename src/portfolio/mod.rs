@@ -1922,12 +1922,14 @@ fn standard_candidate_set(
     )
 }
 
-/// Run the standard portfolio and return every decomposition it produced.
-/// Bags contained in an adjacent bag are contracted in each, as [`decompose`]
-/// contracts them in the one it returns, and the list is sorted ascending by
-/// width and then total bag size of the contracted form, with ties kept in
-/// candidate order (a stable sort), so the first is the decomposition
-/// [`decompose`] returns. Never empty.
+/// Run the standard portfolio and return every distinct decomposition it
+/// produced. Bags contained in an adjacent bag are contracted in each, as
+/// [`decompose`] contracts them in the one it returns, and the list is sorted
+/// ascending by width and then total bag size of the contracted form, with
+/// ties kept in candidate order (a stable sort), so the first is the
+/// decomposition [`decompose`] returns. A decomposition that several
+/// candidates produced, the same bags under the same tree, is listed once.
+/// Never empty.
 ///
 /// # Errors
 ///
@@ -1957,7 +1959,9 @@ pub fn candidates(
 /// The list is what [`candidates`] returns, so its first entry is the
 /// decomposition [`decompose`] returns; the origins say which stage, seed and
 /// pass of the schedule each one came from, which is what a caller that ranks
-/// the candidates itself needs to attribute its choice.
+/// the candidates itself needs to attribute its choice. A decomposition that
+/// several candidates produced carries the origin of the first of them in
+/// the list's order; `trace` still reports each of those candidates.
 ///
 /// # Errors
 ///
