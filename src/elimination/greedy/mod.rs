@@ -33,6 +33,7 @@ macro_rules! ord_by_key {
 mod deterministic;
 mod min_degree;
 mod min_fill;
+mod probe;
 mod sampling;
 
 #[cfg(test)]

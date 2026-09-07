@@ -18,6 +18,7 @@
 use std::collections::BinaryHeap;
 use std::time::Instant;
 
+use super::probe::{ElimProbe, Phase};
 use super::{
     CHEAP_MODE_MAX_ACTIVE, Cutoff, DeadlinePacer, ElimEntry, ElimExit, ElimSink, ElimStop,
     EliminationGraph, exceeds_width_bound, take_bag,
@@ -188,8 +189,22 @@ fn drain_clique_tail<P: ElimPolicy>(
 pub(super) fn eliminate_greedy<P: ElimPolicy>(
     policy: &mut P,
     graph: &mut EliminationGraph,
+    sink: ElimSink<'_>,
+    stop: ElimStop,
+) -> ElimExit {
+    let mut probe = ElimProbe::start(std::any::type_name::<P>(), graph.len(), graph.num_edges);
+    let exit = eliminate_greedy_probed(policy, graph, sink, stop, &mut probe);
+    probe.finished(graph, exit);
+    exit
+}
+
+/// The loop itself, with the probe threaded through it.
+fn eliminate_greedy_probed<P: ElimPolicy>(
+    policy: &mut P,
+    graph: &mut EliminationGraph,
     mut sink: ElimSink<'_>,
     stop: ElimStop,
+    probe: &mut ElimProbe,
 ) -> ElimExit {
     let ElimStop {
         soft_deadline,
@@ -208,6 +223,7 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
         Seeded::CheapMode => true,
         Seeded::Bailed => return ElimExit::DeadlineReached(Cutoff::Hard),
     };
+    probe.seeded(graph, cheap_mode);
 
     let mut nbrs_buf = Vec::new();
     let mut pacer = DeadlinePacer::new();
@@ -216,7 +232,11 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
     // skip all scoring work on the giant-clique endgame.
     let mut clique_residual = false;
 
-    while let Some(entry) = policy.pop() {
+    loop {
+        let mark = probe.mark();
+        let popped = policy.pop();
+        probe.charge(Phase::Heap, mark);
+        let Some(entry) = popped else { break };
         let v = entry.vertex();
         if !graph.active[v as usize] {
             continue; // lazy deletion: v was already eliminated
@@ -257,22 +277,28 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
         // Stale-snapshot guard: re-score a popped vertex and, if it moved,
         // re-push and let the heap decide again. Skipped in cheap mode, where
         // score accuracy is already abandoned.
+        let mark = probe.mark();
         if !cheap_mode
             && let Some(live) = policy.rescore_on_pop(graph, v)
             && live != snapshot
         {
             policy.push(graph, v, live);
+            probe.charge(Phase::Heap, mark);
             continue;
         }
+        probe.charge(Phase::Heap, mark);
 
+        let mark = probe.mark();
         let bag = take_bag(graph, v, &mut nbrs_buf);
         let bag_len = bag.len();
+        probe.charge(Phase::Bag, mark);
 
         if !clique_residual && graph.is_residual_clique() {
             clique_residual = true;
         }
 
         let simplicial = P::ZERO_SCORE_IS_SIMPLICIAL && !cheap_mode && snapshot == 0;
+        let mark = probe.mark();
         if clique_residual || simplicial {
             graph.remove_without_fill_nbrs(v, &nbrs_buf);
         } else if cheap_mode {
@@ -280,7 +306,11 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
         } else {
             policy.eliminate_with_fill(graph, v, &nbrs_buf);
         }
+        probe.charge(Phase::Elim, mark);
+        probe.eliminated(graph, &nbrs_buf, bag_len, cheap_mode);
+        let mark = probe.mark();
         sink.record(v, bag);
+        probe.charge(Phase::Sink, mark);
 
         if exceeds_width_bound(bag_len, width_bound) {
             return ElimExit::WidthLimitExceeded;
@@ -296,7 +326,11 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
             return ElimExit::Complete;
         }
 
-        match policy.after_eliminate(graph, &nbrs_buf, cheap_mode, soft_deadline, !simplicial) {
+        let mark = probe.mark();
+        let reaction =
+            policy.after_eliminate(graph, &nbrs_buf, cheap_mode, soft_deadline, !simplicial);
+        probe.charge(Phase::After, mark);
+        match reaction {
             AfterElim::Continue => {}
             AfterElim::EnterCheapMode => {
                 debug_assert!(P::CHEAP_MODE, "core without cheap mode asked to enter it");

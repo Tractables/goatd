@@ -253,7 +253,6 @@ impl EliminationGraph {
     }
 
     /// Whether `vertex`'s row currently carries a membership map.
-    #[cfg(test)]
     pub(super) fn row_is_indexed(&self, vertex: u32) -> bool {
         self.row_index[vertex as usize].is_some()
     }
