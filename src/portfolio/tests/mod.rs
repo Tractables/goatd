@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use super::Schedule;
 use super::candidates::CandidateSet;
 use super::config::{MAX_DIVERSE_SAMPLING_RUNS, validate};
+use super::trace::CandidateOrigin;
 use super::{CandidateOutcome, DEFAULT_HEDGE_DIMS, HedgeSeries, HedgeWeights, StageBudget};
 use super::{EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig, Residual};
 use super::{FLOWCUTTER_RESERVE, restart_admitted, restart_deadline};
@@ -66,6 +67,13 @@ fn hedged<'a>(
     }
 }
 
+/// Any origin will do for a set fed by hand.
+const ORIGIN: CandidateOrigin = CandidateOrigin {
+    stage: Stage::MinFill,
+    seed: 0,
+    pass: Pass::Only,
+};
+
 #[test]
 fn best_only_candidate_storage_discards_losing_decompositions() {
     let graph = Graph::new(3, []);
@@ -75,9 +83,9 @@ fn best_only_candidate_storage_discards_losing_decompositions() {
     let medium = TreeDecomposition::new(&graph, [vec![0, 1], vec![1, 2]], [(0, 1)]).unwrap();
     let mut candidates = CandidateSet::best_only();
 
-    candidates.push(wide);
-    candidates.push(narrow);
-    candidates.push(medium);
+    candidates.push(wide, ORIGIN);
+    candidates.push(narrow, ORIGIN);
+    candidates.push(medium, ORIGIN);
 
     let retained = candidates.into_decompositions();
     assert_eq!(retained.len(), 1);
@@ -97,8 +105,8 @@ fn best_only_candidate_storage_compares_compacted_bag_size() {
     .unwrap();
     let mut candidates = CandidateSet::best_only();
 
-    candidates.push(smaller_before_compaction);
-    candidates.push(smaller_after_compaction);
+    candidates.push(smaller_before_compaction, ORIGIN);
+    candidates.push(smaller_after_compaction, ORIGIN);
 
     let retained = candidates.into_decompositions();
     assert_eq!(retained.len(), 1);
