@@ -8,7 +8,7 @@ use super::trace::CandidateOrigin;
 use super::{CandidateOutcome, DEFAULT_HEDGE_DIMS, HedgeSeries, HedgeWeights, StageBudget};
 use super::{EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig, Residual};
 use super::{FLOWCUTTER_RESERVE, restart_admitted, restart_deadline};
-use super::{Sample, SampleBand};
+use super::{Sample, SampleBand, SamplingPatience};
 use super::{Stage, elimination_stop, extra_sample, hedge_random_seed, sample_seed};
 use crate::elimination::Order;
 use crate::{Graph, TreeDecomposition};
@@ -1027,6 +1027,105 @@ fn an_expensive_initial_order_on_an_admitted_residual_stops_at_half_the_budget_l
 }
 
 #[test]
+fn the_patience_rule_waits_in_proportion_to_the_restarts_already_run() {
+    let rule = SamplingPatience::Halving { min_restarts: 50 };
+    let many = u64::MAX;
+
+    assert!(
+        !rule.stalled(49, None, many),
+        "the first restarts always run"
+    );
+    assert!(
+        rule.stalled(50, None, many),
+        "50 restarts and none of them improved anything"
+    );
+    assert!(
+        !rule.stalled(50, Some(25), many),
+        "an improvement at the halfway mark buys the other half"
+    );
+    assert!(rule.stalled(50, Some(24), many));
+    assert!(
+        !rule.stalled(400, Some(200), many),
+        "the patience grows with the list"
+    );
+    assert!(rule.stalled(400, Some(199), many));
+    assert!(
+        !SamplingPatience::Off.stalled(1_000_000, None, many),
+        "off, nothing stops the restarts but their count or their deadline"
+    );
+}
+
+#[test]
+fn the_trailing_candidate_keeps_its_window_until_the_rule_is_asked_for() {
+    let long = super::FLOWCUTTER_CANDIDATE_BASE_WINDOW * 4;
+    let short = super::FLOWCUTTER_CANDIDATE_BASE_WINDOW;
+    let rule = SamplingPatience::Halving { min_restarts: 200 };
+    // What the rest of the schedule took, longer than the window here so the
+    // share is what binds.
+    let spent = long;
+
+    assert_eq!(
+        super::flowcutter_candidate_limits(long, SamplingPatience::Off, spent).0,
+        None,
+        "off, a long window is what ends the tail"
+    );
+    assert_eq!(
+        super::flowcutter_candidate_limits(long, rule, spent).0,
+        Some(super::FLOWCUTTER_CANDIDATE_BASE_WINDOW),
+        "on, a long window is cut to the base window"
+    );
+    assert_eq!(
+        super::flowcutter_candidate_limits(short, rule, spent).0,
+        super::flowcutter_candidate_limits(short, SamplingPatience::Off, spent).0,
+        "a short window carries its own patience either way"
+    );
+}
+
+#[test]
+fn a_far_deadline_leaves_the_tail_no_more_patience_than_the_schedule_took() {
+    let rule = SamplingPatience::Halving { min_restarts: 200 };
+    let hour = Duration::from_secs(3_600);
+    // The restarts stalled after two seconds, so the tail waits two seconds
+    // rather than half the hour it was handed.
+    let spent = Duration::from_secs(2);
+
+    assert_eq!(
+        super::flowcutter_candidate_limits(hour, rule, spent).0,
+        Some(spent),
+        "the schedule's own time caps the patience where it is the smaller"
+    );
+    assert_eq!(
+        super::flowcutter_candidate_limits(hour, rule, hour).0,
+        Some(super::FLOWCUTTER_CANDIDATE_BASE_WINDOW),
+        "and the base window caps it where the schedule was long"
+    );
+    assert_eq!(
+        super::flowcutter_candidate_limits(hour, rule, Duration::from_millis(1)).0,
+        Some(super::FLOWCUTTER_CANDIDATE_PATIENCE),
+        "and the floor still stands under it"
+    );
+}
+
+#[test]
+fn the_floor_never_passes_half_of_what_the_schedule_draws() {
+    let rule = SamplingPatience::Halving { min_restarts: 200 };
+
+    assert!(
+        !rule.stalled(199, None, u64::MAX),
+        "with restarts to spare the floor is the figure asked for"
+    );
+    assert!(rule.stalled(200, None, u64::MAX));
+    assert!(
+        !rule.stalled(49, None, 100),
+        "on a list of 100 the floor is 50"
+    );
+    assert!(
+        rule.stalled(50, None, 100),
+        "so the rule can still fire before the list runs out"
+    );
+}
+
+#[test]
 fn an_extra_sample_stops_at_the_restart_deadline() {
     let restart_deadline = Instant::now() + Duration::from_secs(1);
     let hard_deadline = restart_deadline + Duration::from_secs(1);
@@ -1142,17 +1241,27 @@ fn the_flowcutter_slot_declines_a_graph_it_could_not_stop_on() {
     // A 20x20 grid needs a few milliseconds of setup and a restart, so even a
     // 200-millisecond window is enough for it.
     let small = grid(20);
-    let candidate =
-        super::flowcutter_candidate(&small, Duration::from_millis(200), None, unmeasured())
-            .unwrap();
+    let candidate = super::flowcutter_candidate(
+        &small,
+        Duration::from_millis(200),
+        None,
+        unmeasured(),
+        SamplingPatience::Off,
+    )
+    .unwrap();
     assert!(candidate.is_some(), "a small graph fits a short window");
 
     // 60,000 vertices and 180,000 edges put setup and one restart at about
     // nine seconds, and the backend cannot stop before finishing that restart.
     let large = ring_with_chords(60_000);
-    let candidate =
-        super::flowcutter_candidate(&large, Duration::from_millis(4_750), None, unmeasured())
-            .unwrap();
+    let candidate = super::flowcutter_candidate(
+        &large,
+        Duration::from_millis(4_750),
+        None,
+        unmeasured(),
+        SamplingPatience::Off,
+    )
+    .unwrap();
     assert!(
         candidate.is_none(),
         "a graph whose first restart outlasts the window is declined"
@@ -1709,7 +1818,7 @@ fn the_flowcutter_candidate_limits_hold_only_up_to_the_base_window() {
     ];
     for window in short {
         assert_eq!(
-            super::flowcutter_candidate_limits(window),
+            super::flowcutter_candidate_limits(window, SamplingPatience::Off, window),
             (
                 Some(super::FLOWCUTTER_CANDIDATE_PATIENCE),
                 super::FLOWCUTTER_CANDIDATE_ITERATIONS
@@ -1726,7 +1835,7 @@ fn the_flowcutter_candidate_limits_hold_only_up_to_the_base_window() {
     ];
     for window in long {
         assert_eq!(
-            super::flowcutter_candidate_limits(window),
+            super::flowcutter_candidate_limits(window, SamplingPatience::Off, window),
             (None, crate::flowcutter::TIMED_ITERATIONS),
             "over the base window a window of {window:?} is what ends the run",
         );

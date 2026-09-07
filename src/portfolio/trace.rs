@@ -36,6 +36,8 @@ pub enum Stage {
     FlowCutter,
     /// A hedge's weighted stage as a whole, rather than one of its candidates.
     WeightedStage,
+    /// The ordinary sampled restarts as a whole, rather than one of them.
+    SampledRestarts,
 }
 
 impl fmt::Display for Stage {
@@ -53,6 +55,7 @@ impl fmt::Display for Stage {
             Stage::Minimalized => formatter.write_str("minimalized"),
             Stage::FlowCutter => formatter.write_str("flowcutter"),
             Stage::WeightedStage => formatter.write_str("weighted-stage"),
+            Stage::SampledRestarts => formatter.write_str("sampled-restarts"),
         }
     }
 }
@@ -110,6 +113,34 @@ pub enum CandidateOutcome {
         /// What the stages may spend between them: the reserve fraction of what
         /// the soft budget had left when the plain pass finished.
         allowance: Duration,
+    },
+    /// The ordinary restarts stopped because they had stalled: the last one to
+    /// improve the portfolio's best decomposition was far enough back that the
+    /// patience rule gave up on the rest of the list. Reported once, against
+    /// [`Stage::SampledRestarts`].
+    SamplingStopped {
+        /// Ordinary restarts that had run.
+        restarts: u64,
+        /// The last of them to improve the best decomposition, counting from
+        /// zero, or `None` where none of them did.
+        last_improvement: Option<u64>,
+        /// What was left of the deadline the restarts run against, or `None`
+        /// where they run under no deadline.
+        left: Option<Duration>,
+    },
+    /// The trailing FlowCutter candidate ran under a patience: what it had,
+    /// how long it was allowed to go without improving, and what it spent.
+    /// Reported once beside that candidate's own record, and only where the
+    /// caller turned the patience rule on: the fixed patience a short window
+    /// has always had is not this rule's doing and gets no record. The backend reports no reason for stopping,
+    /// so a run that ended well inside its window is one the patience ended.
+    TailBounded {
+        /// The window the candidate was given.
+        window: Duration,
+        /// How long it could go without a narrower decomposition.
+        patience: Duration,
+        /// What it spent.
+        spent: Duration,
     },
 }
 

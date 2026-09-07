@@ -105,6 +105,120 @@ pub(super) const DIVERSE_PASS_RESERVE: f64 = 0.5;
 /// exact minimum.
 const DEFAULT_SAMPLE_BAND: u64 = 3;
 
+/// The share of its window the trailing FlowCutter candidate goes without
+/// improving before the stall rule ends it, with
+/// [`super::FLOWCUTTER_CANDIDATE_PATIENCE`] as the floor and the smaller of
+/// what the rest of the schedule spent and
+/// [`super::FLOWCUTTER_CANDIDATE_BASE_WINDOW`] as the ceiling. Half, so the tail is read the way the
+/// restarts are: what it has already spent says how long it waits.
+const TAIL_PATIENCE_SHARE: f64 = 0.5;
+
+/// Whether the ordinary restarts give up on their own. See
+/// [`SamplingPatience`].
+///
+/// Off in every configuration: the restarts are what the widths in this
+/// library rest on, and a replay of the stall rule over a traced corpus run
+/// loses width on about one small view in nine at every figure that saves
+/// worthwhile time. A caller who would rather have the time asks for it with
+/// [`PortfolioConfig::with_sampling_patience`].
+const DEFAULT_SAMPLING_PATIENCE: SamplingPatience = SamplingPatience::Off;
+
+/// When the portfolio stops drawing further sampled restarts.
+///
+/// The seeds converge. On a traced corpus run the restarts reach their best
+/// width early and then repeat it for the rest of the list, so the tail of the
+/// list costs the caller time and returns the tree it already had. This says
+/// how long the portfolio waits for a restart to improve on what it holds
+/// before it stops asking; the trailing FlowCutter candidate runs either way,
+/// on the budget it was configured with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SamplingPatience {
+    /// The restarts run to their count or their deadline, whichever comes
+    /// first.
+    Off,
+    /// Stop once enough ordinary restarts have run and the last one that
+    /// improved the portfolio's best decomposition — width first, then total
+    /// bag size — is in the first half of them.
+    ///
+    /// The patience is a share of the restarts already run rather than a fixed
+    /// count, so a longer budget, which fits more restarts, also waits longer
+    /// before giving up. `min_restarts` is the floor under that share, and it
+    /// is read against the restarts the schedule can actually draw: where the
+    /// count is what stops them ([`PortfolioConfig::with_sampling_runs`],
+    /// 100 by default), the floor is at most half that count, so the rule can
+    /// still fire before the list runs out.
+    ///
+    /// Replaying the rule over a traced corpus run, 200 is where the width it
+    /// costs stops falling faster than the time it saves: below it the loss
+    /// grows about twice as fast as the saving. On the 100-restart schedule
+    /// the same replay puts the floor at 50, which is what 200 becomes there.
+    ///
+    /// The trailing FlowCutter candidate is bounded the same way: above a
+    /// short window it stops when it has gone half the window without
+    /// improving, instead of running the window out.
+    Halving {
+        /// Restarts that always run before the rule can stop anything, at most
+        /// half of what the schedule draws.
+        min_restarts: u64,
+    },
+}
+
+impl SamplingPatience {
+    /// Whether the caller left the rule off, which is the default.
+    pub(super) fn is_off(self) -> bool {
+        matches!(self, SamplingPatience::Off)
+    }
+
+    /// Whether the restarts stop rather than run restart `index`, counting the
+    /// ordinary restarts of this run from zero.
+    ///
+    /// `last_improvement` is the index of the last restart that improved the
+    /// portfolio's best decomposition, and `None` where none has. A restart the
+    /// incumbent width bound cut produced nothing, so it is not an improvement.
+    /// `restarts` is how many the schedule draws, which the floor is read
+    /// against.
+    pub(super) fn stalled(self, index: u64, last_improvement: Option<u64>, restarts: u64) -> bool {
+        match self {
+            SamplingPatience::Off => false,
+            SamplingPatience::Halving { min_restarts } => {
+                index >= min_restarts.min(restarts / 2)
+                    && last_improvement.is_none_or(|last| last < index / 2)
+            }
+        }
+    }
+
+    /// How long the trailing FlowCutter candidate goes without improving before
+    /// it stops, on a window longer than [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`].
+    /// `None` leaves it running to the end of its window, which is what it does
+    /// with the rule off.
+    ///
+    /// Half the window, and never longer than either what the rest of the
+    /// schedule took before it or
+    /// [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`]. Without those two bounds a
+    /// deadline an hour away leaves the tail an hour-long window and half an
+    /// hour of patience, so the run spends the clock on a candidate that
+    /// stopped improving in its first seconds. The schedule's own time is what
+    /// keeps a quick graph quick; the base window is the absolute that does not
+    /// grow with the deadline at all, and on a traced hour-long run of a 900
+    /// vertex grid it is the one that matters — the restarts took 32.6 s there,
+    /// so that bound alone would have left the tail another 34.8 s.
+    ///
+    /// [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`]: super::FLOWCUTTER_CANDIDATE_BASE_WINDOW
+    pub(super) fn tail_patience(self, window: Duration, spent: Duration) -> Option<Duration> {
+        match self {
+            SamplingPatience::Off => None,
+            SamplingPatience::Halving { .. } => Some(
+                window
+                    .mul_f64(TAIL_PATIENCE_SHARE)
+                    .min(spent)
+                    .min(super::FLOWCUTTER_CANDIDATE_BASE_WINDOW)
+                    .max(super::FLOWCUTTER_CANDIDATE_PATIENCE),
+            ),
+        }
+    }
+}
+
 /// Residuals of this size or smaller run the whole schedule whatever the budget
 /// is. Above the line the measurement decides: the schedule runs where a
 /// min-fill pass over the residual is cheap enough for the budget to hold the
@@ -366,6 +480,7 @@ pub struct PortfolioConfig {
     pub(super) restarts_to_deadline: bool,
     pub(super) sample_band: u64,
     pub(super) sample_band_alternate: bool,
+    pub(super) sampling_patience: SamplingPatience,
     pub(super) expensive_orders_up_to: usize,
     pub(super) maximum_cardinality: Option<u32>,
     pub(super) minimal_triangulation: Option<u32>,
@@ -387,6 +502,7 @@ impl PartialEq for PortfolioConfig {
             && self.restarts_to_deadline == other.restarts_to_deadline
             && self.sample_band == other.sample_band
             && self.sample_band_alternate == other.sample_band_alternate
+            && self.sampling_patience == other.sampling_patience
             && self.expensive_orders_up_to == other.expensive_orders_up_to
             && self.maximum_cardinality == other.maximum_cardinality
             && self.minimal_triangulation == other.minimal_triangulation
@@ -413,6 +529,7 @@ impl PortfolioConfig {
             restarts_to_deadline: false,
             sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
+            sampling_patience: DEFAULT_SAMPLING_PATIENCE,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
             maximum_cardinality: None,
             minimal_triangulation: None,
@@ -431,6 +548,13 @@ impl PortfolioConfig {
 
     /// Set the soft portfolio budget, measured from before preprocessing. The
     /// hard deadline is twice this value.
+    ///
+    /// On [`PortfolioConfig::standard`] this attaches a clock to the
+    /// no-deadline schedule rather than switching to the budgeted one: no
+    /// diverse pass, no trailing FlowCutter candidate, at most 100 restarts,
+    /// and the run returns when those have run.
+    /// [`PortfolioConfig::standard_with_budget`] is the schedule that spends a
+    /// budget.
     pub fn with_soft_budget(mut self, budget: Duration) -> Self {
         self.soft_budget = Some(budget);
         self
@@ -485,7 +609,12 @@ impl PortfolioConfig {
     ///
     /// A soft budget added with [`PortfolioConfig::with_soft_budget`] cuts the
     /// restarts short but does not extend them: the count stops them unless
-    /// [`PortfolioConfig::with_restarts_to_deadline`] is turned on.
+    /// [`PortfolioConfig::with_restarts_to_deadline`] is turned on. This set
+    /// under a budget is the no-deadline schedule wearing a clock — no diverse
+    /// pass, no trailing FlowCutter candidate, at most 100 restarts — and it
+    /// returns as soon as those have run, however much of the budget is left.
+    /// A caller who wants the schedule the budget was measured for wants
+    /// [`PortfolioConfig::standard_with_budget`].
     pub fn standard() -> Self {
         Self {
             soft_budget: None,
@@ -498,6 +627,7 @@ impl PortfolioConfig {
             restarts_to_deadline: false,
             sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
+            sampling_patience: DEFAULT_SAMPLING_PATIENCE,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
             maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
@@ -536,6 +666,24 @@ impl PortfolioConfig {
     /// fits before that stop, so the deadline rather than the count is what
     /// ends them; the count is what a run stops at with
     /// [`PortfolioConfig::with_restarts_to_deadline`] turned off.
+    ///
+    /// A caller with a share of time per graph passes half of it here and the
+    /// whole share to [`PortfolioConfig::with_hard_budget`]:
+    ///
+    /// ```
+    /// # use std::time::Duration;
+    /// # use goatd::portfolio::PortfolioConfig;
+    /// # let share = Duration::from_secs(20);
+    /// let config = PortfolioConfig::standard_with_budget(share / 2).with_hard_budget(share);
+    /// ```
+    ///
+    /// The trailing FlowCutter candidate is the FlowCutter run of that share,
+    /// and it is already inside it, so there is nothing left to refine
+    /// afterwards. The run uses the whole share whether or not the restarts are
+    /// still finding anything;
+    /// [`PortfolioConfig::with_sampling_patience`] gives back what the
+    /// restarts and the trailing candidate spend after they have stalled, at a
+    /// cost in width.
     pub fn standard_with_budget(budget: Duration) -> Self {
         Self {
             soft_budget: Some(budget),
@@ -548,6 +696,7 @@ impl PortfolioConfig {
             restarts_to_deadline: true,
             sample_band: DEFAULT_SAMPLE_BAND,
             sample_band_alternate: false,
+            sampling_patience: DEFAULT_SAMPLING_PATIENCE,
             expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
             maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
@@ -629,6 +778,22 @@ impl PortfolioConfig {
     /// the band adds. Off, every restart draws from the band.
     pub fn with_sample_band_alternate(mut self, alternate: bool) -> Self {
         self.sample_band_alternate = alternate;
+        self
+    }
+
+    /// When the ordinary restarts give up on finding anything better, and with
+    /// them the trailing FlowCutter candidate.
+    ///
+    /// The default, [`SamplingPatience::Off`], runs the whole list: the count
+    /// set by [`PortfolioConfig::with_sampling_runs`], or the restart deadline
+    /// where [`PortfolioConfig::with_restarts_to_deadline`] is on, and a
+    /// trailing candidate that runs its window out.
+    /// [`SamplingPatience::Halving`] stops both once they have stalled and
+    /// gives the caller the rest of the budget back. It costs width: on a
+    /// traced corpus run about one small view in nine came back wider, so it
+    /// is for a caller who wants the time more than the last of the width.
+    pub fn with_sampling_patience(mut self, patience: SamplingPatience) -> Self {
+        self.sampling_patience = patience;
         self
     }
 

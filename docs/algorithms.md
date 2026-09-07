@@ -84,6 +84,17 @@ and the one that left the smallest residual wins. At the soft deadline that comp
 covers only the component in hand, and the ones behind it get their own orders
 against the hard deadline.
 
+`PortfolioConfig::with_sampling_patience` asks the restarts to stop once they
+stall: after a floor number of them, a run whose last improvement on the
+portfolio's best decomposition is in the first half of the restarts it has done
+gives the rest of the time back to the caller, and the trailing FlowCutter
+candidate stops after half its window without a narrower decomposition instead
+of running the window out. The floor is at most half the restarts the schedule
+draws, so the rule fires on a schedule bounded by its count as well as on one
+bounded by a deadline. It is off unless the caller asks for it: replaying the
+rule over a corpus run, the time it saves costs width on about one small graph
+in nine.
+
 The restarts run past the soft deadline into the hard window, stopping 1.5
 seconds short of it to leave the FlowCutter candidate that much to run in.
 Under `PortfolioConfig::standard_with_budget` the restart deadline is what ends

@@ -29,7 +29,7 @@ use config::{DIVERSE_PASS_RESERVE, FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_
 
 pub use config::{
     DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, HedgeWeights, MAX_DIVERSE_SAMPLING_RUNS,
-    MAX_HEDGE_PASSES, PortfolioConfig,
+    MAX_HEDGE_PASSES, PortfolioConfig, SamplingPatience,
 };
 pub use trace::{CandidateOrigin, CandidateOutcome, CandidateTrace, Pass, Stage};
 
@@ -422,6 +422,16 @@ impl<'a> Schedule<'a> {
         self.fixed_runs.saturating_add(self.diverse_runs)
     }
 
+    /// Where the ordinary restarts start in the sample sequence. A residual
+    /// whose restarts fall back to min-degree runs no pass before them.
+    fn ordinary_start(self) -> u64 {
+        if self.min_degree_restarts {
+            0
+        } else {
+            self.passes_total()
+        }
+    }
+
     /// Candidates before the ordinary restarts: the plain diverse pass, then
     /// one weighted stage per weighting.
     fn passes_total(self) -> u64 {
@@ -645,7 +655,7 @@ fn extra_sample(schedule: Schedule<'_>, index: u64) -> Option<Sample<'_>> {
         }
     }
 
-    let ordinary_index = index - schedule.passes_total();
+    let ordinary_index = index - schedule.ordinary_start();
     if ordinary_index >= schedule.ordinary_runs {
         return None;
     }
@@ -748,14 +758,21 @@ fn flowcutter_window(
 ///
 /// Both read the window rather than the configured budget, since the window is
 /// already the smaller of that budget and what the hard deadline has left.
-fn flowcutter_candidate_limits(window: Duration) -> (Option<Duration>, u32) {
+fn flowcutter_candidate_limits(
+    window: Duration,
+    patience: SamplingPatience,
+    spent: Duration,
+) -> (Option<Duration>, u32) {
     if window <= FLOWCUTTER_CANDIDATE_BASE_WINDOW {
         return (
             Some(FLOWCUTTER_CANDIDATE_PATIENCE),
             FLOWCUTTER_CANDIDATE_ITERATIONS,
         );
     }
-    (None, crate::flowcutter::TIMED_ITERATIONS)
+    (
+        patience.tail_patience(window, spent),
+        crate::flowcutter::TIMED_ITERATIONS,
+    )
 }
 
 /// What the run has spent so far, on both clocks.
@@ -868,7 +885,8 @@ fn flowcutter_candidate(
     configured_budget: Duration,
     hard_deadline: Option<Instant>,
     spent: Spent,
-) -> Result<Option<TreeDecomposition>, Error> {
+    sampling_patience: SamplingPatience,
+) -> Result<Option<(TreeDecomposition, Duration, Option<Duration>)>, Error> {
     let timeout = flowcutter_window(
         configured_budget,
         hard_deadline.map(crate::deadline::remaining),
@@ -877,9 +895,10 @@ fn flowcutter_candidate(
     if !flowcutter_runs_in(graph, timeout) {
         return Ok(None);
     }
-    let (patience, iterations) = flowcutter_candidate_limits(timeout);
+    let (patience, iterations) =
+        flowcutter_candidate_limits(timeout, sampling_patience, spent.elapsed);
     match flowcutter_decompose(graph, Budget::timed(timeout, patience, iterations)) {
-        Ok(decomposition) => Ok(Some(decomposition)),
+        Ok(decomposition) => Ok(Some((decomposition, timeout, patience))),
         // A timed backend run may end before it has a result. The elimination
         // candidates already make the portfolio complete, so this one can be
         // absent without changing the contract.
@@ -1473,9 +1492,13 @@ fn run_portfolio(
                 // Nothing usable from this candidate, but the portfolio is
                 // still inside its budget.
                 CandidateOutcome::WidthAborted => false,
-                // Only the sampling phase has stages to skip, and only the
-                // trailing FlowCutter slot reports an unstarted candidate.
-                CandidateOutcome::StageSkipped { .. } | CandidateOutcome::NotStarted => false,
+                // Only the sampling phase has stages to skip and restarts to
+                // stop, and only the trailing FlowCutter slot reports an
+                // unstarted candidate.
+                CandidateOutcome::StageSkipped { .. }
+                | CandidateOutcome::NotStarted
+                | CandidateOutcome::SamplingStopped { .. }
+                | CandidateOutcome::TailBounded { .. } => false,
                 CandidateOutcome::Produced { .. } | CandidateOutcome::DeadlineReached => {
                     expired(hard_deadline)
                 }
@@ -1671,6 +1694,11 @@ fn run_portfolio(
     // runs on the deadline checks alone.
     let mut restart_finished = crate::meter::now();
     let mut previous_restart: Option<Duration> = None;
+    // Where the ordinary restarts start, and the last of them to improve the
+    // best decomposition, for the patience rule. The passes before them are
+    // not restarts and are not counted.
+    let ordinary_start = schedule.ordinary_start();
+    let mut last_improvement: Option<u64> = None;
     // Normally the restart deadline fires first; the portfolio hard-deadline
     // check also prevents another sample after an initial candidate used the
     // complete two-stage window.
@@ -1679,6 +1707,31 @@ fn run_portfolio(
         && !expired(restart_deadline)
         && !expired(hard_deadline)
     {
+        // The restarts stop once they have stalled: past the first few of
+        // them, a run whose last improvement lies in the first half of the
+        // restarts it has done is not finding anything in the rest of the
+        // list, and the caller gets the time back. The trailing FlowCutter
+        // candidate below still runs, on the budget it was configured with.
+        if sample_index >= ordinary_start {
+            let restarts = sample_index - ordinary_start;
+            if config
+                .sampling_patience
+                .stalled(restarts, last_improvement, schedule.ordinary_runs)
+            {
+                trace(CandidateTrace {
+                    stage: Stage::SampledRestarts,
+                    seed,
+                    pass: Pass::Only,
+                    outcome: CandidateOutcome::SamplingStopped {
+                        restarts,
+                        last_improvement,
+                        left: restart_deadline.map(remaining),
+                    },
+                    elapsed: crate::meter::now().saturating_duration_since(started),
+                });
+                break;
+            }
+        }
         // At the front of a weighted stage, charge the one that just ended and
         // ask whether one more fits; the first stage runs whatever the answer.
         // Nothing after a refusal fits either — the projection never grows and
@@ -1759,6 +1812,11 @@ fn run_portfolio(
         let finished = crate::meter::now();
         previous_restart = Some(finished.saturating_duration_since(restart_finished));
         restart_finished = finished;
+        if sample_index >= ordinary_start
+            && matches!(outcome, CandidateOutcome::Produced { best: true, .. })
+        {
+            last_improvement = Some(sample_index - ordinary_start);
+        }
         trace(CandidateTrace {
             stage: candidate.stage,
             seed: candidate.seed,
@@ -1776,11 +1834,15 @@ fn run_portfolio(
             // back from a candidate.
             //
             // A candidate that ran has a result, so it never reports
-            // `NotStarted`; only a slot the size rule gave up does.
+            // `NotStarted`; only a slot the size rule gave up does. The
+            // patience rule's own record is written where it breaks out of the
+            // loop, and never comes back from a candidate either.
             CandidateOutcome::Produced { .. }
             | CandidateOutcome::WidthAborted
             | CandidateOutcome::NotStarted
-            | CandidateOutcome::StageSkipped { .. } => {
+            | CandidateOutcome::StageSkipped { .. }
+            | CandidateOutcome::SamplingStopped { .. }
+            | CandidateOutcome::TailBounded { .. } => {
                 sample_index += 1;
             }
         }
@@ -1794,17 +1856,19 @@ fn run_portfolio(
     // separator-refinement pass is applied to it. It runs on every residual; on
     // the large ones it is often the best candidate by a wide margin, and
     // `flowcutter_candidate` has its own vertex cap.
+    let tail_started = crate::meter::now();
     if let Some(configured_budget) = config
         .flowcutter_budget
         .filter(|_| !hard_deadline_tripped && !expired(hard_deadline))
-        && let Some(decomposition) = flowcutter_candidate(
+        && let Some((decomposition, window, patience)) = flowcutter_candidate(
             graph,
             configured_budget,
             hard_deadline,
             Spent {
-                elapsed: crate::meter::now().saturating_duration_since(started),
+                elapsed: tail_started.saturating_duration_since(started),
                 charged_units: crate::meter::units_spent().saturating_sub(started_units),
             },
+            config.sampling_patience,
         )?
     {
         let origin = CandidateOrigin {
@@ -1813,13 +1877,33 @@ fn run_portfolio(
             pass: Pass::Only,
         };
         let outcome = candidates.push(decomposition, origin);
+        let now = crate::meter::now();
         trace(CandidateTrace {
             stage: Stage::FlowCutter,
             seed,
             pass: Pass::Only,
             outcome,
-            elapsed: crate::meter::now().saturating_duration_since(started),
+            elapsed: now.saturating_duration_since(started),
         });
+        // What the trailing candidate was given and what it took, where the
+        // caller turned the patience rule on. The backend reports no reason for
+        // stopping, so a run that ends well inside its window is where the
+        // patience ended it. A run with the rule off is left alone, record
+        // included: the fixed patience short windows have always had is not
+        // this rule's doing.
+        if let Some(patience) = patience.filter(|_| !config.sampling_patience.is_off()) {
+            trace(CandidateTrace {
+                stage: Stage::FlowCutter,
+                seed,
+                pass: Pass::Only,
+                outcome: CandidateOutcome::TailBounded {
+                    window,
+                    patience,
+                    spent: now.saturating_duration_since(tail_started),
+                },
+                elapsed: now.saturating_duration_since(started),
+            });
+        }
     }
     // Last, the fill edges the winner's bags do not need. The pass rebuilds the
     // decomposition on a minimal triangulation of the same graph, which is
