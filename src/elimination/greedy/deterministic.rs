@@ -239,9 +239,11 @@ fn eliminate_greedy_probed<P: ElimPolicy>(
         let Some(entry) = popped else { break };
         let v = entry.vertex();
         if !graph.active[v as usize] {
-            continue; // lazy deletion: v was already eliminated
+            probe.popped(true); // lazy deletion: v was already eliminated
+            continue;
         }
         if !policy.entry_is_current(&entry) {
+            probe.popped(true);
             continue;
         }
         let snapshot = entry.snapshot();
@@ -284,9 +286,12 @@ fn eliminate_greedy_probed<P: ElimPolicy>(
         {
             policy.push(graph, v, live);
             probe.charge(Phase::Heap, mark);
+            probe.popped(true);
+            probe.pushed(1);
             continue;
         }
         probe.charge(Phase::Heap, mark);
+        probe.popped(false);
 
         let mark = probe.mark();
         let bag = take_bag(graph, v, &mut nbrs_buf);
@@ -307,7 +312,10 @@ fn eliminate_greedy_probed<P: ElimPolicy>(
             policy.eliminate_with_fill(graph, v, &nbrs_buf);
         }
         probe.charge(Phase::Elim, mark);
-        probe.eliminated(graph, &nbrs_buf, bag_len, cheap_mode);
+        if probe.on() {
+            let heap_len = policy.heap().len();
+            probe.eliminated(graph, &nbrs_buf, bag_len, cheap_mode, heap_len);
+        }
         let mark = probe.mark();
         sink.record(v, bag);
         probe.charge(Phase::Sink, mark);
@@ -330,6 +338,7 @@ fn eliminate_greedy_probed<P: ElimPolicy>(
         let reaction =
             policy.after_eliminate(graph, &nbrs_buf, cheap_mode, soft_deadline, !simplicial);
         probe.charge(Phase::After, mark);
+        probe.pushed(nbrs_buf.len() as u64);
         match reaction {
             AfterElim::Continue => {}
             AfterElim::EnterCheapMode => {

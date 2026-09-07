@@ -56,9 +56,15 @@ pub(super) struct ElimProbe {
     start: Instant,
     next: Duration,
     elims: u64,
+    pops: u64,
+    discards: u64,
+    pushes: u64,
     ns: [u64; PHASES],
     last_at: Duration,
     last_elims: u64,
+    last_pops: u64,
+    last_discards: u64,
+    last_pushes: u64,
     last_ns: [u64; PHASES],
 }
 
@@ -76,9 +82,15 @@ impl ElimProbe {
             start: Instant::now(),
             next: STRIDE,
             elims: 0,
+            pops: 0,
+            discards: 0,
+            pushes: 0,
             ns: [0; PHASES],
             last_at: Duration::ZERO,
             last_elims: 0,
+            last_pops: 0,
+            last_discards: 0,
+            last_pushes: 0,
             last_ns: [0; PHASES],
         };
         if let Some(file) = probe.out.as_mut() {
@@ -90,10 +102,36 @@ impl ElimProbe {
         probe
     }
 
+    /// Whether the probe is writing anything.
+    #[inline]
+    pub(super) fn on(&self) -> bool {
+        self.out.is_some()
+    }
+
     /// The clock, if the probe is on.
     #[inline]
     pub(super) fn mark(&self) -> Option<Instant> {
         self.out.as_ref().map(|_| Instant::now())
+    }
+
+    /// Count one entry taken off the heap, and whether it was discarded
+    /// without eliminating anything — an entry for an already-eliminated
+    /// vertex, one the core has replaced, or one whose score had moved and is
+    /// pushed back.
+    #[inline]
+    pub(super) fn popped(&mut self, discarded: bool) {
+        if self.out.is_some() {
+            self.pops += 1;
+            self.discards += u64::from(discarded);
+        }
+    }
+
+    /// Count entries pushed onto the heap.
+    #[inline]
+    pub(super) fn pushed(&mut self, entries: u64) {
+        if self.out.is_some() {
+            self.pushes += entries;
+        }
     }
 
     /// Add the time since `mark` to `phase`.
@@ -130,6 +168,7 @@ impl ElimProbe {
         nbrs: &[u32],
         bag_len: usize,
         cheap_mode: bool,
+        heap_len: usize,
     ) {
         if self.out.is_none() {
             return;
@@ -159,6 +198,9 @@ impl ElimProbe {
 
         let interval_ms = (at - self.last_at).as_secs_f64() * 1e3;
         let interval_elims = self.elims - self.last_elims;
+        let interval_pops = self.pops - self.last_pops;
+        let interval_discards = self.discards - self.last_discards;
+        let interval_pushes = self.pushes - self.last_pushes;
         let per_elim_us = if interval_elims > 0 {
             interval_ms * 1e3 / interval_elims as f64
         } else {
@@ -177,6 +219,7 @@ impl ElimProbe {
                 "probe run={run} ms={ms} elims={elims} d_ms={interval_ms:.0} d_elims={interval_elims} \
 us_per_elim={per_elim_us:.1} active={active} edges={edges} degree={degree} bag={bag_len} \
 sigma={sigma} indexed={indexed} cheap={cheap} gate={gate} bitset_mib={bitset_mib} \
+heap_len={heap_len} d_pops={interval_pops} d_discards={interval_discards} d_pushes={interval_pushes} \
 ms_heap={c0} ms_bag={c1} ms_elim={c2} ms_sink={c3} ms_after={c4} \
 d_heap={i0} d_bag={i1} d_elim={i2} d_sink={i3} d_after={i4}",
                 run = self.run,
@@ -200,6 +243,9 @@ d_heap={i0} d_bag={i1} d_elim={i2} d_sink={i3} d_after={i4}",
 
         self.last_at = at;
         self.last_elims = self.elims;
+        self.last_pops = self.pops;
+        self.last_discards = self.discards;
+        self.last_pushes = self.pushes;
         self.last_ns = self.ns;
     }
 
@@ -207,13 +253,15 @@ d_heap={i0} d_bag={i1} d_elim={i2} d_sink={i3} d_after={i4}",
     pub(super) fn finished(&mut self, graph: &EliminationGraph, exit: ElimExit) {
         let at = self.start.elapsed();
         let (elims, run) = (self.elims, self.run);
+        let (pops, discards, pushes) = (self.pops, self.discards, self.pushes);
         let active = graph.num_active;
         let edges = graph.num_edges;
         let ns = self.ns;
         if let Some(file) = self.out.as_mut() {
             let _ = writeln!(
                 file,
-                "probe-end run={run} exit={exit:?} ms={ms} elims={elims} active={active} edges={edges} \
+                "probe-end run={run} exit={exit:?} ms={ms} elims={elims} pops={pops} \
+discards={discards} pushes={pushes} active={active} edges={edges} \
 ms_heap={h} ms_bag={b} ms_elim={e} ms_sink={s} ms_after={a}",
                 ms = at.as_millis(),
                 h = ns[0] / 1_000_000,
