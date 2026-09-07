@@ -537,6 +537,38 @@ fn a_decomposition_several_candidates_produce_is_listed_once() {
     assert_eq!(listed[0].bags().len(), 1);
 }
 
+/// A traced run reports each produced candidate's bag mass and widest
+/// separator beside its width, so a caller can rank the candidates on
+/// something other than width.
+#[test]
+fn a_produced_candidate_carries_its_shape() {
+    let graph = grid(5);
+    let weight = vec![1; graph.num_vertices() as usize];
+    let mut produced = 0;
+    candidates_traced(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard(),
+        &mut |trace| {
+            if let CandidateOutcome::Produced { width, shape, .. } = trace.outcome {
+                let shape = shape.expect("a traced candidate carries its shape");
+                produced += 1;
+                // The mass is at least the largest bag's own term, and the
+                // separator is at most a whole bag less the vertex the two
+                // bags do not share.
+                assert!(
+                    shape.bag_mass >= f64::from(width + 1),
+                    "{shape:?} against width {width}"
+                );
+                assert!(shape.max_separator <= width as usize, "{shape:?}");
+            }
+        },
+    )
+    .unwrap();
+    assert!(produced > 0);
+}
+
 /// Every candidate comes back with the bags an adjacent bag contains
 /// contracted, as the winner always did, and with the stage, seed and pass
 /// that produced it, which the trace reported as it finished.
