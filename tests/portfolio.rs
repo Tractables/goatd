@@ -1,10 +1,11 @@
 use std::time::Duration;
 
-use goatd::Graph;
 use goatd::portfolio::{
-    CandidateOutcome, Hedge, Pass, PortfolioConfig, SamplingPatience, Stage, candidates, decompose,
-    decompose_and_refine, decompose_traced, sampled_min_fill_candidates,
+    CandidateOutcome, Hedge, Pass, PortfolioConfig, SamplingPatience, Stage, candidates,
+    candidates_traced, decompose, decompose_and_refine, decompose_traced,
+    sampled_min_fill_candidates,
 };
+use goatd::{Graph, TreeDecomposition};
 
 fn grid(side: u32) -> Graph {
     let mut edges = Vec::new();
@@ -37,6 +38,11 @@ fn every_portfolio_entry_point_decomposes_a_grid() {
         .map(|td| (td.treewidth(), td.total_bag_size()))
         .collect();
     assert!(quality.windows(2).all(|pair| pair[0] <= pair[1]));
+
+    // The list's head is the decomposition `decompose` returns: both are
+    // compared on the compacted key, and both contract the same bags.
+    let winner = decompose(&graph, &weight, 0, PortfolioConfig::standard()).unwrap();
+    assert_eq!(candidates[0].bags(), winner.bags());
 
     let refined =
         decompose_and_refine(&graph, &weight, 0, PortfolioConfig::standard(), None).unwrap();
@@ -439,4 +445,150 @@ fn a_gate_below_the_residual_leaves_the_maximum_cardinality_candidate_unrun() {
     )
     .unwrap();
     assert!(!stages.contains(&Stage::MaximumCardinality));
+}
+
+/// A decomposition's bags and tree, free of the order the algorithm listed
+/// them in.
+fn bag_tree(decomposition: &TreeDecomposition) -> (Vec<Vec<u32>>, Vec<(usize, usize)>) {
+    let mut bags: Vec<(Vec<u32>, usize)> = decomposition
+        .bags()
+        .iter()
+        .enumerate()
+        .map(|(index, bag)| {
+            let mut vertices = bag.vertices().to_vec();
+            vertices.sort_unstable();
+            (vertices, index)
+        })
+        .collect();
+    bags.sort();
+    let mut position = vec![0; bags.len()];
+    for (sorted, &(_, index)) in bags.iter().enumerate() {
+        position[index] = sorted;
+    }
+    let position = &position;
+    let mut edges: Vec<(usize, usize)> = decomposition
+        .adjacency()
+        .iter()
+        .enumerate()
+        .flat_map(|(left, neighbours)| {
+            neighbours.iter().map(move |&right| {
+                let (left, right) = (position[left], position[right]);
+                (left.min(right), left.max(right))
+            })
+        })
+        .collect();
+    edges.sort_unstable();
+    edges.dedup();
+    (
+        bags.into_iter().map(|(vertices, _)| vertices).collect(),
+        edges,
+    )
+}
+
+fn complete_bipartite(left: u32, right: u32) -> Graph {
+    let mut edges = Vec::new();
+    for l in 0..left {
+        for r in 0..right {
+            edges.push((l, left + r));
+        }
+    }
+    Graph::new(left + right, edges)
+}
+
+fn complete(n: u32) -> Graph {
+    let mut edges = Vec::new();
+    for i in 0..n {
+        for j in i + 1..n {
+            edges.push((i, j));
+        }
+    }
+    Graph::new(n, edges)
+}
+
+/// Different candidates often build the same bags under the same tree; the
+/// list has each decomposition once. On K4,4 the schedule's orders share a
+/// handful of decompositions between them; on a clique every candidate
+/// returns the one bag the preprocessing leaves.
+#[test]
+fn a_decomposition_several_candidates_produce_is_listed_once() {
+    let graph = complete_bipartite(4, 4);
+    let weight = vec![1; graph.num_vertices() as usize];
+    let traced =
+        candidates_traced(&graph, &weight, 0, PortfolioConfig::standard(), &mut |_| {}).unwrap();
+    assert!(
+        traced.len() > 1,
+        "K4,4 has more than one decomposition to list"
+    );
+    let forms: Vec<_> = traced.iter().map(|c| bag_tree(&c.decomposition)).collect();
+    for (index, form) in forms.iter().enumerate() {
+        assert!(
+            !forms[..index].contains(form),
+            "candidate {index} ({:?}) repeats an earlier decomposition",
+            traced[index].origin
+        );
+    }
+    let plain = candidates(&graph, &weight, 0, PortfolioConfig::standard()).unwrap();
+    assert_eq!(plain.len(), traced.len());
+
+    let clique = complete(5);
+    let weight = vec![1; clique.num_vertices() as usize];
+    let listed = candidates(&clique, &weight, 0, PortfolioConfig::standard()).unwrap();
+    assert_eq!(listed.len(), 1, "a clique has one decomposition to list");
+    assert_eq!(listed[0].bags().len(), 1);
+}
+
+/// Every candidate comes back with the bags an adjacent bag contains
+/// contracted, as the winner always did, and with the stage, seed and pass
+/// that produced it, which the trace reported as it finished.
+#[test]
+fn every_candidate_is_compacted_and_names_the_stage_that_made_it() {
+    let graph = grid(5);
+    let weight = vec![1; graph.num_vertices() as usize];
+    let mut produced = Vec::new();
+    let traced = candidates_traced(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard(),
+        &mut |trace| {
+            if matches!(trace.outcome, CandidateOutcome::Produced { .. }) {
+                produced.push((trace.stage, trace.seed, trace.pass));
+            }
+        },
+    )
+    .unwrap();
+    assert!(!traced.is_empty());
+    let plain = candidates(&graph, &weight, 0, PortfolioConfig::standard()).unwrap();
+    assert_eq!(traced.len(), plain.len());
+    for (candidate, decomposition) in traced.iter().zip(&plain) {
+        assert_eq!(candidate.decomposition.bags(), decomposition.bags());
+        candidate.decomposition.validate(&graph).unwrap();
+        let origin = candidate.origin;
+        assert!(
+            produced.contains(&(origin.stage, origin.seed, origin.pass)),
+            "origin {origin:?} was never reported as produced"
+        );
+        // No bag is contained in a neighbouring bag.
+        let bags = candidate.decomposition.bags();
+        for (index, bag) in bags.iter().enumerate() {
+            for &neighbour in &candidate.decomposition.adjacency()[index] {
+                let other = &bags[neighbour];
+                assert!(
+                    !bag.vertices().iter().all(|v| other.vertices().contains(v)),
+                    "bag {index} is contained in its neighbour {neighbour}"
+                );
+            }
+        }
+    }
+    let keys: Vec<(u32, usize)> = traced
+        .iter()
+        .map(|c| {
+            (
+                c.decomposition.treewidth(),
+                c.decomposition.total_bag_size(),
+            )
+        })
+        .collect();
+    assert!(keys.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert!(traced.iter().any(|c| c.origin.stage == Stage::MinDegree));
 }

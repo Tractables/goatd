@@ -6,8 +6,13 @@ or from the vendored upstream code.
 
 ## The portfolio
 
-`portfolio::candidates` runs a fixed schedule and returns every decomposition
-it produces:
+`portfolio::candidates` runs a fixed schedule and returns every distinct
+decomposition it produces, each with the bags an adjacent bag contains
+contracted and the list sorted by width and then total bag size, so its head
+is what `portfolio::decompose` returns; candidates that built the same bags
+under the same tree, which different elimination orders often do, count once.
+`portfolio::candidates_traced` adds to each the stage, seed and pass that
+produced it. The schedule:
 
 1. deterministic min-degree;
 2. sampled min-degree;
