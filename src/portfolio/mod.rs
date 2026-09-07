@@ -1345,8 +1345,7 @@ fn run_bipartite_lift(
     };
 
     // The stage needs a budget to take a share of, and a graph to colour.
-    let (Some(edge_factor), Some(soft_budget)) = (config.bipartite_lift, config.soft_budget)
-    else {
+    let (Some(edge_factor), Some(soft_budget)) = (config.bipartite_lift, config.soft_budget) else {
         return Ok(());
     };
     if graph.num_vertices() == 0 {
@@ -1363,9 +1362,7 @@ fn run_bipartite_lift(
     let projections: Vec<_> = [(&first, &second), (&second, &first)]
         .into_iter()
         .filter(|(keep, drop)| !keep.is_empty() && !drop.is_empty())
-        .filter_map(|(keep, drop)| {
-            bipartite_lift::project(graph, &adjacency, keep, drop, limit)
-        })
+        .filter_map(|(keep, drop)| bipartite_lift::project(graph, &adjacency, keep, drop, limit))
         .collect();
     if projections.is_empty() {
         give_up(trace);

@@ -8,7 +8,9 @@ use crate::portfolio::{PortfolioConfig, Stage};
 fn incidence(variables: u32, clauses: &[&[u32]]) -> Graph {
     let edges = clauses.iter().enumerate().flat_map(|(index, clause)| {
         let clause_vertex = variables + index as u32;
-        clause.iter().map(move |&variable| (variable, clause_vertex))
+        clause
+            .iter()
+            .map(move |&variable| (variable, clause_vertex))
     });
     Graph::new(variables + clauses.len() as u32, edges)
 }
@@ -32,21 +34,42 @@ fn projecting_the_clause_side_gives_the_primal_graph() {
     // Two clauses over three variables: {0,1,2} and {1,2}.
     let graph = incidence(3, &[&[0, 1, 2], &[1, 2]]);
     let adjacency = adjacency(&graph);
-    let projection = project(&graph, &adjacency, &[0, 1, 2], &[3, 4], usize::MAX)
-        .expect("the projection fits");
+    let projection =
+        project(&graph, &adjacency, &[0, 1, 2], &[3, 4], usize::MAX).expect("the projection fits");
     assert_eq!(projection.graph.num_vertices(), 3);
-    assert_eq!(projection.graph.edges().to_vec(), vec![(0u32, 1), (0, 2), (1, 2)]);
+    assert_eq!(
+        projection.graph.edges().to_vec(),
+        vec![(0u32, 1), (0, 2), (1, 2)]
+    );
     // The widest clause holds three variables, so the side contributes 3.
     assert_eq!(projection.eliminated_width, 3);
 }
 
 #[test]
-fn refuses_a_projection_over_the_edge_limit() {
-    // One clause over six variables projects to fifteen edges.
+fn refuses_a_projection_that_is_too_large() {
+    // One clause over six variables: six edges in, and a projection of fifteen.
     let graph = incidence(6, &[&[0, 1, 2, 3, 4, 5]]);
-    let adjacency = adjacency(&graph);
-    assert!(project(&graph, &adjacency, &[0, 1, 2, 3, 4, 5], &[6], 14).is_none());
-    assert!(project(&graph, &adjacency, &[0, 1, 2, 3, 4, 5], &[6], 15).is_some());
+    let wide = adjacency(&graph);
+    // Refused before the cliques are built, by the edge limit.
+    assert!(project(&graph, &wide, &[0, 1, 2, 3, 4, 5], &[6], 14).is_none());
+    // And refused after them, because the projection holds more edges than the
+    // input does.
+    assert!(project(&graph, &wide, &[0, 1, 2, 3, 4, 5], &[6], usize::MAX).is_none());
+
+    // A projection smaller than the input on both counts is kept: five edges in,
+    // three out.
+    let smaller = incidence(3, &[&[0, 1, 2], &[1, 2]]);
+    let smaller_adjacency = adjacency(&smaller);
+    assert!(
+        project(
+            &smaller,
+            &smaller_adjacency,
+            &[0, 1, 2],
+            &[3, 4],
+            usize::MAX
+        )
+        .is_some()
+    );
 }
 
 #[test]

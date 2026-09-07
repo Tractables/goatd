@@ -57,8 +57,8 @@ const DEFAULT_MAXIMUM_CARDINALITY_VERTICES: u32 = 40_000;
 /// bounded.
 const DEFAULT_TRIANGULATION_REFINEMENT_VERTICES: u32 = 2_000;
 
-/// How large a projection the bipartite lift will build, as a multiple of the
-/// input's edge count.
+/// How large a projection the bipartite lift will build before it is allowed
+/// to look at it, as a multiple of the input's edge count.
 ///
 /// Eliminating a side turns each of its neighbourhoods into a clique, so a
 /// side holding a vertex of high degree projects to something far denser than
@@ -68,7 +68,9 @@ const DEFAULT_TRIANGULATION_REFINEMENT_VERTICES: u32 = 2_000;
 /// alone puts millions of edges there. The limit is what separates the two,
 /// and it is a multiple of the input's edges rather than a fixed number
 /// because what the projection costs to decompose is relative to the graph the
-/// portfolio would otherwise be running on.
+/// portfolio would otherwise be running on. It is only the guard on building
+/// one: a projection that is built and turns out to hold more edges than the
+/// input is dropped whatever this says.
 const DEFAULT_BIPARTITE_LIFT_EDGE_FACTOR: u32 = 4;
 
 /// Dimensions the hedge places the vertices in, one weighted stage each, in

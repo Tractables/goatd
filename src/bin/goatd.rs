@@ -95,6 +95,10 @@ options:
   --no-hedge            portfolio only: run every candidate once, on uniform
                         weights, instead of repeating the candidates that read
                         weights on a ranking the portfolio computes itself
+  --no-bipartite-lift   portfolio only: do not decompose the projection onto
+                        one side of a bipartite graph and put the other side
+                        back, which the budgeted portfolio otherwise tries
+                        before its elimination orders
   --capped-restarts     portfolio only: stop the ordinary restarts at their
                         count instead of drawing seeds until the restart
                         deadline, which is the hard cutoff less the reserve
@@ -202,6 +206,7 @@ struct Args {
     drop_fill_up_to: Option<u32>,
     no_drop_fill: bool,
     no_hedge: bool,
+    no_bipartite_lift: bool,
     capped_restarts: bool,
     sample_band: Option<u64>,
     sample_band_alternate: bool,
@@ -270,6 +275,7 @@ fn parse_args(argv: &[String]) -> Args {
     let mut drop_fill_up_to = None;
     let mut no_drop_fill = false;
     let mut no_hedge = false;
+    let mut no_bipartite_lift = false;
     let mut capped_restarts = false;
     let mut sample_band = None;
     let mut sample_band_alternate = false;
@@ -390,6 +396,7 @@ fn parse_args(argv: &[String]) -> Args {
             }
             "--no-drop-fill" => no_drop_fill = true,
             "--no-hedge" => no_hedge = true,
+            "--no-bipartite-lift" => no_bipartite_lift = true,
             "--capped-restarts" => capped_restarts = true,
             "--sample-band" => sample_band = Some(number(&mut i, arg)),
             "--sample-band-alternate" => sample_band_alternate = true,
@@ -507,6 +514,13 @@ fn parse_args(argv: &[String]) -> Args {
     if no_hedge {
         needs("--no-hedge", order == Method::Portfolio, "portfolio");
     }
+    if no_bipartite_lift {
+        needs(
+            "--no-bipartite-lift",
+            order == Method::Portfolio,
+            "portfolio",
+        );
+    }
     // Each pair says whether one construction runs and how large a graph it
     // runs on, so giving both leaves one of them with nothing to decide.
     if mcs_up_to.is_some() {
@@ -621,6 +635,7 @@ fn parse_args(argv: &[String]) -> Args {
         drop_fill_up_to,
         no_drop_fill,
         no_hedge,
+        no_bipartite_lift,
         capped_restarts,
         sample_band,
         sample_band_alternate,
@@ -703,6 +718,9 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             }
             if args.no_hedge {
                 config = config.with_hedge(Hedge::Off);
+            }
+            if args.no_bipartite_lift {
+                config = config.without_bipartite_lift();
             }
             if let Some(dims) = &args.hedge_dims {
                 config = config.with_hedge(Hedge::Passes(HedgeSeries::eccentricity_dims(dims)));

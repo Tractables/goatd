@@ -86,11 +86,20 @@ pub(super) struct Projection {
 }
 
 /// Project `graph` onto `keep`, eliminating `drop`, or `None` when the
-/// projection would hold more than `edge_limit` edges.
+/// projection is not worth decomposing.
 ///
 /// `keep` and `drop` are the two sides of a 2-colouring, so every edge of the
 /// input runs between them and the projection's edges are exactly the cliques
 /// the eliminations leave behind.
+///
+/// Two refusals. `edge_limit` bounds the cliques before any of them is built,
+/// so a side holding a high-degree vertex costs nothing to reject. Then the
+/// projection has to be smaller than the input: fewer vertices, which
+/// eliminating a non-empty side always gives, and no more edges, which it
+/// often does not. On the incidence graph of a formula the clause side
+/// projects onto the primal graph, which is smaller on both counts; on a grid
+/// the same construction turns every degree-4 vertex into six edges and leaves
+/// more edges than it started with, and there the lift is work for nothing.
 pub(super) fn project(
     graph: &Graph,
     adjacency: &[Vec<u32>],
@@ -134,8 +143,12 @@ pub(super) fn project(
         }
         eliminated.push((vertex, neighbourhood));
     }
+    let projected = Graph::new(keep.len() as u32, edges);
+    if projected.edges().len() > graph.edges().len() {
+        return None;
+    }
     Some(Projection {
-        graph: Graph::new(keep.len() as u32, edges),
+        graph: projected,
         vertices: keep.to_vec(),
         eliminated,
         eliminated_width,
