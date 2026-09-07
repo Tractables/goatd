@@ -130,8 +130,12 @@ impl ElimPolicy for MinFill<'_> {
     const MAINTAIN_BITSET: bool = true;
     const ZERO_SCORE_IS_SIMPLICIAL: bool = true;
 
-    fn heap(&mut self) -> &mut BinaryHeap<HeapEntry> {
-        &mut self.heap
+    fn queue_len(&self) -> usize {
+        self.heap.len()
+    }
+
+    fn pop(&mut self) -> Option<HeapEntry> {
+        self.heap.pop()
     }
 
     fn push(&mut self, graph: &EliminationGraph, v: u32, score: u64) {

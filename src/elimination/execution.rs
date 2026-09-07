@@ -34,9 +34,12 @@ pub(crate) struct DeadlinePacer {
 }
 
 impl DeadlinePacer {
+    /// The first [`due`](Self::due) reads the clock, so a loop that finishes
+    /// inside one stride still honours a deadline that had already passed
+    /// when it started.
     pub(crate) fn new() -> Self {
         Self {
-            steps: 0,
+            steps: DEADLINE_CHECK_STRIDE,
             mark: crate::meter::units_spent(),
         }
     }
