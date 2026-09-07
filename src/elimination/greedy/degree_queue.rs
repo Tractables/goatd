@@ -44,10 +44,6 @@ impl DegreeQueue {
         }
     }
 
-    pub(super) fn entries(&self) -> usize {
-        self.len
-    }
-
     /// File `v` under `degree` with tie key `tie`, moving it if it is already
     /// queued. One removal and one insert, both `O(log b)` in the bucket's
     /// size; nothing superseded is left behind.
