@@ -189,7 +189,10 @@ Each score is exact. What varies between the orders is how they break ties.
   key. The portfolio's initial min-degree instead breaks equal degrees by heap
   insertion order.
 - A sampled order draws from the whole minimum-key tie set, with one
-  caller-supplied weight per vertex; uniform weights give uniform sampling.
+  caller-supplied weight per vertex; uniform weights give uniform sampling. A
+  vertex is drawn with mass `u32::MAX - weight + 1`, linear in the weight, so
+  weight 0 is the likeliest and `u32::MAX` is drawn about once in four billion
+  against it. Weights within a small factor of each other give a mild bias.
 - The restarts widen that set into a band, taking every vertex whose fill is
   within a fixed distance of the smallest, so seeds still separate on a graph
   where one vertex holds the minimum at every step.

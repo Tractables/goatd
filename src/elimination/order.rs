@@ -6,6 +6,12 @@
 /// vertices tied on the order's score, a smaller weight makes a vertex more
 /// likely to be drawn and therefore eliminated earlier. Equal weights give
 /// uniform sampling.
+///
+/// A vertex in the tie set is drawn with mass `u32::MAX - weight + 1`, so the
+/// odds are linear in the weight: weight 0 is the likeliest, and `u32::MAX` is
+/// drawn about once in four billion against it, which excludes a vertex rather
+/// than disfavouring it. Weights within a small factor of each other give a
+/// mild bias.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Order<'a> {
