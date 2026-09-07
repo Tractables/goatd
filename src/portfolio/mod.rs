@@ -2081,6 +2081,10 @@ pub fn candidates(
 /// several candidates produced carries the origin of the first of them in
 /// the list's order; `trace` still reports each of those candidates.
 ///
+/// A traced run computes each produced candidate's bag mass and widest
+/// separator, one pass over its bags. A caller that does not read the trace
+/// should call [`candidates`], which skips that pass.
+///
 /// # Errors
 ///
 /// Returns the same errors as [`candidates`].
@@ -2117,6 +2121,11 @@ pub fn decompose(
 /// The portfolio returns one decomposition and says nothing about where it
 /// came from; this says. The candidate the portfolio returns is the last one
 /// reported as [`CandidateOutcome::Produced`] with `best` set.
+///
+/// A traced run computes the bag mass and widest separator of each
+/// candidate that is not wider than the incumbent, one pass over its bags.
+/// A caller that does not read the trace should call [`decompose`], which
+/// skips that pass.
 ///
 /// # Errors
 ///

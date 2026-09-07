@@ -103,7 +103,9 @@ pub enum CandidateOutcome {
         /// The total size of its bags.
         total_bag_size: usize,
         /// Its bag mass and widest separator, on a traced run; `None` where
-        /// the run has no sink to report them to and does not compute them.
+        /// the run has no sink to report them to and does not compute them,
+        /// and for a candidate wider than the incumbent on a run that keeps
+        /// only its best, which is dropped before they are computed.
         shape: Option<Shape>,
         /// Whether the portfolio would now return this one.
         best: bool,

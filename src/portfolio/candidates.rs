@@ -105,15 +105,7 @@ impl CandidateSet {
         origin: CandidateOrigin,
     ) -> CandidateOutcome {
         let (width, total_bag_size) = decomposition.quality_key();
-        // Read off the same decomposition as the width and the total bag
-        // size, so the four numbers describe one set of bags.
-        let shape = self.report_shape.then(|| {
-            let (bag_mass, max_separator) = decomposition.shape();
-            Shape {
-                bag_mass,
-                max_separator,
-            }
-        });
+        let mut shape = None;
         self.best_width = Some(self.best_width.map_or(width, |best| best.min(width)));
         // A candidate wider than the incumbent cannot win in either mode, and
         // a plan it will not be sorted on is not worth computing; in
@@ -121,6 +113,17 @@ impl CandidateSet {
         let contender = self.best_quality_key.is_none_or(|best| width <= best.0);
         let mut best = false;
         if !self.retain_only_best || contender {
+            // Read off the same decomposition as the width and the total bag
+            // size, so the four numbers describe one set of bags. A candidate
+            // the set drops is never returned, so nothing ranks it and its
+            // shape is not computed.
+            shape = self.report_shape.then(|| {
+                let (bag_mass, max_separator) = decomposition.shape();
+                Shape {
+                    bag_mass,
+                    max_separator,
+                }
+            });
             let compaction = decomposition.subsumed_bag_compaction();
             let quality_key = (width, compaction.total_bag_size());
             best = self
