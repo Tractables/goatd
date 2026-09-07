@@ -77,8 +77,24 @@ pub enum Pass {
     },
 }
 
+/// Two numbers about a produced decomposition's shape, beside its width and
+/// total bag size, for a caller that ranks the candidates itself.
+///
+/// Computed only on a traced run: [`decompose`](crate::portfolio::decompose)
+/// and [`candidates`](crate::portfolio::candidates) do not pay for them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shape {
+    /// `log2` of the sum over bags of `2^|bag|`: what a consumer compiling
+    /// over the bags pays in the worst case. Equal widths can differ here by
+    /// the number of bags at that width and the sizes of the rest.
+    pub bag_mass: f64,
+    /// The largest number of vertices two adjacent bags share: what a consumer
+    /// carries across the widest join in the tree.
+    pub max_separator: usize,
+}
+
 /// What one candidate left behind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CandidateOutcome {
     /// A decomposition, recorded and folded into the best width so far.
     Produced {
@@ -86,6 +102,9 @@ pub enum CandidateOutcome {
         width: u32,
         /// The total size of its bags.
         total_bag_size: usize,
+        /// Its bag mass and widest separator, on a traced run; `None` where
+        /// the run has no sink to report them to and does not compute them.
+        shape: Option<Shape>,
         /// Whether the portfolio would now return this one.
         best: bool,
     },
@@ -156,7 +175,7 @@ pub struct CandidateOrigin {
 }
 
 /// One candidate the portfolio ran.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CandidateTrace {
     /// Which candidate of the schedule this was.
     pub stage: Stage,

@@ -128,6 +128,49 @@ impl TreeDecomposition {
         self.bags.iter().map(|b| b.vertices.len()).sum()
     }
 
+    /// Two more numbers about the decomposition's shape, for a caller that
+    /// ranks candidates on something other than width.
+    ///
+    /// The mass is `log2` of the sum over bags of `2^|bag|`, which is what a
+    /// consumer compiling over the bags pays in the worst case; the sum is
+    /// scaled by the largest bag before the logarithm, so a bag of a few
+    /// thousand vertices does not overflow the exponent. No bags is `0.0`.
+    /// The separator is the largest number of vertices two adjacent bags
+    /// share, which is what a consumer joining two bags carries between them.
+    ///
+    /// One pass over the bags and one over the tree edges, with a stamp array
+    /// over the graph's vertices for the intersections.
+    pub(crate) fn shape(&self) -> (f64, usize) {
+        let Some(largest) = self.bags.iter().map(|bag| bag.vertices.len()).max() else {
+            return (0.0, 0);
+        };
+        let scaled: f64 = self
+            .bags
+            .iter()
+            .map(|bag| (bag.vertices.len() as f64 - largest as f64).exp2())
+            .sum();
+        let mass = largest as f64 + scaled.log2();
+
+        let mut stamp = vec![usize::MAX; self.num_vertices as usize];
+        let mut separator = 0;
+        for (index, neighbours) in self.adj.iter().enumerate() {
+            for &vertex in &self.bags[index].vertices {
+                stamp[vertex as usize] = index;
+            }
+            // Each edge is walked from both ends; the shared count is the same
+            // either way, so taking the maximum over all of them is enough.
+            for &neighbour in neighbours {
+                let shared = self.bags[neighbour]
+                    .vertices
+                    .iter()
+                    .filter(|&&vertex| stamp[vertex as usize] == index)
+                    .count();
+                separator = separator.max(shared);
+            }
+        }
+        (mass, separator)
+    }
+
     /// The ordering used when goatd compares two decompositions: narrower
     /// first, then fewer total vertices across all bags.
     pub(crate) fn quality_key(&self) -> (u32, usize) {

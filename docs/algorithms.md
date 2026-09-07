@@ -265,8 +265,11 @@ as it finishes: which candidate of the schedule it was (`portfolio::Stage`),
 the seed, the pass of a hedge, whether it produced a decomposition or stopped
 at the width bound or a deadline, and how far into the portfolio it finished. A
 candidate that produced one also says whether the portfolio would return it, so
-the winner is reported rather than inferred. `portfolio::decompose` is the same
-run with the sink discarded.
+the winner is reported rather than inferred, and carries two more numbers about
+the bags for a caller ranking the candidates itself: the bag mass, `log2` of
+the sum over bags of `2^|bag|`, and the largest number of vertices two adjacent
+bags share. `portfolio::decompose` is the same run with the sink discarded, and
+does not compute them.
 
 ## Cardinality searches
 

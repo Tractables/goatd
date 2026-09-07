@@ -788,8 +788,17 @@ fn print_candidate(candidate: &CandidateTrace) {
         CandidateOutcome::Produced {
             width,
             total_bag_size,
+            shape,
             ..
-        } => line.push_str(&format!(" width={width} bags={total_bag_size}")),
+        } => {
+            line.push_str(&format!(" width={width} bags={total_bag_size}"));
+            if let Some(shape) = shape {
+                line.push_str(&format!(
+                    " bag-mass={:.2} max-separator={}",
+                    shape.bag_mass, shape.max_separator
+                ));
+            }
+        }
         CandidateOutcome::SamplingStopped {
             restarts,
             last_improvement,

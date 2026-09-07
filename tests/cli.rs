@@ -457,6 +457,13 @@ fn the_trace_names_the_candidate_the_decomposition_came_from() {
             line.contains(" width=") || line.contains(" outcome="),
             "a candidate line says what it produced: {line}"
         );
+        // A candidate that produced a decomposition also carries its shape.
+        if line.contains(" width=") {
+            assert!(
+                line.contains(" bag-mass=") && line.contains(" max-separator="),
+                "a produced candidate carries its shape numbers: {line}"
+            );
+        }
     }
     let winner = winner.expect("a winner line");
     assert!(

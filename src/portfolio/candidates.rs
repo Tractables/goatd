@@ -5,7 +5,7 @@ use crate::decomposition::SubsumedBagCompaction;
 use crate::elimination::engine::OrderRun;
 use crate::elimination::execution::Cutoff;
 
-use super::trace::{CandidateOrigin, CandidateOutcome};
+use super::trace::{CandidateOrigin, CandidateOutcome, Shape};
 
 /// Whether the portfolio may start another candidate after this one.
 ///
@@ -44,6 +44,9 @@ pub(super) struct CandidateSet {
     best_width: Option<u32>,
     best_quality_key: Option<(u32, usize)>,
     retain_only_best: bool,
+    /// Whether a produced candidate carries its shape numbers. Only a traced
+    /// run has anywhere to report them, and they cost a pass over the bags.
+    report_shape: bool,
 }
 
 impl CandidateSet {
@@ -53,6 +56,7 @@ impl CandidateSet {
             best_width: None,
             best_quality_key: None,
             retain_only_best: false,
+            report_shape: false,
         }
     }
 
@@ -62,7 +66,15 @@ impl CandidateSet {
             best_width: None,
             best_quality_key: None,
             retain_only_best: true,
+            report_shape: false,
         }
+    }
+
+    /// Report each produced candidate's shape numbers, or not. A run whose
+    /// trace sink discards everything does not compute them.
+    pub(super) fn reporting_shape(mut self, on: bool) -> Self {
+        self.report_shape = on;
+        self
     }
 
     pub(super) fn best_width(&self) -> Option<u32> {
@@ -93,6 +105,15 @@ impl CandidateSet {
         origin: CandidateOrigin,
     ) -> CandidateOutcome {
         let (width, total_bag_size) = decomposition.quality_key();
+        // Read off the same decomposition as the width and the total bag
+        // size, so the four numbers describe one set of bags.
+        let shape = self.report_shape.then(|| {
+            let (bag_mass, max_separator) = decomposition.shape();
+            Shape {
+                bag_mass,
+                max_separator,
+            }
+        });
         self.best_width = Some(self.best_width.map_or(width, |best| best.min(width)));
         // A candidate wider than the incumbent cannot win in either mode, and
         // a plan it will not be sorted on is not worth computing; in
@@ -123,6 +144,7 @@ impl CandidateSet {
         CandidateOutcome::Produced {
             width,
             total_bag_size,
+            shape,
             best,
         }
     }

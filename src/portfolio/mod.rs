@@ -31,7 +31,7 @@ pub use config::{
     DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, HedgeWeights, MAX_DIVERSE_SAMPLING_RUNS,
     MAX_HEDGE_PASSES, PortfolioConfig, SamplingPatience,
 };
-pub use trace::{CandidateOrigin, CandidateOutcome, CandidateTrace, Pass, Stage};
+pub use trace::{CandidateOrigin, CandidateOutcome, CandidateTrace, Pass, Shape, Stage};
 
 /// Exit early if FlowCutter hasn't improved treewidth for this long, on a
 /// window of [`FLOWCUTTER_CANDIDATE_BASE_WINDOW`] or less. Caps per-graph
@@ -1202,6 +1202,32 @@ enum CandidateRetention {
     BestOnly,
 }
 
+/// What a run keeps of its candidates, and what it reports about them.
+#[derive(Clone, Copy)]
+struct Collection {
+    retention: CandidateRetention,
+    /// Whether a produced candidate carries its shape numbers. Only a run with
+    /// a trace sink has anywhere to report them, and they cost a pass over the
+    /// bags, so an untraced run does not compute them.
+    traced: bool,
+}
+
+impl Collection {
+    fn all(traced: bool) -> Self {
+        Collection {
+            retention: CandidateRetention::All,
+            traced,
+        }
+    }
+
+    fn best_only(traced: bool) -> Self {
+        Collection {
+            retention: CandidateRetention::BestOnly,
+            traced,
+        }
+    }
+}
+
 /// The standard portfolio's fixed candidates. Vertex-order min-degree runs
 /// first so it supplies a deterministic incumbent before the sampled orders.
 fn standard_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandidate<'_>> {
@@ -1274,7 +1300,7 @@ fn run_portfolio(
     seed: u64,
     initial_orders: InitialOrderBuilder,
     config: PortfolioConfig,
-    retention: CandidateRetention,
+    collection: Collection,
     trace: &mut dyn FnMut(CandidateTrace),
 ) -> Result<CandidateSet, crate::Error> {
     config::validate(config)?;
@@ -1306,10 +1332,11 @@ fn run_portfolio(
     // The builder is needed again for the fixed orders the hedge repeats.
     let order_builder = initial_orders;
     let initial_orders = initial_orders(seed, weights);
-    let mut candidates = match retention {
+    let mut candidates = match collection.retention {
         CandidateRetention::All => CandidateSet::all(initial_orders.len() + 1),
         CandidateRetention::BestOnly => CandidateSet::best_only(),
-    };
+    }
+    .reporting_shape(collection.traced);
 
     // Set after any candidate reaches the hard deadline, or when it expires
     // between candidates. Later runs would stop at the same point.
@@ -1941,6 +1968,13 @@ fn run_portfolio(
             CandidateOutcome::Produced {
                 width,
                 total_bag_size,
+                shape: collection.traced.then(|| {
+                    let (bag_mass, max_separator) = minimalized.shape();
+                    Shape {
+                        bag_mass,
+                        max_separator,
+                    }
+                }),
                 best: false,
             }
         };
@@ -1980,7 +2014,7 @@ pub fn sampled_min_fill_candidates(
         seed,
         sampled_min_fill_orders,
         config,
-        CandidateRetention::All,
+        Collection::all(false),
         &mut |_| {},
     )?
     .into_decompositions())
@@ -1991,7 +2025,7 @@ fn standard_candidate_set(
     weights: &[u32],
     seed: u64,
     config: PortfolioConfig,
-    retention: CandidateRetention,
+    collection: Collection,
     trace: &mut dyn FnMut(CandidateTrace),
 ) -> Result<CandidateSet, crate::Error> {
     validate_weights(graph, weights)?;
@@ -2001,7 +2035,7 @@ fn standard_candidate_set(
         seed,
         standard_orders,
         config,
-        retention,
+        collection,
         trace,
     )
 }
@@ -2031,7 +2065,7 @@ pub fn candidates(
         weights,
         seed,
         config,
-        CandidateRetention::All,
+        Collection::all(false),
         &mut |_| {},
     )?
     .into_decompositions())
@@ -2058,7 +2092,7 @@ pub fn candidates_traced(
     trace: &mut dyn FnMut(CandidateTrace),
 ) -> Result<Vec<Candidate>, crate::Error> {
     Ok(
-        standard_candidate_set(graph, weights, seed, config, CandidateRetention::All, trace)?
+        standard_candidate_set(graph, weights, seed, config, Collection::all(true), trace)?
             .into_candidates(),
     )
 }
@@ -2075,7 +2109,7 @@ pub fn decompose(
     seed: u64,
     config: PortfolioConfig,
 ) -> Result<TreeDecomposition, crate::Error> {
-    decompose_traced(graph, weights, seed, config, &mut |_| {})
+    best_candidate(graph, weights, seed, config, false, &mut |_| {})
 }
 
 /// [`decompose`], reporting every candidate to `trace` as it finishes.
@@ -2094,12 +2128,25 @@ pub fn decompose_traced(
     config: PortfolioConfig,
     trace: &mut dyn FnMut(CandidateTrace),
 ) -> Result<TreeDecomposition, crate::Error> {
+    best_candidate(graph, weights, seed, config, true, trace)
+}
+
+/// [`decompose`] and [`decompose_traced`], with `traced` saying whether the
+/// candidates carry their shape numbers.
+fn best_candidate(
+    graph: &Graph,
+    weights: &[u32],
+    seed: u64,
+    config: PortfolioConfig,
+    traced: bool,
+    trace: &mut dyn FnMut(CandidateTrace),
+) -> Result<TreeDecomposition, crate::Error> {
     Ok(standard_candidate_set(
         graph,
         weights,
         seed,
         config,
-        CandidateRetention::BestOnly,
+        Collection::best_only(traced),
         trace,
     )?
     .into_decompositions()
