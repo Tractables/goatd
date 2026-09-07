@@ -57,6 +57,20 @@ const DEFAULT_MAXIMUM_CARDINALITY_VERTICES: u32 = 40_000;
 /// bounded.
 const DEFAULT_TRIANGULATION_REFINEMENT_VERTICES: u32 = 2_000;
 
+/// How large a projection the bipartite lift will build, as a multiple of the
+/// input's edge count.
+///
+/// Eliminating a side turns each of its neighbourhoods into a clique, so a
+/// side holding a vertex of high degree projects to something far denser than
+/// the input: on an incidence graph the clause side projects to the primal
+/// graph, roughly the edge count of the input, while the variable side
+/// projects to a clique per variable and a variable in a few thousand clauses
+/// alone puts millions of edges there. The limit is what separates the two,
+/// and it is a multiple of the input's edges rather than a fixed number
+/// because what the projection costs to decompose is relative to the graph the
+/// portfolio would otherwise be running on.
+const DEFAULT_BIPARTITE_LIFT_EDGE_FACTOR: u32 = 4;
+
 /// Dimensions the hedge places the vertices in, one weighted stage each, in
 /// this order. Which graphs a dimension improves is close to arbitrary and two
 /// dimensions improve mostly different ones, so a hedge that runs several
@@ -485,6 +499,7 @@ pub struct PortfolioConfig {
     pub(super) maximum_cardinality: Option<u32>,
     pub(super) minimal_triangulation: Option<u32>,
     pub(super) triangulation_refinement: Option<u32>,
+    pub(super) bipartite_lift: Option<u32>,
 }
 
 /// Two configurations are equal when they ask for the same run, the reserve
@@ -507,6 +522,7 @@ impl PartialEq for PortfolioConfig {
             && self.maximum_cardinality == other.maximum_cardinality
             && self.minimal_triangulation == other.minimal_triangulation
             && self.triangulation_refinement == other.triangulation_refinement
+            && self.bipartite_lift == other.bipartite_lift
     }
 }
 
@@ -534,6 +550,7 @@ impl PortfolioConfig {
             maximum_cardinality: None,
             minimal_triangulation: None,
             triangulation_refinement: None,
+            bipartite_lift: None,
         }
     }
 
@@ -632,6 +649,7 @@ impl PortfolioConfig {
             maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
+            bipartite_lift: None,
         }
     }
 
@@ -701,6 +719,7 @@ impl PortfolioConfig {
             maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
+            bipartite_lift: Some(DEFAULT_BIPARTITE_LIFT_EDGE_FACTOR),
         }
     }
 
@@ -937,6 +956,28 @@ impl PortfolioConfig {
     /// it.
     pub fn without_triangulation_refinement(mut self) -> Self {
         self.triangulation_refinement = None;
+        self
+    }
+
+    /// Run the bipartite lift on a bipartite graph, on a projection of at most
+    /// `edge_factor` times the input's edges.
+    ///
+    /// The stage 2-colours the graph, eliminates one side into the other — on
+    /// a bipartite graph a side is an independent set, so those eliminations
+    /// add no fill among themselves and each leaves a bag of its own
+    /// neighbourhood — decomposes what is left with a share of the budget, and
+    /// puts the eliminated side back. Both sides are tried where both fit
+    /// under the limit. It needs a soft budget to take its share of, and it is
+    /// one candidate among the others: the portfolio keeps whichever
+    /// decomposition is narrower, so the stage costs time and never width.
+    pub fn with_bipartite_lift(mut self, edge_factor: u32) -> Self {
+        self.bipartite_lift = Some(edge_factor);
+        self
+    }
+
+    /// Do not try the bipartite lift.
+    pub fn without_bipartite_lift(mut self) -> Self {
+        self.bipartite_lift = None;
         self
     }
 }

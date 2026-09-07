@@ -34,6 +34,9 @@ pub enum Stage {
     Minimalized,
     /// The trailing FlowCutter candidate.
     FlowCutter,
+    /// The lift of a decomposition of one side's projection, on a bipartite
+    /// graph.
+    BipartiteLift,
     /// A hedge's weighted stage as a whole, rather than one of its candidates.
     WeightedStage,
     /// The ordinary sampled restarts as a whole, rather than one of them.
@@ -51,6 +54,7 @@ impl fmt::Display for Stage {
             }
             Stage::Sample => formatter.write_str("sample"),
             Stage::MaximumCardinality => formatter.write_str("maximum-cardinality"),
+            Stage::BipartiteLift => formatter.write_str("bipartite-lift"),
             Stage::MinimalTriangulation => formatter.write_str("minimal-triangulation"),
             Stage::Minimalized => formatter.write_str("minimalized"),
             Stage::FlowCutter => formatter.write_str("flowcutter"),
