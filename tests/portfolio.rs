@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use goatd::Graph;
 use goatd::portfolio::{
-    Hedge, Pass, PortfolioConfig, Stage, candidates, decompose, decompose_and_refine,
-    decompose_traced, sampled_min_fill_candidates,
+    CandidateOutcome, Hedge, Pass, PortfolioConfig, SamplingPatience, Stage, candidates, decompose,
+    decompose_and_refine, decompose_traced, sampled_min_fill_candidates,
 };
 
 fn grid(side: u32) -> Graph {
@@ -191,6 +191,81 @@ fn traced_stages(graph: &Graph, config: PortfolioConfig) -> Vec<(Stage, Pass)> {
     seen
 }
 
+/// How many ordinary restarts a run made, and what the patience rule reported
+/// when it stopped them: the restarts that had run and the last improving one.
+fn restart_run(graph: &Graph, config: PortfolioConfig) -> (usize, Vec<(u64, Option<u64>)>) {
+    let weight = vec![1; graph.num_vertices() as usize];
+    let mut ran = 0;
+    let mut stops = Vec::new();
+    decompose_traced(graph, &weight, 0, config, &mut |candidate| {
+        if let CandidateOutcome::SamplingStopped {
+            restarts,
+            last_improvement,
+            ..
+        } = candidate.outcome
+        {
+            stops.push((restarts, last_improvement));
+        } else if candidate.stage == Stage::Sample {
+            ran += 1;
+        }
+    })
+    .expect("a decomposition");
+    (ran, stops)
+}
+
+#[test]
+fn stalled_restarts_stop_before_their_count_and_report_where() {
+    // A grid this size gives the restarts one width to find and nothing after
+    // it, which is the stall the rule is for.
+    let graph = grid(6);
+    let config = PortfolioConfig::standard()
+        .with_hedge(Hedge::Off)
+        .with_sampling_runs(1_000);
+
+    let (whole, none) = restart_run(&graph, config);
+    let (stopped, records) = restart_run(
+        &graph,
+        config.with_sampling_patience(SamplingPatience::Halving { min_restarts: 200 }),
+    );
+
+    assert_eq!(whole, 1_000, "the count is what stops a run by default");
+    assert!(none.is_empty(), "and it reports no stop: {none:?}");
+    assert!(
+        stopped < whole,
+        "the patience rule stopped {stopped} restarts short of {whole}"
+    );
+    assert_eq!(records.len(), 1, "the stop is reported once: {records:?}");
+    let (restarts, last_improvement) = records[0];
+    assert_eq!(
+        restarts, stopped as u64,
+        "the record counts the restarts that ran"
+    );
+    assert!(
+        last_improvement.is_none_or(|last| last < restarts / 2),
+        "the rule fires on an improvement in the first half: {records:?}"
+    );
+}
+
+#[test]
+fn the_floor_follows_the_restarts_the_schedule_draws() {
+    // The figure asked for is above the whole list, so the floor is half the
+    // list instead and the rule still fires.
+    let graph = grid(6);
+    let config = PortfolioConfig::standard()
+        .with_hedge(Hedge::Off)
+        .with_sampling_runs(100)
+        .with_sampling_patience(SamplingPatience::Halving { min_restarts: 200 });
+
+    let (ran, records) = restart_run(&graph, config);
+
+    assert!(ran < 100, "the rule stopped the list at {ran}");
+    assert_eq!(records.len(), 1, "reported once: {records:?}");
+    assert!(
+        records[0].0 >= 50,
+        "and not before half the list: {records:?}"
+    );
+}
+
 #[test]
 fn the_expensive_orders_stop_at_the_configured_residual() {
     let graph = grid(6);
@@ -228,6 +303,7 @@ fn the_expensive_orders_stop_at_the_configured_residual() {
                     | Stage::MinimalTriangulation
                     | Stage::Minimalized
                     | Stage::FlowCutter
+                    | Stage::SampledRestarts
             ) && pass == Pass::Only
         }),
         "above the limit min-degree runs, plus the self-gated candidates: {min_degree_only:?}"

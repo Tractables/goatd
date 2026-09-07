@@ -14,7 +14,7 @@ use goatd::embedding::MAX_DIM;
 use goatd::flowcutter::{Budget, decompose as flowcutter};
 use goatd::portfolio::{
     CandidateOutcome, CandidateTrace, DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, MAX_HEDGE_PASSES,
-    Pass, PortfolioConfig, decompose_traced as portfolio,
+    Pass, PortfolioConfig, SamplingPatience, decompose_traced as portfolio,
 };
 use goatd::{Graph, TreeDecomposition, stop_flag};
 
@@ -112,6 +112,18 @@ options:
                         between the exact minimum and --sample-band, an even
                         restart drawing from the minimum and an odd one from
                         the band. Needs --sample-band above 0
+  --sampling-patience <n>
+                        portfolio only: the ordinary restarts stop once n of
+                        them have run and the last one that improved the best
+                        decomposition is in the first half of them, and the
+                        trailing flowcutter candidate stops after half its
+                        window without improving. n is capped at half the
+                        restarts the schedule draws. Off by default, and it
+                        costs width
+  --no-sampling-patience
+                        portfolio only: the default, run every ordinary
+                        restart the count or the deadline allows and let the
+                        trailing candidate run its window out
   --expensive-orders-up-to <n>
                         portfolio only: the largest residual, in vertices left
                         after preprocessing, that still runs min-fill (default
@@ -193,6 +205,8 @@ struct Args {
     capped_restarts: bool,
     sample_band: Option<u64>,
     sample_band_alternate: bool,
+    sampling_patience: Option<u64>,
+    no_sampling_patience: bool,
     expensive_orders_up_to: Option<usize>,
     trace: bool,
     steps: Option<u64>,
@@ -259,6 +273,8 @@ fn parse_args(argv: &[String]) -> Args {
     let mut capped_restarts = false;
     let mut sample_band = None;
     let mut sample_band_alternate = false;
+    let mut sampling_patience = None;
+    let mut no_sampling_patience = false;
     let mut expensive_orders_up_to = None;
     let mut trace = false;
     let mut steps = None;
@@ -377,6 +393,8 @@ fn parse_args(argv: &[String]) -> Args {
             "--capped-restarts" => capped_restarts = true,
             "--sample-band" => sample_band = Some(number(&mut i, arg)),
             "--sample-band-alternate" => sample_band_alternate = true,
+            "--sampling-patience" => sampling_patience = Some(number(&mut i, arg)),
+            "--no-sampling-patience" => no_sampling_patience = true,
             "--expensive-orders-up-to" => {
                 let vertices = number(&mut i, arg);
                 expensive_orders_up_to = Some(usize::try_from(vertices).unwrap_or(usize::MAX));
@@ -553,6 +571,26 @@ fn parse_args(argv: &[String]) -> Args {
             );
         }
     }
+    if sampling_patience.is_some() {
+        needs(
+            "--sampling-patience",
+            order == Method::Portfolio,
+            "portfolio",
+        );
+        if no_sampling_patience {
+            usage_error(
+                "--sampling-patience and --no-sampling-patience both say when the restarts \
+                 stop; give one",
+            );
+        }
+    }
+    if no_sampling_patience {
+        needs(
+            "--no-sampling-patience",
+            order == Method::Portfolio,
+            "portfolio",
+        );
+    }
     if expensive_orders_up_to.is_some() {
         needs(
             "--expensive-orders-up-to",
@@ -586,6 +624,8 @@ fn parse_args(argv: &[String]) -> Args {
         capped_restarts,
         sample_band,
         sample_band_alternate,
+        sampling_patience,
+        no_sampling_patience,
         expensive_orders_up_to,
         trace,
         steps,
@@ -700,6 +740,12 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             if args.sample_band_alternate {
                 config = config.with_sample_band_alternate(true);
             }
+            if let Some(min_restarts) = args.sampling_patience {
+                config = config.with_sampling_patience(SamplingPatience::Halving { min_restarts });
+            }
+            if args.no_sampling_patience {
+                config = config.with_sampling_patience(SamplingPatience::Off);
+            }
             if let Some(vertices) = args.expensive_orders_up_to {
                 config = config.with_expensive_orders_up_to(vertices);
             }
@@ -744,6 +790,33 @@ fn print_candidate(candidate: &CandidateTrace) {
             total_bag_size,
             ..
         } => line.push_str(&format!(" width={width} bags={total_bag_size}")),
+        CandidateOutcome::SamplingStopped {
+            restarts,
+            last_improvement,
+            left,
+        } => {
+            line.push_str(&format!(" outcome=sampling-stopped restarts={restarts}"));
+            match last_improvement {
+                Some(index) => line.push_str(&format!(" last-improvement={index}")),
+                None => line.push_str(" last-improvement=none"),
+            }
+            match left {
+                Some(duration) => {
+                    line.push_str(&format!(" left-ms={}", duration.as_millis()));
+                }
+                None => line.push_str(" left-ms=none"),
+            }
+        }
+        CandidateOutcome::TailBounded {
+            window,
+            patience,
+            spent,
+        } => line.push_str(&format!(
+            " outcome=tail-bounded window-ms={} patience-ms={} spent-ms={}",
+            window.as_millis(),
+            patience.as_millis(),
+            spent.as_millis()
+        )),
         CandidateOutcome::WidthAborted => line.push_str(" outcome=aborted"),
         CandidateOutcome::DeadlineReached => line.push_str(" outcome=deadline"),
         CandidateOutcome::NotStarted => line.push_str(" outcome=not-started"),

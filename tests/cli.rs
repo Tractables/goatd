@@ -369,6 +369,24 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--capped-restarts", "--budget"],
         ),
         (
+            &["--sampling-patience", "50"],
+            &["--sampling-patience", "minfill", "portfolio"],
+        ),
+        (
+            &["--order", "flowcutter", "--no-sampling-patience"],
+            &["--no-sampling-patience", "flowcutter", "portfolio"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--sampling-patience",
+                "50",
+                "--no-sampling-patience",
+            ],
+            &["--sampling-patience", "--no-sampling-patience"],
+        ),
+        (
             &["--expensive-orders-up-to", "50000"],
             &["--expensive-orders-up-to", "minfill", "portfolio"],
         ),
