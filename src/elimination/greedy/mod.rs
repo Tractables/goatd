@@ -30,6 +30,7 @@ macro_rules! ord_by_key {
     };
 }
 
+mod degree_queue;
 mod deterministic;
 mod min_degree;
 mod min_fill;

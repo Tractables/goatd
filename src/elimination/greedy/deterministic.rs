@@ -15,7 +15,6 @@
 //! The two sampling cores in `sampling.rs` deliberately stay outside this
 //! skeleton.
 
-use std::collections::BinaryHeap;
 use std::time::Instant;
 
 use super::{
@@ -61,14 +60,17 @@ pub(super) enum AfterElim {
 /// [`rescore_on_pop`](Self::rescore_on_pop) before acting on it; a moved
 /// score means the entry is stale, and it is re-pushed instead of acted on.
 ///
-/// Only [`heap`](Self::heap), [`push`](Self::push) and
-/// [`live_score`](Self::live_score) have to be written. The defaults below
-/// are the simplest core there is — seed the heap in one pass, re-score every
-/// pop, owe the neighbours nothing — and each override marks a real
-/// difference between the cores.
+/// A snapshot can only go stale where the queue cannot move an entry. A core
+/// whose queue holds one entry per vertex and refiles it on every change has
+/// nothing stale to guard against and returns `None` from `rescore_on_pop`.
+///
+/// Only [`pop`](Self::pop), [`push`](Self::push) and
+/// [`live_score`](Self::live_score) have to be written. The defaults below are the simplest core there is — seed the
+/// queue in one pass, re-score every pop, owe the neighbours nothing — and
+/// each override marks a real difference between the cores.
 pub(super) trait ElimPolicy {
-    /// This core's heap entry.
-    type Entry: Ord + ElimEntry;
+    /// This core's queue entry.
+    type Entry: ElimEntry;
 
     /// Whether this core degrades instead of giving up when the soft deadline
     /// passes. A core with cheap mode stops maintaining scores and keeps
@@ -90,16 +92,19 @@ pub(super) trait ElimPolicy {
     /// fast path and leave it false.
     const ZERO_SCORE_IS_SIMPLICIAL: bool;
 
-    /// The heap this core pops from and pushes to.
-    fn heap(&mut self) -> &mut BinaryHeap<Self::Entry>;
+    /// Next candidate: its vertex and the score snapshot its entry recorded.
+    fn pop(&mut self) -> Option<Self::Entry>;
 
-    /// Push `v` with a freshly measured `score`.
+    /// File `v` with a freshly measured `score`. A core whose queue can move
+    /// an entry replaces the vertex's existing key; a core built on a heap
+    /// pushes a second entry and leaves the older one to be discarded when it
+    /// surfaces.
     fn push(&mut self, graph: &EliminationGraph, v: u32, score: u64);
 
     /// `v`'s true score in the current graph.
     fn live_score(&mut self, graph: &EliminationGraph, v: u32) -> u64;
 
-    /// Score every active vertex and fill the heap. The default scores each
+    /// Score every active vertex and fill the queue. The default scores each
     /// vertex as it reaches it; a core whose scoring pass is expensive enough
     /// to need its own deadline handling overrides this.
     fn seed(
@@ -117,14 +122,11 @@ pub(super) trait ElimPolicy {
         Seeded::Ready
     }
 
-    /// Next candidate: its vertex and the score snapshot its entry recorded.
-    fn pop(&mut self) -> Option<Self::Entry> {
-        self.heap().pop()
-    }
-
-    /// Whether an entry is the latest one pushed for its vertex. Cores that
-    /// eagerly replace changed scores use this to discard every older heap
-    /// entry, including one whose stale score happens to equal the new score.
+    /// Whether an entry is the latest one filed for its vertex. Cores that
+    /// push a second entry rather than move the existing one use this to
+    /// discard every older entry, including one whose stale score happens to
+    /// equal the new score. A core whose queue holds one entry per vertex has
+    /// nothing to discard and leaves this true.
     fn entry_is_current(&self, _entry: &Self::Entry) -> bool {
         true
     }
@@ -159,8 +161,11 @@ pub(super) trait ElimPolicy {
     }
 }
 
-/// Drain a clique residual in the policy's heap order. Old entries from an
-/// eagerly maintained heap are skipped before they can choose a vertex.
+/// Drain a clique residual in the policy's queue order. Old entries from a
+/// heap the core did not maintain are skipped before they can choose a
+/// vertex. Every order gives the same width and the same multiset of bag
+/// sizes here, so which vertex lands in which bag is the only thing the
+/// queue's order decides.
 fn drain_clique_tail<P: ElimPolicy>(
     graph: &mut EliminationGraph,
     sink: &mut ElimSink<'_>,
