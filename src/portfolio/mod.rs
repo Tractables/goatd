@@ -1885,10 +1885,13 @@ fn run_portfolio(
             outcome,
             elapsed: now.saturating_duration_since(started),
         });
-        // What the trailing candidate was given and what it took. The backend
-        // reports no reason for stopping, so a run that ends well inside its
-        // window is where the patience ended it.
-        if let Some(patience) = patience {
+        // What the trailing candidate was given and what it took, where the
+        // caller turned the patience rule on. The backend reports no reason for
+        // stopping, so a run that ends well inside its window is where the
+        // patience ended it. A run with the rule off is left alone, record
+        // included: the fixed patience short windows have always had is not
+        // this rule's doing.
+        if let Some(patience) = patience.filter(|_| !config.sampling_patience.is_off()) {
             trace(CandidateTrace {
                 stage: Stage::FlowCutter,
                 seed,

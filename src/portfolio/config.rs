@@ -165,6 +165,11 @@ pub enum SamplingPatience {
 }
 
 impl SamplingPatience {
+    /// Whether the caller left the rule off, which is the default.
+    pub(super) fn is_off(self) -> bool {
+        matches!(self, SamplingPatience::Off)
+    }
+
     /// Whether the restarts stop rather than run restart `index`, counting the
     /// ordinary restarts of this run from zero.
     ///

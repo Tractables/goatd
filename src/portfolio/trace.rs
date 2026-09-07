@@ -131,7 +131,8 @@ pub enum CandidateOutcome {
     /// The trailing FlowCutter candidate ran under a patience: what it had,
     /// how long it was allowed to go without improving, and what it spent.
     /// Reported once beside that candidate's own record, and only where the
-    /// patience rule gave it one. The backend reports no reason for stopping,
+    /// caller turned the patience rule on: the fixed patience a short window
+    /// has always had is not this rule's doing and gets no record. The backend reports no reason for stopping,
     /// so a run that ended well inside its window is one the patience ended.
     TailBounded {
         /// The window the candidate was given.
