@@ -421,3 +421,129 @@ fn the_bitset_almost_simplicial_test_agrees_with_the_pairwise_scan() {
     let complete = EliminationGraph::from_edges(5, &edges);
     assert_eq!(complete.almost_simplicial_nonedge(0), None);
 }
+
+/// A graph too large to index the bitset by vertex id, eliminated down to a
+/// dense core: the bitset arrives only when the residual is dense, is the
+/// residual's size, and reports vertex ids.
+#[test]
+fn a_large_graph_gets_a_bitset_over_its_dense_residual() {
+    let core = 200u32;
+    let n = 17_000u32;
+    let mut edges = Vec::new();
+    for u in 0..core {
+        for v in (u + 1)..core {
+            edges.push((u, v));
+        }
+    }
+    for v in core..n - 1 {
+        edges.push((v, v + 1));
+    }
+    edges.push((0, core));
+    edges.sort_unstable();
+    let mut g = EliminationGraph::from_edges(n, &edges);
+    assert_eq!(g.bitset_words, 0, "17,000 vertices are indexed by row");
+    assert!(!g.should_promote_bitset(), "the whole graph is sparse");
+
+    // Peel the tail from its far end. Each vertex has degree one when its turn
+    // comes, so this adds no fill and leaves the clique.
+    for v in (core..n).rev() {
+        g.eliminate(v);
+    }
+    assert_eq!(g.num_active, core as usize);
+    assert!(g.should_promote_bitset(), "the residual clique is dense");
+    g.promote_bitset();
+    assert!(g.bitset_words > 0);
+    assert_eq!(
+        g.bitset_words,
+        (core as usize).div_ceil(64),
+        "a row of bits covers the residual, not the graph"
+    );
+
+    assert_eq!(g.degree(0), core as usize - 1);
+    for u in 0..core {
+        for v in (u + 1)..core {
+            assert!(g.contains_edge(u, v) && g.contains_edge(v, u), "{u}-{v}");
+        }
+    }
+    let mut nbrs = g.live_neighbours(0);
+    nbrs.sort_unstable();
+    assert_eq!(
+        nbrs,
+        (1..core).collect::<Vec<u32>>(),
+        "vertex ids, not slots"
+    );
+
+    let bag = g.eliminate(0);
+    assert_eq!(bag.len(), core as usize - 1);
+    assert_eq!(g.degree(1), core as usize - 2);
+    assert!(!g.active[0]);
+}
+
+/// The same graph peeled to a residual that is still sparse: no bitset, since
+/// the density condition is also what bounds its size.
+#[test]
+fn a_large_sparse_residual_is_refused_a_bitset() {
+    let n = 17_000u32;
+    let edges: Vec<(u32, u32)> = (0..n - 1).map(|v| (v, v + 1)).collect();
+    let mut g = EliminationGraph::from_edges(n, &edges);
+    for v in (1_000..n).rev() {
+        g.eliminate(v);
+    }
+    assert_eq!(g.num_active, 1_000);
+    assert!(
+        !g.should_promote_bitset(),
+        "a path of 1,000 vertices would cost 125 KiB of bits against 8 KiB of rows"
+    );
+    assert_eq!(g.bitset_words, 0);
+}
+
+/// The residual bitset and the adjacency rows have to answer identically once
+/// fill starts moving edges around, since the bitset is indexed over the
+/// active vertices and the rows are indexed by vertex id.
+#[test]
+fn the_residual_bitset_and_the_rows_eliminate_alike() {
+    let core = 200u32;
+    let n = 17_000u32;
+    let mut edges = Vec::new();
+    for u in 0..core {
+        for v in (u + 1)..core {
+            // Dense but not complete, so eliminating a core vertex adds fill.
+            if (u * 7 + v * 13) % 4 != 0 {
+                edges.push((u, v));
+            }
+        }
+    }
+    for v in core..n - 1 {
+        edges.push((v, v + 1));
+    }
+    edges.push((0, core));
+    edges.sort_unstable();
+
+    let mut rows = EliminationGraph::from_edges(n, &edges);
+    let mut bits = EliminationGraph::from_edges(n, &edges);
+    for v in (core..n).rev() {
+        rows.eliminate(v);
+        bits.eliminate(v);
+    }
+    assert!(bits.should_promote_bitset());
+    bits.promote_bitset();
+    assert!(bits.bitset_words > 0 && rows.bitset_words == 0);
+
+    for v in 0..20 {
+        let mut left = rows.eliminate(v);
+        let mut right = bits.eliminate(v);
+        left.sort_unstable();
+        right.sort_unstable();
+        assert_eq!(left, right, "bag of {v}");
+        assert_eq!(rows.num_edges, bits.num_edges, "edge count after {v}");
+        assert_eq!(rows.num_active, bits.num_active, "active count after {v}");
+        for u in 20..core {
+            assert_eq!(rows.degree(u), bits.degree(u), "degree of {u} after {v}");
+            let mut a = rows.live_neighbours(u);
+            let mut b = bits.live_neighbours(u);
+            a.sort_unstable();
+            b.sort_unstable();
+            assert_eq!(a, b, "neighbours of {u} after {v}");
+        }
+    }
+}

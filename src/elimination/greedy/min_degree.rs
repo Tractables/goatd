@@ -44,8 +44,11 @@ impl ElimPolicy for MinDegree<'_> {
     type Entry = DegEntry;
 
     const CHEAP_MODE: bool = true;
-    // Degree is a single lookup either way, so the bitset would buy nothing.
-    const MAINTAIN_BITSET: bool = false;
+    // Scoring is a single lookup either way, but the elimination is not: on a
+    // dense residual it tests every pair of neighbours for an existing edge,
+    // and against rows that is the degree squared probes while against a
+    // bitset it is the degree times the row's words.
+    const MAINTAIN_BITSET: bool = true;
     // Ranking by degree says nothing about whether N(v) is already a clique.
     const ZERO_SCORE_IS_SIMPLICIAL: bool = false;
 
@@ -175,7 +178,7 @@ mod tests {
         type Entry = RefEntry;
 
         const CHEAP_MODE: bool = true;
-        const MAINTAIN_BITSET: bool = false;
+        const MAINTAIN_BITSET: bool = true;
         const ZERO_SCORE_IS_SIMPLICIAL: bool = false;
 
         fn pop(&mut self) -> Option<RefEntry> {
