@@ -30,6 +30,7 @@ macro_rules! ord_by_key {
     };
 }
 
+mod degree_queue;
 mod deterministic;
 mod min_degree;
 mod min_fill;
@@ -220,7 +221,7 @@ impl FillAffected {
 
     fn clear_inside(&mut self, nbrs: &[u32], bitset_words: usize) {
         if bitset_words > 0 {
-            self.inside.fill(0);
+            self.inside[..bitset_words].fill(0);
         } else {
             for &vertex in nbrs {
                 self.unmark_inside(vertex);
@@ -230,9 +231,13 @@ impl FillAffected {
 
     fn prepare_inside(&mut self, graph: &EliminationGraph, v: u32, nbrs: &[u32]) {
         if graph.bitset_words > 0 {
-            let start = v as usize * graph.bitset_words;
-            self.inside
-                .copy_from_slice(&graph.bitset[start..start + graph.bitset_words]);
+            // In bitset mode `inside` is a copy of v's row, so it is indexed
+            // by slot like the row is, and only its first `bitset_words` words
+            // are in use — a bitset re-indexed over the residual is shorter
+            // than one word per vertex of the graph.
+            let words = graph.bitset_words;
+            let start = graph.bitset_slot_of(v) * words;
+            self.inside[..words].copy_from_slice(&graph.bitset[start..start + words]);
         } else {
             for &vertex in nbrs {
                 self.mark_inside(vertex);
@@ -260,15 +265,15 @@ impl FillAffected {
             if graph.bitset_words > 0 {
                 let words = graph.bitset_words;
                 crate::meter::charge(words as u64);
-                let left_start = left as usize * words;
-                let right_start = right as usize * words;
+                let left_start = graph.bitset_slot_of(left) * words;
+                let right_start = graph.bitset_slot_of(right) * words;
                 for word in 0..words {
                     let mut common = graph.bitset[left_start + word]
                         & graph.bitset[right_start + word]
                         & !self.inside[word];
                     while common != 0 {
                         let bit = common.trailing_zeros() as usize;
-                        let vertex = (word * 64 + bit) as u32;
+                        let vertex = graph.bitset_vertex_at(word * 64 + bit);
                         self.increment(vertex);
                         common &= common - 1;
                     }

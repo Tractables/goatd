@@ -19,9 +19,12 @@
 
 use rustc_hash::FxHashMap;
 
-/// Maximum graph size for which full bitset adjacency is maintained.
+/// Maximum graph size for which bitset adjacency is indexed by vertex id.
 /// At n = 16384: 16384 * 256 words * 8 bytes = 32 MB per graph.
 const BITSET_THRESH: usize = 16384;
+
+/// Slot value for a vertex the bitset does not cover.
+const NO_SLOT: u32 = u32::MAX;
 
 /// Row length at which a membership map starts being maintained. Below it the
 /// linear scan wins: a few hundred contiguous `u32`s are a handful of cache
@@ -48,9 +51,27 @@ fn is_canonical(edges: &[(u32, u32)]) -> bool {
 }
 
 /// Whether a graph of `n` vertices and `num_edges` edges is kept as a flat
-/// bitset: small enough for the bitset to fit and dense enough for it to win.
+/// bitset indexed by vertex id: small enough for the bitset to fit and dense
+/// enough for it to win.
 fn bitset_mode(n: usize, num_edges: usize) -> bool {
     n <= BITSET_THRESH && num_edges.saturating_mul(128) > n.saturating_mul(n)
+}
+
+/// Whether a residual of `num_active` vertices and `num_edges` edges gets a
+/// bitset re-indexed over its active vertices.
+///
+/// The condition is the same break-even as everywhere else — a row of bits
+/// costs `num_active / 64` words against the marker path's average degree of
+/// `2·num_edges / num_active`, so bits win once
+/// `128·num_edges > num_active²` — and it is also the size bound. Rearranged,
+/// it says the bitset's `num_active² / 8` bytes are at most `16·num_edges`,
+/// twice what the adjacency rows already hold at `8·num_edges`, and the build
+/// releases those rows and their membership maps. So the residual's density
+/// caps the bitset against memory the graph is already holding, and there is
+/// no vertex count to pick: a residual dense enough to be worth covering is
+/// one whose rows already cost half of what covering it costs.
+fn residual_bitset_mode(num_active: usize, num_edges: usize) -> bool {
+    (num_edges as u128) * 128 > (num_active as u128) * (num_active as u128)
 }
 
 /// Build the membership map of one adjacency row.
@@ -173,12 +194,25 @@ pub(super) struct EliminationGraph {
     /// u32; the stamp wraps and clears the marker array when it does.
     elim_marker: Vec<u16>,
     elim_stamp: u16,
-    /// Flat bitset adjacency: vertex `v` occupies words
-    /// `v * bitset_words .. (v+1) * bitset_words`; bit `u` in that slice is
-    /// set iff edge (v, u) exists. Empty when bitset mode is disabled.
+    /// Flat bitset adjacency over *slots*: the vertex in slot `i` occupies
+    /// words `i * bitset_words .. (i+1) * bitset_words`, and bit `j` in that
+    /// slice is set iff there is an edge to the vertex in slot `j`. Empty when
+    /// bitset mode is disabled.
     pub(super) bitset: Vec<u64>,
-    /// Number of u64 words per vertex in `bitset`. 0 iff bitset is disabled.
+    /// Number of u64 words per slot in `bitset`. 0 iff bitset is disabled.
     pub(super) bitset_words: usize,
+    /// Slot of each vertex, or [`NO_SLOT`]. On a graph small enough to index
+    /// by vertex id this is the identity; on a large graph whose residual got
+    /// a bitset it covers the vertices that were active at promotion, which is
+    /// what keeps the bitset to the residual's size and not the graph's.
+    bitset_slot: Vec<u32>,
+    /// The vertex each slot stands for, so a set bit can be reported as the
+    /// vertex id every caller works in.
+    slot_vertex: Vec<u32>,
+    /// Whether slots are a re-indexing of the active vertices rather than
+    /// vertex ids. False keeps the hot paths free of the extra lookup, which
+    /// is what the graphs small enough to index by vertex id always did.
+    bitset_compact: bool,
     hardware_popcount: bool,
 }
 
@@ -195,8 +229,45 @@ impl EliminationGraph {
             elim_stamp: 0,
             bitset: Vec::new(),
             bitset_words: 0,
+            bitset_slot: Vec::new(),
+            slot_vertex: Vec::new(),
+            bitset_compact: false,
             hardware_popcount: hardware_popcount_available(),
         }
+    }
+
+    /// The slot holding `v`. Only valid in bitset mode, and only for a vertex
+    /// the bitset covers — every vertex that was active when it was built.
+    #[inline]
+    fn slot(&self, v: u32) -> usize {
+        if !self.bitset_compact {
+            return v as usize;
+        }
+        let slot = self.bitset_slot[v as usize];
+        debug_assert_ne!(slot, NO_SLOT, "vertex {v} is outside the bitset");
+        slot as usize
+    }
+
+    /// The vertex in `slot`.
+    #[inline]
+    fn vertex_at(&self, slot: usize) -> u32 {
+        if !self.bitset_compact {
+            return slot as u32;
+        }
+        self.slot_vertex[slot]
+    }
+
+    /// The slot holding `v`, for the callers outside this module that read
+    /// `bitset` directly.
+    #[inline]
+    pub(super) fn bitset_slot_of(&self, v: u32) -> usize {
+        self.slot(v)
+    }
+
+    /// The vertex in `slot`, for those same callers.
+    #[inline]
+    pub(super) fn bitset_vertex_at(&self, slot: usize) -> u32 {
+        self.vertex_at(slot)
     }
 
     /// Whether `neighbour` is in `vertex`'s adjacency row. Sparse mode only.
@@ -290,16 +361,7 @@ impl EliminationGraph {
             }
         }
         if bitset_mode(n, g.num_edges) {
-            let w = n.div_ceil(64);
-            g.bitset = vec![0u64; n * w];
-            g.bitset_words = w;
-            g.bitset_degree = g.adj.iter().map(|row| row.len() as u32).collect();
-            for v in 0..n {
-                for &u in g.adj[v].iter() {
-                    g.bitset[v * w + u as usize / 64] |= 1u64 << (u as usize % 64);
-                }
-            }
-            g.drop_row_indexes();
+            g.build_bitset(false);
         }
         g
     }
@@ -350,45 +412,111 @@ impl EliminationGraph {
     }
 
     /// True when promoting from adj-only to bitset-assisted representation is
-    /// worthwhile: density has crossed the break-even where bitset's
-    /// O(k · words) beats the marker path's O(k · avg_deg). With
-    /// `avg_deg = 2·num_edges / num_active` and `words ≈ n/64`, that break-even
-    /// is `128·num_edges > n · num_active` — `num_active`, not `n`, so
-    /// promotion still fires when fill edges densify the graph mid-elimination
-    /// even though `from_edges` saw it as sparse.
+    /// worthwhile.
+    ///
+    /// A graph small enough to index by vertex id promotes on density alone:
+    /// the bitset's O(k · words) beats the marker path's O(k · avg_deg) once
+    /// `128·num_edges > n · num_active` — `num_active`, not `n`, so promotion
+    /// still fires when fill edges densify the graph mid-elimination even
+    /// though `from_edges` saw it as sparse.
+    ///
+    /// A larger graph promotes on its residual instead: once elimination has
+    /// left a dense core, a bitset over the active vertices is the residual's
+    /// size and not the graph's. This is where an elimination on a dense core
+    /// costs its degree squared membership tests against the rows, and a row
+    /// of bits turns that into degree times words. See
+    /// [`residual_bitset_mode`] for why the density condition is also the size
+    /// bound.
     pub(super) fn should_promote_bitset(&self) -> bool {
         if self.bitset_words > 0 {
             return false;
         }
         let n = self.adj.len();
-        if n == 0 || n > BITSET_THRESH {
+        if n == 0 {
             return false;
         }
-        self.num_edges.saturating_mul(128) > n.saturating_mul(self.num_active.max(1))
+        if n <= BITSET_THRESH {
+            return self.num_edges.saturating_mul(128) > n.saturating_mul(self.num_active.max(1));
+        }
+        residual_bitset_mode(self.num_active, self.num_edges)
     }
 
     /// Allocate and populate the bitset adjacency from `adj`, switching the
     /// graph into bitset mode. After this, `adj` is no longer maintained, so
     /// a caller that reads `graph.adj` directly must not call this mid-loop.
+    ///
+    /// A graph of at most [`BITSET_THRESH`] vertices is indexed by vertex id;
+    /// a larger one is indexed over its active vertices and its rows are
+    /// released, since they are neither read nor maintained afterwards and on
+    /// a dense residual they are the larger of the two.
     pub(super) fn promote_bitset(&mut self) {
         debug_assert_eq!(self.bitset_words, 0);
         let n = self.adj.len();
-        if n == 0 || n > BITSET_THRESH {
+        if n == 0 {
             return;
         }
-        let w = n.div_ceil(64);
-        let mut bs = vec![0u64; n * w];
-        self.bitset_degree = self.adj.iter().map(|row| row.len() as u32).collect();
+        self.build_bitset(n > BITSET_THRESH);
+    }
+
+    /// Build the bitset from the adjacency rows. `compact` indexes it over the
+    /// active vertices and releases the rows; otherwise slots are vertex ids.
+    fn build_bitset(&mut self, compact: bool) {
+        let n = self.adj.len();
+        // Slots are vertex ids unless the graph is too large for that, in
+        // which case only the active vertices get one.
+        let mut bitset_slot = Vec::new();
+        let mut slot_vertex = Vec::new();
+        let slots = if compact {
+            bitset_slot = vec![NO_SLOT; n];
+            slot_vertex.reserve(self.num_active);
+            for (v, &live) in self.active.iter().enumerate() {
+                if live {
+                    bitset_slot[v] = slot_vertex.len() as u32;
+                    slot_vertex.push(v as u32);
+                }
+            }
+            slot_vertex.len()
+        } else {
+            n
+        };
+        self.bitset_compact = compact;
+        let w = slots.div_ceil(64);
+        let mut bitset = vec![0u64; slots * w];
+        let mut degree = vec![0u32; slots];
         for v in 0..n {
             if !self.active[v] {
                 continue;
             }
+            let vs = if compact { bitset_slot[v] as usize } else { v };
+            degree[vs] = self.adj[v].len() as u32;
+            let vb = vs * w;
             for &u in self.adj[v].iter() {
-                bs[v * w + u as usize / 64] |= 1u64 << (u as usize % 64);
+                let us = if compact {
+                    bitset_slot[u as usize] as usize
+                } else {
+                    u as usize
+                };
+                bitset[vb + us / 64] |= 1u64 << (us % 64);
             }
         }
-        self.bitset = bs;
+        if compact {
+            for row in self.adj.iter_mut() {
+                *row = Vec::new();
+            }
+        } else {
+            // An inactive vertex keeps the degree its row still reports, as
+            // the vertex-indexed build always has.
+            for (v, row) in self.adj.iter().enumerate() {
+                if !self.active[v] {
+                    degree[v] = row.len() as u32;
+                }
+            }
+        }
+        self.bitset = bitset;
+        self.bitset_degree = degree;
         self.bitset_words = w;
+        self.bitset_slot = bitset_slot;
+        self.slot_vertex = slot_vertex;
         self.drop_row_indexes();
     }
 
@@ -407,6 +535,9 @@ impl EliminationGraph {
             elim_stamp: self.elim_stamp,
             bitset: self.bitset.clone(),
             bitset_words: self.bitset_words,
+            bitset_slot: self.bitset_slot.clone(),
+            slot_vertex: self.slot_vertex.clone(),
+            bitset_compact: self.bitset_compact,
             hardware_popcount: self.hardware_popcount,
         }
     }
@@ -417,8 +548,8 @@ impl EliminationGraph {
         if u == v {
             return false;
         }
-        let ui = u as usize;
-        let vi = v as usize;
+        let ui = self.slot(u);
+        let vi = self.slot(v);
         let w = self.bitset_words;
         let word_u = ui / 64;
         let bit_u = 1u64 << (ui % 64);
@@ -439,7 +570,7 @@ impl EliminationGraph {
 
     pub(super) fn degree(&self, v: u32) -> usize {
         if self.bitset_words > 0 {
-            self.bitset_degree[v as usize] as usize
+            self.bitset_degree[self.slot(v)] as usize
         } else {
             self.adj[v as usize].len()
         }
@@ -470,8 +601,8 @@ impl EliminationGraph {
         popcount: impl Fn(u64) -> u64 + Copy,
     ) -> u64 {
         let words = self.bitset_words;
-        let left_start = left as usize * words;
-        let right_start = right as usize * words;
+        let left_start = self.slot(left) * words;
+        let right_start = self.slot(right) * words;
         difference_popcount_by(
             &self.bitset[left_start..left_start + words],
             &self.bitset[right_start..right_start + words],
@@ -482,14 +613,13 @@ impl EliminationGraph {
     pub(super) fn collect_live_nbrs_into(&self, v: u32, buf: &mut Vec<u32>) {
         let start_len = buf.len();
         if self.bitset_words > 0 {
-            let vi = v as usize;
             let w = self.bitset_words;
-            let vb = vi * w;
+            let vb = self.slot(v) * w;
             for j in 0..w {
                 let mut bits = self.bitset[vb + j];
                 while bits != 0 {
                     let lsb = bits.trailing_zeros() as usize;
-                    buf.push((j * 64 + lsb) as u32);
+                    buf.push(self.vertex_at(j * 64 + lsb));
                     bits &= bits - 1;
                 }
             }
@@ -507,8 +637,8 @@ impl EliminationGraph {
         if self.bitset_words > 0 {
             crate::meter::charge(1);
             let w = self.bitset_words;
-            let vi = v as usize;
-            self.bitset[u as usize * w + vi / 64] & (1u64 << (vi % 64)) != 0
+            let vi = self.slot(v);
+            self.bitset[self.slot(u) * w + vi / 64] & (1u64 << (vi % 64)) != 0
         } else {
             crate::meter::charge(self.row_lookup_units(u));
             self.row_contains(u, v)
@@ -646,13 +776,13 @@ impl EliminationGraph {
         mut fill_edges: Option<&mut Vec<(u32, u32)>>,
         popcount: impl Fn(u64) -> u32 + Copy,
     ) {
-        let vi = v as usize;
+        let vi = self.slot(v);
         let w = self.bitset_words;
         let vb = vi * w;
         let mut pushes: usize = 0;
 
         for &u_raw in neighbours {
-            let u = u_raw as usize;
+            let u = self.slot(u_raw);
             let ub = u * w;
             // The symmetric fill edge (bitset[wj] gaining bit u) is set when
             // wj's own outer-loop iteration runs, not here — bitset[wj] still
@@ -669,7 +799,7 @@ impl EliminationGraph {
                     let mut canonical = fill_mask;
                     while canonical != 0 {
                         let bit = canonical.trailing_zeros() as usize;
-                        let other = (j * 64 + bit) as u32;
+                        let other = self.vertex_at(j * 64 + bit);
                         if u_raw < other {
                             edges.push((u_raw, other));
                         }
@@ -689,8 +819,8 @@ impl EliminationGraph {
             self.bitset[vb + j] = 0;
         }
         self.bitset_degree[vi] = 0;
-        if self.active[vi] {
-            self.active[vi] = false;
+        if self.active[v as usize] {
+            self.active[v as usize] = false;
             self.num_active -= 1;
         }
         self.num_edges -= neighbours.len();
@@ -806,15 +936,17 @@ impl EliminationGraph {
         let vi = v as usize;
         if self.bitset_words > 0 {
             let w = self.bitset_words;
+            let vs = self.slot(v);
             for &u in nbrs {
-                self.bitset[u as usize * w + vi / 64] &= !(1u64 << (vi % 64));
-                self.bitset_degree[u as usize] -= 1;
+                let us = self.slot(u);
+                self.bitset[us * w + vs / 64] &= !(1u64 << (vs % 64));
+                self.bitset_degree[us] -= 1;
             }
-            let vb = vi * w;
+            let vb = vs * w;
             for j in 0..w {
                 self.bitset[vb + j] = 0;
             }
-            self.bitset_degree[vi] = 0;
+            self.bitset_degree[vs] = 0;
         } else {
             for &u in nbrs {
                 self.row_swap_remove(u, v);
@@ -853,9 +985,8 @@ impl EliminationGraph {
     /// Is the live neighbourhood of `v` a clique?
     pub(super) fn is_simplicial(&self, v: u32) -> bool {
         if self.bitset_words > 0 {
-            let vi = v as usize;
             let w = self.bitset_words;
-            let vb = vi * w;
+            let vb = self.slot(v) * w;
             let vbs = &self.bitset[vb..vb + w];
             let mut words_scanned = 0u64;
             for j in 0..w {
@@ -929,7 +1060,7 @@ impl EliminationGraph {
         }
 
         let w = self.bitset_words;
-        let vb = v as usize * w;
+        let vb = self.slot(v) * w;
         let mut endpoints: [u32; 2] = [0, 0];
         let mut found = 0usize;
         let mut total = 0u64;
@@ -937,7 +1068,7 @@ impl EliminationGraph {
         for j in 0..w {
             let mut bits = self.bitset[vb + j];
             while bits != 0 {
-                let u = (j * 64 + bits.trailing_zeros() as usize) as u32;
+                let u = self.vertex_at(j * 64 + bits.trailing_zeros() as usize);
                 bits &= bits - 1;
                 neighbours_scanned += 1;
                 // u itself is in N(v) and not in N(u), so one of the counted
@@ -992,7 +1123,7 @@ impl EliminationGraph {
 
     #[inline(always)]
     fn fill_count_of_bs_by(&self, v: u32, popcount: impl Fn(u64) -> u64 + Copy) -> u64 {
-        let vi = v as usize;
+        let vi = self.slot(v);
         let w = self.bitset_words;
         let vb = vi * w;
         let vbs = &self.bitset[vb..vb + w];
