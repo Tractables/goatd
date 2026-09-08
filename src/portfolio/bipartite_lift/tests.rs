@@ -85,7 +85,8 @@ fn a_cutoff_keeps_the_long_vertices_as_vertices() {
 
     let whole = price(&adjacency, &drop, u32::MAX, usize::MAX).expect("under the limit");
     assert_eq!(whole.kept, 0);
-    assert_eq!(whole.pairs, 4 * 1 + 10);
+    // Four clauses of two, one pair each, and the long clause's ten.
+    assert_eq!(whole.pairs, 14);
 
     let partial = price(&adjacency, &drop, 2, usize::MAX).expect("under the limit");
     assert_eq!((partial.kept, partial.kept_edges, partial.pairs), (1, 5, 4));
@@ -119,8 +120,8 @@ fn a_cutoff_keeps_the_long_vertices_as_vertices() {
 fn the_cutoffs_are_the_sides_own_degrees() {
     // A side of uniform degree has one rung, which is the whole side.
     let uniform = incidence(4, &[&[0, 1], &[1, 2], &[2, 3]]);
-    let adjacency = adjacency(&uniform);
-    assert_eq!(cutoffs(&adjacency, &[4, 5, 6]), vec![u32::MAX]);
+    let uniform_adjacency = adjacency(&uniform);
+    assert_eq!(cutoffs(&uniform_adjacency, &[4, 5, 6]), vec![u32::MAX]);
 
     // A side with a long vertex among short ones has rungs below the whole
     // side, largest first, and none of them equals the largest degree.
@@ -128,8 +129,8 @@ fn the_cutoffs_are_the_sides_own_degrees() {
         6,
         &[&[0, 1], &[1, 2], &[2, 3], &[3, 4], &[0, 1, 2, 3, 4, 5]],
     );
-    let adjacency = adjacency(&mixed);
-    let rungs = cutoffs(&adjacency, &[6, 7, 8, 9, 10]);
+    let mixed_adjacency = adjacency(&mixed);
+    let rungs = cutoffs(&mixed_adjacency, &[6, 7, 8, 9, 10]);
     assert_eq!(rungs[0], u32::MAX);
     assert!(
         rungs.len() > 1,
