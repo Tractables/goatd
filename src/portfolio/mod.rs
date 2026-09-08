@@ -1358,16 +1358,25 @@ fn run_bipartite_lift(
         return Ok(());
     };
 
-    let limit = graph.edges().len().saturating_mul(edge_factor as usize);
-    let projections: Vec<_> = [(&first, &second), (&second, &first)]
+    // Both sides are measured before either is built: a side whose
+    // eliminations would add too much is not a smaller search, and building it
+    // to find that out is the cost the measurement avoids. What is left is
+    // tried cheapest first, and the second side is built only if the first
+    // turns out to hold more edges than the input.
+    let limit = (edge_factor * graph.edges().len() as f64) as usize;
+    let mut sides: Vec<(&Vec<u32>, &Vec<u32>, usize)> = [(&first, &second), (&second, &first)]
         .into_iter()
         .filter(|(keep, drop)| !keep.is_empty() && !drop.is_empty())
-        .filter_map(|(keep, drop)| bipartite_lift::project(graph, &adjacency, keep, drop, limit))
+        .filter_map(|(keep, drop)| {
+            bipartite_lift::projected_pairs(&adjacency, drop, limit)
+                .map(|pairs| (keep, drop, pairs))
+        })
         .collect();
-    if projections.is_empty() {
+    if sides.is_empty() {
         give_up(trace);
         return Ok(());
     }
+    sides.sort_by_key(|&(_, _, pairs)| pairs);
 
     // The share is of the whole window, since that is what the stage spends:
     // a sub-run stops at its own hard deadline. Inside its share it keeps the
@@ -1376,18 +1385,21 @@ fn run_bipartite_lift(
     let window = config
         .hard_budget
         .unwrap_or_else(|| soft_budget.saturating_mul(2));
-    let per_side = window.mul_f64(BIPARTITE_LIFT_SHARE / projections.len() as f64);
-    for projection in projections {
+    let share = window.mul_f64(BIPARTITE_LIFT_SHARE);
+    for (keep, drop, pairs) in sides {
+        let Some(projection) = bipartite_lift::project(graph, &adjacency, keep, drop, pairs) else {
+            continue;
+        };
         let mut sub = config;
         sub.bipartite_lift = None;
-        sub.soft_budget = Some(per_side / 2);
-        sub.hard_budget = Some(per_side);
+        sub.soft_budget = Some(share / 2);
+        sub.hard_budget = Some(share);
         // A share too short for the trailing candidate drops it rather than
         // refusing the configuration: the sub-run is a search of the
         // projection, not a place to spend a FlowCutter window that small.
         sub.flowcutter_budget = config
             .flowcutter_budget
-            .map(|_| per_side / 2)
+            .map(|_| share / 2)
             .filter(|budget| *budget >= Duration::from_millis(MIN_FLOWCUTTER_CANDIDATE_MS));
         let sub_weights = projection.weights(weights);
         let produced = run_portfolio(
@@ -1402,27 +1414,30 @@ fn run_bipartite_lift(
         .into_decompositions()
         .into_iter()
         .next();
-        let Some(produced) = produced else {
-            continue;
-        };
         // What the lift would be worth is known from the projection's width
         // and the degrees of the side that was eliminated, so a lift that
-        // cannot beat what the other side already produced is not built.
-        if candidates
-            .best_width()
-            .is_some_and(|best| projection.lifted_width(&produced) > best)
-        {
-            continue;
+        // cannot beat what is already there is not built. Either way this side
+        // has had the stage's share and the other one is not tried after it.
+        match produced {
+            Some(produced)
+                if candidates
+                    .best_width()
+                    .is_none_or(|best| projection.lifted_width(&produced) <= best) =>
+            {
+                let outcome = candidates.push(projection.lift(graph, &produced)?, origin);
+                trace(CandidateTrace {
+                    stage: Stage::BipartiteLift,
+                    seed,
+                    pass: Pass::Only,
+                    outcome,
+                    elapsed: crate::meter::now().saturating_duration_since(started),
+                });
+            }
+            _ => give_up(trace),
         }
-        let outcome = candidates.push(projection.lift(graph, &produced)?, origin);
-        trace(CandidateTrace {
-            stage: Stage::BipartiteLift,
-            seed,
-            pass: Pass::Only,
-            outcome,
-            elapsed: crate::meter::now().saturating_duration_since(started),
-        });
+        return Ok(());
     }
+    give_up(trace);
     Ok(())
 }
 

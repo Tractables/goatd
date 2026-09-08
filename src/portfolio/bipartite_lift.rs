@@ -17,6 +17,14 @@
 //! vertex of an incidence graph collapses into an edge set the primal graph
 //! already has.
 //!
+//! Both sides are measured before either is built: eliminating a side of
+//! degrees d costs the sum of d(d-1)/2, which bounds the projection's edge
+//! count and is the work of building it. Only the cheaper side is built, and
+//! the other only if that one turns out to hold more edges than the input. A
+//! side whose projection would keep too large a share of the vertices is not
+//! measured at all: decomposing nearly the same graph again is what the stage
+//! is spending its share of the window on.
+//!
 //! Putting a vertex back needs a bag holding all of its neighbours, and one
 //! exists because those neighbours are a clique of the projection. The bag is
 //! found through the rooted bag tree: of the neighbours, take the one whose
@@ -85,41 +93,47 @@ pub(super) struct Projection {
     pub(super) eliminated_width: u32,
 }
 
+/// What eliminating `drop` would cost, or `None` when that is over `limit`.
+///
+/// The clique of an eliminated vertex of degree d holds d(d-1)/2 edges, and
+/// they are counted with their repeats: a pair two eliminations both cover is
+/// one edge of the projection, but it costs the work of two here. So this is
+/// an upper bound on the projection's edge count and the exact cost of
+/// building it, and it is what decides which side to build.
+pub(super) fn projected_pairs(adjacency: &[Vec<u32>], drop: &[u32], limit: usize) -> Option<usize> {
+    let mut pairs = 0usize;
+    for &vertex in drop {
+        let degree = adjacency[vertex as usize].len();
+        pairs = pairs.saturating_add(degree * degree.saturating_sub(1) / 2);
+        if pairs > limit {
+            return None;
+        }
+    }
+    Some(pairs)
+}
+
 /// Project `graph` onto `keep`, eliminating `drop`, or `None` when the
-/// projection is not worth decomposing.
+/// projection holds more edges than the input.
 ///
 /// `keep` and `drop` are the two sides of a 2-colouring, so every edge of the
 /// input runs between them and the projection's edges are exactly the cliques
-/// the eliminations leave behind.
+/// the eliminations leave behind. `pairs` is what
+/// [`projected_pairs`] returned for this side.
 ///
-/// Two refusals. `edge_limit` bounds the cliques before any of them is built,
-/// so a side holding a high-degree vertex costs nothing to reject. Then the
-/// projection has to be smaller than the input: fewer vertices, which
-/// eliminating a non-empty side always gives, and no more edges, which it
-/// often does not. On the incidence graph of a formula the clause side
-/// projects onto the primal graph, which is smaller on both counts; on a grid
-/// the same construction turns every degree-4 vertex into six edges and leaves
-/// more edges than it started with, and there the lift is work for nothing.
+/// A projection is worth decomposing only if it is smaller than the input:
+/// fewer vertices, which eliminating a non-empty side always gives, and no
+/// more edges, which it often does not. On the incidence graph of a formula
+/// the clause side projects onto the primal graph, which is smaller on both
+/// counts; on a grid the same construction turns every degree-4 vertex into
+/// six edges and leaves more edges than it started with, and there the lift is
+/// work for nothing.
 pub(super) fn project(
     graph: &Graph,
     adjacency: &[Vec<u32>],
     keep: &[u32],
     drop: &[u32],
-    edge_limit: usize,
+    pairs: usize,
 ) -> Option<Projection> {
-    // The clique of an eliminated vertex of degree d holds d(d-1)/2 edges, and
-    // they are counted with their repeats: a pair two eliminations both cover
-    // is one edge of the projection, but it costs the work of two here. Asking
-    // before any of it is built keeps a side whose projection would be dense
-    // from being built at all.
-    let mut pairs = 0usize;
-    for &vertex in drop {
-        let degree = adjacency[vertex as usize].len();
-        pairs = pairs.saturating_add(degree * degree.saturating_sub(1) / 2);
-        if pairs > edge_limit {
-            return None;
-        }
-    }
     crate::meter::charge(pairs as u64);
 
     let mut local = vec![u32::MAX; graph.num_vertices() as usize];

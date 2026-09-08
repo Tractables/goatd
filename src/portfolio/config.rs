@@ -71,7 +71,9 @@ const DEFAULT_TRIANGULATION_REFINEMENT_VERTICES: u32 = 2_000;
 /// portfolio would otherwise be running on. It is only the guard on building
 /// one: a projection that is built and turns out to hold more edges than the
 /// input is dropped whatever this says.
-const DEFAULT_BIPARTITE_LIFT_EDGE_FACTOR: u32 = 4;
+/// The bipartite lift runs on a side whose eliminations would add fewer than
+/// this multiple of the input's edges, counted with repeats.
+const DEFAULT_BIPARTITE_LIFT_EDGE_FACTOR: f64 = 3.0;
 
 /// Dimensions the hedge places the vertices in, one weighted stage each, in
 /// this order. Which graphs a dimension improves is close to arbitrary and two
@@ -501,7 +503,7 @@ pub struct PortfolioConfig {
     pub(super) maximum_cardinality: Option<u32>,
     pub(super) minimal_triangulation: Option<u32>,
     pub(super) triangulation_refinement: Option<u32>,
-    pub(super) bipartite_lift: Option<u32>,
+    pub(super) bipartite_lift: Option<f64>,
 }
 
 /// Two configurations are equal when they ask for the same run, the reserve
@@ -524,7 +526,7 @@ impl PartialEq for PortfolioConfig {
             && self.maximum_cardinality == other.maximum_cardinality
             && self.minimal_triangulation == other.minimal_triangulation
             && self.triangulation_refinement == other.triangulation_refinement
-            && self.bipartite_lift == other.bipartite_lift
+            && self.bipartite_lift.map(f64::to_bits) == other.bipartite_lift.map(f64::to_bits)
     }
 }
 
@@ -961,18 +963,27 @@ impl PortfolioConfig {
         self
     }
 
-    /// Run the bipartite lift on a bipartite graph, on a projection of at most
-    /// `edge_factor` times the input's edges.
+    /// Run the bipartite lift on a bipartite graph, on the side whose
+    /// eliminations add fewer than `edge_factor` times the input's edges.
     ///
     /// The stage 2-colours the graph, eliminates one side into the other — on
     /// a bipartite graph a side is an independent set, so those eliminations
     /// add no fill among themselves and each leaves a bag of its own
     /// neighbourhood — decomposes what is left with a share of the budget, and
-    /// puts the eliminated side back. Both sides are tried where both fit
-    /// under the limit. It needs a soft budget to take its share of, and it is
-    /// one candidate among the others: the portfolio keeps whichever
-    /// decomposition is narrower, so the stage costs time and never width.
-    pub fn with_bipartite_lift(mut self, edge_factor: u32) -> Self {
+    /// puts the eliminated side back.
+    ///
+    /// `edge_factor` is measured against the sum of d(d-1)/2 over the side
+    /// being eliminated, which counts a projected edge once per elimination
+    /// that covers it and so is an upper bound on the projection's edge count:
+    /// on the graphs it was set from the bound is about twice the real count.
+    /// Both sides are measured this way before either is built, only the
+    /// cheaper one is built, and the other only if that one turns out to hold
+    /// more edges than the input. A side over the factor is not built at all,
+    /// and if neither is, the stage keeps its share of the window for the rest
+    /// of the schedule. The stage is one candidate among the others: the
+    /// portfolio keeps whichever decomposition is narrower, so it costs time
+    /// and never width.
+    pub fn with_bipartite_lift(mut self, edge_factor: f64) -> Self {
         self.bipartite_lift = Some(edge_factor);
         self
     }
@@ -1043,6 +1054,14 @@ pub(super) fn validate(config: PortfolioConfig) -> Result<(), Error> {
     {
         return Err(Error::InvalidInput(
             "portfolio FlowCutter budget does not fit in milliseconds".into(),
+        ));
+    }
+    if config
+        .bipartite_lift
+        .is_some_and(|factor| !(factor.is_finite() && factor > 0.0))
+    {
+        return Err(Error::InvalidInput(
+            "portfolio bipartite-lift edge factor must be finite and above zero".into(),
         ));
     }
     if config.diverse_sampling_runs > MAX_DIVERSE_SAMPLING_RUNS {
