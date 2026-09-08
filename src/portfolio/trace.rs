@@ -36,6 +36,9 @@ pub enum Stage {
     Recombined,
     /// The trailing FlowCutter candidate.
     FlowCutter,
+    /// The lift of a decomposition of one side's projection, on a bipartite
+    /// graph.
+    BipartiteLift,
     /// A hedge's weighted stage as a whole, rather than one of its candidates.
     WeightedStage,
     /// The ordinary sampled restarts as a whole, rather than one of them.
@@ -62,6 +65,7 @@ impl Stage {
             Stage::FlowCutter => 8,
             Stage::WeightedStage => 9,
             Stage::SampledRestarts => 10,
+            Stage::BipartiteLift => 11,
             Stage::Diverse { degree_coefficient } => {
                 100 + u32::from(degree_coefficient.cast_unsigned())
             }
@@ -80,6 +84,7 @@ impl fmt::Display for Stage {
             }
             Stage::Sample => formatter.write_str("sample"),
             Stage::MaximumCardinality => formatter.write_str("maximum-cardinality"),
+            Stage::BipartiteLift => formatter.write_str("bipartite-lift"),
             Stage::MinimalTriangulation => formatter.write_str("minimal-triangulation"),
             Stage::Minimalized => formatter.write_str("minimalized"),
             Stage::Recombined => formatter.write_str("recombined"),
@@ -133,7 +138,9 @@ pub enum CandidateOutcome {
         /// The total size of its bags.
         total_bag_size: usize,
         /// Its bag mass and widest separator, on a traced run; `None` where
-        /// the run has no sink to report them to and does not compute them.
+        /// the run has no sink to report them to and does not compute them,
+        /// and for a candidate wider than the incumbent on a run that keeps
+        /// only its best, which is dropped before they are computed.
         shape: Option<Shape>,
         /// Whether the portfolio would now return this one.
         best: bool,

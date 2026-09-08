@@ -84,7 +84,7 @@ seconds on one CPU.
 
 | Solver | Nontrivial | Exact best | Within +1 | Within +4 |
 | --- | ---: | ---: | ---: | ---: |
-| goatd portfolio | **9,351 (99.3%)** | **8,683 (92.2%)** | **9,112 (96.8%)** | **9,233 (98.1%)** |
+| goatd portfolio | **9,339 (99.2%)** | **8,832 (93.8%)** | **9,176 (97.5%)** | **9,260 (98.4%)** |
 | HTD | 9,203 (97.8%) | 1,819 (19.3%) | 3,355 (35.6%) | 6,591 (70.0%) |
 | Jdrasil heuristic | 9,095 (96.6%) | 790 (8.4%) | 2,126 (22.6%) | 5,305 (56.4%) |
 | Tamaki PACE 2017 | 8,240 (87.5%) | 644 (6.8%) | 1,256 (13.3%) | 3,231 (34.3%) |
@@ -119,7 +119,7 @@ goatd has no accompanying paper, so cite the software:
   title        = {goatd: Greatest Of All Tree Decompositions},
   year         = {2026},
   howpublished = {\url{https://github.com/Tractables/goatd}},
-  note         = {Rust library and command-line solver, version 0.1.2}
+  note         = {Rust library and command-line solver, version 0.2.0}
 }
 ```
 

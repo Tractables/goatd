@@ -569,6 +569,38 @@ fn a_produced_candidate_carries_its_shape() {
     assert!(produced > 0);
 }
 
+/// A run that keeps only its best drops a candidate wider than the incumbent
+/// before its shape is computed, so the trace reports that candidate without
+/// one and every other candidate with one.
+#[test]
+fn a_best_only_run_shapes_only_the_candidates_it_keeps() {
+    let graph = grid(5);
+    let weight = vec![1; graph.num_vertices() as usize];
+    let mut best_width = u32::MAX;
+    let mut shaped = 0;
+    let mut unshaped = 0;
+    decompose_traced(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard(),
+        &mut |trace| {
+            if let CandidateOutcome::Produced { width, shape, .. } = trace.outcome {
+                if width <= best_width {
+                    assert!(shape.is_some(), "{trace:?} is not wider than the incumbent");
+                    shaped += 1;
+                } else {
+                    assert!(shape.is_none(), "{trace:?} is wider than the incumbent");
+                    unshaped += 1;
+                }
+                best_width = best_width.min(width);
+            }
+        },
+    )
+    .unwrap();
+    assert!(shaped > 0, "{shaped} shaped, {unshaped} dropped");
+}
+
 /// Every candidate comes back with the bags an adjacent bag contains
 /// contracted, as the winner always did, and with the stage, seed and pass
 /// that produced it, which the trace reported as it finished.

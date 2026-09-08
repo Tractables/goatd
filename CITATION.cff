@@ -27,5 +27,5 @@ keywords:
 license: Apache-2.0
 repository-code: https://github.com/Tractables/goatd
 url: https://tractables.github.io/goatd/
-version: 0.1.2
-date-released: '2026-08-30'
+version: 0.2.0
+date-released: '2026-09-08'
