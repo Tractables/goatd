@@ -2,9 +2,15 @@
 //!
 //! Every construction here produces a whole tree decomposition and the caller
 //! keeps the narrowest. That throws away the good bags of every other one. This
-//! module keeps them instead: it collects the bags of all the decompositions a
-//! run produced and searches, over that pool, for the narrowest tree
+//! module keeps them instead: it holds the best few decompositions a run
+//! produced, pools their bags, and searches that pool for the narrowest tree
 //! decomposition whose every bag comes from it.
+//!
+//! The pool gives each decomposition it keeps an equal share of its bags, so no
+//! one of them fills it, and it takes nothing from a decomposition that does
+//! not fit its share. Each is minimalised on the way in where there is time for
+//! it, so the bags pooled are the cliques of a minimal triangulation rather
+//! than whatever the elimination left.
 //!
 //! The search is the dynamic programme of Bouchitté and Todinca, "Treewidth and
 //! minimum fill-in: grouping the minimal separators", SIAM Journal on Computing
@@ -43,11 +49,17 @@
 //! The pool always holds the bags of the run's own best decomposition, so the
 //! search does not come back wider than that.
 //!
+//! After the first answer the widest pieces of it — a bag with the bags next to
+//! it in the tree — are decomposed on their own by MCS-M and their cliques
+//! added to the pool, and the programme runs again over the longer list. That
+//! is the growth step of Tamaki's heuristic, and it stops at the deadline or
+//! when a round adds nothing.
+//!
 //! What it costs: a traversal of the graph per pool bag, then one pass over the
-//! blocks. What it holds: the pool and one vertex list per block, both capped
-//! by a constant (see [`Limits`]). It stops collecting rather than exceed
-//! either cap and searches the part of the pool it took in, and it hands back
-//! nothing at its deadline rather than a part-built answer.
+//! blocks, per round. What it holds: the pool and one vertex list per block,
+//! both capped by a constant (see [`Limits`]). It stops collecting rather than
+//! exceed either cap and searches the part of the pool it took in, and it hands
+//! back nothing at its deadline rather than a part-built answer.
 
 use std::time::Instant;
 
@@ -66,6 +78,12 @@ const MAX_POOL_BAGS: usize = 4_000;
 const MAX_POOL_VERTICES: usize = 1_000_000;
 /// Vertex ids the block map may hold.
 const MAX_BLOCK_VERTICES: usize = 32_000_000;
+/// Decompositions the pool keeps, each with an equal share of the bags.
+const POOL_CANDIDATES: usize = 4;
+/// Rounds of growth after the first answer.
+const GROWTH_ROUNDS: usize = 2;
+/// Pieces re-decomposed per round.
+const GROWTH_PIECES: usize = 8;
 /// Blocks evaluated between two reads of the clock.
 const DEADLINE_STRIDE: usize = 64;
 
@@ -76,12 +94,15 @@ const DEADLINE_STRIDE: usize = 64;
 /// by the map the blocks are looked up in. A graph whose pool would need more
 /// is searched as far as the caps reach; what is settled by then still gives a
 /// valid decomposition, only a wider one. The bag count is capped as well,
-/// because the search costs one pass over the graph per bag.
+/// because the search costs one pass over the graph per bag, and it is shared
+/// out: each of the [`Limits::candidates`] decompositions the pool keeps gets
+/// the same quota, so no one of them fills the pool on its own.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Limits {
     pool_vertices: usize,
     block_vertices: usize,
     bags: usize,
+    candidates: usize,
 }
 
 impl Limits {
@@ -91,64 +112,99 @@ impl Limits {
             pool_vertices: MAX_POOL_VERTICES,
             block_vertices: MAX_BLOCK_VERTICES,
             bags: MAX_POOL_BAGS,
+            candidates: POOL_CANDIDATES,
         }
+    }
+
+    /// How many decompositions the pool keeps.
+    pub(crate) fn candidates(&self) -> usize {
+        self.candidates
+    }
+
+    /// The bags one kept decomposition may contribute.
+    pub(crate) fn quota(&self) -> usize {
+        self.bags / self.candidates.max(1)
     }
 }
 
-/// Distinct bags collected from the decompositions a run produced.
+/// The best few decompositions a run produced, kept whole so their bags can be
+/// pooled together.
 ///
-/// A bag is held once however many decompositions carried it. The pool stops
-/// growing at its caps: a stage reading a full pool searches over the bags that
-/// arrived first, which is a smaller search rather than a wrong one.
+/// A decomposition is kept only if it fits its share of the pool, so a graph
+/// whose candidates carry tens of thousands of bags keeps nothing and the
+/// stage has nothing to do. What is kept is ranked the way the candidate set
+/// ranks it, so the bags that go into the pool are the bags of the narrowest
+/// decompositions the run has, not of the first ones it produced.
 pub(crate) struct BagPool {
-    bags: Vec<Vec<u32>>,
-    seen: FxHashSet<Vec<u32>>,
-    stored: usize,
+    kept: Vec<TreeDecomposition>,
     limits: Limits,
 }
 
 impl BagPool {
     pub(crate) fn new(limits: Limits) -> Self {
         Self {
-            bags: Vec::new(),
-            seen: FxHashSet::default(),
-            stored: 0,
+            kept: Vec::new(),
             limits,
         }
     }
 
-    /// Whether another bag fits.
-    fn has_room(&self) -> bool {
-        self.bags.len() < self.limits.bags && self.stored < self.limits.pool_vertices
-    }
-
-    /// Take the bags of one decomposition.
+    /// Offer one decomposition to the pool.
     pub(crate) fn absorb(&mut self, decomposition: &TreeDecomposition) {
-        for bag in decomposition.bags() {
-            if !self.has_room() {
-                return;
-            }
-            let mut vertices = bag.vertices().to_vec();
-            vertices.sort_unstable();
-            vertices.dedup();
-            if self.seen.contains(&vertices) {
-                continue;
-            }
-            self.stored += vertices.len();
-            self.seen.insert(vertices.clone());
-            self.bags.push(vertices);
+        if decomposition.bags().len() > self.limits.quota() {
+            return;
         }
+        let key = decomposition.quality_key();
+        let position = self.kept.partition_point(|kept| kept.quality_key() <= key);
+        if position >= self.limits.candidates {
+            return;
+        }
+        self.kept.insert(position, decomposition.clone());
+        self.kept.truncate(self.limits.candidates);
     }
 
-    /// How many distinct bags the pool holds.
+    /// The bags of everything kept, narrowest decomposition first, each one
+    /// minimalised where there is time for it so its bags are the cliques of a
+    /// minimal triangulation rather than whatever the elimination left.
+    fn assemble(&self, graph: &Graph, deadline: Option<Instant>) -> Vec<Vec<u32>> {
+        let mut bags: Vec<Vec<u32>> = Vec::new();
+        let mut seen: FxHashSet<Vec<u32>> = FxHashSet::default();
+        let mut stored = 0usize;
+        for kept in &self.kept {
+            if expired(deadline) {
+                break;
+            }
+            let source = if super::minimalize_fits(kept, graph, deadline) {
+                super::minimalize_at(kept.clone(), graph, deadline)
+            } else {
+                kept.clone()
+            };
+            for bag in source.bags() {
+                if bags.len() >= self.limits.bags || stored >= self.limits.pool_vertices {
+                    return bags;
+                }
+                let mut vertices = bag.vertices().to_vec();
+                vertices.sort_unstable();
+                vertices.dedup();
+                if seen.contains(&vertices) {
+                    continue;
+                }
+                stored += vertices.len();
+                seen.insert(vertices.clone());
+                bags.push(vertices);
+            }
+        }
+        bags
+    }
+
+    /// How many decompositions the pool holds.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.bags.len()
+        self.kept.len()
     }
 
     /// Whether the pool holds nothing.
     pub(crate) fn is_empty(&self) -> bool {
-        self.bags.is_empty()
+        self.kept.is_empty()
     }
 }
 
@@ -168,6 +224,10 @@ struct Block {
 /// Search the pool for the narrowest tree decomposition whose bags all come
 /// from it.
 ///
+/// After the first answer, the widest pieces of it are re-decomposed on their
+/// own and their bags added to the pool, which is Tamaki's growth step; the
+/// programme is run again over the longer list while there is time for it.
+///
 /// Returns `None` when the pool is empty, when the search would exceed its
 /// [`Limits`], or when `deadline` passes.
 pub(crate) fn recombine(
@@ -175,27 +235,157 @@ pub(crate) fn recombine(
     graph: &Graph,
     deadline: Option<Instant>,
 ) -> Option<TreeDecomposition> {
-    if pool.is_empty() {
+    if pool.is_empty() || expired(deadline) {
         return None;
     }
+    let adjacency = adjacency_lists(graph);
+    let mut bags = pool.assemble(graph, deadline);
+    if bags.is_empty() {
+        return None;
+    }
+    let mut best = search(&bags, graph, &adjacency, pool.limits, deadline)?;
+    for _ in 0..GROWTH_ROUNDS {
+        if expired(deadline) || !grow(&mut bags, &best, &adjacency, pool.limits, deadline) {
+            break;
+        }
+        let Some(next) = search(&bags, graph, &adjacency, pool.limits, deadline) else {
+            break;
+        };
+        if next.quality_key() >= best.quality_key() {
+            break;
+        }
+        best = next;
+    }
+    Some(best)
+}
+
+/// One run of the dynamic programme over `bags`.
+fn search(
+    bags: &[Vec<u32>],
+    graph: &Graph,
+    adjacency: &[Vec<u32>],
+    limits: Limits,
+    deadline: Option<Instant>,
+) -> Option<TreeDecomposition> {
     let n = graph.num_vertices() as usize;
     let mut search = Search {
         n,
-        adjacency: adjacency_lists(graph),
-        limits: pool.limits,
+        adjacency,
+        limits,
         blocks: Vec::new(),
         index: FxHashMap::default(),
         stored: 0,
-        subblocks: vec![Vec::new(); pool.bags.len()],
+        subblocks: vec![Vec::new(); bags.len()],
         collected: 0,
-        bag_sizes: pool.bags.iter().map(Vec::len).collect(),
+        bag_sizes: bags.iter().map(Vec::len).collect(),
         mark: vec![u32::MAX; n],
         stamp: 0,
         seen: vec![false; n],
     };
-    search.collect(pool, deadline)?;
+    search.collect(bags, deadline)?;
     search.evaluate(deadline)?;
-    search.build(pool, graph, deadline)
+    search.build(bags, graph, deadline)
+}
+
+/// Take the widest bags of `answer`, decompose the piece around each of them on
+/// its own, and add the bags that come back to `bags`.
+///
+/// A piece is one bag together with the bags next to it in the tree: small,
+/// overlapping, and where the width of the answer is. Decomposing it by MCS-M
+/// gives the cliques of a minimal triangulation of that piece, which are the
+/// bags the programme could not have assembled from the pool it was given.
+/// Returns whether anything new was added.
+fn grow(
+    bags: &mut Vec<Vec<u32>>,
+    answer: &TreeDecomposition,
+    adjacency: &[Vec<u32>],
+    limits: Limits,
+    deadline: Option<Instant>,
+) -> bool {
+    let width = answer.treewidth();
+    let mut widest: Vec<usize> = (0..answer.bags().len())
+        .filter(|&index| answer.bags()[index].vertices().len() as u32 > width)
+        .collect();
+    widest.sort_by_key(|&index| std::cmp::Reverse(answer.bags()[index].vertices().len()));
+    widest.truncate(GROWTH_PIECES);
+    let known: FxHashSet<&Vec<u32>> = bags.iter().collect();
+    let mut fresh: Vec<Vec<u32>> = Vec::new();
+    let mut done: Vec<Vec<u32>> = Vec::new();
+    let mut stored: usize = bags.iter().map(Vec::len).sum();
+    for index in widest {
+        if expired(deadline) || bags.len() + fresh.len() >= limits.bags {
+            break;
+        }
+        let mut piece: Vec<u32> = answer.bags()[index].vertices().to_vec();
+        for &next in &answer.adjacency()[index] {
+            piece.extend_from_slice(answer.bags()[next].vertices());
+        }
+        piece.sort_unstable();
+        piece.dedup();
+        if done.contains(&piece) {
+            continue;
+        }
+        done.push(piece.clone());
+        for bag in decompose_piece(&piece, adjacency, deadline) {
+            if known.contains(&bag) || fresh.contains(&bag) {
+                continue;
+            }
+            if bags.len() + fresh.len() >= limits.bags || stored >= limits.pool_vertices {
+                break;
+            }
+            stored += bag.len();
+            fresh.push(bag);
+        }
+    }
+    let added = !fresh.is_empty();
+    bags.append(&mut fresh);
+    added
+}
+
+/// The bags of a minimal triangulation of the subgraph `piece` induces, in the
+/// vertex numbering of the whole graph.
+fn decompose_piece(
+    piece: &[u32],
+    adjacency: &[Vec<u32>],
+    deadline: Option<Instant>,
+) -> Vec<Vec<u32>> {
+    let mut position = FxHashMap::default();
+    for (local, &vertex) in piece.iter().enumerate() {
+        position.insert(vertex, local as u32);
+    }
+    let mut edges = Vec::new();
+    for (local, &vertex) in piece.iter().enumerate() {
+        for &next in &adjacency[vertex as usize] {
+            if let Some(&other) = position.get(&next)
+                && (other as usize) > local
+            {
+                edges.push((local as u32, other));
+            }
+        }
+    }
+    let graph = Graph::new(piece.len() as u32, edges);
+    let budget = deadline.map(|deadline| crate::deadline::remaining(deadline) / 4);
+    let Ok(decomposition) = crate::elimination::decompose(
+        &graph,
+        crate::elimination::Order::MinimalTriangulation,
+        0,
+        budget,
+    ) else {
+        return Vec::new();
+    };
+    decomposition
+        .bags()
+        .iter()
+        .map(|bag| {
+            let mut vertices: Vec<u32> = bag
+                .vertices()
+                .iter()
+                .map(|&local| piece[local as usize])
+                .collect();
+            vertices.sort_unstable();
+            vertices
+        })
+        .collect()
 }
 
 /// Adjacency lists over `0..num_vertices`.
@@ -214,9 +404,9 @@ struct Split {
     separators: Vec<Vec<u32>>,
 }
 
-struct Search {
+struct Search<'a> {
     n: usize,
-    adjacency: Vec<Vec<u32>>,
+    adjacency: &'a [Vec<u32>],
     limits: Limits,
     blocks: Vec<Block>,
     index: FxHashMap<Vec<u32>, usize>,
@@ -237,7 +427,7 @@ struct Search {
     seen: Vec<bool>,
 }
 
-impl Search {
+impl Search<'_> {
     /// Mark `vertices` and return the stamp that identifies them.
     fn mark_set(&mut self, vertices: &[u32]) -> u32 {
         self.stamp = self.stamp.wrapping_add(1);
@@ -317,8 +507,8 @@ impl Search {
 
     /// Walk the pool: for each bag, the blocks it splits the graph into, and
     /// the block it caps on the far side of each of them.
-    fn collect(&mut self, pool: &BagPool, deadline: Option<Instant>) -> Option<()> {
-        for (bag_index, bag) in pool.bags.iter().enumerate() {
+    fn collect(&mut self, bags: &[Vec<u32>], deadline: Option<Instant>) -> Option<()> {
+        for (bag_index, bag) in bags.iter().enumerate() {
             if expired(deadline) {
                 return None;
             }
@@ -503,7 +693,7 @@ impl Search {
     /// Assemble the narrowest decomposition the settled widths describe.
     fn build(
         &mut self,
-        pool: &BagPool,
+        bags_pool: &[Vec<u32>],
         graph: &Graph,
         deadline: Option<Instant>,
     ) -> Option<TreeDecomposition> {
@@ -511,7 +701,7 @@ impl Search {
             return None;
         }
         let mut best: Option<(u32, usize)> = None;
-        for (index, bag) in pool.bags.iter().enumerate().take(self.collected) {
+        for (index, bag) in bags_pool.iter().enumerate().take(self.collected) {
             let mut width = bag.len().saturating_sub(1) as u32;
             let mut usable = true;
             for &sub in &self.subblocks[index] {
@@ -526,7 +716,7 @@ impl Search {
             }
         }
         let (_, root) = best?;
-        let mut bags: Vec<Vec<u32>> = vec![pool.bags[root].clone()];
+        let mut bags: Vec<Vec<u32>> = vec![bags_pool[root].clone()];
         let mut edges: Vec<(usize, usize)> = Vec::new();
         let mut pending: Vec<(usize, usize)> =
             self.subblocks[root].iter().map(|&b| (b, 0usize)).collect();
@@ -537,7 +727,7 @@ impl Search {
             let position = bags.len();
             match self.blocks[block].best_cap {
                 Some(cap) => {
-                    bags.push(pool.bags[cap].clone());
+                    bags.push(bags_pool[cap].clone());
                     let component = std::mem::take(&mut self.blocks[block].component);
                     let inside = self.mark_set(&component);
                     self.blocks[block].component = component;

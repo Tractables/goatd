@@ -26,8 +26,8 @@ use crate::{Error, Graph, TreeDecomposition};
 pub use candidates::Candidate;
 use candidates::{CandidateSet, ScheduleStop};
 use config::{
-    DIVERSE_PASS_RESERVE, FLOWCUTTER_RESERVE, MAX_RECOMBINATION_RESERVE,
-    MIN_FLOWCUTTER_CANDIDATE_MS, MIN_RECOMBINATION_RESERVE, RECOMBINATION_WINDOW_SHARE,
+    DIVERSE_PASS_RESERVE, FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS,
+    MIN_RECOMBINATION_RESERVE, RECOMBINATION_PASSES, RECOMBINATION_WINDOW_SHARE,
 };
 
 pub use config::{
@@ -1321,7 +1321,7 @@ fn run_portfolio(
     let window_end = deadlines.hard;
     let recombine = recombination_gate(graph, config, window_end);
     let reserve = recombine
-        .then(|| recombination_reserve(started, window_end))
+        .then(|| recombination_reserve(graph, started, window_end))
         .flatten();
     let hard_deadline = match (window_end, reserve) {
         (Some(end), Some(reserve)) => end
@@ -2073,15 +2073,33 @@ fn recombination_gate(graph: &Graph, config: PortfolioConfig, window_end: Option
         && window_end.is_some()
 }
 
-/// The share of the hard window the stage is given, clamped so a short window
-/// still leaves it something to run in and a long one does not hand it more
-/// than the search can use.
-fn recombination_reserve(started: Instant, window_end: Option<Instant>) -> Option<Duration> {
+/// What the stage is given: what its own search is estimated to cost on this
+/// graph, never more than a share of the window and never less than a floor.
+///
+/// The estimate is priced against the pool rather than the window, because the
+/// pool is what the search reads. The pool holds at most its quota of bags per
+/// decomposition it keeps, and an elimination leaves about one bag per vertex,
+/// so the bags it will hold are the smaller of those two; each of them costs a
+/// pass over the graph, several times over.
+fn recombination_reserve(
+    graph: &Graph,
+    started: Instant,
+    window_end: Option<Instant>,
+) -> Option<Duration> {
     let window = window_end?.saturating_duration_since(started);
-    Some(
-        (window / RECOMBINATION_WINDOW_SHARE)
-            .clamp(MIN_RECOMBINATION_RESERVE, MAX_RECOMBINATION_RESERVE),
-    )
+    let limits = decomposition::BagPoolLimits::standard();
+    let bags = (graph.num_vertices() as u64)
+        .min(limits.quota() as u64)
+        .saturating_mul(limits.candidates() as u64);
+    let units = bags
+        .saturating_mul(graph.num_vertices() as u64 + graph.edges().len() as u64)
+        .saturating_mul(RECOMBINATION_PASSES);
+    let estimate = Duration::from_millis(crate::meter::milliseconds_for_units(units));
+    let share = window / RECOMBINATION_WINDOW_SHARE;
+    Some(estimate.clamp(
+        MIN_RECOMBINATION_RESERVE,
+        share.max(MIN_RECOMBINATION_RESERVE),
+    ))
 }
 
 /// Run one sampled min-fill order, then up to

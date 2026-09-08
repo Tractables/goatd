@@ -24,7 +24,29 @@ fn an_empty_pool_gives_nothing() {
 }
 
 #[test]
-fn the_pool_holds_each_bag_once() {
+fn the_pool_keeps_the_best_few_decompositions() {
+    let graph = path(4);
+    let narrow = TreeDecomposition::new(
+        &graph,
+        [vec![0, 1], vec![1, 2], vec![2, 3]],
+        [(0, 1), (1, 2)],
+    )
+    .unwrap();
+    let wide = TreeDecomposition::new(&graph, [vec![0, 1, 2, 3]], []).unwrap();
+    let mut pool = BagPool::new(Limits::standard());
+    for _ in 0..8 {
+        pool.absorb(&wide);
+        pool.absorb(&narrow);
+    }
+    assert_eq!(pool.len(), Limits::standard().candidates());
+    // Everything kept is as narrow as the narrowest offered, so the wide one
+    // was crowded out.
+    let built = recombine(&pool, &graph, None).expect("the pool holds a decomposition");
+    assert_eq!(built.treewidth(), 1);
+}
+
+#[test]
+fn a_decomposition_that_does_not_fit_its_share_is_not_kept() {
     let graph = path(4);
     let td = TreeDecomposition::new(
         &graph,
@@ -32,17 +54,13 @@ fn the_pool_holds_each_bag_once() {
         [(0, 1), (1, 2)],
     )
     .unwrap();
-    let mut pool = pool_of(&[&td]);
-    assert_eq!(pool.len(), 3);
-    // The same bags again, listed in another order inside each bag.
-    let same = TreeDecomposition::new(
-        &graph,
-        [vec![1, 0], vec![2, 1], vec![3, 2]],
-        [(0, 1), (1, 2)],
-    )
-    .unwrap();
-    pool.absorb(&same);
-    assert_eq!(pool.len(), 3);
+    let mut pool = BagPool::new(Limits {
+        bags: 2,
+        candidates: 2,
+        ..Limits::standard()
+    });
+    pool.absorb(&td);
+    assert!(pool.is_empty());
 }
 
 #[test]
@@ -118,8 +136,22 @@ fn it_glues_a_narrower_tree_out_of_two_candidates() {
     .unwrap();
     assert_eq!(left.treewidth(), 3);
     assert_eq!(right.treewidth(), 3);
-    let pool = pool_of(&[&left, &right]);
-    let built = recombine(&pool, &graph, None).expect("the pool holds a whole decomposition");
+    // The bags of the two, read by the programme as they are: the pool would
+    // minimalise them first, and this is about what the search does with a
+    // list, not about what minimalisation does to one decomposition.
+    let mut bags: Vec<Vec<u32>> = Vec::new();
+    for decomposition in [&left, &right] {
+        for bag in decomposition.bags() {
+            let mut vertices = bag.vertices().to_vec();
+            vertices.sort_unstable();
+            if !bags.contains(&vertices) {
+                bags.push(vertices);
+            }
+        }
+    }
+    let adjacency = super::adjacency_lists(&graph);
+    let built = super::search(&bags, &graph, &adjacency, Limits::standard(), None)
+        .expect("the bags hold a whole decomposition");
     built.validate(&graph).expect("valid");
     // Neither candidate is narrower than 3; the four triangles between them
     // are a decomposition of width 2, and no candidate had them together.
@@ -176,4 +208,49 @@ fn a_full_block_map_gives_a_valid_answer_or_none() {
             built.validate(&graph).expect("valid");
         }
     }
+}
+
+/// The growth pass re-decomposes the pieces around the widest bags of an
+/// answer and adds what it finds, so the second run has bags the pool never
+/// held.
+#[test]
+fn growth_adds_bags_the_pool_did_not_hold() {
+    // Two chorded four-cycles joined at a vertex again, but the pool is given
+    // only the coarse decomposition: one bag per cycle.
+    let graph = Graph::new(
+        7,
+        [
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (3, 0),
+            (0, 2),
+            (3, 4),
+            (4, 5),
+            (5, 6),
+            (6, 3),
+            (3, 5),
+        ],
+    );
+    let coarse =
+        TreeDecomposition::new(&graph, [vec![0, 1, 2, 3], vec![3, 4, 5, 6]], [(0, 1)]).unwrap();
+    let mut bags: Vec<Vec<u32>> = coarse
+        .bags()
+        .iter()
+        .map(|bag| bag.vertices().to_vec())
+        .collect();
+    let held = bags.len();
+    let adjacency = super::adjacency_lists(&graph);
+    assert!(super::grow(
+        &mut bags,
+        &coarse,
+        &adjacency,
+        Limits::standard(),
+        None
+    ));
+    assert!(bags.len() > held);
+    let built = super::search(&bags, &graph, &adjacency, Limits::standard(), None)
+        .expect("the longer list holds a decomposition");
+    built.validate(&graph).expect("valid");
+    assert!(built.treewidth() <= coarse.treewidth());
 }

@@ -401,9 +401,12 @@ that is expensive on clique-dominated graphs.
 
 Every candidate above produces a whole tree decomposition and the portfolio
 keeps the narrowest, which throws away the good bags of all the others. The
-last stage of a budgeted run keeps them instead: it collects the bags of every
-decomposition the run produced and searches, over that pool, for the narrowest
-tree decomposition whose bags all come from it.
+last stage of a budgeted run keeps them instead: it holds the best few
+decompositions the run produced, pools their bags, and searches that pool for
+the narrowest tree decomposition whose bags all come from it. Each kept
+decomposition gets an equal share of the pool and is minimalised on the way in
+where there is time for it, so the bags pooled are the cliques of a minimal
+triangulation of the same graph and no one candidate fills the pool.
 
 The search is the dynamic programme of Bouchitté and Todinca restricted to a
 list of candidate bags rather than run over every potential maximal clique of
@@ -423,17 +426,27 @@ because a block's bags stay inside it. The pool holds the winner's own bags, so
 the search cannot come back wider than the portfolio already has, and the
 portfolio keeps the result only where it is narrower.
 
+After the first answer the stage grows the list: the widest bags of it, each
+with the bags next to it in the tree, are small overlapping pieces of the
+graph, and decomposing one of them on its own by MCS-M gives cliques of a
+minimal triangulation of that piece which the pool did not hold. The programme
+runs again over the longer list, and stops when a round adds nothing, when the
+answer stops improving, or at the deadline.
+
 `PortfolioConfig::with_recombination` gates the stage on a vertex count,
-because the search costs one traversal of the graph per bag in the pool. What
-it holds is capped separately, by constants the graph's size does not enter:
-4,000 bags and 4 MiB of vertex ids in the pool, 128 MiB of them in the blocks.
-On reaching a cap it stops taking bags in and searches the part of the pool it
-has, which is a narrower search rather than a wrong one. The stage takes a
-share of the hard window off the end — an eighth, between 50 ms and 30 s — so
-the rest of the schedule finishes that much earlier; a run with no budget at
-all has no window to take a share of and does not run it. At its deadline the
-search hands back nothing rather than a part-built answer, and the portfolio
-returns what it had.
+because the pool keeps a decomposition only if its bags fit their share of it
+and an elimination leaves about one bag per vertex: above the gate the pool
+holds nothing. What the search holds is capped separately, by constants the
+graph's size does not enter: 4,000 bags and 4 MiB of vertex ids in the pool,
+128 MiB of them in the blocks. On reaching a cap it stops taking bags in and
+searches the part of the pool it has, which is a narrower search rather than a
+wrong one. The reserve the stage takes off the end of the hard window is what
+its own search is estimated to cost on this graph — the pool it will hold,
+times a pass over the graph each, several times over — capped at an eighth of
+the window, so a graph whose search is quick leaves the rest of the schedule
+the window; a run with no budget at all has no window to take a share of and
+does not run the stage. At its deadline the search hands back nothing rather
+than a part-built answer, and the portfolio returns what it had.
 
 The reference for the dynamic programme is Bouchitté and Todinca, "Treewidth
 and minimum fill-in: grouping the minimal separators", SIAM Journal on

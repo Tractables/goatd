@@ -93,12 +93,13 @@ options:
                         costs memory rather than time
   --no-drop-fill        portfolio only: leave the winner's fill edges alone
   --recombine-up-to <n> portfolio only: after the candidates, search the bags
-                        of all of them for the narrowest decomposition built
-                        out of them, on graphs of at most n vertices, in place
-                        of the built-in gate. The stage takes a share of the
-                        hard window off the end, so it needs --budget, and the
-                        search costs one traversal of the graph per bag it
-                        collected, which is what the gate bounds
+                        of the best few of them for the narrowest decomposition
+                        built out of them, on graphs of at most n vertices, in
+                        place of the built-in gate. The stage takes what its
+                        search is estimated to cost off the end of the hard
+                        window, so it needs --budget, and the pool it reads
+                        keeps a decomposition only if its bags fit their share
+                        of it, which is what the gate follows
   --no-recombine        portfolio only: return the best single candidate
   --no-hedge            portfolio only: run every candidate once, on uniform
                         weights, instead of repeating the candidates that read
