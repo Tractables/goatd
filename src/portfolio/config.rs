@@ -971,11 +971,11 @@ impl PortfolioConfig {
     /// the result only where it is narrower.
     ///
     /// The stage is given a share of the hard window, taken off the end, so
-    /// every other candidate stops that much earlier. Without a hard budget
-    /// there is no share to take and the stage does not run. The gate is a
-    /// vertex count because the search costs one traversal of the graph per bag
-    /// in the pool; what it holds is capped separately, as a multiple of the
-    /// vertex count.
+    /// every other candidate stops that much earlier. A run with no budget at
+    /// all has no window to take a share of, and does not run the stage. The
+    /// gate is a vertex count because the search costs one traversal of the
+    /// graph per bag in the pool; what it holds is capped separately, as a
+    /// multiple of the vertex count.
     pub fn with_recombination(mut self, max_vertices: u32) -> Self {
         self.recombination = Some(max_vertices);
         self

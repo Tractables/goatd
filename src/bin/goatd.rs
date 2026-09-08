@@ -96,8 +96,8 @@ options:
                         of all of them for the narrowest decomposition built
                         out of them, on graphs of at most n vertices, in place
                         of the built-in gate. The stage takes a share of the
-                        hard budget off the end, so it needs --hard-budget, and
-                        the search costs one traversal of the graph per bag it
+                        hard window off the end, so it needs --budget, and the
+                        search costs one traversal of the graph per bag it
                         collected, which is what the gate bounds
   --no-recombine        portfolio only: return the best single candidate
   --no-hedge            portfolio only: run every candidate once, on uniform
@@ -573,10 +573,10 @@ fn parse_args(argv: &[String]) -> Args {
                  give one",
             );
         }
-        if hard_budget.is_none() {
+        if budget.is_none() {
             usage_error(
-                "--recombine-up-to requires --hard-budget: the stage runs on a share of the hard \
-                 window, and without one there is no share to take",
+                "--recombine-up-to requires --budget: the stage runs on a share of the hard \
+                 window, and a run with no budget has none",
             );
         }
     }

@@ -1319,7 +1319,7 @@ fn run_portfolio(
     // hard deadline that much earlier and the stage keeps the rest. Where the
     // stage does not run, the two deadlines are the same and nothing moves.
     let window_end = deadlines.hard;
-    let recombine = recombination_gate(graph, config);
+    let recombine = recombination_gate(graph, config, window_end);
     let reserve = recombine
         .then(|| recombination_reserve(started, window_end))
         .flatten();
@@ -2065,11 +2065,14 @@ fn run_portfolio(
 
 /// Whether the recombination stage runs on this graph: it needs a hard window
 /// to take a share of, and the gate bounds the traversals the search costs.
-fn recombination_gate(graph: &Graph, config: PortfolioConfig) -> bool {
+///
+/// The window is the derived one, so a run given only a soft budget has a hard
+/// deadline at twice it and the stage runs there too.
+fn recombination_gate(graph: &Graph, config: PortfolioConfig, window_end: Option<Instant>) -> bool {
     config
         .recombination
         .is_some_and(|gate| graph.num_vertices() <= gate)
-        && config.hard_budget.is_some()
+        && window_end.is_some()
 }
 
 /// The share of the hard window the stage is given, clamped so a short window
