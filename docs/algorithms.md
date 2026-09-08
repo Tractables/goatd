@@ -43,7 +43,9 @@ trailing candidate hands the graph to FlowCutter.
 
 On a budgeted run one more stage follows all of them: it searches over the bags
 of every decomposition the run produced for a narrower tree than any single
-candidate, described under *Recombining the candidates' bags*.
+candidate, described under *Recombining the candidates' bags*, and then one
+that builds a decomposition independently of everything above and merges it in,
+described under *Merging independent decompositions*.
 
 The residual left after preprocessing picks between three schedules. At or
 below 10,000 vertices all of the above runs. Above that line it runs where the
@@ -527,6 +529,59 @@ and minimum fill-in: grouping the minimal separators", SIAM Journal on
 Computing 31(1), 2001. Running it over a heuristic list rather than the
 complete one is Tamaki, "Computing treewidth via exact and heuristic lists of
 minimal separators", 2019.
+
+## Merging independent decompositions
+
+The recombination stage reads the bags of the trees a run already built, so
+every bag in its pool comes from a tree the same schedule produced. The stage
+after it builds a tree the schedule had nothing to do with and merges that in.
+It is the improvement loop of Tamaki, "Heuristic computation of exact
+treewidth", 2022, over the same restricted programme.
+
+A *list* is a set of bags, and its width is what the programme above reads off
+it: the narrowest tree decomposition all of whose bags are in the list. The
+stage starts from the list of the best decomposition the run has, minimalised
+where there is time for it, and improves it:
+
+- build a second list from scratch — several randomised min-fill draws, each
+  minimalised, the narrowest kept;
+- while that list is wider than the one being improved, improve it the same way,
+  which is a chain of independent searches rather than a walk outwards from the
+  tree in hand;
+- merge the two. A bag `X` of the first list is drawn at random and `C` is the
+  largest component of `G` less `X`. A partner `Y` from the second list has to
+  lie inside `C ∪ N(C)`, so that neither of the two crosses the other, and to be
+  no wider than the list already is, so that the tree the merge admits can be
+  narrower than the one there is. The piece the pair picks out is
+  `(C ∪ N(C)) ∩ (D ∪ N(D))`, where `D` is the component of `G` less `Y` that
+  holds `X`. The smallest pieces are taken first: the local graph on one of them
+  — what `G` induces there with the neighbourhood of every component outside it
+  filled into a clique — is triangulated minimally by MCS-M, and where that
+  comes back no wider its cliques join the merged list. Filling those
+  neighbourhoods is what makes a triangulation of the piece extend to one of the
+  graph, so a clique of it is a potential maximal clique of the graph or a
+  minimal separator of it; the separators are dropped, since they cost the
+  programme a pass over the graph and split nothing.
+
+The merged list holds both lists and everything so added, and admits trees that
+neither admits on its own: a tree can take some bags from one, some from the
+other, and the added cliques to join the two. The programme is run over it and
+the stage stops when the width stops improving or at its deadline. It starts
+from the run's own answer, so it never comes back wider.
+
+`PortfolioConfig::with_merge_loop` gates the stage on a vertex count and it
+takes a share of the hard window off the end, both for the reason the
+recombination stage does: the search is the same and costs a pass over the
+graph per bag of the list. Its share comes off first and the recombination
+stage takes its own out of what is left. A level of the recursion may spend
+half of what is left when it starts, so the levels below it cannot spend the
+window on their own, and where the deadline stops a side list above the width
+it was aiming at it is merged anyway — its bags are still bags of a
+triangulation the first list does not have.
+
+`decomposition::decompose_by_merging` runs the construction on its own, without
+a portfolio to start it off: it begins from its own initial list, which is what
+the paper's algorithm does.
 
 ## Decomposition operations
 
