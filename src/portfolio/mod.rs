@@ -1356,9 +1356,7 @@ fn run_portfolio(
     }
     .reporting_shape(collection.traced);
     if recombine {
-        candidates = candidates.collecting_bags(decomposition::BagPoolLimits::for_graph(
-            graph.num_vertices(),
-        ));
+        candidates = candidates.collecting_bags(decomposition::BagPoolLimits::standard());
     }
 
     // Set after any candidate reaches the hard deadline, or when it expires

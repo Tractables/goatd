@@ -974,8 +974,8 @@ impl PortfolioConfig {
     /// every other candidate stops that much earlier. A run with no budget at
     /// all has no window to take a share of, and does not run the stage. The
     /// gate is a vertex count because the search costs one traversal of the
-    /// graph per bag in the pool; what it holds is capped separately, as a
-    /// multiple of the vertex count.
+    /// graph per bag in the pool; what it holds is capped separately, by a
+    /// constant the graph's size does not enter.
     pub fn with_recombination(mut self, max_vertices: u32) -> Self {
         self.recombination = Some(max_vertices);
         self

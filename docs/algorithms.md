@@ -425,13 +425,15 @@ portfolio keeps the result only where it is narrower.
 
 `PortfolioConfig::with_recombination` gates the stage on a vertex count,
 because the search costs one traversal of the graph per bag in the pool. What
-it holds is capped separately, as a multiple of the graph's vertex count: 64
-vertex ids per vertex in the pool and 64 again in the blocks. It gives up the
-graph rather than exceed either. The stage takes a share of the hard window off
-the end — an eighth, between 50 ms and 30 s — so the rest of the schedule
-finishes that much earlier; a run with no hard budget has no share to give it
-and does not run it. At its deadline the search hands back nothing rather than
-a part-built answer, and the portfolio returns what it had.
+it holds is capped separately, by constants the graph's size does not enter:
+4,000 bags and 4 MiB of vertex ids in the pool, 128 MiB of them in the blocks.
+On reaching a cap it stops taking bags in and searches the part of the pool it
+has, which is a narrower search rather than a wrong one. The stage takes a
+share of the hard window off the end — an eighth, between 50 ms and 30 s — so
+the rest of the schedule finishes that much earlier; a run with no budget at
+all has no window to take a share of and does not run it. At its deadline the
+search hands back nothing rather than a part-built answer, and the portfolio
+returns what it had.
 
 The reference for the dynamic programme is Bouchitté and Todinca, "Treewidth
 and minimum fill-in: grouping the minimal separators", SIAM Journal on

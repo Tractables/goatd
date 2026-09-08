@@ -45,9 +45,9 @@
 //!
 //! What it costs: a traversal of the graph per pool bag, then one pass over the
 //! blocks. What it holds: the pool and one vertex list per block, both capped
-//! as a multiple of the graph's vertex count (see [`Limits`]). It abandons the
-//! graph rather than exceed either, and hands back nothing at its deadline
-//! rather than a part-built answer.
+//! by a constant (see [`Limits`]). It stops collecting rather than exceed
+//! either cap and searches the part of the pool it took in, and it hands back
+//! nothing at its deadline rather than a part-built answer.
 
 use std::time::Instant;
 
@@ -60,22 +60,23 @@ use crate::deadline::expired;
 #[cfg(test)]
 mod tests;
 
-/// Vertex ids the pool may hold, per graph vertex.
-const POOL_VERTICES_PER_VERTEX: usize = 64;
-/// Vertex ids the block map may hold, per graph vertex.
-const BLOCK_VERTICES_PER_VERTEX: usize = 64;
-/// Distinct bags the pool may hold, whatever the graph's size.
+/// Distinct bags the pool may hold.
 const MAX_POOL_BAGS: usize = 4_000;
+/// Vertex ids the pool may hold.
+const MAX_POOL_VERTICES: usize = 1_000_000;
+/// Vertex ids the block map may hold.
+const MAX_BLOCK_VERTICES: usize = 32_000_000;
 /// Blocks evaluated between two reads of the clock.
 const DEADLINE_STRIDE: usize = 64;
 
 /// What the pool and the search may hold.
 ///
-/// Both caps are a multiple of the graph's vertex count, so the memory the
-/// stage can reach is linear in the graph: [`POOL_VERTICES_PER_VERTEX`] vertex
-/// ids per vertex in the pool and [`BLOCK_VERTICES_PER_VERTEX`] again in the
-/// blocks, 512 bytes per graph vertex between them. The bag count is capped as
-/// well, because the search costs one pass over the graph per bag.
+/// The caps are constants rather than a function of the graph, so the stage's
+/// memory does not grow with it: 4 MiB of pool and 128 MiB of blocks, doubled
+/// by the map the blocks are looked up in. A graph whose pool would need more
+/// is searched as far as the caps reach; what is settled by then still gives a
+/// valid decomposition, only a wider one. The bag count is capped as well,
+/// because the search costs one pass over the graph per bag.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Limits {
     pool_vertices: usize,
@@ -84,12 +85,11 @@ pub(crate) struct Limits {
 }
 
 impl Limits {
-    /// The caps for a graph of `vertices` vertices.
-    pub(crate) fn for_graph(vertices: u32) -> Self {
-        let vertices = vertices as usize;
+    /// The caps every graph is searched under.
+    pub(crate) fn standard() -> Self {
         Self {
-            pool_vertices: vertices.saturating_mul(POOL_VERTICES_PER_VERTEX),
-            block_vertices: vertices.saturating_mul(BLOCK_VERTICES_PER_VERTEX),
+            pool_vertices: MAX_POOL_VERTICES,
+            block_vertices: MAX_BLOCK_VERTICES,
             bags: MAX_POOL_BAGS,
         }
     }
@@ -187,6 +187,7 @@ pub(crate) fn recombine(
         index: FxHashMap::default(),
         stored: 0,
         subblocks: vec![Vec::new(); pool.bags.len()],
+        collected: 0,
         bag_sizes: pool.bags.iter().map(Vec::len).collect(),
         mark: vec![u32::MAX; n],
         stamp: 0,
@@ -223,6 +224,10 @@ struct Search {
     /// For each pool bag, the blocks that are the components of `G` less that
     /// bag.
     subblocks: Vec<Vec<usize>>,
+    /// How many pool bags were taken in whole. The rest were left out when a
+    /// cap was reached, and neither they nor the caps they had begun to
+    /// register may be read.
+    collected: usize,
     bag_sizes: Vec<usize>,
     /// Stamped membership marks, so a vertex set can be tested without an
     /// array being cleared per query.
@@ -320,7 +325,10 @@ impl Search {
             let split = self.split(bag);
             let mut subblocks = Vec::with_capacity(split.components.len());
             for (component, separator) in split.components.iter().zip(&split.separators) {
-                subblocks.push(self.block(component.clone(), separator.clone())?);
+                let Some(block) = self.block(component.clone(), separator.clone()) else {
+                    return Some(());
+                };
+                subblocks.push(block);
             }
             self.subblocks[bag_index] = subblocks;
             // Two indexes over the bag, both built once and read once per
@@ -351,9 +359,12 @@ impl Search {
                 else {
                     continue;
                 };
-                let index = self.block(capped, separator)?;
+                let Some(index) = self.block(capped, separator) else {
+                    return Some(());
+                };
                 self.blocks[index].caps.push(bag_index);
             }
+            self.collected = bag_index + 1;
         }
         Some(())
     }
@@ -444,6 +455,9 @@ impl Search {
             let mut best: Option<(u32, usize)> = None;
             for position in 0..self.blocks[index].caps.len() {
                 let cap = self.blocks[index].caps[position];
+                if cap >= self.collected {
+                    continue;
+                }
                 let Some(candidate) = self.cap_width(cap, index, inside) else {
                     continue;
                 };
@@ -497,7 +511,7 @@ impl Search {
             return None;
         }
         let mut best: Option<(u32, usize)> = None;
-        for (index, bag) in pool.bags.iter().enumerate() {
+        for (index, bag) in pool.bags.iter().enumerate().take(self.collected) {
             let mut width = bag.len().saturating_sub(1) as u32;
             let mut usable = true;
             for &sub in &self.subblocks[index] {

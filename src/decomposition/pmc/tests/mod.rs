@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use super::{BagPool, Limits, recombine};
 use crate::{Graph, TreeDecomposition};
 
-fn pool_of(graph: &Graph, decompositions: &[&TreeDecomposition]) -> BagPool {
-    let mut pool = BagPool::new(Limits::for_graph(graph.num_vertices()));
+fn pool_of(decompositions: &[&TreeDecomposition]) -> BagPool {
+    let mut pool = BagPool::new(Limits::standard());
     for decomposition in decompositions {
         pool.absorb(decomposition);
     }
@@ -19,7 +19,7 @@ fn path(n: u32) -> Graph {
 #[test]
 fn an_empty_pool_gives_nothing() {
     let graph = path(4);
-    let pool = BagPool::new(Limits::for_graph(graph.num_vertices()));
+    let pool = BagPool::new(Limits::standard());
     assert!(recombine(&pool, &graph, None).is_none());
 }
 
@@ -32,7 +32,7 @@ fn the_pool_holds_each_bag_once() {
         [(0, 1), (1, 2)],
     )
     .unwrap();
-    let mut pool = pool_of(&graph, &[&td]);
+    let mut pool = pool_of(&[&td]);
     assert_eq!(pool.len(), 3);
     // The same bags again, listed in another order inside each bag.
     let same = TreeDecomposition::new(
@@ -54,7 +54,7 @@ fn a_pool_from_one_decomposition_rebuilds_it() {
         [(0, 1), (1, 2), (2, 3), (3, 4)],
     )
     .unwrap();
-    let pool = pool_of(&graph, &[&td]);
+    let pool = pool_of(&[&td]);
     let built = recombine(&pool, &graph, None).expect("the pool holds a whole decomposition");
     built.validate(&graph).expect("valid");
     assert_eq!(built.treewidth(), 1);
@@ -72,7 +72,7 @@ fn the_search_never_comes_back_wider_than_the_pool_it_read() {
         [(0, 1), (0, 2)],
     )
     .unwrap();
-    let pool = pool_of(&graph, &[&wide, &narrow]);
+    let pool = pool_of(&[&wide, &narrow]);
     let built = recombine(&pool, &graph, None).expect("the pool holds a whole decomposition");
     built.validate(&graph).expect("valid");
     assert!(built.treewidth() <= narrow.treewidth());
@@ -118,7 +118,7 @@ fn it_glues_a_narrower_tree_out_of_two_candidates() {
     .unwrap();
     assert_eq!(left.treewidth(), 3);
     assert_eq!(right.treewidth(), 3);
-    let pool = pool_of(&graph, &[&left, &right]);
+    let pool = pool_of(&[&left, &right]);
     let built = recombine(&pool, &graph, None).expect("the pool holds a whole decomposition");
     built.validate(&graph).expect("valid");
     // Neither candidate is narrower than 3; the four triangles between them
@@ -135,7 +135,7 @@ fn a_passed_deadline_gives_nothing() {
         [(0, 1), (1, 2), (2, 3), (3, 4)],
     )
     .unwrap();
-    let pool = pool_of(&graph, &[&td]);
+    let pool = pool_of(&[&td]);
     let past = Instant::now() - Duration::from_secs(1);
     assert!(recombine(&pool, &graph, Some(past)).is_none());
 }
@@ -149,8 +149,31 @@ fn a_disconnected_graph_comes_back_whole() {
         [(0, 1), (1, 2)],
     )
     .unwrap();
-    let pool = pool_of(&graph, &[&td]);
+    let pool = pool_of(&[&td]);
     let built = recombine(&pool, &graph, None).expect("the pool holds a whole decomposition");
     built.validate(&graph).expect("valid");
     assert_eq!(built.treewidth(), 1);
+}
+
+/// The search stops taking bags in when it reaches its cap. What it has by
+/// then is still a decomposition of the whole graph, or nothing.
+#[test]
+fn a_full_block_map_gives_a_valid_answer_or_none() {
+    let graph = path(8);
+    let td = TreeDecomposition::new(
+        &graph,
+        (0u32..7).map(|v| vec![v, v + 1]).collect::<Vec<_>>(),
+        (0usize..6).map(|edge| (edge, edge + 1)),
+    )
+    .unwrap();
+    for block_vertices in 0..64 {
+        let mut pool = BagPool::new(Limits {
+            block_vertices,
+            ..Limits::standard()
+        });
+        pool.absorb(&td);
+        if let Some(built) = recombine(&pool, &graph, None) {
+            built.validate(&graph).expect("valid");
+        }
+    }
 }
