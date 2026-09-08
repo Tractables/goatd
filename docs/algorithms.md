@@ -158,17 +158,30 @@ single-threaded throughout.
 
 ## The bipartite lift
 
-One side of a bipartite graph is an independent set, so eliminating that whole
-side first adds no edge inside it, and each of its vertices leaves a bag of
-itself and its neighbours. What is left is the projection: the other side, with
-every neighbourhood of an eliminated vertex completed to a clique. A
-decomposition of the projection therefore lifts to one of the whole graph — each
-eliminated vertex goes into a new bag beside a bag holding its neighbourhood,
-which exists because that neighbourhood is a clique of the projection — of width
+One side of a bipartite graph is an independent set, so eliminating any part of
+that side first adds no edge among the vertices eliminated, and each of them
+leaves a bag of itself and its neighbours. What is left is the projection:
+everything else, with every neighbourhood of an eliminated vertex completed to
+a clique. A decomposition of the projection therefore lifts to one of the whole
+graph — each eliminated vertex goes into a new bag beside a bag holding its
+neighbourhood, which exists because that neighbourhood is a clique of the
+projection — of width
 
 ```text
-max(width of the projection, largest degree over the eliminated side)
+max(width of the projection, largest degree over the eliminated vertices)
 ```
+
+Eliminating the whole side gives the smallest projection to search and the
+weakest bound: a vertex of degree d puts a clique of size d into the
+projection, so on an incidence graph the projection is the primal graph and the
+lift can never be narrower than the primal width, however much narrower the
+incidence graph is. A cutoff on the side's degrees keeps the long vertices as
+vertices and eliminates only the short ones, which gives a larger graph to
+search and a bound between the two. So the stage does not pick one cutoff: it
+walks the quantiles of the side's own degrees from the largest down, spends on
+each rung what its share of the work is worth, and keeps the narrowest lift any
+of them produced. A side whose degrees are all the same has one rung, which is
+the whole side.
 
 `PortfolioConfig::with_bipartite_lift` turns the stage on; the budgeted
 standard portfolio runs it. It 2-colours the graph, and on a graph with an odd
@@ -185,13 +198,16 @@ built only if the first turns out to hold more edges than the input. The lift
 is one more candidate: the portfolio keeps whichever decomposition is narrower,
 so the stage spends time and never width.
 
-Whether the stage runs at all is a question about the budget, not about the
-size of the graph. `PortfolioConfig::with_bipartite_lift_rate` sets how much
-work it may do per millisecond of the share it would take, in edges: the
-input's edges, which the colouring and the pricing each walk, plus the cheaper
-side's estimate, which is what building the projection costs and stands for the
-search over it. Over that rate the stage does not run and its share stays with
-the rest of the schedule, so the same graph is refused under a ten-second
+Whether the stage runs at all, and how many cutoffs it tries, is a question
+about the budget, not about the size of the graph.
+`PortfolioConfig::with_bipartite_lift_rate` sets how much work it may do per
+millisecond of the share it would take, in edges: the input's edges, which the
+colouring and the pricing each walk, plus what building the projections costs,
+which stands for the search over them. The whole side is the first rung and is
+what the rate admits or refuses; further rungs are added while the total stays
+under what the share pays for, and the rungs then split the share evenly. Over
+the rate the stage does not run at all and its share stays
+with the rest of the schedule, so the same graph is refused under a ten-second
 budget and decomposed under a four-minute one.
 
 It runs first, so the width it finds is the incumbent the elimination orders

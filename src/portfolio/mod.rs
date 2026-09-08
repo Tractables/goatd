@@ -1310,12 +1310,14 @@ fn sampled_min_fill_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandid
 const BIPARTITE_LIFT_SHARE: f64 = 0.25;
 
 /// Decompose the projection onto one side of a bipartite graph and put the
-/// other side back, as one more candidate.
+/// eliminated vertices back, as one more candidate.
 ///
 /// Runs before the elimination orders, so the width it finds bounds them.
 /// Costs a 2-colouring on a graph that is not bipartite and nothing else; on
-/// one that is, a share of the budget per side whose projection fits under the
-/// configured limit. See [`bipartite_lift`] for what the construction is.
+/// one that is, a share of the budget for the side whose projection fits under
+/// the configured limit, split over the cutoffs the share pays for. See
+/// [`bipartite_lift`] for what the construction is and why there is more than
+/// one cutoff.
 ///
 /// # Errors
 ///
@@ -1368,19 +1370,20 @@ fn run_bipartite_lift(
     // tried cheapest first, and the second side is built only if the first
     // turns out to hold more edges than the input.
     let limit = (edge_factor * graph.edges().len() as f64) as usize;
-    let mut sides: Vec<(&Vec<u32>, &Vec<u32>, usize)> = [(&first, &second), (&second, &first)]
-        .into_iter()
-        .filter(|(keep, drop)| !keep.is_empty() && !drop.is_empty())
-        .filter_map(|(keep, drop)| {
-            bipartite_lift::projected_pairs(&adjacency, drop, limit)
-                .map(|pairs| (keep, drop, pairs))
-        })
-        .collect();
+    let mut sides: Vec<(&Vec<u32>, &Vec<u32>, bipartite_lift::Price)> =
+        [(&first, &second), (&second, &first)]
+            .into_iter()
+            .filter(|(keep, drop)| !keep.is_empty() && !drop.is_empty())
+            .filter_map(|(keep, drop)| {
+                bipartite_lift::price(&adjacency, drop, u32::MAX, limit)
+                    .map(|priced| (keep, drop, priced))
+            })
+            .collect();
     if sides.is_empty() {
         give_up(trace);
         return Ok(());
     }
-    sides.sort_by_key(|&(_, _, pairs)| pairs);
+    sides.sort_by_key(|&(_, _, priced)| priced.work());
 
     // The share is of the whole window, since that is what the stage spends:
     // a sub-run stops at its own hard deadline. Inside its share it keeps the
@@ -1398,64 +1401,109 @@ fn run_bipartite_lift(
     // refused here, and the share stays with the rest of the schedule; the same
     // graph under a longer window is not.
     let affordable = config.bipartite_lift_rate * share.as_millis() as f64;
-    let cheapest = sides
-        .first()
-        .map_or(0.0, |&(_, _, pairs)| (graph.edges().len() + pairs) as f64);
+    let cheapest = sides.first().map_or(0.0, |&(_, _, priced)| {
+        (graph.edges().len() + priced.work()) as f64
+    });
     if cheapest > affordable {
         give_up(trace);
         return Ok(());
     }
 
-    for (keep, drop, pairs) in sides {
-        let Some(projection) = bipartite_lift::project(graph, &adjacency, keep, drop, pairs) else {
-            continue;
-        };
-        let mut sub = config;
-        sub.bipartite_lift = None;
-        sub.soft_budget = Some(share / 2);
-        sub.hard_budget = Some(share);
-        // A share too short for the trailing candidate drops it rather than
-        // refusing the configuration: the sub-run is a search of the
-        // projection, not a place to spend a FlowCutter window that small.
-        sub.flowcutter_budget = config
-            .flowcutter_budget
-            .map(|_| share / 2)
-            .filter(|budget| *budget >= Duration::from_millis(MIN_FLOWCUTTER_CANDIDATE_MS));
-        let sub_weights = projection.weights(weights);
-        let produced = run_portfolio(
-            &projection.graph,
-            &sub_weights,
-            seed,
-            initial_orders,
-            sub,
-            Collection::best_only(false),
-            &mut |_| {},
-        )?
-        .into_decompositions()
-        .into_iter()
-        .next();
-        // What the lift would be worth is known from the projection's width
-        // and the degrees of the side that was eliminated, so a lift that
-        // cannot beat what is already there is not built. Either way this side
-        // has had the stage's share and the other one is not tried after it.
-        match produced {
-            Some(produced)
-                if candidates
+    for (keep, drop, whole) in sides {
+        // The rungs of the ladder the share pays for. The whole side is the
+        // first and is what the rate gate above already accepted; the rest are
+        // added while the total work stays under what the share buys at the
+        // rate, so how deep the ladder goes is a function of the budget rather
+        // than of the graph.
+        let mut ladder = Vec::new();
+        let mut work = graph.edges().len();
+        for cutoff in bipartite_lift::cutoffs(&adjacency, drop) {
+            let priced = if cutoff == u32::MAX {
+                whole
+            } else {
+                let Some(priced) = bipartite_lift::price(&adjacency, drop, cutoff, limit) else {
+                    continue;
+                };
+                priced
+            };
+            let next = work.saturating_add(priced.work());
+            if !ladder.is_empty() && next as f64 > affordable {
+                break;
+            }
+            work = next;
+            ladder.push(priced);
+        }
+
+        // The rungs split the share evenly. A rung that keeps more vertices is
+        // a larger graph to search but a smaller projection to build, so what
+        // it costs to build says nothing about what its search needs, and there
+        // is no reason to give one rung more of the window than another. Where
+        // that leaves a slice too short to search anything, the whole side
+        // takes the share on its own, as it did before there was a ladder.
+        let mut slice = share / ladder.len().max(1) as u32;
+        if slice < Duration::from_millis(2 * MIN_FLOWCUTTER_CANDIDATE_MS) {
+            ladder.truncate(1);
+            slice = share;
+        }
+        let mut produced_any = false;
+        let mut reported = None;
+        for priced in ladder {
+            let Some(projection) = bipartite_lift::project(graph, &adjacency, keep, drop, priced)
+            else {
+                continue;
+            };
+            produced_any = true;
+            let mut sub = config;
+            sub.bipartite_lift = None;
+            sub.soft_budget = Some(slice / 2);
+            sub.hard_budget = Some(slice);
+            // A slice too short for the trailing candidate drops it rather
+            // than refusing the configuration: the sub-run is a search of the
+            // projection, not a place to spend a FlowCutter window that small.
+            sub.flowcutter_budget = config
+                .flowcutter_budget
+                .map(|_| slice / 2)
+                .filter(|budget| *budget >= Duration::from_millis(MIN_FLOWCUTTER_CANDIDATE_MS));
+            let sub_weights = projection.weights(weights);
+            let found = run_portfolio(
+                &projection.graph,
+                &sub_weights,
+                seed,
+                initial_orders,
+                sub,
+                Collection::best_only(false),
+                &mut |_| {},
+            )?
+            .into_decompositions()
+            .into_iter()
+            .next();
+            // What the lift would be worth is known from the projection's
+            // width and the degrees of the vertices that were eliminated, so a
+            // lift that cannot beat what is already there is not built.
+            if let Some(found) = found
+                && candidates
                     .best_width()
-                    .is_none_or(|best| projection.lifted_width(&produced) <= best) =>
+                    .is_none_or(|best| projection.lifted_width(&found) <= best)
             {
-                let outcome = candidates.push(projection.lift(graph, &produced)?, origin);
-                trace(CandidateTrace {
+                reported = Some(candidates.push(projection.lift(graph, &found)?, origin));
+            }
+        }
+        // This side has had the stage's share, so the other one is not tried
+        // after it unless nothing here could be built at all. The stage
+        // reports once, on the narrowest lift its rungs produced.
+        if produced_any {
+            match reported {
+                Some(outcome) => trace(CandidateTrace {
                     stage: Stage::BipartiteLift,
                     seed,
                     pass: Pass::Only,
                     outcome,
                     elapsed: crate::meter::now().saturating_duration_since(started),
-                });
+                }),
+                None => give_up(trace),
             }
-            _ => give_up(trace),
+            return Ok(());
         }
-        return Ok(());
     }
     give_up(trace);
     Ok(())

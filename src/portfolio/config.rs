@@ -1051,6 +1051,15 @@ impl PortfolioConfig {
     /// neighbourhood — decomposes what is left with a share of the budget, and
     /// puts the eliminated side back.
     ///
+    /// Eliminating a vertex of degree d makes the projection hold a clique of
+    /// size d, so the whole side gives the smallest graph to search and the
+    /// weakest bound on the width. The stage therefore also tries cutoffs on
+    /// the side's degrees, keeping the longer vertices as vertices and
+    /// eliminating only the short ones. The cutoffs are quantiles of the
+    /// side's own degrees, and how many of them run is what the share pays
+    /// for at the rate below, so a side of uniform degrees is one search and a
+    /// short window is still one search.
+    ///
     /// `edge_factor` is measured against the sum of d(d-1)/2 over the side
     /// being eliminated, which counts a projected edge once per elimination
     /// that covers it and so is an upper bound on the projection's edge count:
