@@ -397,6 +397,48 @@ an early-convergence patience limit, and a density gate on a shortcut order
 that is expensive on clique-dominated graphs.
 [THIRD-PARTY.md](THIRD-PARTY.md) lists every source change and licence.
 
+## Recombining the candidates' bags
+
+Every candidate above produces a whole tree decomposition and the portfolio
+keeps the narrowest, which throws away the good bags of all the others. The
+last stage of a budgeted run keeps them instead: it collects the bags of every
+decomposition the run produced and searches, over that pool, for the narrowest
+tree decomposition whose bags all come from it.
+
+The search is the dynamic programme of Bouchitté and Todinca restricted to a
+list of candidate bags rather than run over every potential maximal clique of
+the graph. A *block* is a connected component `C` of `G` less a pool bag,
+carried with its separator `N(C)`; a *cap* of a block is a pool bag `Ω` with
+`N(C) ⊆ Ω ⊆ C ∪ N(C)` and a vertex inside `C`. The width of a block is the
+cheapest way to decompose `C ∪ N(C)` with `N(C)` in its top bag: everything in
+one bag, or a cap with the blocks it leaves inside `C` under it. Blocks are
+evaluated smallest first, so a block's sub-blocks are settled before it and one
+pass is enough; the answer is the same expression over the whole graph,
+minimised over the choice of top bag.
+
+The tree that comes out is a valid decomposition whatever the pool holds, so no
+bag is tested for being a potential maximal clique: a cap and the blocks below
+it cover every edge inside `C ∪ N(C)`, and each vertex's bags form a subtree
+because a block's bags stay inside it. The pool holds the winner's own bags, so
+the search cannot come back wider than the portfolio already has, and the
+portfolio keeps the result only where it is narrower.
+
+`PortfolioConfig::with_recombination` gates the stage on a vertex count,
+because the search costs one traversal of the graph per bag in the pool. What
+it holds is capped separately, as a multiple of the graph's vertex count: 64
+vertex ids per vertex in the pool and 64 again in the blocks. It gives up the
+graph rather than exceed either. The stage takes a share of the hard window off
+the end — an eighth, between 50 ms and 30 s — so the rest of the schedule
+finishes that much earlier; a run with no hard budget has no share to give it
+and does not run it. At its deadline the search hands back nothing rather than
+a part-built answer, and the portfolio returns what it had.
+
+The reference for the dynamic programme is Bouchitté and Todinca, "Treewidth
+and minimum fill-in: grouping the minimal separators", SIAM Journal on
+Computing 31(1), 2001. Running it over a heuristic list rather than the
+complete one is Tamaki, "Computing treewidth via exact and heuristic lists of
+minimal separators", 2019.
+
 ## Decomposition operations
 
 `decomposition` holds the tree-decomposition type, validation, projection,

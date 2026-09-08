@@ -92,6 +92,14 @@ options:
                         fits in what is left of the hard budget, so a wide n
                         costs memory rather than time
   --no-drop-fill        portfolio only: leave the winner's fill edges alone
+  --recombine-up-to <n> portfolio only: after the candidates, search the bags
+                        of all of them for the narrowest decomposition built
+                        out of them, on graphs of at most n vertices, in place
+                        of the built-in gate. The stage takes a share of the
+                        hard budget off the end, so it needs --hard-budget, and
+                        the search costs one traversal of the graph per bag it
+                        collected, which is what the gate bounds
+  --no-recombine        portfolio only: return the best single candidate
   --no-hedge            portfolio only: run every candidate once, on uniform
                         weights, instead of repeating the candidates that read
                         weights on a ranking the portfolio computes itself
@@ -201,6 +209,8 @@ struct Args {
     no_mcsm: bool,
     drop_fill_up_to: Option<u32>,
     no_drop_fill: bool,
+    recombine_up_to: Option<u32>,
+    no_recombine: bool,
     no_hedge: bool,
     capped_restarts: bool,
     sample_band: Option<u64>,
@@ -269,6 +279,8 @@ fn parse_args(argv: &[String]) -> Args {
     let mut no_mcsm = false;
     let mut drop_fill_up_to = None;
     let mut no_drop_fill = false;
+    let mut recombine_up_to = None;
+    let mut no_recombine = false;
     let mut no_hedge = false;
     let mut capped_restarts = false;
     let mut sample_band = None;
@@ -389,6 +401,17 @@ fn parse_args(argv: &[String]) -> Args {
                 drop_fill_up_to = Some(vertices as u32);
             }
             "--no-drop-fill" => no_drop_fill = true,
+            "--recombine-up-to" => {
+                let vertices = number(&mut i, arg);
+                if vertices > u64::from(u32::MAX) {
+                    usage_error(&format!(
+                        "--recombine-up-to wants a vertex count in 0..={}",
+                        u32::MAX
+                    ));
+                }
+                recombine_up_to = Some(vertices as u32);
+            }
+            "--no-recombine" => no_recombine = true,
             "--no-hedge" => no_hedge = true,
             "--capped-restarts" => capped_restarts = true,
             "--sample-band" => sample_band = Some(number(&mut i, arg)),
@@ -542,6 +565,24 @@ fn parse_args(argv: &[String]) -> Args {
     if no_drop_fill {
         needs("--no-drop-fill", order == Method::Portfolio, "portfolio");
     }
+    if recombine_up_to.is_some() {
+        needs("--recombine-up-to", order == Method::Portfolio, "portfolio");
+        if no_recombine {
+            usage_error(
+                "--recombine-up-to gates the recombination stage and --no-recombine runs none; \
+                 give one",
+            );
+        }
+        if hard_budget.is_none() {
+            usage_error(
+                "--recombine-up-to requires --hard-budget: the stage runs on a share of the hard \
+                 window, and without one there is no share to take",
+            );
+        }
+    }
+    if no_recombine {
+        needs("--no-recombine", order == Method::Portfolio, "portfolio");
+    }
     // The count is what stops the restarts of a run with no deadline, so the
     // flag decides nothing there.
     if capped_restarts {
@@ -620,6 +661,8 @@ fn parse_args(argv: &[String]) -> Args {
         no_mcsm,
         drop_fill_up_to,
         no_drop_fill,
+        recombine_up_to,
+        no_recombine,
         no_hedge,
         capped_restarts,
         sample_band,
@@ -730,6 +773,12 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             }
             if args.no_drop_fill {
                 config = config.without_triangulation_refinement();
+            }
+            if let Some(vertices) = args.recombine_up_to {
+                config = config.with_recombination(vertices);
+            }
+            if args.no_recombine {
+                config = config.without_recombination();
             }
             if args.capped_restarts {
                 config = config.with_restarts_to_deadline(false);

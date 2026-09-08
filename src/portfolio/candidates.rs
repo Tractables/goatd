@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::TreeDecomposition;
-use crate::decomposition::SubsumedBagCompaction;
+use crate::decomposition::{BagPool, BagPoolLimits, SubsumedBagCompaction};
 use crate::elimination::engine::OrderRun;
 use crate::elimination::execution::Cutoff;
 
@@ -47,6 +47,10 @@ pub(super) struct CandidateSet {
     /// Whether a produced candidate carries its shape numbers. Only a traced
     /// run has anywhere to report them, and they cost a pass over the bags.
     report_shape: bool,
+    /// The bags of every candidate, for the recombination stage. `None` where
+    /// no stage is going to read them, which is the ordinary case; keeping
+    /// them costs a sorted copy of each bag.
+    pool: Option<BagPool>,
 }
 
 impl CandidateSet {
@@ -57,6 +61,7 @@ impl CandidateSet {
             best_quality_key: None,
             retain_only_best: false,
             report_shape: false,
+            pool: None,
         }
     }
 
@@ -67,6 +72,7 @@ impl CandidateSet {
             best_quality_key: None,
             retain_only_best: true,
             report_shape: false,
+            pool: None,
         }
     }
 
@@ -75,6 +81,17 @@ impl CandidateSet {
     pub(super) fn reporting_shape(mut self, on: bool) -> Self {
         self.report_shape = on;
         self
+    }
+
+    /// Keep the bags of every candidate the set is given, under `limits`.
+    pub(super) fn collecting_bags(mut self, limits: BagPoolLimits) -> Self {
+        self.pool = Some(BagPool::new(limits));
+        self
+    }
+
+    /// The collected bags, or `None` where the set was not collecting them.
+    pub(super) fn bag_pool(&self) -> Option<&BagPool> {
+        self.pool.as_ref()
     }
 
     pub(super) fn best_width(&self) -> Option<u32> {
@@ -104,6 +121,9 @@ impl CandidateSet {
         decomposition: TreeDecomposition,
         origin: CandidateOrigin,
     ) -> CandidateOutcome {
+        if let Some(pool) = &mut self.pool {
+            pool.absorb(&decomposition);
+        }
         let (width, total_bag_size) = decomposition.quality_key();
         // Read off the same decomposition as the width and the total bag
         // size, so the four numbers describe one set of bags.

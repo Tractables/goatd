@@ -25,7 +25,10 @@ use crate::flowcutter::{Budget, decompose as flowcutter_decompose};
 use crate::{Error, Graph, TreeDecomposition};
 pub use candidates::Candidate;
 use candidates::{CandidateSet, ScheduleStop};
-use config::{DIVERSE_PASS_RESERVE, FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS};
+use config::{
+    DIVERSE_PASS_RESERVE, FLOWCUTTER_RESERVE, MAX_RECOMBINATION_RESERVE,
+    MIN_FLOWCUTTER_CANDIDATE_MS, MIN_RECOMBINATION_RESERVE, RECOMBINATION_WINDOW_SHARE,
+};
 
 pub use config::{
     DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, HedgeWeights, MAX_DIVERSE_SAMPLING_RUNS,
@@ -1311,7 +1314,22 @@ fn run_portfolio(
     let deadlines =
         crate::deadline::staged(started, config.soft_budget, config.hard_budget, "portfolio")?;
     let soft_deadline = deadlines.soft;
-    let hard_deadline = deadlines.hard;
+    // The recombination stage runs last and reads the bags of everything before
+    // it, so its share of the window comes off the end: the schedule sees a
+    // hard deadline that much earlier and the stage keeps the rest. Where the
+    // stage does not run, the two deadlines are the same and nothing moves.
+    let window_end = deadlines.hard;
+    let recombine = recombination_gate(graph, config);
+    let reserve = recombine
+        .then(|| recombination_reserve(started, window_end))
+        .flatten();
+    let hard_deadline = match (window_end, reserve) {
+        (Some(end), Some(reserve)) => end
+            .checked_sub(reserve)
+            .filter(|earlier| soft_deadline.is_none_or(|soft| *earlier > soft)),
+        _ => window_end,
+    }
+    .or(window_end);
     let mut prebuilt = engine::prebuild(graph, soft_deadline);
     let active = prebuilt.num_active();
     // The class where the sizes settle it on their own. In the band between
@@ -1337,6 +1355,11 @@ fn run_portfolio(
         CandidateRetention::BestOnly => CandidateSet::best_only(),
     }
     .reporting_shape(collection.traced);
+    if recombine {
+        candidates = candidates.collecting_bags(decomposition::BagPoolLimits::for_graph(
+            graph.num_vertices(),
+        ));
+    }
 
     // Set after any candidate reaches the hard deadline, or when it expires
     // between candidates. Later runs would stop at the same point.
@@ -1986,7 +2009,78 @@ fn run_portfolio(
             elapsed: crate::meter::now().saturating_duration_since(started),
         });
     }
+    // Last of all, the bags of every candidate together. The pool holds the
+    // winner's bags among the rest, so the search cannot come back wider than
+    // the set already has; it is recorded only where it is narrower, and a
+    // search that runs out of its share hands back nothing.
+    if recombine && !expired(window_end) {
+        let found = candidates
+            .bag_pool()
+            .and_then(|pool| decomposition::recombine(pool, graph, window_end));
+        let before = candidates
+            .best()
+            .map(TreeDecomposition::quality_key)
+            .expect("a candidate has produced a decomposition");
+        let outcome = match found {
+            Some(recombined) if recombined.quality_key() < before => candidates.push(
+                recombined,
+                CandidateOrigin {
+                    stage: Stage::Recombined,
+                    seed,
+                    pass: Pass::Only,
+                },
+            ),
+            // The search found nothing the set does not already have. It reads
+            // the same bags the winner is made of, so this is the ordinary
+            // outcome rather than a failure.
+            Some(recombined) => {
+                let (width, total_bag_size) = recombined.quality_key();
+                CandidateOutcome::Produced {
+                    width,
+                    total_bag_size,
+                    shape: collection.traced.then(|| {
+                        let (bag_mass, max_separator) = recombined.shape();
+                        Shape {
+                            bag_mass,
+                            max_separator,
+                        }
+                    }),
+                    best: false,
+                }
+            }
+            // The pool was empty, the search ran past its share, or it would
+            // have held more than its cap allows.
+            None => CandidateOutcome::DeadlineReached,
+        };
+        trace(CandidateTrace {
+            stage: Stage::Recombined,
+            seed,
+            pass: Pass::Only,
+            outcome,
+            elapsed: crate::meter::now().saturating_duration_since(started),
+        });
+    }
     Ok(candidates)
+}
+
+/// Whether the recombination stage runs on this graph: it needs a hard window
+/// to take a share of, and the gate bounds the traversals the search costs.
+fn recombination_gate(graph: &Graph, config: PortfolioConfig) -> bool {
+    config
+        .recombination
+        .is_some_and(|gate| graph.num_vertices() <= gate)
+        && config.hard_budget.is_some()
+}
+
+/// The share of the hard window the stage is given, clamped so a short window
+/// still leaves it something to run in and a long one does not hand it more
+/// than the search can use.
+fn recombination_reserve(started: Instant, window_end: Option<Instant>) -> Option<Duration> {
+    let window = window_end?.saturating_duration_since(started);
+    Some(
+        (window / RECOMBINATION_WINDOW_SHARE)
+            .clamp(MIN_RECOMBINATION_RESERVE, MAX_RECOMBINATION_RESERVE),
+    )
 }
 
 /// Run one sampled min-fill order, then up to

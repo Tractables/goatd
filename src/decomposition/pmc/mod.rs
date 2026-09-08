@@ -1,0 +1,551 @@
+//! Build a decomposition out of bags taken from several others.
+//!
+//! Every construction here produces a whole tree decomposition and the caller
+//! keeps the narrowest. That throws away the good bags of every other one. This
+//! module keeps them instead: it collects the bags of all the decompositions a
+//! run produced and searches, over that pool, for the narrowest tree
+//! decomposition whose every bag comes from it.
+//!
+//! The search is the dynamic programme of Bouchitté and Todinca, "Treewidth and
+//! minimum fill-in: grouping the minimal separators", SIAM Journal on Computing
+//! 31(1), 2001, restricted to a list of candidate bags rather than run over all
+//! the potential maximal cliques of the graph. Tamaki, "Computing treewidth via
+//! exact and heuristic lists of minimal separators", 2019, is where the
+//! restricted form comes from.
+//!
+//! The two objects it works with:
+//!
+//! - a **block** is a connected component `C` of `G − Ω` for a pool bag `Ω`,
+//!   carried with its separator `N(C)`;
+//! - a **cap** of a block `(C, S)` is a pool bag `Ω` with `S ⊆ Ω ⊆ C ∪ S` and
+//!   at least one vertex inside `C`.
+//!
+//! The width of a block is the cheapest way to decompose `C ∪ S` with `S` in
+//! its top bag:
+//!
+//! ```text
+//! width(C, S) = min( |C| + |S| − 1,
+//!                    min over caps Ω of
+//!                      max( |Ω| − 1, width of each block of G − Ω inside C ) )
+//! ```
+//!
+//! and the answer is the same expression over the whole graph, minimised over
+//! the choice of top bag. Blocks are evaluated smallest first, so a block's
+//! sub-blocks — strictly smaller — are settled before it and one pass is
+//! enough.
+//!
+//! The tree that comes out is a valid decomposition whatever the pool holds. A
+//! cap and the blocks below it cover every edge inside `C ∪ S`: an edge with
+//! both ends in the cap is in that bag, an edge from the cap into a sub-block
+//! has its cap end in that sub-block's separator, and two sub-blocks share no
+//! edge. Each vertex's bags form a subtree because a block's bags stay inside
+//! `C ∪ S`. So no bag has to be tested for being a potential maximal clique.
+//! The pool always holds the bags of the run's own best decomposition, so the
+//! search does not come back wider than that.
+//!
+//! What it costs: a traversal of the graph per pool bag, then one pass over the
+//! blocks. What it holds: the pool and one vertex list per block, both capped
+//! as a multiple of the graph's vertex count (see [`Limits`]). It abandons the
+//! graph rather than exceed either, and hands back nothing at its deadline
+//! rather than a part-built answer.
+
+use std::time::Instant;
+
+use rustc_hash::{FxHashMap, FxHashSet};
+
+use super::TreeDecomposition;
+use crate::Graph;
+use crate::deadline::expired;
+
+#[cfg(test)]
+mod tests;
+
+/// Vertex ids the pool may hold, per graph vertex.
+const POOL_VERTICES_PER_VERTEX: usize = 64;
+/// Vertex ids the block map may hold, per graph vertex.
+const BLOCK_VERTICES_PER_VERTEX: usize = 64;
+/// Distinct bags the pool may hold, whatever the graph's size.
+const MAX_POOL_BAGS: usize = 4_000;
+/// Blocks evaluated between two reads of the clock.
+const DEADLINE_STRIDE: usize = 64;
+
+/// What the pool and the search may hold.
+///
+/// Both caps are a multiple of the graph's vertex count, so the memory the
+/// stage can reach is linear in the graph: [`POOL_VERTICES_PER_VERTEX`] vertex
+/// ids per vertex in the pool and [`BLOCK_VERTICES_PER_VERTEX`] again in the
+/// blocks, 512 bytes per graph vertex between them. The bag count is capped as
+/// well, because the search costs one pass over the graph per bag.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Limits {
+    pool_vertices: usize,
+    block_vertices: usize,
+    bags: usize,
+}
+
+impl Limits {
+    /// The caps for a graph of `vertices` vertices.
+    pub(crate) fn for_graph(vertices: u32) -> Self {
+        let vertices = vertices as usize;
+        Self {
+            pool_vertices: vertices.saturating_mul(POOL_VERTICES_PER_VERTEX),
+            block_vertices: vertices.saturating_mul(BLOCK_VERTICES_PER_VERTEX),
+            bags: MAX_POOL_BAGS,
+        }
+    }
+}
+
+/// Distinct bags collected from the decompositions a run produced.
+///
+/// A bag is held once however many decompositions carried it. The pool stops
+/// growing at its caps: a stage reading a full pool searches over the bags that
+/// arrived first, which is a smaller search rather than a wrong one.
+pub(crate) struct BagPool {
+    bags: Vec<Vec<u32>>,
+    seen: FxHashSet<Vec<u32>>,
+    stored: usize,
+    limits: Limits,
+}
+
+impl BagPool {
+    pub(crate) fn new(limits: Limits) -> Self {
+        Self {
+            bags: Vec::new(),
+            seen: FxHashSet::default(),
+            stored: 0,
+            limits,
+        }
+    }
+
+    /// Whether another bag fits.
+    fn has_room(&self) -> bool {
+        self.bags.len() < self.limits.bags && self.stored < self.limits.pool_vertices
+    }
+
+    /// Take the bags of one decomposition.
+    pub(crate) fn absorb(&mut self, decomposition: &TreeDecomposition) {
+        for bag in decomposition.bags() {
+            if !self.has_room() {
+                return;
+            }
+            let mut vertices = bag.vertices().to_vec();
+            vertices.sort_unstable();
+            vertices.dedup();
+            if self.seen.contains(&vertices) {
+                continue;
+            }
+            self.stored += vertices.len();
+            self.seen.insert(vertices.clone());
+            self.bags.push(vertices);
+        }
+    }
+
+    /// How many distinct bags the pool holds.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.bags.len()
+    }
+
+    /// Whether the pool holds nothing.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.bags.is_empty()
+    }
+}
+
+/// One block: a connected component of `G − Ω` for some pool bag, with its
+/// separator, the pool bags that cap it, and what the dynamic programme
+/// settled.
+struct Block {
+    component: Vec<u32>,
+    separator: Vec<u32>,
+    caps: Vec<usize>,
+    width: u32,
+    /// The cap the width came from, or `None` where `C ∪ S` in one bag was
+    /// cheapest.
+    best_cap: Option<usize>,
+}
+
+/// Search the pool for the narrowest tree decomposition whose bags all come
+/// from it.
+///
+/// Returns `None` when the pool is empty, when the search would exceed its
+/// [`Limits`], or when `deadline` passes.
+pub(crate) fn recombine(
+    pool: &BagPool,
+    graph: &Graph,
+    deadline: Option<Instant>,
+) -> Option<TreeDecomposition> {
+    if pool.is_empty() {
+        return None;
+    }
+    let n = graph.num_vertices() as usize;
+    let mut search = Search {
+        n,
+        adjacency: adjacency_lists(graph),
+        limits: pool.limits,
+        blocks: Vec::new(),
+        index: FxHashMap::default(),
+        stored: 0,
+        subblocks: vec![Vec::new(); pool.bags.len()],
+        bag_sizes: pool.bags.iter().map(Vec::len).collect(),
+        mark: vec![u32::MAX; n],
+        stamp: 0,
+        seen: vec![false; n],
+    };
+    search.collect(pool, deadline)?;
+    search.evaluate(deadline)?;
+    search.build(pool, graph, deadline)
+}
+
+/// Adjacency lists over `0..num_vertices`.
+fn adjacency_lists(graph: &Graph) -> Vec<Vec<u32>> {
+    let mut adjacency = vec![Vec::new(); graph.num_vertices() as usize];
+    for &(left, right) in graph.edges() {
+        adjacency[left as usize].push(right);
+        adjacency[right as usize].push(left);
+    }
+    adjacency
+}
+
+/// The components of `G − Ω`, with the vertices of `Ω` on each one's border.
+struct Split {
+    components: Vec<Vec<u32>>,
+    separators: Vec<Vec<u32>>,
+}
+
+struct Search {
+    n: usize,
+    adjacency: Vec<Vec<u32>>,
+    limits: Limits,
+    blocks: Vec<Block>,
+    index: FxHashMap<Vec<u32>, usize>,
+    stored: usize,
+    /// For each pool bag, the blocks that are the components of `G` less that
+    /// bag.
+    subblocks: Vec<Vec<usize>>,
+    bag_sizes: Vec<usize>,
+    /// Stamped membership marks, so a vertex set can be tested without an
+    /// array being cleared per query.
+    mark: Vec<u32>,
+    stamp: u32,
+    /// Scratch for the traversal.
+    seen: Vec<bool>,
+}
+
+impl Search {
+    /// Mark `vertices` and return the stamp that identifies them.
+    fn mark_set(&mut self, vertices: &[u32]) -> u32 {
+        self.stamp = self.stamp.wrapping_add(1);
+        for &vertex in vertices {
+            self.mark[vertex as usize] = self.stamp;
+        }
+        self.stamp
+    }
+
+    fn marked(&self, vertex: u32, stamp: u32) -> bool {
+        self.mark[vertex as usize] == stamp
+    }
+
+    /// The connected components of `G` less `bag`, each with its separator.
+    fn split(&mut self, bag: &[u32]) -> Split {
+        let removed = self.mark_set(bag);
+        self.seen.fill(false);
+        for &vertex in bag {
+            self.seen[vertex as usize] = true;
+        }
+        let mut components: Vec<Vec<u32>> = Vec::new();
+        let mut separators: Vec<Vec<u32>> = Vec::new();
+        let mut stack = Vec::new();
+        for start in 0..self.n {
+            if self.seen[start] {
+                continue;
+            }
+            self.seen[start] = true;
+            stack.push(start as u32);
+            let mut component = Vec::new();
+            let mut separator = Vec::new();
+            while let Some(vertex) = stack.pop() {
+                component.push(vertex);
+                for &next in &self.adjacency[vertex as usize] {
+                    if self.marked(next, removed) {
+                        separator.push(next);
+                    } else if !self.seen[next as usize] {
+                        self.seen[next as usize] = true;
+                        stack.push(next);
+                    }
+                }
+            }
+            component.sort_unstable();
+            separator.sort_unstable();
+            separator.dedup();
+            components.push(component);
+            separators.push(separator);
+        }
+        Split {
+            components,
+            separators,
+        }
+    }
+
+    /// Register a block, or return the one already there. `None` when the
+    /// block map is full.
+    fn block(&mut self, component: Vec<u32>, separator: Vec<u32>) -> Option<usize> {
+        if let Some(&index) = self.index.get(&component) {
+            return Some(index);
+        }
+        let size = component.len() + separator.len();
+        if self.stored.saturating_add(size) > self.limits.block_vertices {
+            return None;
+        }
+        self.stored += size;
+        let index = self.blocks.len();
+        self.index.insert(component.clone(), index);
+        self.blocks.push(Block {
+            component,
+            separator,
+            caps: Vec::new(),
+            width: u32::MAX,
+            best_cap: None,
+        });
+        Some(index)
+    }
+
+    /// Walk the pool: for each bag, the blocks it splits the graph into, and
+    /// the block it caps on the far side of each of them.
+    fn collect(&mut self, pool: &BagPool, deadline: Option<Instant>) -> Option<()> {
+        for (bag_index, bag) in pool.bags.iter().enumerate() {
+            if expired(deadline) {
+                return None;
+            }
+            let split = self.split(bag);
+            let mut subblocks = Vec::with_capacity(split.components.len());
+            for (component, separator) in split.components.iter().zip(&split.separators) {
+                subblocks.push(self.block(component.clone(), separator.clone())?);
+            }
+            self.subblocks[bag_index] = subblocks;
+            // Two indexes over the bag, both built once and read once per
+            // component: which components each bag vertex borders, and which
+            // other bag vertices it is adjacent to.
+            let mut borders: FxHashMap<u32, Vec<usize>> = FxHashMap::default();
+            for (id, separator) in split.separators.iter().enumerate() {
+                for &vertex in separator {
+                    borders.entry(vertex).or_default().push(id);
+                }
+            }
+            let inside_bag = self.mark_set(bag);
+            let mut bag_neighbours: FxHashMap<u32, Vec<u32>> = FxHashMap::default();
+            for &vertex in bag {
+                let neighbours: Vec<u32> = self.adjacency[vertex as usize]
+                    .iter()
+                    .copied()
+                    .filter(|&next| self.marked(next, inside_bag))
+                    .collect();
+                bag_neighbours.insert(vertex, neighbours);
+            }
+            for position in 0..split.components.len() {
+                if expired(deadline) {
+                    return None;
+                }
+                let Some((capped, separator)) =
+                    self.capped_block(bag, &split, &borders, &bag_neighbours, position)
+                else {
+                    continue;
+                };
+                let index = self.block(capped, separator)?;
+                self.blocks[index].caps.push(bag_index);
+            }
+        }
+        Some(())
+    }
+
+    /// The component of `G` less the `position`-th component's separator that
+    /// holds the rest of `bag`, with that component's own separator. `None`
+    /// where the bag is the separator and so caps nothing.
+    ///
+    /// The far side is what is left of the bag once the separator is taken out,
+    /// plus every other component of `G − Ω` that touches it. Nothing further
+    /// joins: two components of `G − Ω` share no edge, so a component reached
+    /// from one of them would have to be reached through the bag, and the only
+    /// bag vertices left are already there.
+    ///
+    /// Its separator is not the whole of `N(C)`: a vertex there may border `C`
+    /// and nothing on the far side. Taking the exact set matters, because a
+    /// block's separator is what its parent bag is guaranteed to contain.
+    fn capped_block(
+        &mut self,
+        bag: &[u32],
+        split: &Split,
+        borders: &FxHashMap<u32, Vec<usize>>,
+        bag_neighbours: &FxHashMap<u32, Vec<u32>>,
+        position: usize,
+    ) -> Option<(Vec<u32>, Vec<u32>)> {
+        let border = self.mark_set(&split.separators[position]);
+        let rest: Vec<u32> = bag
+            .iter()
+            .copied()
+            .filter(|&vertex| !self.marked(vertex, border))
+            .collect();
+        if rest.is_empty() {
+            return None;
+        }
+        let mut touched = vec![false; split.components.len()];
+        for vertex in &rest {
+            for &id in borders.get(vertex).map(Vec::as_slice).unwrap_or(&[]) {
+                touched[id] = true;
+            }
+        }
+        let far = self.mark_set(&rest);
+        let mut separator = Vec::new();
+        for &vertex in &split.separators[position] {
+            let adjacent_to_rest = bag_neighbours
+                .get(&vertex)
+                .is_some_and(|neighbours| neighbours.iter().any(|&next| self.marked(next, far)));
+            let borders_far_component = borders
+                .get(&vertex)
+                .is_some_and(|ids| ids.iter().any(|&id| id != position && touched[id]));
+            if adjacent_to_rest || borders_far_component {
+                separator.push(vertex);
+            }
+        }
+        let mut capped = rest;
+        for (id, component) in split.components.iter().enumerate() {
+            if id != position && touched[id] {
+                capped.extend_from_slice(component);
+            }
+        }
+        capped.sort_unstable();
+        separator.sort_unstable();
+        separator.dedup();
+        Some((capped, separator))
+    }
+
+    /// Settle every block's width, smallest component first.
+    fn evaluate(&mut self, deadline: Option<Instant>) -> Option<()> {
+        let mut order: Vec<usize> = (0..self.blocks.len()).collect();
+        order.sort_by_key(|&index| self.blocks[index].component.len());
+        for (step, index) in order.into_iter().enumerate() {
+            if step % DEADLINE_STRIDE == 0 && expired(deadline) {
+                return None;
+            }
+            let inside = {
+                let component = &self.blocks[index].component;
+                self.stamp = self.stamp.wrapping_add(1);
+                let stamp = self.stamp;
+                for &vertex in component {
+                    self.mark[vertex as usize] = stamp;
+                }
+                stamp
+            };
+            // Everything in one bag, which is always available and always
+            // valid, against the best cap. A cap that only ties is still
+            // preferred: it says the same width in smaller bags.
+            let whole = (self.blocks[index].component.len() + self.blocks[index].separator.len())
+                .saturating_sub(1) as u32;
+            let mut best: Option<(u32, usize)> = None;
+            for position in 0..self.blocks[index].caps.len() {
+                let cap = self.blocks[index].caps[position];
+                let Some(candidate) = self.cap_width(cap, index, inside) else {
+                    continue;
+                };
+                if best.is_none_or(|(width, _)| candidate < width) {
+                    best = Some((candidate, cap));
+                }
+            }
+            let (width, best_cap) = match best {
+                Some((width, cap)) if width <= whole => (width, Some(cap)),
+                _ => (whole, None),
+            };
+            self.blocks[index].width = width;
+            self.blocks[index].best_cap = best_cap;
+        }
+        Some(())
+    }
+
+    /// What putting pool bag `cap` at the top of block `block` costs, or
+    /// `None` where a sub-block it leaves has no width yet.
+    fn cap_width(&self, cap: usize, block: usize, inside: u32) -> Option<u32> {
+        let mut width = self.bag_sizes[cap].saturating_sub(1) as u32;
+        for &sub in &self.subblocks[cap] {
+            if sub == block {
+                // The cap left the block it caps whole, so it is not a cap at
+                // all; using it would be circular.
+                return None;
+            }
+            let other = &self.blocks[sub];
+            // A sub-block lies wholly inside the component or wholly outside
+            // it, so one vertex settles it.
+            let representative = *other.component.first()?;
+            if !self.marked(representative, inside) {
+                continue;
+            }
+            if other.width == u32::MAX {
+                return None;
+            }
+            width = width.max(other.width);
+        }
+        Some(width)
+    }
+
+    /// Assemble the narrowest decomposition the settled widths describe.
+    fn build(
+        &mut self,
+        pool: &BagPool,
+        graph: &Graph,
+        deadline: Option<Instant>,
+    ) -> Option<TreeDecomposition> {
+        if expired(deadline) {
+            return None;
+        }
+        let mut best: Option<(u32, usize)> = None;
+        for (index, bag) in pool.bags.iter().enumerate() {
+            let mut width = bag.len().saturating_sub(1) as u32;
+            let mut usable = true;
+            for &sub in &self.subblocks[index] {
+                if self.blocks[sub].width == u32::MAX {
+                    usable = false;
+                    break;
+                }
+                width = width.max(self.blocks[sub].width);
+            }
+            if usable && best.is_none_or(|(best_width, _)| width < best_width) {
+                best = Some((width, index));
+            }
+        }
+        let (_, root) = best?;
+        let mut bags: Vec<Vec<u32>> = vec![pool.bags[root].clone()];
+        let mut edges: Vec<(usize, usize)> = Vec::new();
+        let mut pending: Vec<(usize, usize)> =
+            self.subblocks[root].iter().map(|&b| (b, 0usize)).collect();
+        while let Some((block, parent)) = pending.pop() {
+            if expired(deadline) {
+                return None;
+            }
+            let position = bags.len();
+            match self.blocks[block].best_cap {
+                Some(cap) => {
+                    bags.push(pool.bags[cap].clone());
+                    let component = std::mem::take(&mut self.blocks[block].component);
+                    let inside = self.mark_set(&component);
+                    self.blocks[block].component = component;
+                    for &sub in &self.subblocks[cap] {
+                        let representative = *self.blocks[sub].component.first()?;
+                        if self.marked(representative, inside) {
+                            pending.push((sub, position));
+                        }
+                    }
+                }
+                None => {
+                    // No cap was worth it, so the block goes into one bag: its
+                    // component and its separator together.
+                    let mut bag = self.blocks[block].component.clone();
+                    bag.extend_from_slice(&self.blocks[block].separator);
+                    bag.sort_unstable();
+                    bag.dedup();
+                    bags.push(bag);
+                }
+            }
+            edges.push((parent, position));
+        }
+        TreeDecomposition::new(graph, bags, edges).ok()
+    }
+}

@@ -32,6 +32,8 @@ pub enum Stage {
     MinimalTriangulation,
     /// The pass that drops the fill edges the winner's bags do not need.
     Minimalized,
+    /// The stage that recombines the bags of all the candidates.
+    Recombined,
     /// The trailing FlowCutter candidate.
     FlowCutter,
     /// A hedge's weighted stage as a whole, rather than one of its candidates.
@@ -53,6 +55,7 @@ impl fmt::Display for Stage {
             Stage::MaximumCardinality => formatter.write_str("maximum-cardinality"),
             Stage::MinimalTriangulation => formatter.write_str("minimal-triangulation"),
             Stage::Minimalized => formatter.write_str("minimalized"),
+            Stage::Recombined => formatter.write_str("recombined"),
             Stage::FlowCutter => formatter.write_str("flowcutter"),
             Stage::WeightedStage => formatter.write_str("weighted-stage"),
             Stage::SampledRestarts => formatter.write_str("sampled-restarts"),

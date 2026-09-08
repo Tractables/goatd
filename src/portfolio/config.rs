@@ -57,6 +57,20 @@ const DEFAULT_MAXIMUM_CARDINALITY_VERTICES: u32 = 40_000;
 /// bounded.
 const DEFAULT_TRIANGULATION_REFINEMENT_VERTICES: u32 = 2_000;
 
+/// Graph size at or below which the standard budgeted portfolio recombines the
+/// bags of its candidates. The stage holds a pool of bags and a block per
+/// component they cut out, both capped as a multiple of the vertex count, and
+/// it costs one traversal of the graph per bag in the pool. Above this the
+/// traversals are what rules it out rather than the memory.
+const DEFAULT_RECOMBINATION_VERTICES: u32 = 20_000;
+
+/// The share of the hard window the recombination stage is given, taken off the
+/// end so the rest of the schedule finishes that much earlier.
+pub(super) const RECOMBINATION_WINDOW_SHARE: u32 = 8;
+/// The least and the most the stage is given, whatever the share comes to.
+pub(super) const MIN_RECOMBINATION_RESERVE: Duration = Duration::from_millis(50);
+pub(super) const MAX_RECOMBINATION_RESERVE: Duration = Duration::from_secs(30);
+
 /// Dimensions the hedge places the vertices in, one weighted stage each, in
 /// this order. Which graphs a dimension improves is close to arbitrary and two
 /// dimensions improve mostly different ones, so a hedge that runs several
@@ -485,6 +499,7 @@ pub struct PortfolioConfig {
     pub(super) maximum_cardinality: Option<u32>,
     pub(super) minimal_triangulation: Option<u32>,
     pub(super) triangulation_refinement: Option<u32>,
+    pub(super) recombination: Option<u32>,
 }
 
 /// Two configurations are equal when they ask for the same run, the reserve
@@ -507,6 +522,7 @@ impl PartialEq for PortfolioConfig {
             && self.maximum_cardinality == other.maximum_cardinality
             && self.minimal_triangulation == other.minimal_triangulation
             && self.triangulation_refinement == other.triangulation_refinement
+            && self.recombination == other.recombination
     }
 }
 
@@ -534,6 +550,7 @@ impl PortfolioConfig {
             maximum_cardinality: None,
             minimal_triangulation: None,
             triangulation_refinement: None,
+            recombination: None,
         }
     }
 
@@ -632,6 +649,9 @@ impl PortfolioConfig {
             maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
+            // The stage wants a share of a hard window, and this schedule has
+            // no deadline to take one from.
+            recombination: None,
         }
     }
 
@@ -701,6 +721,7 @@ impl PortfolioConfig {
             maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
+            recombination: Some(DEFAULT_RECOMBINATION_VERTICES),
         }
     }
 
@@ -937,6 +958,33 @@ impl PortfolioConfig {
     /// it.
     pub fn without_triangulation_refinement(mut self) -> Self {
         self.triangulation_refinement = None;
+        self
+    }
+
+    /// Recombine the bags of the candidates on graphs of at most
+    /// `max_vertices` vertices.
+    ///
+    /// The last stage of the schedule collects the bags of every decomposition
+    /// the run produced and searches over that pool for the narrowest tree
+    /// decomposition whose bags all come from it. The pool holds the winner's
+    /// own bags, so the search cannot come back wider, and the portfolio keeps
+    /// the result only where it is narrower.
+    ///
+    /// The stage is given a share of the hard window, taken off the end, so
+    /// every other candidate stops that much earlier. Without a hard budget
+    /// there is no share to take and the stage does not run. The gate is a
+    /// vertex count because the search costs one traversal of the graph per bag
+    /// in the pool; what it holds is capped separately, as a multiple of the
+    /// vertex count.
+    pub fn with_recombination(mut self, max_vertices: u32) -> Self {
+        self.recombination = Some(max_vertices);
+        self
+    }
+
+    /// Return the best single candidate instead of recombining the bags of all
+    /// of them.
+    pub fn without_recombination(mut self) -> Self {
+        self.recombination = None;
         self
     }
 }
