@@ -1386,6 +1386,22 @@ fn run_bipartite_lift(
         .hard_budget
         .unwrap_or_else(|| soft_budget.saturating_mul(2));
     let share = window.mul_f64(BIPARTITE_LIFT_SHARE);
+
+    // What the stage may do per millisecond of that share. The work is the
+    // input's edges, which the colouring and the pricing each walk, and the
+    // cheaper side's estimate, which is what building the projection costs and
+    // stands for the search over it. A graph that is large for this window is
+    // refused here, and the share stays with the rest of the schedule; the same
+    // graph under a longer window is not.
+    let affordable = config.bipartite_lift_rate * share.as_millis() as f64;
+    let cheapest = sides
+        .first()
+        .map_or(0.0, |&(_, _, pairs)| (graph.edges().len() + pairs) as f64);
+    if cheapest > affordable {
+        give_up(trace);
+        return Ok(());
+    }
+
     for (keep, drop, pairs) in sides {
         let Some(projection) = bipartite_lift::project(graph, &adjacency, keep, drop, pairs) else {
             continue;

@@ -107,6 +107,53 @@ fn the_edge_factor_keeps_the_stage_off_a_side_that_would_cost_too_much() {
 }
 
 #[test]
+fn the_rate_keeps_the_stage_off_a_graph_that_is_large_for_the_window() {
+    // The same graph either way: at a rate the graph is over, the stage reports
+    // that it did not start; at a rate it is under, it runs. That is what makes
+    // the gate a function of the budget rather than of the graph, since the
+    // rate is multiplied by the share of the window the stage would take.
+    let clauses = triples();
+    let borrowed: Vec<&[u32]> = clauses.iter().map(Vec::as_slice).collect();
+    let graph = incidence(6, &borrowed);
+    let weights = vec![1; graph.num_vertices() as usize];
+    let budget = Duration::from_millis(200);
+
+    let mut lifts = Vec::new();
+    crate::portfolio::decompose_traced(
+        &graph,
+        &weights,
+        0,
+        PortfolioConfig::standard_with_budget(budget).with_bipartite_lift_rate(0.01),
+        &mut |t| {
+            if t.stage == Stage::BipartiteLift {
+                lifts.push(t.outcome);
+            }
+        },
+    )
+    .expect("the portfolio returns a decomposition");
+    assert!(
+        lifts
+            .iter()
+            .all(|outcome| matches!(outcome, crate::portfolio::CandidateOutcome::NotStarted)),
+        "the work is over the rate for this share: {lifts:?}"
+    );
+
+    let mut stages = Vec::new();
+    crate::portfolio::decompose_traced(
+        &graph,
+        &weights,
+        0,
+        PortfolioConfig::standard_with_budget(budget).with_bipartite_lift_rate(1000.0),
+        &mut |t| stages.push(t.stage),
+    )
+    .expect("the portfolio returns a decomposition");
+    assert!(
+        stages.contains(&Stage::BipartiteLift),
+        "the same graph is under a rate a thousand times larger: {stages:?}"
+    );
+}
+
+#[test]
 fn lifts_a_decomposition_of_the_projection() {
     // A chain of clauses, so the primal graph is a chain of triangles and its
     // decomposition is more than one bag.

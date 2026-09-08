@@ -181,6 +181,15 @@ built only if the first turns out to hold more edges than the input. The lift
 is one more candidate: the portfolio keeps whichever decomposition is narrower,
 so the stage spends time and never width.
 
+Whether the stage runs at all is a question about the budget, not about the
+size of the graph. `PortfolioConfig::with_bipartite_lift_rate` sets how much
+work it may do per millisecond of the share it would take, in edges: the
+input's edges, which the colouring and the pricing each walk, plus the cheaper
+side's estimate, which is what building the projection costs and stands for the
+search over it. Over that rate the stage does not run and its share stays with
+the rest of the schedule, so the same graph is refused under a ten-second
+budget and decomposed under a four-minute one.
+
 It runs first, so the width it finds is the incumbent the elimination orders
 are bounded against, and on a graph whose projection is much smaller than the
 input — an incidence graph, whose clause side projects onto the primal graph —

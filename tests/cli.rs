@@ -238,6 +238,10 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--no-bipartite-lift"],
             &["--no-bipartite-lift", "minfill", "portfolio"],
         ),
+        (
+            &["--bipartite-lift-rate", "150"],
+            &["--bipartite-lift-rate", "minfill", "portfolio"],
+        ),
         (&["--mcs-up-to", "500"], &["--mcs-up-to", "portfolio"]),
         (&["--no-mcs"], &["--no-mcs", "minfill", "portfolio"]),
         (

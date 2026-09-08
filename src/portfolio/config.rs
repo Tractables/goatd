@@ -75,6 +75,9 @@ const DEFAULT_TRIANGULATION_REFINEMENT_VERTICES: u32 = 2_000;
 /// this multiple of the input's edges, counted with repeats.
 const DEFAULT_BIPARTITE_LIFT_EDGE_FACTOR: f64 = 3.0;
 
+/// Edges of work per millisecond of the share the bipartite lift would take.
+const DEFAULT_BIPARTITE_LIFT_RATE: f64 = 150.0;
+
 /// Dimensions the hedge places the vertices in, one weighted stage each, in
 /// this order. Which graphs a dimension improves is close to arbitrary and two
 /// dimensions improve mostly different ones, so a hedge that runs several
@@ -504,6 +507,7 @@ pub struct PortfolioConfig {
     pub(super) minimal_triangulation: Option<u32>,
     pub(super) triangulation_refinement: Option<u32>,
     pub(super) bipartite_lift: Option<f64>,
+    pub(super) bipartite_lift_rate: f64,
 }
 
 /// Two configurations are equal when they ask for the same run, the reserve
@@ -527,6 +531,7 @@ impl PartialEq for PortfolioConfig {
             && self.minimal_triangulation == other.minimal_triangulation
             && self.triangulation_refinement == other.triangulation_refinement
             && self.bipartite_lift.map(f64::to_bits) == other.bipartite_lift.map(f64::to_bits)
+            && self.bipartite_lift_rate.to_bits() == other.bipartite_lift_rate.to_bits()
     }
 }
 
@@ -555,6 +560,7 @@ impl PortfolioConfig {
             minimal_triangulation: None,
             triangulation_refinement: None,
             bipartite_lift: None,
+            bipartite_lift_rate: DEFAULT_BIPARTITE_LIFT_RATE,
         }
     }
 
@@ -654,6 +660,7 @@ impl PortfolioConfig {
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
             bipartite_lift: None,
+            bipartite_lift_rate: DEFAULT_BIPARTITE_LIFT_RATE,
         }
     }
 
@@ -724,6 +731,7 @@ impl PortfolioConfig {
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
             bipartite_lift: Some(DEFAULT_BIPARTITE_LIFT_EDGE_FACTOR),
+            bipartite_lift_rate: DEFAULT_BIPARTITE_LIFT_RATE,
         }
     }
 
@@ -988,6 +996,24 @@ impl PortfolioConfig {
         self
     }
 
+    /// How much work the bipartite lift may do per millisecond of the share it
+    /// takes, in edges: the input's edges for the colouring and the pricing,
+    /// plus the cheaper side's estimate for building the projection and
+    /// searching it. Over that rate the stage does not run and its share stays
+    /// with the rest of the schedule.
+    ///
+    /// This is what keeps the stage off a graph that is large for the window
+    /// rather than off a large graph: the same 500,000-edge incidence graph is
+    /// refused under a ten-second budget and decomposed under a four-minute
+    /// one. At the default, on the graphs it was calibrated from, every view
+    /// where the lift returned nothing inside ten seconds is above the rate by
+    /// at least a factor of two, and every view it narrowed at either budget is
+    /// under it.
+    pub fn with_bipartite_lift_rate(mut self, edges_per_millisecond: f64) -> Self {
+        self.bipartite_lift_rate = edges_per_millisecond;
+        self
+    }
+
     /// Do not try the bipartite lift.
     pub fn without_bipartite_lift(mut self) -> Self {
         self.bipartite_lift = None;
@@ -1062,6 +1088,11 @@ pub(super) fn validate(config: PortfolioConfig) -> Result<(), Error> {
     {
         return Err(Error::InvalidInput(
             "portfolio bipartite-lift edge factor must be finite and above zero".into(),
+        ));
+    }
+    if !(config.bipartite_lift_rate.is_finite() && config.bipartite_lift_rate > 0.0) {
+        return Err(Error::InvalidInput(
+            "portfolio bipartite-lift rate must be finite and above zero".into(),
         ));
     }
     if config.diverse_sampling_runs > MAX_DIVERSE_SAMPLING_RUNS {
