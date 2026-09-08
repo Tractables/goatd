@@ -119,7 +119,7 @@ goatd has no accompanying paper, so cite the software:
   title        = {goatd: Greatest Of All Tree Decompositions},
   year         = {2026},
   howpublished = {\url{https://github.com/Tractables/goatd}},
-  note         = {Rust library and command-line solver, version 0.2.0}
+  note         = {Rust library and command-line solver, version 0.1.2}
 }
 ```
 
