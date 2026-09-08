@@ -6,7 +6,7 @@ use crate::{Graph, TreeDecomposition};
 fn pool_of(decompositions: &[&TreeDecomposition]) -> BagPool {
     let mut pool = BagPool::new(Limits::standard());
     for decomposition in decompositions {
-        pool.absorb(decomposition);
+        pool.absorb(decomposition, 0);
     }
     pool
 }
@@ -34,33 +34,39 @@ fn the_pool_keeps_the_best_few_decompositions() {
     .unwrap();
     let wide = TreeDecomposition::new(&graph, [vec![0, 1, 2, 3]], []).unwrap();
     let mut pool = BagPool::new(Limits::standard());
-    for _ in 0..8 {
-        pool.absorb(&wide);
-        pool.absorb(&narrow);
+    for slot in 0..8 {
+        pool.absorb(&wide, slot);
+        pool.absorb(&narrow, slot);
     }
-    assert_eq!(pool.len(), Limits::standard().candidates());
-    // Everything kept is as narrow as the narrowest offered, so the wide one
-    // was crowded out.
+    // One decomposition per slot, and each slot kept the narrower of the two
+    // offered to it.
+    assert_eq!(pool.len(), 8);
     let built = recombine(&pool, &graph, None).expect("the pool holds a decomposition");
     assert_eq!(built.treewidth(), 1);
 }
 
+/// Every stage that produced a decomposition is in the pool, and when they do
+/// not all fit, each still gives up bags rather than being dropped.
 #[test]
-fn a_decomposition_that_does_not_fit_its_share_is_not_kept() {
-    let graph = path(4);
-    let td = TreeDecomposition::new(
+fn a_full_pool_shares_its_bags_out() {
+    let graph = path(9);
+    let path_bags: Vec<Vec<u32>> = (0..8).map(|v| vec![v, v + 1]).collect();
+    let along = TreeDecomposition::new(
         &graph,
-        [vec![0, 1], vec![1, 2], vec![2, 3]],
-        [(0, 1), (1, 2)],
+        path_bags.clone(),
+        (0usize..7).map(|edge| (edge, edge + 1)),
     )
     .unwrap();
     let mut pool = BagPool::new(Limits {
-        bags: 2,
-        candidates: 2,
+        bags: 4,
         ..Limits::standard()
     });
-    pool.absorb(&td);
-    assert!(pool.is_empty());
+    for slot in 0..4 {
+        pool.absorb(&along, slot);
+    }
+    assert_eq!(pool.len(), 4);
+    let built = recombine(&pool, &graph, None).expect("the pool holds a decomposition");
+    built.validate(&graph).expect("valid");
 }
 
 #[test]
@@ -203,7 +209,7 @@ fn a_full_block_map_gives_a_valid_answer_or_none() {
             block_vertices,
             ..Limits::standard()
         });
-        pool.absorb(&td);
+        pool.absorb(&td, 0);
         if let Some(built) = recombine(&pool, &graph, None) {
             built.validate(&graph).expect("valid");
         }

@@ -94,6 +94,12 @@ impl CandidateSet {
         self.pool.as_ref()
     }
 
+    /// The pool, to put a decomposition in that is not a candidate: one drawn
+    /// only to give the recombination a differently shaped tree to read.
+    pub(super) fn bag_pool_mut(&mut self) -> Option<&mut BagPool> {
+        self.pool.as_mut()
+    }
+
     pub(super) fn best_width(&self) -> Option<u32> {
         self.best_width
     }
@@ -122,7 +128,7 @@ impl CandidateSet {
         origin: CandidateOrigin,
     ) -> CandidateOutcome {
         if let Some(pool) = &mut self.pool {
-            pool.absorb(&decomposition);
+            pool.absorb(&decomposition, origin.stage.slot());
         }
         let (width, total_bag_size) = decomposition.quality_key();
         // Read off the same decomposition as the width and the total bag

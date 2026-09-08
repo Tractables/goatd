@@ -42,6 +42,33 @@ pub enum Stage {
     SampledRestarts,
 }
 
+impl Stage {
+    /// Which slot of the recombination pool this stage's decompositions go in.
+    ///
+    /// The pool keeps the best decomposition of each slot, so every stage that
+    /// produced one is represented in the bags the recombination reads however
+    /// wide it came out: what the search needs from a candidate is a tree
+    /// shaped differently from the others, and the stages are what differ.
+    pub(crate) fn slot(self) -> u32 {
+        match self {
+            Stage::MinFill => 0,
+            Stage::MinDegree => 1,
+            Stage::NestedDissection => 2,
+            Stage::Sample => 3,
+            Stage::MaximumCardinality => 4,
+            Stage::MinimalTriangulation => 5,
+            Stage::Minimalized => 6,
+            Stage::Recombined => 7,
+            Stage::FlowCutter => 8,
+            Stage::WeightedStage => 9,
+            Stage::SampledRestarts => 10,
+            Stage::Diverse { degree_coefficient } => {
+                100 + u32::from(degree_coefficient.cast_unsigned())
+            }
+        }
+    }
+}
+
 impl fmt::Display for Stage {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

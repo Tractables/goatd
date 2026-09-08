@@ -6,11 +6,14 @@
 //! produced, pools their bags, and searches that pool for the narrowest tree
 //! decomposition whose every bag comes from it.
 //!
-//! The pool gives each decomposition it keeps an equal share of its bags, so no
-//! one of them fills it, and it takes nothing from a decomposition that does
-//! not fit its share. Each is minimalised on the way in where there is time for
-//! it, so the bags pooled are the cliques of a minimal triangulation rather
-//! than whatever the elimination left.
+//! The pool holds the best decomposition of every stage the run has, rather
+//! than the best few decompositions overall: what the search needs from a
+//! candidate is a tree shaped differently from the others, and the narrowest
+//! four are usually four near copies of one another. Where they do not all fit,
+//! the bags are shared out — the narrowest tree twice the share of the rest,
+//! and each gives up its narrowest bags first. Each is minimalised on the way
+//! in where there is time for it, so the bags pooled are the cliques of a
+//! minimal triangulation rather than whatever the elimination left.
 //!
 //! The search is the dynamic programme of Bouchitté and Todinca, "Treewidth and
 //! minimum fill-in: grouping the minimal separators", SIAM Journal on Computing
@@ -78,8 +81,8 @@ const MAX_POOL_BAGS: usize = 4_000;
 const MAX_POOL_VERTICES: usize = 1_000_000;
 /// Vertex ids the block map may hold.
 const MAX_BLOCK_VERTICES: usize = 32_000_000;
-/// Decompositions the pool keeps, each with an equal share of the bags.
-const POOL_CANDIDATES: usize = 4;
+/// Stages the pool keeps a decomposition from.
+const POOL_SLOTS: usize = 16;
 /// Rounds of growth after the first answer.
 const GROWTH_ROUNDS: usize = 2;
 /// Pieces re-decomposed per round.
@@ -102,7 +105,7 @@ pub(crate) struct Limits {
     pool_vertices: usize,
     block_vertices: usize,
     bags: usize,
-    candidates: usize,
+    slots: usize,
 }
 
 impl Limits {
@@ -112,32 +115,40 @@ impl Limits {
             pool_vertices: MAX_POOL_VERTICES,
             block_vertices: MAX_BLOCK_VERTICES,
             bags: MAX_POOL_BAGS,
-            candidates: POOL_CANDIDATES,
+            slots: POOL_SLOTS,
         }
     }
 
-    /// How many decompositions the pool keeps.
-    pub(crate) fn candidates(&self) -> usize {
-        self.candidates
+    /// How many stages the pool keeps a decomposition from.
+    pub(crate) fn slots(&self) -> usize {
+        self.slots
     }
 
-    /// The bags one kept decomposition may contribute.
-    pub(crate) fn quota(&self) -> usize {
-        self.bags / self.candidates.max(1)
+    /// The bags the pool may hold in all.
+    pub(crate) fn bags(&self) -> usize {
+        self.bags
     }
 }
 
-/// The best few decompositions a run produced, kept whole so their bags can be
-/// pooled together.
+/// The best decomposition each stage of a run produced, kept whole so their
+/// bags can be pooled together.
 ///
-/// A decomposition is kept only if it fits its share of the pool, so a graph
-/// whose candidates carry tens of thousands of bags keeps nothing and the
-/// stage has nothing to do. What is kept is ranked the way the candidate set
-/// ranks it, so the bags that go into the pool are the bags of the narrowest
-/// decompositions the run has, not of the first ones it produced.
+/// The pool is keyed by the stage that produced the decomposition, not by width
+/// alone, because what the search needs from a candidate is a tree shaped
+/// differently from the others: the sampled draws, the diverse passes,
+/// FlowCutter and nested dissection cut the graph in different places, and a
+/// pool of the four narrowest trees is usually four near copies of one of them.
+/// Every slot that produced anything is in the pool, and the bags are shared
+/// out between them when they do not all fit, with the narrowest given twice
+/// the share of the rest.
 pub(crate) struct BagPool {
-    kept: Vec<TreeDecomposition>,
+    kept: Vec<Kept>,
     limits: Limits,
+}
+
+struct Kept {
+    slot: u32,
+    decomposition: TreeDecomposition,
 }
 
 impl BagPool {
@@ -148,49 +159,109 @@ impl BagPool {
         }
     }
 
-    /// Offer one decomposition to the pool.
-    pub(crate) fn absorb(&mut self, decomposition: &TreeDecomposition) {
-        if decomposition.bags().len() > self.limits.quota() {
-            return;
-        }
+    /// Offer one decomposition, produced by the stage `slot`.
+    pub(crate) fn absorb(&mut self, decomposition: &TreeDecomposition, slot: u32) {
         let key = decomposition.quality_key();
-        let position = self.kept.partition_point(|kept| kept.quality_key() <= key);
-        if position >= self.limits.candidates {
+        if let Some(held) = self.kept.iter_mut().find(|held| held.slot == slot) {
+            if key < held.decomposition.quality_key() {
+                held.decomposition = decomposition.clone();
+            }
             return;
         }
-        self.kept.insert(position, decomposition.clone());
-        self.kept.truncate(self.limits.candidates);
+        if self.kept.len() < self.limits.slots {
+            self.kept.push(Kept {
+                slot,
+                decomposition: decomposition.clone(),
+            });
+            return;
+        }
+        // Full, and this is a stage the pool has nothing from. It takes the
+        // place of the widest slot held, so a late stage is not shut out by
+        // the order the run happens to produce its candidates in.
+        let Some(widest) = self
+            .kept
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, held)| held.decomposition.quality_key())
+            .map(|(index, _)| index)
+        else {
+            return;
+        };
+        if key < self.kept[widest].decomposition.quality_key() {
+            self.kept[widest] = Kept {
+                slot,
+                decomposition: decomposition.clone(),
+            };
+        }
     }
 
     /// The bags of everything kept, narrowest decomposition first, each one
     /// minimalised where there is time for it so its bags are the cliques of a
     /// minimal triangulation rather than whatever the elimination left.
+    ///
+    /// Where the pool cannot hold everything, each kept decomposition gets a
+    /// share of it — the narrowest two shares, the rest one each — and gives up
+    /// its narrowest bags first, since the width of a decomposition is in its
+    /// widest bags and those are what the search is being asked to beat. What
+    /// one of them leaves unused is filled from the others afterwards.
     fn assemble(&self, graph: &Graph, deadline: Option<Instant>) -> Vec<Vec<u32>> {
-        let mut bags: Vec<Vec<u32>> = Vec::new();
-        let mut seen: FxHashSet<Vec<u32>> = FxHashSet::default();
-        let mut stored = 0usize;
-        for kept in &self.kept {
+        let mut sources: Vec<TreeDecomposition> = Vec::new();
+        let mut order: Vec<&Kept> = self.kept.iter().collect();
+        order.sort_by_key(|held| held.decomposition.quality_key());
+        for held in order {
             if expired(deadline) {
                 break;
             }
-            let source = if super::minimalize_fits(kept, graph, deadline) {
+            let kept = &held.decomposition;
+            sources.push(if super::minimalize_fits(kept, graph, deadline) {
                 super::minimalize_at(kept.clone(), graph, deadline)
             } else {
                 kept.clone()
-            };
-            for bag in source.bags() {
-                if bags.len() >= self.limits.bags || stored >= self.limits.pool_vertices {
-                    return bags;
+            });
+        }
+        let shares = sources.len() + 1;
+        let mut bags: Vec<Vec<u32>> = Vec::new();
+        let mut seen: FxHashSet<Vec<u32>> = FxHashSet::default();
+        let mut stored = 0usize;
+        let mut widest: Vec<Vec<usize>> = sources
+            .iter()
+            .map(|source| {
+                let mut indices: Vec<usize> = (0..source.bags().len()).collect();
+                indices
+                    .sort_by_key(|&index| std::cmp::Reverse(source.bags()[index].vertices().len()));
+                indices
+            })
+            .collect();
+        for round in 0..2 {
+            for (rank, source) in sources.iter().enumerate() {
+                let share = if rank == 0 { 2 } else { 1 };
+                let quota = if round == 0 {
+                    (self.limits.bags * share / shares).max(1)
+                } else {
+                    self.limits.bags
+                };
+                let mut taken = 0;
+                let mut left = Vec::new();
+                for index in std::mem::take(&mut widest[rank]) {
+                    if taken >= quota
+                        || bags.len() >= self.limits.bags
+                        || stored >= self.limits.pool_vertices
+                    {
+                        left.push(index);
+                        continue;
+                    }
+                    let mut vertices = source.bags()[index].vertices().to_vec();
+                    vertices.sort_unstable();
+                    vertices.dedup();
+                    taken += 1;
+                    if seen.contains(&vertices) {
+                        continue;
+                    }
+                    stored += vertices.len();
+                    seen.insert(vertices.clone());
+                    bags.push(vertices);
                 }
-                let mut vertices = bag.vertices().to_vec();
-                vertices.sort_unstable();
-                vertices.dedup();
-                if seen.contains(&vertices) {
-                    continue;
-                }
-                stored += vertices.len();
-                seen.insert(vertices.clone());
-                bags.push(vertices);
+                widest[rank] = left;
             }
         }
         bags

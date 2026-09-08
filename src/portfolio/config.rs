@@ -58,11 +58,10 @@ const DEFAULT_MAXIMUM_CARDINALITY_VERTICES: u32 = 40_000;
 const DEFAULT_TRIANGULATION_REFINEMENT_VERTICES: u32 = 2_000;
 
 /// Graph size at or below which the standard budgeted portfolio recombines the
-/// bags of its candidates. The pool gives each decomposition it keeps an equal
-/// share of its bags and takes nothing from one that does not fit that share.
-/// An elimination leaves about one bag per vertex, so above roughly twice the
-/// share there is nothing for the pool to hold, and the stage would take a
-/// reserve off the window for a search that has no bags to read.
+/// bags of its candidates. The search costs a pass over the graph per bag in
+/// the pool, and the pool holds thousands, so above this the reserve it would
+/// need is more of the window than the stage can be worth. It is the cheap
+/// filter; the reserve priced against the pool is what settles the rest.
 const DEFAULT_RECOMBINATION_VERTICES: u32 = 2_000;
 
 /// The most of the hard window the recombination stage is given, taken off the
@@ -78,7 +77,9 @@ pub(super) const RECOMBINATION_PASSES: u64 = 3;
 /// of the graph per pool bag. Measured rather than derived: the pass allocates
 /// a vertex list per component it cuts out and hashes each one, which costs far
 /// more per edge than the work the meter is calibrated on.
-pub(super) const RECOMBINATION_RATE_PER_MS: u64 = 5_000;
+pub(super) const RECOMBINATION_RATE_PER_MS: u64 = 12_000;
+/// Where the pool slots of the extra draws start, past every stage's own.
+pub(super) const VARIETY_SLOT: u32 = 400;
 
 /// Dimensions the hedge places the vertices in, one weighted stage each, in
 /// this order. Which graphs a dimension improves is close to arbitrary and two
@@ -983,11 +984,10 @@ impl PortfolioConfig {
     /// a share of the hard window, and it is taken off the end, so every other
     /// candidate stops that much earlier. A run with no budget at all has no
     /// window to take a share of, and does not run the stage. The gate is a
-    /// vertex count because the pool keeps a decomposition only if its bags fit
-    /// their share of the pool, and an elimination leaves about one bag per
-    /// vertex: above the gate the pool would hold nothing and the reserve would
-    /// buy nothing. What the search holds is capped separately, by a constant
-    /// the graph's size does not enter.
+    /// vertex count because the search costs a pass over the graph per bag in
+    /// the pool: above it the reserve the stage would need is more of the
+    /// window than it can be worth. What the search holds is capped separately,
+    /// by a constant the graph's size does not enter.
     pub fn with_recombination(mut self, max_vertices: u32) -> Self {
         self.recombination = Some(max_vertices);
         self

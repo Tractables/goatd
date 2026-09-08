@@ -28,7 +28,7 @@ use candidates::{CandidateSet, ScheduleStop};
 use config::{
     DIVERSE_PASS_RESERVE, FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS,
     MIN_RECOMBINATION_RESERVE, RECOMBINATION_PASSES, RECOMBINATION_RATE_PER_MS,
-    RECOMBINATION_WINDOW_SHARE,
+    RECOMBINATION_WINDOW_SHARE, VARIETY_SLOT,
 };
 
 pub use config::{
@@ -2013,6 +2013,7 @@ fn run_portfolio(
     // the set already has; it is recorded only where it is narrower, and a
     // search that runs out of its share hands back nothing.
     if recombine && !expired(window_end) {
+        variety_draws(graph, weights, seed, &mut candidates, window_end);
         let found = candidates
             .bag_pool()
             .and_then(|pool| decomposition::recombine(pool, graph, window_end));
@@ -2062,6 +2063,51 @@ fn run_portfolio(
     Ok(candidates)
 }
 
+/// Sampled eliminations run only to feed the recombination pool.
+///
+/// The candidates a run produces are the ones its schedule pays for, and on a
+/// short schedule they are a few draws of the same shape. These are cheap extra
+/// draws on scores the schedule did not run, put straight into the pool and
+/// never into the candidate set: they are not offered as answers, only as bags
+/// the search can build an answer out of. They take at most a quarter of the
+/// reserve, checked between draws, so the search keeps the rest.
+fn variety_draws(
+    graph: &Graph,
+    weights: &[u32],
+    seed: u64,
+    candidates: &mut CandidateSet,
+    window_end: Option<Instant>,
+) {
+    const COEFFICIENTS: [i8; 4] = [-6, -3, 3, 6];
+    let Some(window_end) = window_end else {
+        return;
+    };
+    let share = crate::deadline::remaining(window_end) / 4;
+    let stop = crate::meter::now() + share;
+    let each = share / (COEFFICIENTS.len() as u32 * 2);
+    for (index, degree_coefficient) in COEFFICIENTS.into_iter().enumerate() {
+        if crate::meter::now() >= stop {
+            return;
+        }
+        let order = Order::FillDegreeSampled {
+            weights,
+            degree_coefficient,
+        };
+        let Ok(drawn) = crate::elimination::decompose(
+            graph,
+            order,
+            seed.wrapping_add(index as u64 + 1),
+            Some(each),
+        ) else {
+            return;
+        };
+        let Some(pool) = candidates.bag_pool_mut() else {
+            return;
+        };
+        pool.absorb(&drawn, VARIETY_SLOT + index as u32);
+    }
+}
+
 /// Whether the recombination stage runs on this graph: it needs a hard window
 /// to take a share of, and the gate bounds the traversals the search costs.
 ///
@@ -2093,8 +2139,8 @@ fn recombination_reserve(
     let window = window_end?.saturating_duration_since(started);
     let limits = decomposition::BagPoolLimits::standard();
     let bags = (graph.num_vertices() as u64)
-        .min(limits.quota() as u64)
-        .saturating_mul(limits.candidates() as u64);
+        .saturating_mul(limits.slots() as u64)
+        .min(limits.bags() as u64);
     let milliseconds = bags
         .saturating_mul(graph.num_vertices() as u64 + graph.edges().len() as u64)
         .saturating_mul(RECOMBINATION_PASSES)

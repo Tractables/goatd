@@ -401,12 +401,18 @@ that is expensive on clique-dominated graphs.
 
 Every candidate above produces a whole tree decomposition and the portfolio
 keeps the narrowest, which throws away the good bags of all the others. The
-last stage of a budgeted run keeps them instead: it holds the best few
-decompositions the run produced, pools their bags, and searches that pool for
-the narrowest tree decomposition whose bags all come from it. Each kept
-decomposition gets an equal share of the pool and is minimalised on the way in
-where there is time for it, so the bags pooled are the cliques of a minimal
-triangulation of the same graph and no one candidate fills the pool.
+last stage of a budgeted run keeps them instead: it holds the best
+decomposition of every stage above, pools their bags, and searches that pool
+for the narrowest tree decomposition whose bags all come from it. It is keyed
+by stage rather than by width because what the search needs from a candidate is
+a tree shaped differently from the others, and the narrowest few are usually
+near copies of one another. Where they do not all fit, the bags are shared out —
+the narrowest tree twice the share of the rest, each giving up its narrowest
+bags first — and each is minimalised on the way in where there is time for it,
+so the bags pooled are the cliques of a minimal triangulation of the same
+graph. Where the reserve has time to spare before the search, a few extra
+sampled eliminations are drawn on scores the schedule did not run and put
+straight into the pool; they are never offered as answers.
 
 The search is the dynamic programme of Bouchitté and Todinca restricted to a
 list of candidate bags rather than run over every potential maximal clique of
@@ -434,9 +440,9 @@ runs again over the longer list, and stops when a round adds nothing, when the
 answer stops improving, or at the deadline.
 
 `PortfolioConfig::with_recombination` gates the stage on a vertex count,
-because the pool keeps a decomposition only if its bags fit their share of it
-and an elimination leaves about one bag per vertex: above the gate the pool
-holds nothing. What the search holds is capped separately, by constants the
+because the search costs a pass over the graph per bag in the pool and the pool
+holds thousands: above the gate the reserve it would need is more of the window
+than the stage can be worth. What the search holds is capped separately, by constants the
 graph's size does not enter: 4,000 bags and 4 MiB of vertex ids in the pool,
 128 MiB of them in the blocks. On reaching a cap it stops taking bags in and
 searches the part of the pool it has, which is a narrower search rather than a
