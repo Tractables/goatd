@@ -71,9 +71,14 @@ const DEFAULT_RECOMBINATION_VERTICES: u32 = 2_000;
 pub(super) const RECOMBINATION_WINDOW_SHARE: u32 = 8;
 /// The least the stage is given, whatever the estimate comes to.
 pub(super) const MIN_RECOMBINATION_RESERVE: Duration = Duration::from_millis(50);
-/// Passes over the pool the estimate pays for: the components and the caps of
-/// each bag, and the two growth rounds after the first answer.
-pub(super) const RECOMBINATION_PASSES: u64 = 6;
+/// Passes over the pool the estimate pays for: the first search, and the growth
+/// rounds after it where there is time for them.
+pub(super) const RECOMBINATION_PASSES: u64 = 3;
+/// What one pass of the search covers in a millisecond, in vertices and edges
+/// of the graph per pool bag. Measured rather than derived: the pass allocates
+/// a vertex list per component it cuts out and hashes each one, which costs far
+/// more per edge than the work the meter is calibrated on.
+pub(super) const RECOMBINATION_RATE_PER_MS: u64 = 5_000;
 
 /// Dimensions the hedge places the vertices in, one weighted stage each, in
 /// this order. Which graphs a dimension improves is close to arbitrary and two

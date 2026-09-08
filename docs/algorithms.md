@@ -442,10 +442,11 @@ graph's size does not enter: 4,000 bags and 4 MiB of vertex ids in the pool,
 searches the part of the pool it has, which is a narrower search rather than a
 wrong one. The reserve the stage takes off the end of the hard window is what
 its own search is estimated to cost on this graph — the pool it will hold,
-times a pass over the graph each, several times over — capped at an eighth of
-the window, so a graph whose search is quick leaves the rest of the schedule
-the window; a run with no budget at all has no window to take a share of and
-does not run the stage. At its deadline the search hands back nothing rather
+times a pass over the graph each, a few times over — and where that is more
+than an eighth of the window the stage is given no reserve and does not run,
+because it would reach the deadline with nothing and the schedule would have
+stopped early for it. A run with no budget at all has no window to take a share
+of and does not run the stage either. At its deadline the search hands back nothing rather
 than a part-built answer, and the portfolio returns what it had.
 
 The reference for the dynamic programme is Bouchitté and Todinca, "Treewidth

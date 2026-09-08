@@ -27,7 +27,8 @@ pub use candidates::Candidate;
 use candidates::{CandidateSet, ScheduleStop};
 use config::{
     DIVERSE_PASS_RESERVE, FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS,
-    MIN_RECOMBINATION_RESERVE, RECOMBINATION_PASSES, RECOMBINATION_WINDOW_SHARE,
+    MIN_RECOMBINATION_RESERVE, RECOMBINATION_PASSES, RECOMBINATION_RATE_PER_MS,
+    RECOMBINATION_WINDOW_SHARE,
 };
 
 pub use config::{
@@ -1319,10 +1320,10 @@ fn run_portfolio(
     // hard deadline that much earlier and the stage keeps the rest. Where the
     // stage does not run, the two deadlines are the same and nothing moves.
     let window_end = deadlines.hard;
-    let recombine = recombination_gate(graph, config, window_end);
-    let reserve = recombine
+    let reserve = recombination_gate(graph, config, window_end)
         .then(|| recombination_reserve(graph, started, window_end))
         .flatten();
+    let recombine = reserve.is_some();
     let hard_deadline = match (window_end, reserve) {
         (Some(end), Some(reserve)) => end
             .checked_sub(reserve)
@@ -2074,13 +2075,16 @@ fn recombination_gate(graph: &Graph, config: PortfolioConfig, window_end: Option
 }
 
 /// What the stage is given: what its own search is estimated to cost on this
-/// graph, never more than a share of the window and never less than a floor.
+/// graph, or nothing at all where that is more than a share of the window.
 ///
 /// The estimate is priced against the pool rather than the window, because the
 /// pool is what the search reads. The pool holds at most its quota of bags per
 /// decomposition it keeps, and an elimination leaves about one bag per vertex,
 /// so the bags it will hold are the smaller of those two; each of them costs a
-/// pass over the graph, several times over.
+/// pass over the graph, a few times over. A graph whose search does not fit the
+/// share is not worth stopping the rest of the schedule early for — it would
+/// reach the deadline with nothing — so it is given no reserve, does not run
+/// the stage, and the whole window stays with the candidates.
 fn recombination_reserve(
     graph: &Graph,
     started: Instant,
@@ -2091,15 +2095,12 @@ fn recombination_reserve(
     let bags = (graph.num_vertices() as u64)
         .min(limits.quota() as u64)
         .saturating_mul(limits.candidates() as u64);
-    let units = bags
+    let milliseconds = bags
         .saturating_mul(graph.num_vertices() as u64 + graph.edges().len() as u64)
-        .saturating_mul(RECOMBINATION_PASSES);
-    let estimate = Duration::from_millis(crate::meter::milliseconds_for_units(units));
-    let share = window / RECOMBINATION_WINDOW_SHARE;
-    Some(estimate.clamp(
-        MIN_RECOMBINATION_RESERVE,
-        share.max(MIN_RECOMBINATION_RESERVE),
-    ))
+        .saturating_mul(RECOMBINATION_PASSES)
+        / RECOMBINATION_RATE_PER_MS;
+    let estimate = Duration::from_millis(milliseconds).max(MIN_RECOMBINATION_RESERVE);
+    (estimate <= window / RECOMBINATION_WINDOW_SHARE).then_some(estimate)
 }
 
 /// Run one sampled min-fill order, then up to
