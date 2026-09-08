@@ -133,14 +133,25 @@ pub(crate) fn merge_loop(
         None => state.initial(deadline)?,
     };
     let mut neighbourhoods = Neighbourhoods::new(&adjacency);
+    // Every round keeps what it merged in, whether or not the width moved. The
+    // list only grows, so the programme over it never reads a wider tree than
+    // the round before, and one merge on its own rarely lowers anything: what
+    // lowers the width is the bags of several of them together. The round that
+    // adds nothing at all is the one worth stopping on.
     while !expired(deadline) {
+        let held = answer.bags.len();
         let Some(next) = state.improve(&answer, 0, &mut neighbourhoods, deadline) else {
             break;
         };
-        if next.tree.quality_key() >= answer.tree.quality_key() {
+        answer = next;
+        // At width k the list drops every bag of more than k + 2 vertices: no
+        // tree of width k or less has one, and this is what keeps it from
+        // growing without bound as the merges accumulate.
+        let room = answer.width() as usize + 2;
+        answer.bags.retain(|bag| bag.len() <= room);
+        if answer.bags.len() <= held {
             break;
         }
-        answer = next;
     }
     Some(answer.tree)
 }
@@ -216,13 +227,14 @@ impl Loop<'_> {
         let until = share(deadline);
         let mut side = self.initial(until)?;
         while side.width() > answer.width() && depth + 1 < MAX_DEPTH && !expired(until) {
+            let held = side.bags.len();
             let Some(better) = self.improve(&side, depth + 1, neighbourhoods, until) else {
                 break;
             };
-            if better.tree.quality_key() >= side.tree.quality_key() {
+            side = better;
+            if side.bags.len() <= held {
                 break;
             }
-            side = better;
         }
         let merged = self.merge(answer, &side, neighbourhoods, deadline);
         self.settle(merged, deadline)
@@ -320,7 +332,7 @@ impl Loop<'_> {
                 found.push(focus);
             }
         }
-        found.sort_by_key(Vec::len);
+        found.sort_by(|one, other| one.len().cmp(&other.len()).then_with(|| one.cmp(other)));
         found.dedup();
         found.truncate(FOCUSES_PER_MERGE);
         Some(found)
