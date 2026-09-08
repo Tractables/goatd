@@ -168,13 +168,27 @@ max(width of the projection, largest degree over the eliminated side)
 
 `PortfolioConfig::with_bipartite_lift` turns the stage on; the budgeted
 standard portfolio runs it. It 2-colours the graph, and on a graph with an odd
-cycle that is all it does. Otherwise it tries both sides, skipping one whose
-projection would hold more edges than the configured multiple of the input's —
-eliminating a side with a high-degree vertex leaves a clique that size, which
-is how a side that is not worth projecting shows itself — and gives each side
-it tries a share of the budget to decompose its projection with, through a
-portfolio run of its own. The lift is one more candidate: the portfolio keeps
-whichever decomposition is narrower, so the stage spends time and never width.
+cycle that is all it does. Otherwise it prices both sides before building
+either: eliminating a side of degrees d adds the sum of d(d-1)/2 edges counted
+with their repeats, which is an upper bound on the projection's edge count and
+the work of building it. A side priced above the configured multiple of the
+input's edges is not built — eliminating a side with a high-degree vertex
+leaves a clique that size, which is how a side that is not worth projecting
+shows itself — and if neither side is under it the stage keeps its share of the
+window for the rest of the schedule. The cheaper side is built and decomposed
+through a portfolio run of its own, given a share of the budget; the other is
+built only if the first turns out to hold more edges than the input. The lift
+is one more candidate: the portfolio keeps whichever decomposition is narrower,
+so the stage spends time and never width.
+
+Whether the stage runs at all is a question about the budget, not about the
+size of the graph. `PortfolioConfig::with_bipartite_lift_rate` sets how much
+work it may do per millisecond of the share it would take, in edges: the
+input's edges, which the colouring and the pricing each walk, plus the cheaper
+side's estimate, which is what building the projection costs and stands for the
+search over it. Over that rate the stage does not run and its share stays with
+the rest of the schedule, so the same graph is refused under a ten-second
+budget and decomposed under a four-minute one.
 
 It runs first, so the width it finds is the incumbent the elimination orders
 are bounded against, and on a graph whose projection is much smaller than the

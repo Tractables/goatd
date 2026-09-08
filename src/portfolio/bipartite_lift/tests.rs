@@ -34,8 +34,9 @@ fn projecting_the_clause_side_gives_the_primal_graph() {
     // Two clauses over three variables: {0,1,2} and {1,2}.
     let graph = incidence(3, &[&[0, 1, 2], &[1, 2]]);
     let adjacency = adjacency(&graph);
+    let pairs = projected_pairs(&adjacency, &[3, 4], usize::MAX).expect("under the limit");
     let projection =
-        project(&graph, &adjacency, &[0, 1, 2], &[3, 4], usize::MAX).expect("the projection fits");
+        project(&graph, &adjacency, &[0, 1, 2], &[3, 4], pairs).expect("the projection fits");
     assert_eq!(projection.graph.num_vertices(), 3);
     assert_eq!(
         projection.graph.edges().to_vec(),
@@ -47,28 +48,108 @@ fn projecting_the_clause_side_gives_the_primal_graph() {
 
 #[test]
 fn refuses_a_projection_that_is_too_large() {
-    // One clause over six variables: six edges in, and a projection of fifteen.
+    // One clause over six variables: six edges in, and a projection of fifteen,
+    // which the estimate reports exactly because no two eliminations overlap.
     let graph = incidence(6, &[&[0, 1, 2, 3, 4, 5]]);
     let wide = adjacency(&graph);
     // Refused before the cliques are built, by the edge limit.
-    assert!(project(&graph, &wide, &[0, 1, 2, 3, 4, 5], &[6], 14).is_none());
+    assert!(projected_pairs(&wide, &[6], 14).is_none());
     // And refused after them, because the projection holds more edges than the
     // input does.
-    assert!(project(&graph, &wide, &[0, 1, 2, 3, 4, 5], &[6], usize::MAX).is_none());
+    let pairs = projected_pairs(&wide, &[6], usize::MAX).expect("under the limit");
+    assert_eq!(pairs, 15);
+    assert!(project(&graph, &wide, &[0, 1, 2, 3, 4, 5], &[6], pairs).is_none());
 
     // A projection smaller than the input on both counts is kept: five edges in,
-    // three out.
+    // three out, and an estimate of four, which is a bound and not the count.
     let smaller = incidence(3, &[&[0, 1, 2], &[1, 2]]);
     let smaller_adjacency = adjacency(&smaller);
+    let pairs = projected_pairs(&smaller_adjacency, &[3, 4], usize::MAX).expect("under the limit");
+    assert_eq!(pairs, 4);
+    let projection = project(&smaller, &smaller_adjacency, &[0, 1, 2], &[3, 4], pairs)
+        .expect("the projection fits");
+    assert_eq!(projection.graph.edges().len(), 3);
+}
+
+#[test]
+fn the_edge_factor_keeps_the_stage_off_a_side_that_would_cost_too_much() {
+    // Ten clauses of three over six variables: eliminating the clause side
+    // costs 30 pairs and the variable side 60, against the graph's 30 edges,
+    // so half the edge count leaves no side to build and the stage does not
+    // run. The default factor admits the clause side, which the test below
+    // covers.
+    let clauses = triples();
+    let borrowed: Vec<&[u32]> = clauses.iter().map(Vec::as_slice).collect();
+    let graph = incidence(6, &borrowed);
+    let weights = vec![1; graph.num_vertices() as usize];
+    let budget = Duration::from_millis(200);
+
+    let mut lifts = Vec::new();
+    crate::portfolio::decompose_traced(
+        &graph,
+        &weights,
+        0,
+        PortfolioConfig::standard_with_budget(budget).with_bipartite_lift(0.5),
+        &mut |t| {
+            if t.stage == Stage::BipartiteLift {
+                lifts.push(t.outcome);
+            }
+        },
+    )
+    .expect("the portfolio returns a decomposition");
+    // The stage reports that it did not start, and builds nothing.
     assert!(
-        project(
-            &smaller,
-            &smaller_adjacency,
-            &[0, 1, 2],
-            &[3, 4],
-            usize::MAX
-        )
-        .is_some()
+        lifts
+            .iter()
+            .all(|outcome| matches!(outcome, crate::portfolio::CandidateOutcome::NotStarted)),
+        "no side is under half the edge count: {lifts:?}"
+    );
+}
+
+#[test]
+fn the_rate_keeps_the_stage_off_a_graph_that_is_large_for_the_window() {
+    // The same graph either way: at a rate the graph is over, the stage reports
+    // that it did not start; at a rate it is under, it runs. That is what makes
+    // the gate a function of the budget rather than of the graph, since the
+    // rate is multiplied by the share of the window the stage would take.
+    let clauses = triples();
+    let borrowed: Vec<&[u32]> = clauses.iter().map(Vec::as_slice).collect();
+    let graph = incidence(6, &borrowed);
+    let weights = vec![1; graph.num_vertices() as usize];
+    let budget = Duration::from_millis(200);
+
+    let mut lifts = Vec::new();
+    crate::portfolio::decompose_traced(
+        &graph,
+        &weights,
+        0,
+        PortfolioConfig::standard_with_budget(budget).with_bipartite_lift_rate(0.01),
+        &mut |t| {
+            if t.stage == Stage::BipartiteLift {
+                lifts.push(t.outcome);
+            }
+        },
+    )
+    .expect("the portfolio returns a decomposition");
+    assert!(
+        lifts
+            .iter()
+            .all(|outcome| matches!(outcome, crate::portfolio::CandidateOutcome::NotStarted)),
+        "the work is over the rate for this share: {lifts:?}"
+    );
+
+    let mut stages = Vec::new();
+    crate::portfolio::decompose_traced(
+        &graph,
+        &weights,
+        0,
+        PortfolioConfig::standard_with_budget(budget).with_bipartite_lift_rate(1000.0),
+        &mut |t| stages.push(t.stage),
+    )
+    .expect("the portfolio returns a decomposition");
+    assert!(
+        stages.contains(&Stage::BipartiteLift),
+        "the same graph is under a rate a thousand times larger: {stages:?}"
     );
 }
 
@@ -80,8 +161,8 @@ fn lifts_a_decomposition_of_the_projection() {
     let adjacency = adjacency(&graph);
     let keep: Vec<u32> = (0..5).collect();
     let drop: Vec<u32> = (5..9).collect();
-    let projection =
-        project(&graph, &adjacency, &keep, &drop, usize::MAX).expect("the projection fits");
+    let pairs = projected_pairs(&adjacency, &drop, usize::MAX).expect("under the limit");
+    let projection = project(&graph, &adjacency, &keep, &drop, pairs).expect("the projection fits");
     let projected = crate::elimination::decompose(
         &projection.graph,
         crate::elimination::Order::MinFill,
@@ -105,11 +186,9 @@ fn lifts_a_decomposition_of_the_projection() {
     assert!(lifted.treewidth() <= projected.treewidth() + 1);
 }
 
-#[test]
-fn the_portfolio_lifts_an_incidence_graph() {
-    // Ten clauses over six variables: the incidence graph is bipartite and its
-    // clause side projects onto the primal graph.
-    let clauses: Vec<Vec<u32>> = vec![
+/// Ten clauses of three over six variables.
+fn triples() -> Vec<Vec<u32>> {
+    vec![
         vec![0, 1, 2],
         vec![1, 2, 3],
         vec![2, 3, 4],
@@ -120,7 +199,14 @@ fn the_portfolio_lifts_an_incidence_graph() {
         vec![0, 1, 4],
         vec![2, 4, 5],
         vec![0, 3, 4],
-    ];
+    ]
+}
+
+#[test]
+fn the_portfolio_lifts_an_incidence_graph() {
+    // The incidence graph of those clauses is bipartite and its clause side
+    // projects onto the primal graph.
+    let clauses = triples();
     let borrowed: Vec<&[u32]> = clauses.iter().map(Vec::as_slice).collect();
     let graph = incidence(6, &borrowed);
     let weights = vec![1; graph.num_vertices() as usize];
