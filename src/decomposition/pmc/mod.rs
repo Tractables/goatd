@@ -80,7 +80,7 @@ pub(crate) use merge::merge_loop;
 /// randomised minimal triangulations, then independent answers built, improved
 /// and merged into it until `budget` runs out.
 ///
-/// This is the construction of [`merge_loop`] standing on its own, without a
+/// This is the portfolio's merge stage standing on its own, without a
 /// portfolio to start it off. Where the budget runs out before the programme
 /// settles anything, a single min-fill decomposition comes back instead, so
 /// the call always answers.
