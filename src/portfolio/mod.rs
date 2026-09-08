@@ -8,6 +8,7 @@
 use std::cell::OnceCell;
 use std::time::{Duration, Instant};
 
+mod bipartite_lift;
 mod candidates;
 mod config;
 mod trace;
@@ -1294,6 +1295,137 @@ fn sampled_min_fill_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandid
 /// sets with. Every candidate and every sampled order shares it unless the
 /// portfolio hedges, which runs a weighted stage per weighting on weights of
 /// its own.
+/// The share of the portfolio's whole window the bipartite lift may spend,
+/// split between the sides it tries.
+///
+/// A quarter rather than half: the projection is the smaller graph of the two,
+/// so it reaches its width in less time than the input does, and what the lift
+/// spends is time the orders on the input do not get. The orders have to keep
+/// most of the window, because on a graph where the projection is no better
+/// than the input they are what produces the answer.
+const BIPARTITE_LIFT_SHARE: f64 = 0.25;
+
+/// Decompose the projection onto one side of a bipartite graph and put the
+/// other side back, as one more candidate.
+///
+/// Runs before the elimination orders, so the width it finds bounds them.
+/// Costs a 2-colouring on a graph that is not bipartite and nothing else; on
+/// one that is, a share of the budget per side whose projection fits under the
+/// configured limit. See [`bipartite_lift`] for what the construction is.
+///
+/// # Errors
+///
+/// Returns an error when the sub-run does, and when a lift finds no bag to put
+/// an eliminated vertex in, which is a defect rather than a property of the
+/// graph.
+#[allow(clippy::too_many_arguments)]
+fn run_bipartite_lift(
+    graph: &Graph,
+    weights: &[u32],
+    seed: u64,
+    initial_orders: InitialOrderBuilder,
+    config: PortfolioConfig,
+    candidates: &mut CandidateSet,
+    started: Instant,
+    trace: &mut dyn FnMut(CandidateTrace),
+) -> Result<(), crate::Error> {
+    let origin = CandidateOrigin {
+        stage: Stage::BipartiteLift,
+        seed,
+        pass: Pass::Only,
+    };
+    let give_up = |trace: &mut dyn FnMut(CandidateTrace)| {
+        trace(CandidateTrace {
+            stage: Stage::BipartiteLift,
+            seed,
+            pass: Pass::Only,
+            outcome: CandidateOutcome::NotStarted,
+            elapsed: crate::meter::now().saturating_duration_since(started),
+        });
+    };
+
+    // The stage needs a budget to take a share of, and a graph to colour.
+    let (Some(edge_factor), Some(soft_budget)) = (config.bipartite_lift, config.soft_budget) else {
+        return Ok(());
+    };
+    if graph.num_vertices() == 0 {
+        return Ok(());
+    }
+    let adjacency = bipartite_lift::adjacency(graph);
+    // A graph with an odd cycle has no side to eliminate, and the stage
+    // reports nothing: there was no candidate to give up on.
+    let Some([first, second]) = bipartite_lift::sides(&adjacency) else {
+        return Ok(());
+    };
+
+    let limit = graph.edges().len().saturating_mul(edge_factor as usize);
+    let projections: Vec<_> = [(&first, &second), (&second, &first)]
+        .into_iter()
+        .filter(|(keep, drop)| !keep.is_empty() && !drop.is_empty())
+        .filter_map(|(keep, drop)| bipartite_lift::project(graph, &adjacency, keep, drop, limit))
+        .collect();
+    if projections.is_empty() {
+        give_up(trace);
+        return Ok(());
+    }
+
+    // The share is of the whole window, since that is what the stage spends:
+    // a sub-run stops at its own hard deadline. Inside its share it keeps the
+    // shape the caller asked for, a soft deadline at half the window, so the
+    // sub-run schedules itself the way the caller's own run does.
+    let window = config
+        .hard_budget
+        .unwrap_or_else(|| soft_budget.saturating_mul(2));
+    let per_side = window.mul_f64(BIPARTITE_LIFT_SHARE / projections.len() as f64);
+    for projection in projections {
+        let mut sub = config;
+        sub.bipartite_lift = None;
+        sub.soft_budget = Some(per_side / 2);
+        sub.hard_budget = Some(per_side);
+        // A share too short for the trailing candidate drops it rather than
+        // refusing the configuration: the sub-run is a search of the
+        // projection, not a place to spend a FlowCutter window that small.
+        sub.flowcutter_budget = config
+            .flowcutter_budget
+            .map(|_| per_side / 2)
+            .filter(|budget| *budget >= Duration::from_millis(MIN_FLOWCUTTER_CANDIDATE_MS));
+        let sub_weights = projection.weights(weights);
+        let produced = run_portfolio(
+            &projection.graph,
+            &sub_weights,
+            seed,
+            initial_orders,
+            sub,
+            Collection::best_only(false),
+            &mut |_| {},
+        )?
+        .into_decompositions()
+        .into_iter()
+        .next();
+        let Some(produced) = produced else {
+            continue;
+        };
+        // What the lift would be worth is known from the projection's width
+        // and the degrees of the side that was eliminated, so a lift that
+        // cannot beat what the other side already produced is not built.
+        if candidates
+            .best_width()
+            .is_some_and(|best| projection.lifted_width(&produced) > best)
+        {
+            continue;
+        }
+        let outcome = candidates.push(projection.lift(graph, &produced)?, origin);
+        trace(CandidateTrace {
+            stage: Stage::BipartiteLift,
+            seed,
+            pass: Pass::Only,
+            outcome,
+            elapsed: crate::meter::now().saturating_duration_since(started),
+        });
+    }
+    Ok(())
+}
+
 fn run_portfolio(
     graph: &Graph,
     weights: &[u32],
@@ -1337,6 +1469,22 @@ fn run_portfolio(
         CandidateRetention::BestOnly => CandidateSet::best_only(),
     }
     .reporting_shape(collection.traced);
+
+    // The bipartite lift runs before the orders that eliminate the input
+    // itself, so that what it finds is the incumbent they are bounded against
+    // and the time it spends is time they would have spent on a graph it
+    // decomposes a smaller version of. On a graph that is not bipartite it
+    // costs one 2-colouring.
+    run_bipartite_lift(
+        graph,
+        weights,
+        seed,
+        order_builder,
+        config,
+        &mut candidates,
+        started,
+        trace,
+    )?;
 
     // Set after any candidate reaches the hard deadline, or when it expires
     // between candidates. Later runs would stop at the same point.

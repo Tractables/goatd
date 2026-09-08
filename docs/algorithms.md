@@ -28,6 +28,10 @@ later candidate is handed the best width so far and stops as soon as one of its
 bags is too wide to win. Fill counts are computed once, when the first
 fill-based order needs them, and reused by the rest.
 
+On a bipartite graph the schedule opens with the lift instead, described under
+*The bipartite lift*, and the six orders above are handed its width as their
+incumbent.
+
 Two cardinality-search candidates follow the fixed orders, each on a residual
 small enough for it. Neither is part of the schedule choice below: each has a
 vertex gate of its own. They are described under *Cardinality searches*.
@@ -147,6 +151,35 @@ in the vendored backend then answers as an expired hard deadline, and the
 caller gets the best decomposition found so far. The solver sets the flag from
 a `SIGTERM` handler. Both standard configurations hedge, and the library is
 single-threaded throughout.
+
+## The bipartite lift
+
+One side of a bipartite graph is an independent set, so eliminating that whole
+side first adds no edge inside it, and each of its vertices leaves a bag of
+itself and its neighbours. What is left is the projection: the other side, with
+every neighbourhood of an eliminated vertex completed to a clique. A
+decomposition of the projection therefore lifts to one of the whole graph — each
+eliminated vertex goes into a new bag beside a bag holding its neighbourhood,
+which exists because that neighbourhood is a clique of the projection — of width
+
+```text
+max(width of the projection, largest degree over the eliminated side)
+```
+
+`PortfolioConfig::with_bipartite_lift` turns the stage on; the budgeted
+standard portfolio runs it. It 2-colours the graph, and on a graph with an odd
+cycle that is all it does. Otherwise it tries both sides, skipping one whose
+projection would hold more edges than the configured multiple of the input's —
+eliminating a side with a high-degree vertex leaves a clique that size, which
+is how a side that is not worth projecting shows itself — and gives each side
+it tries a share of the budget to decompose its projection with, through a
+portfolio run of its own. The lift is one more candidate: the portfolio keeps
+whichever decomposition is narrower, so the stage spends time and never width.
+
+It runs first, so the width it finds is the incumbent the elimination orders
+are bounded against, and on a graph whose projection is much smaller than the
+input — an incidence graph, whose clause side projects onto the primal graph —
+the search that matters runs on the smaller graph.
 
 ## Preprocessing
 
