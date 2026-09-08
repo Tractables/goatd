@@ -18,5 +18,6 @@ pub(crate) use minimal::{minimalize_at, minimalize_fits};
 pub use model::{TdBag, TreeDecomposition};
 pub(crate) use ops::SubsumedBagCompaction;
 pub use ops::{Projection, RootedForest};
-pub(crate) use pmc::{BagPool, Limits as BagPoolLimits, recombine};
+pub use pmc::decompose_by_merging;
+pub(crate) use pmc::{BagPool, Limits as BagPoolLimits, merge_loop, recombine};
 pub use refine::refine_with_flowcutter;

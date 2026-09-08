@@ -34,6 +34,9 @@ pub enum Stage {
     Minimalized,
     /// The stage that recombines the bags of all the candidates.
     Recombined,
+    /// The stage that merges independently built decompositions into the best
+    /// one the run has.
+    Merged,
     /// The trailing FlowCutter candidate.
     FlowCutter,
     /// The lift of a decomposition of one side's projection, on a bipartite
@@ -62,6 +65,7 @@ impl Stage {
             Stage::MinimalTriangulation => 5,
             Stage::Minimalized => 6,
             Stage::Recombined => 7,
+            Stage::Merged => 12,
             Stage::FlowCutter => 8,
             Stage::WeightedStage => 9,
             Stage::SampledRestarts => 10,
@@ -88,6 +92,7 @@ impl fmt::Display for Stage {
             Stage::MinimalTriangulation => formatter.write_str("minimal-triangulation"),
             Stage::Minimalized => formatter.write_str("minimalized"),
             Stage::Recombined => formatter.write_str("recombined"),
+            Stage::Merged => formatter.write_str("merged"),
             Stage::FlowCutter => formatter.write_str("flowcutter"),
             Stage::WeightedStage => formatter.write_str("weighted-stage"),
             Stage::SampledRestarts => formatter.write_str("sampled-restarts"),

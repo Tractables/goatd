@@ -64,6 +64,18 @@ const DEFAULT_TRIANGULATION_REFINEMENT_VERTICES: u32 = 2_000;
 /// filter; the reserve priced against the pool is what settles the rest.
 const DEFAULT_RECOMBINATION_VERTICES: u32 = 2_000;
 
+/// Graph size at or below which the standard budgeted portfolio runs the merge
+/// loop. Its search is the same restricted Bouchitte-Todinca programme the
+/// recombination stage runs, over a list of the same order, so the same size is
+/// where the reserve it would need stops being worth the window.
+const DEFAULT_MERGE_LOOP_VERTICES: u32 = DEFAULT_RECOMBINATION_VERTICES;
+
+/// The most of the hard window the merge loop is given, taken off the end
+/// before the recombination stage takes its own share. The loop runs one
+/// programme per side answer it builds, so its share is the same size as the
+/// recombination stage's.
+pub(super) const MERGE_LOOP_WINDOW_SHARE: u32 = RECOMBINATION_WINDOW_SHARE;
+
 /// The most of the hard window the recombination stage is given, taken off the
 /// end so the rest of the schedule finishes that much earlier. It is given the
 /// estimated cost of its own search where that is less.
@@ -530,6 +542,7 @@ pub struct PortfolioConfig {
     pub(super) minimal_triangulation: Option<u32>,
     pub(super) triangulation_refinement: Option<u32>,
     pub(super) recombination: Option<u32>,
+    pub(super) merge_loop: Option<u32>,
     pub(super) bipartite_lift: Option<f64>,
     pub(super) bipartite_lift_rate: f64,
 }
@@ -555,6 +568,7 @@ impl PartialEq for PortfolioConfig {
             && self.minimal_triangulation == other.minimal_triangulation
             && self.triangulation_refinement == other.triangulation_refinement
             && self.recombination == other.recombination
+            && self.merge_loop == other.merge_loop
             && self.bipartite_lift.map(f64::to_bits) == other.bipartite_lift.map(f64::to_bits)
             && self.bipartite_lift_rate.to_bits() == other.bipartite_lift_rate.to_bits()
     }
@@ -585,6 +599,7 @@ impl PortfolioConfig {
             minimal_triangulation: None,
             triangulation_refinement: None,
             recombination: None,
+            merge_loop: None,
             bipartite_lift: None,
             bipartite_lift_rate: DEFAULT_BIPARTITE_LIFT_RATE,
         }
@@ -695,6 +710,7 @@ impl PortfolioConfig {
             // The stage wants a share of a hard window, and this schedule has
             // no deadline to take one from.
             recombination: None,
+            merge_loop: None,
             bipartite_lift: None,
             bipartite_lift_rate: DEFAULT_BIPARTITE_LIFT_RATE,
         }
@@ -772,6 +788,7 @@ impl PortfolioConfig {
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
             recombination: Some(DEFAULT_RECOMBINATION_VERTICES),
+            merge_loop: Some(DEFAULT_MERGE_LOOP_VERTICES),
             bipartite_lift: Some(DEFAULT_BIPARTITE_LIFT_EDGE_FACTOR),
             bipartite_lift_rate: DEFAULT_BIPARTITE_LIFT_RATE,
         }
@@ -1039,6 +1056,30 @@ impl PortfolioConfig {
     /// of them.
     pub fn without_recombination(mut self) -> Self {
         self.recombination = None;
+        self
+    }
+
+    /// Improve the best decomposition the run has by merging independent ones
+    /// into it, on graphs of at most `max_vertices` vertices.
+    ///
+    /// The stage builds a second decomposition from scratch, improves that one
+    /// on its own until it is no wider, and then searches the two lists of bags
+    /// together with the cliques that join them, which is Tamaki's improvement
+    /// loop. It keeps the result only where it is narrower than what the run
+    /// already has.
+    ///
+    /// Like [`PortfolioConfig::with_recombination`] it is given a share of the
+    /// hard window taken off the end, so a run with no budget does not run it,
+    /// and the gate is a vertex count because its search costs a pass over the
+    /// graph per bag of the list.
+    pub fn with_merge_loop(mut self, max_vertices: u32) -> Self {
+        self.merge_loop = Some(max_vertices);
+        self
+    }
+
+    /// Do not merge independent decompositions into the run's best one.
+    pub fn without_merge_loop(mut self) -> Self {
+        self.merge_loop = None;
         self
     }
 

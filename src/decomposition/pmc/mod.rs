@@ -72,6 +72,37 @@ use super::TreeDecomposition;
 use crate::Graph;
 use crate::deadline::expired;
 
+mod merge;
+
+pub(crate) use merge::merge_loop;
+
+/// Build a decomposition by the merge loop alone: an initial answer of several
+/// randomised minimal triangulations, then independent answers built, improved
+/// and merged into it until `budget` runs out.
+///
+/// This is the construction of [`merge_loop`] standing on its own, without a
+/// portfolio to start it off. Where the budget runs out before the programme
+/// settles anything, a single min-fill decomposition comes back instead, so
+/// the call always answers.
+///
+/// # Errors
+///
+/// Returns an error if the budget is too large to represent as a deadline, or
+/// if the fallback elimination fails.
+pub fn decompose_by_merging(
+    graph: &Graph,
+    seed: u64,
+    budget: Option<std::time::Duration>,
+) -> Result<TreeDecomposition, crate::Error> {
+    let deadline = budget
+        .map(|budget| crate::deadline::checked(crate::meter::now(), budget, "merge loop"))
+        .transpose()?;
+    if let Some(found) = merge_loop(graph, None, seed, Limits::standard(), deadline) {
+        return Ok(found);
+    }
+    crate::elimination::decompose(graph, crate::elimination::Order::MinFill, seed, budget)
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -338,9 +369,7 @@ fn search(
     limits: Limits,
     deadline: Option<Instant>,
 ) -> Option<TreeDecomposition> {
-    let n = graph.num_vertices() as usize;
     let mut search = Search {
-        n,
         adjacency,
         limits,
         blocks: Vec::new(),
@@ -349,9 +378,7 @@ fn search(
         subblocks: vec![Vec::new(); bags.len()],
         collected: 0,
         bag_sizes: bags.iter().map(Vec::len).collect(),
-        mark: vec![u32::MAX; n],
-        stamp: 0,
-        seen: vec![false; n],
+        marks: Neighbourhoods::new(adjacency),
     };
     search.collect(bags, deadline)?;
     search.evaluate(deadline)?;
@@ -470,35 +497,36 @@ fn adjacency_lists(graph: &Graph) -> Vec<Vec<u32>> {
 }
 
 /// The components of `G − Ω`, with the vertices of `Ω` on each one's border.
+///
+/// The two lists run together: `separators[i]` is `N(C)` for the component
+/// `components[i]`. A component's own vertices are collected only where the
+/// caller asked for them; otherwise `components[i]` is empty.
 struct Split {
     components: Vec<Vec<u32>>,
     separators: Vec<Vec<u32>>,
 }
 
-struct Search<'a> {
-    n: usize,
+/// The graph as adjacency lists, with the scratch its traversals share.
+///
+/// Membership is stamped rather than cleared, so a vertex set can be marked
+/// and tested without an array being walked per query.
+struct Neighbourhoods<'a> {
     adjacency: &'a [Vec<u32>],
-    limits: Limits,
-    blocks: Vec<Block>,
-    index: FxHashMap<Vec<u32>, usize>,
-    stored: usize,
-    /// For each pool bag, the blocks that are the components of `G` less that
-    /// bag.
-    subblocks: Vec<Vec<usize>>,
-    /// How many pool bags were taken in whole. The rest were left out when a
-    /// cap was reached, and neither they nor the caps they had begun to
-    /// register may be read.
-    collected: usize,
-    bag_sizes: Vec<usize>,
-    /// Stamped membership marks, so a vertex set can be tested without an
-    /// array being cleared per query.
     mark: Vec<u32>,
     stamp: u32,
-    /// Scratch for the traversal.
     seen: Vec<bool>,
 }
 
-impl Search<'_> {
+impl<'a> Neighbourhoods<'a> {
+    fn new(adjacency: &'a [Vec<u32>]) -> Self {
+        Self {
+            adjacency,
+            mark: vec![u32::MAX; adjacency.len()],
+            stamp: 0,
+            seen: vec![false; adjacency.len()],
+        }
+    }
+
     /// Mark `vertices` and return the stamp that identifies them.
     fn mark_set(&mut self, vertices: &[u32]) -> u32 {
         self.stamp = self.stamp.wrapping_add(1);
@@ -512,17 +540,48 @@ impl Search<'_> {
         self.mark[vertex as usize] == stamp
     }
 
-    /// The connected components of `G` less `bag`, each with its separator.
-    fn split(&mut self, bag: &[u32]) -> Split {
-        let removed = self.mark_set(bag);
+    fn adjacent(&self, left: u32, right: u32) -> bool {
+        let (left, right) =
+            if self.adjacency[left as usize].len() <= self.adjacency[right as usize].len() {
+                (left, right)
+            } else {
+                (right, left)
+            };
+        self.adjacency[left as usize].contains(&right)
+    }
+
+    /// The connected components of `G − removed`, each with its vertices and
+    /// its border. `removed` is read as a set, so it need not be sorted; the
+    /// vertices and the border of each component come back sorted, the border
+    /// also without repeats.
+    fn split(&mut self, removed: &[u32]) -> Split {
+        self.walk(removed, true)
+    }
+
+    /// The border of every component of `G − removed`. A component with no
+    /// border — a part of a disconnected graph that `removed` does not touch —
+    /// is left out.
+    fn borders(&mut self, removed: &[u32]) -> Vec<Vec<u32>> {
+        self.walk(removed, false)
+            .separators
+            .into_iter()
+            .filter(|border| !border.is_empty())
+            .collect()
+    }
+
+    /// The traversal both of those read. `vertices` says whether each
+    /// component's own vertices are collected as well as its border, which is
+    /// what the two callers differ in.
+    fn walk(&mut self, removed: &[u32], vertices: bool) -> Split {
+        let stamp = self.mark_set(removed);
         self.seen.fill(false);
-        for &vertex in bag {
+        for &vertex in removed {
             self.seen[vertex as usize] = true;
         }
         let mut components: Vec<Vec<u32>> = Vec::new();
         let mut separators: Vec<Vec<u32>> = Vec::new();
         let mut stack = Vec::new();
-        for start in 0..self.n {
+        for start in 0..self.adjacency.len() {
             if self.seen[start] {
                 continue;
             }
@@ -531,9 +590,11 @@ impl Search<'_> {
             let mut component = Vec::new();
             let mut separator = Vec::new();
             while let Some(vertex) = stack.pop() {
-                component.push(vertex);
+                if vertices {
+                    component.push(vertex);
+                }
                 for &next in &self.adjacency[vertex as usize] {
-                    if self.marked(next, removed) {
+                    if self.marked(next, stamp) {
                         separator.push(next);
                     } else if !self.seen[next as usize] {
                         self.seen[next as usize] = true;
@@ -551,6 +612,40 @@ impl Search<'_> {
             components,
             separators,
         }
+    }
+}
+
+struct Search<'a> {
+    adjacency: &'a [Vec<u32>],
+    limits: Limits,
+    blocks: Vec<Block>,
+    index: FxHashMap<Vec<u32>, usize>,
+    stored: usize,
+    /// For each pool bag, the blocks that are the components of `G` less that
+    /// bag.
+    subblocks: Vec<Vec<usize>>,
+    /// How many pool bags were taken in whole. The rest were left out when a
+    /// cap was reached, and neither they nor the caps they had begun to
+    /// register may be read.
+    collected: usize,
+    bag_sizes: Vec<usize>,
+    /// The traversals and the stamped membership marks they share.
+    marks: Neighbourhoods<'a>,
+}
+
+impl Search<'_> {
+    /// Mark `vertices` and return the stamp that identifies them.
+    fn mark_set(&mut self, vertices: &[u32]) -> u32 {
+        self.marks.mark_set(vertices)
+    }
+
+    fn marked(&self, vertex: u32, stamp: u32) -> bool {
+        self.marks.marked(vertex, stamp)
+    }
+
+    /// The connected components of `G` less `bag`, each with its separator.
+    fn split(&mut self, bag: &[u32]) -> Split {
+        self.marks.split(bag)
     }
 
     /// Register a block, or return the one already there. `None` when the
@@ -699,15 +794,7 @@ impl Search<'_> {
             if step % DEADLINE_STRIDE == 0 && expired(deadline) {
                 return None;
             }
-            let inside = {
-                let component = &self.blocks[index].component;
-                self.stamp = self.stamp.wrapping_add(1);
-                let stamp = self.stamp;
-                for &vertex in component {
-                    self.mark[vertex as usize] = stamp;
-                }
-                stamp
-            };
+            let inside = self.marks.mark_set(&self.blocks[index].component);
             // Everything in one bag, which is always available and always
             // valid, against the best cap. A cap that only ties is still
             // preferred: it says the same width in smaller bags.

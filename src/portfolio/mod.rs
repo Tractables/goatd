@@ -27,7 +27,7 @@ use crate::{Error, Graph, TreeDecomposition};
 pub use candidates::Candidate;
 use candidates::{CandidateSet, ScheduleStop};
 use config::{
-    DIVERSE_PASS_RESERVE, FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS,
+    DIVERSE_PASS_RESERVE, FLOWCUTTER_RESERVE, MERGE_LOOP_WINDOW_SHARE, MIN_FLOWCUTTER_CANDIDATE_MS,
     MIN_RECOMBINATION_RESERVE, RECOMBINATION_PASSES, RECOMBINATION_RATE_PER_MS,
     RECOMBINATION_WINDOW_SHARE, VARIETY_SLOT,
 };
@@ -1531,17 +1531,19 @@ fn run_portfolio(
     // hard deadline that much earlier and the stage keeps the rest. Where the
     // stage does not run, the two deadlines are the same and nothing moves.
     let window_end = deadlines.hard;
-    let reserve = recombination_gate(graph, config, window_end)
-        .then(|| recombination_reserve(graph, started, window_end))
+    // The merge loop runs after the recombination stage and reads its answer,
+    // so its share comes off the end first and the recombination stage's share
+    // comes off what is left.
+    let merge_share = merge_gate(graph, config, window_end)
+        .then(|| merge_reserve(graph, started, window_end))
+        .flatten();
+    let merge = merge_share.is_some();
+    let recombine_end = less_reserve(window_end, merge_share, soft_deadline);
+    let reserve = recombination_gate(graph, config, recombine_end)
+        .then(|| recombination_reserve(graph, started, recombine_end))
         .flatten();
     let recombine = reserve.is_some();
-    let hard_deadline = match (window_end, reserve) {
-        (Some(end), Some(reserve)) => end
-            .checked_sub(reserve)
-            .filter(|earlier| soft_deadline.is_none_or(|soft| *earlier > soft)),
-        _ => window_end,
-    }
-    .or(window_end);
+    let hard_deadline = less_reserve(recombine_end, reserve, soft_deadline);
     let mut prebuilt = engine::prebuild(graph, soft_deadline);
     let active = prebuilt.num_active();
     // The class where the sizes settle it on their own. In the band between
@@ -2239,11 +2241,11 @@ fn run_portfolio(
     // winner's bags among the rest, so the search cannot come back wider than
     // the set already has; it is recorded only where it is narrower, and a
     // search that runs out of its share hands back nothing.
-    if recombine && !expired(window_end) {
-        variety_draws(graph, weights, seed, &mut candidates, window_end);
+    if recombine && !expired(recombine_end) {
+        variety_draws(graph, weights, seed, &mut candidates, recombine_end);
         let found = candidates
             .bag_pool()
-            .and_then(|pool| decomposition::recombine(pool, graph, window_end));
+            .and_then(|pool| decomposition::recombine(pool, graph, recombine_end));
         let before = candidates
             .best()
             .map(TreeDecomposition::quality_key)
@@ -2287,7 +2289,104 @@ fn run_portfolio(
             elapsed: crate::meter::now().saturating_duration_since(started),
         });
     }
+    // And last, the merge loop: a decomposition built independently of
+    // everything above, improved on its own until it is no wider than the best
+    // the run has, and merged into it. It starts from that best answer, so what
+    // it comes back with is never wider.
+    if merge && !expired(window_end) {
+        let start = candidates
+            .best()
+            .cloned()
+            .expect("a candidate has produced a decomposition");
+        let before = start.quality_key();
+        let found = decomposition::merge_loop(
+            graph,
+            Some(&start),
+            seed,
+            decomposition::BagPoolLimits::standard(),
+            window_end,
+        );
+        let outcome = match found {
+            Some(merged) if merged.quality_key() < before => candidates.push(
+                merged,
+                CandidateOrigin {
+                    stage: Stage::Merged,
+                    seed,
+                    pass: Pass::Only,
+                },
+            ),
+            // The loop settled on the answer it started from. It reads that
+            // answer's own bags among the rest, so this is the ordinary
+            // outcome rather than a failure.
+            Some(merged) => {
+                let (width, total_bag_size) = merged.quality_key();
+                CandidateOutcome::Produced {
+                    width,
+                    total_bag_size,
+                    shape: collection.traced.then(|| {
+                        let (bag_mass, max_separator) = merged.shape();
+                        Shape {
+                            bag_mass,
+                            max_separator,
+                        }
+                    }),
+                    best: false,
+                }
+            }
+            // The share ran out before the programme settled anything, or the
+            // search would have held more than its cap allows.
+            None => CandidateOutcome::DeadlineReached,
+        };
+        trace(CandidateTrace {
+            stage: Stage::Merged,
+            seed,
+            pass: Pass::Only,
+            outcome,
+            elapsed: crate::meter::now().saturating_duration_since(started),
+        });
+    }
     Ok(candidates)
+}
+
+/// `end` less `reserve`, where that still leaves the soft deadline behind it.
+///
+/// A reserve that would put the hard deadline at or before the soft one is not
+/// taken: the stages before it would then have no window of their own.
+fn less_reserve(
+    end: Option<Instant>,
+    reserve: Option<Duration>,
+    soft_deadline: Option<Instant>,
+) -> Option<Instant> {
+    match (end, reserve) {
+        (Some(end), Some(reserve)) => end
+            .checked_sub(reserve)
+            .filter(|earlier| soft_deadline.is_none_or(|soft| *earlier > soft)),
+        _ => end,
+    }
+    .or(end)
+}
+
+/// Whether the merge loop runs on this graph: it needs a hard window to take a
+/// share of, and the gate bounds the traversals its search costs.
+fn merge_gate(graph: &Graph, config: PortfolioConfig, window_end: Option<Instant>) -> bool {
+    config
+        .merge_loop
+        .is_some_and(|gate| graph.num_vertices() <= gate)
+        && window_end.is_some()
+}
+
+/// What the merge loop is given: what one run of its search is estimated to
+/// cost on this graph, or nothing at all where that is more than a share of the
+/// window.
+///
+/// The estimate is the recombination stage's, priced the same way against the
+/// same caps, because the two run the same search over lists of the same order
+/// of size. A graph whose search does not fit the share is not worth stopping
+/// the rest of the schedule early for.
+fn merge_reserve(graph: &Graph, started: Instant, window_end: Option<Instant>) -> Option<Duration> {
+    let window = window_end?.saturating_duration_since(started);
+    let estimate = search_cost(graph);
+    (estimate <= window / MERGE_LOOP_WINDOW_SHARE).then_some(estimate)
 }
 
 /// Sampled eliminations run only to feed the recombination pool.
@@ -2364,6 +2463,18 @@ fn recombination_reserve(
     window_end: Option<Instant>,
 ) -> Option<Duration> {
     let window = window_end?.saturating_duration_since(started);
+    let estimate = search_cost(graph);
+    (estimate <= window / RECOMBINATION_WINDOW_SHARE).then_some(estimate)
+}
+
+/// What the programme's search over a full pool is estimated to cost on this
+/// graph.
+///
+/// The pool holds at most its quota of bags per decomposition it keeps, and an
+/// elimination leaves about one bag per vertex, so the bags it will hold are
+/// the smaller of those two; each of them costs a pass over the graph, a few
+/// times over.
+fn search_cost(graph: &Graph) -> Duration {
     let limits = decomposition::BagPoolLimits::standard();
     let bags = (graph.num_vertices() as u64)
         .saturating_mul(limits.slots() as u64)
@@ -2372,8 +2483,7 @@ fn recombination_reserve(
         .saturating_mul(graph.num_vertices() as u64 + graph.edges().len() as u64)
         .saturating_mul(RECOMBINATION_PASSES)
         / RECOMBINATION_RATE_PER_MS;
-    let estimate = Duration::from_millis(milliseconds).max(MIN_RECOMBINATION_RESERVE);
-    (estimate <= window / RECOMBINATION_WINDOW_SHARE).then_some(estimate)
+    Duration::from_millis(milliseconds).max(MIN_RECOMBINATION_RESERVE)
 }
 
 /// Run one sampled min-fill order, then up to

@@ -16,6 +16,23 @@ fn path(n: u32) -> Graph {
     Graph::new(n, (0..n.saturating_sub(1)).map(|v| (v, v + 1)))
 }
 
+/// The 3 × 3 grid, vertex `3 * row + column`. Its treewidth is 3.
+fn grid() -> Graph {
+    let mut edges = Vec::new();
+    for row in 0..3u32 {
+        for column in 0..3u32 {
+            let vertex = row * 3 + column;
+            if column + 1 < 3 {
+                edges.push((vertex, vertex + 1));
+            }
+            if row + 1 < 3 {
+                edges.push((vertex, vertex + 3));
+            }
+        }
+    }
+    Graph::new(9, edges)
+}
+
 #[test]
 fn an_empty_pool_gives_nothing() {
     let graph = path(4);
@@ -259,4 +276,91 @@ fn growth_adds_bags_the_pool_did_not_hold() {
         .expect("the longer list holds a decomposition");
     built.validate(&graph).expect("valid");
     assert!(built.treewidth() <= coarse.treewidth());
+}
+
+/// The Bouchitté–Todinca test, on sets whose status can be read off the graph.
+#[test]
+fn the_potential_maximal_clique_test_agrees_with_small_graphs() {
+    // A four-cycle: its minimal separators are {0,2} and {1,3}, and its
+    // potential maximal cliques are the four triangles, since every minimal
+    // triangulation adds one chord.
+    let graph = Graph::new(4, [(0, 1), (1, 2), (2, 3), (3, 0)]);
+    let adjacency = super::adjacency_lists(&graph);
+    let mut neighbourhoods = super::Neighbourhoods::new(&adjacency);
+    for triple in [vec![0, 1, 2], vec![1, 2, 3], vec![0, 2, 3], vec![0, 1, 3]] {
+        assert!(super::merge::is_potential_maximal_clique(
+            &triple,
+            &mut neighbourhoods
+        ));
+    }
+    // A single edge is a minimal separator, so the two components either side
+    // of {0,2} both have it whole on their border and it is not one.
+    assert!(!super::merge::is_potential_maximal_clique(
+        &[0, 2],
+        &mut neighbourhoods
+    ));
+    // The whole graph is: nothing is left outside it, and both non-adjacent
+    // pairs would have to be covered by a component that does not exist — but
+    // there is no component at all, so the pairs are uncovered.
+    assert!(!super::merge::is_potential_maximal_clique(
+        &[0, 1, 2, 3],
+        &mut neighbourhoods
+    ));
+}
+
+#[test]
+fn the_merge_loop_never_comes_back_wider_than_it_started() {
+    let graph = grid();
+    let wide = TreeDecomposition::new(
+        &graph,
+        [vec![0, 1, 2, 3, 4, 5], vec![3, 4, 5, 6, 7, 8]],
+        [(0, 1)],
+    )
+    .unwrap();
+    let found = super::merge_loop(
+        &graph,
+        Some(&wide),
+        0,
+        Limits::standard(),
+        Some(Instant::now() + Duration::from_millis(500)),
+    )
+    .expect("the loop settles on a small graph");
+    found.validate(&graph).expect("a valid decomposition");
+    assert!(found.treewidth() <= wide.treewidth());
+}
+
+#[test]
+fn the_merge_loop_stops_at_a_passed_deadline() {
+    let graph = grid();
+    let start = TreeDecomposition::new(&graph, [(0..9).collect::<Vec<u32>>()], []).unwrap();
+    assert!(
+        super::merge_loop(
+            &graph,
+            Some(&start),
+            0,
+            Limits::standard(),
+            Some(Instant::now() - Duration::from_millis(1)),
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn the_merge_loop_decomposes_a_graph_on_its_own() {
+    let graph = grid();
+    let found = super::decompose_by_merging(&graph, 0, Some(Duration::from_millis(500)))
+        .expect("the construction answers");
+    found.validate(&graph).expect("a valid decomposition");
+    // The 3 x 3 grid has treewidth 3, and a minimal triangulation of it does
+    // not do worse.
+    assert_eq!(found.treewidth(), 3);
+}
+
+#[test]
+fn a_disconnected_graph_merges() {
+    let graph = Graph::new(6, [(0, 1), (1, 2), (3, 4), (4, 5)]);
+    let found = super::decompose_by_merging(&graph, 0, Some(Duration::from_millis(500)))
+        .expect("the construction answers");
+    found.validate(&graph).expect("a valid decomposition");
+    assert_eq!(found.treewidth(), 1);
 }

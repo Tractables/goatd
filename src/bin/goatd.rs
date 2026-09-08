@@ -31,6 +31,10 @@ options:
                           mindegree           greedy min-degree order
                           nested-dissection   multilevel nested dissection
                           flowcutter          the FlowCutter solver
+                          merge-loop          independent decompositions built,
+                                              improved and merged into one
+                                              list of bags, searched for the
+                                              narrowest tree it admits
                           portfolio           several orders under one budget,
                                               keeping the narrowest
   --seed <n>            tie-breaking seed for every order but flowcutter
@@ -100,6 +104,15 @@ options:
                         needs --budget, and it costs a pass over the graph per
                         bag it pooled, which is what the gate bounds
   --no-recombine        portfolio only: return the best single candidate
+  --merge-up-to <n>     portfolio only: after the recombination stage, build a
+                        decomposition independently of everything the run has,
+                        improve it until it is no wider, and search the two
+                        lists of bags together, on graphs of at most n
+                        vertices, in place of the built-in gate. Like the
+                        recombination stage it takes its share off the end of
+                        the hard window, so it needs --budget
+  --no-merge            portfolio only: merge no independent decomposition into
+                        the run's answer
   --no-hedge            portfolio only: run every candidate once, on uniform
                         weights, instead of repeating the candidates that read
                         weights on a ranking the portfolio computes itself
@@ -173,6 +186,7 @@ enum Method {
     MinDegree,
     NestedDissection,
     FlowCutter,
+    MergeLoop,
     Portfolio,
 }
 
@@ -183,6 +197,7 @@ impl Method {
             "mindegree" => Method::MinDegree,
             "nested-dissection" => Method::NestedDissection,
             "flowcutter" => Method::FlowCutter,
+            "merge-loop" => Method::MergeLoop,
             "portfolio" => Method::Portfolio,
             _ => return None,
         })
@@ -194,6 +209,7 @@ impl Method {
             Method::MinDegree => "mindegree",
             Method::NestedDissection => "nested-dissection",
             Method::FlowCutter => "flowcutter",
+            Method::MergeLoop => "merge-loop",
             Method::Portfolio => "portfolio",
         }
     }
@@ -221,6 +237,8 @@ struct Args {
     no_drop_fill: bool,
     recombine_up_to: Option<u32>,
     no_recombine: bool,
+    merge_up_to: Option<u32>,
+    no_merge: bool,
     no_hedge: bool,
     no_bipartite_lift: bool,
     bipartite_lift_rate: Option<f64>,
@@ -293,6 +311,8 @@ fn parse_args(argv: &[String]) -> Args {
     let mut no_drop_fill = false;
     let mut recombine_up_to = None;
     let mut no_recombine = false;
+    let mut merge_up_to = None;
+    let mut no_merge = false;
     let mut no_hedge = false;
     let mut no_bipartite_lift = false;
     let mut bipartite_lift_rate = None;
@@ -426,6 +446,17 @@ fn parse_args(argv: &[String]) -> Args {
                 recombine_up_to = Some(vertices as u32);
             }
             "--no-recombine" => no_recombine = true,
+            "--merge-up-to" => {
+                let vertices = number(&mut i, arg);
+                if vertices > u64::from(u32::MAX) {
+                    usage_error(&format!(
+                        "--merge-up-to wants a vertex count in 0..={}",
+                        u32::MAX
+                    ));
+                }
+                merge_up_to = Some(vertices as u32);
+            }
+            "--no-merge" => no_merge = true,
             "--no-hedge" => no_hedge = true,
             "--no-bipartite-lift" => no_bipartite_lift = true,
             "--bipartite-lift-rate" => {
@@ -499,7 +530,7 @@ fn parse_args(argv: &[String]) -> Args {
         needs(
             "--seed",
             order != Method::FlowCutter,
-            "minfill, mindegree, nested-dissection or portfolio",
+            "minfill, mindegree, nested-dissection, merge-loop or portfolio",
         );
     }
     if steps.is_some() {
@@ -633,6 +664,21 @@ fn parse_args(argv: &[String]) -> Args {
     if no_recombine {
         needs("--no-recombine", order == Method::Portfolio, "portfolio");
     }
+    if merge_up_to.is_some() {
+        needs("--merge-up-to", order == Method::Portfolio, "portfolio");
+        if no_merge {
+            usage_error("--merge-up-to gates the merge loop and --no-merge runs none; give one");
+        }
+        if budget.is_none() {
+            usage_error(
+                "--merge-up-to requires --budget: the stage runs on a share of the hard \
+                 window, and a run with no budget has none",
+            );
+        }
+    }
+    if no_merge {
+        needs("--no-merge", order == Method::Portfolio, "portfolio");
+    }
     // The count is what stops the restarts of a run with no deadline, so the
     // flag decides nothing there.
     if capped_restarts {
@@ -713,6 +759,8 @@ fn parse_args(argv: &[String]) -> Args {
         no_drop_fill,
         recombine_up_to,
         no_recombine,
+        merge_up_to,
+        no_merge,
         no_hedge,
         no_bipartite_lift,
         bipartite_lift_rate,
@@ -787,6 +835,8 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             .unwrap_or_else(|error| fail(&error.to_string())),
         Method::FlowCutter => flowcutter(graph, Budget::standalone(budget, args.steps))
             .unwrap_or_else(|e| fail(&e.to_string())),
+        Method::MergeLoop => goatd::decomposition::decompose_by_merging(graph, seed, budget)
+            .unwrap_or_else(|error| fail(&error.to_string())),
         Method::Portfolio => {
             let weights = vec![1; graph.num_vertices() as usize];
             let mut config = budget.map_or_else(
@@ -837,6 +887,12 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             }
             if args.no_recombine {
                 config = config.without_recombination();
+            }
+            if let Some(vertices) = args.merge_up_to {
+                config = config.with_merge_loop(vertices);
+            }
+            if args.no_merge {
+                config = config.without_merge_loop();
             }
             if args.capped_restarts {
                 config = config.with_restarts_to_deadline(false);
