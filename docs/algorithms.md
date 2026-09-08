@@ -434,7 +434,11 @@ that deadline too, and reads it from inside its own loops: on a graph whose
 coarsening declines to shrink anything, growing the initial partition alone
 takes seconds, so a bisection that only checked the clock on the way in would
 carry the whole recursion well past its cutoff. A bisection the deadline stops
-is dropped and its vertices take the same fixed order.
+is dropped and its vertices take the same fixed order. The order still covers
+the whole subgraph, so the closing elimination gets what a pass over the
+residual is projected to cost past the deadline and builds its bags from it; a
+pass that needs longer than the projection is stopped and the candidate returns
+nothing.
 
 The graph bisector is public on its own, as is a separate hypergraph bisector
 that minimizes cut hyperedges with FM and flow-based refinement. Hypergraph

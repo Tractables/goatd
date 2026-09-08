@@ -12,7 +12,7 @@
 //! min-fill on the induced subgraph. The returned vector is a full elimination
 //! order over `active` in global IDs.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rustc_hash::FxHashSet;
 
@@ -92,7 +92,34 @@ pub(super) fn eliminate_nested_dissection(
         0,
     );
 
+    // The order covers the residual whether or not the recursion finished: the
+    // levels that got their bisection keep it and the rest are in salt order.
+    // Building the bags from it is one pass over the residual, so a run the
+    // cutoff stopped is left that much time to finish rather than dropping
+    // everything the recursion did.
+    let stop = ElimStop {
+        hard_deadline: stop.hard_deadline.map(|deadline| {
+            deadline
+                .checked_add(elimination_allowance(active.len(), edges.len()))
+                .unwrap_or(deadline)
+        }),
+        ..stop
+    };
     eliminate_in_order(graph, order, &mut sink, stop)
+}
+
+/// What the closing elimination may spend past the recursion's cutoff.
+///
+/// The pass reads every vertex and every edge of the residual once, and cost
+/// 14 ms over 39,985 vertices and 154,053 edges when it was measured, so the
+/// projection counts a vertex for four edges and allows a millisecond per ten
+/// thousand of them — twice what that measurement needed. A residual whose
+/// pass runs longer than its projection is stopped as before and the stage
+/// returns nothing. The sum over a graph's components is the projection for
+/// the whole graph, so a run cannot buy time by being split into more of them.
+fn elimination_allowance(vertices: usize, edges: usize) -> Duration {
+    let units = vertices.saturating_mul(4).saturating_add(edges);
+    Duration::from_micros((units / 10) as u64)
 }
 
 /// Compute a nested-dissection elimination order for the active vertex set

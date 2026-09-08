@@ -46,6 +46,11 @@ pub(super) fn greedy_graph_growing(
     }
 
     while set_weight < target {
+        // The scan below reads every vertex, so the growth of one side costs a
+        // pass over the graph per vertex it adds. Charged like any other pass:
+        // without it this loop is the one long stretch of a bisection that a
+        // work-based clock cannot see.
+        crate::meter::charge(n as u64);
         if stop.reached() {
             break;
         }

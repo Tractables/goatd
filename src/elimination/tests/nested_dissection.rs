@@ -1,3 +1,5 @@
+use crate::elimination::execution::{ElimExit, ElimSink, ElimStop};
+use crate::elimination::graph::EliminationGraph;
 use crate::elimination::nested_dissection::*;
 
 /// The parameters every test here runs under, varying only the base-case
@@ -97,28 +99,30 @@ fn the_base_case_stops_at_the_hard_deadline_and_still_returns_a_full_order() {
     );
 }
 
-#[test]
-fn a_level_stops_inside_its_bisection_instead_of_running_it_out() {
-    // 20,000 vertices of which 1,200 carry every edge. The matching pairs
-    // those and leaves the rest to cross the level alone, so the first
-    // coarsening level shrinks the graph by less than a tenth and the sweep
-    // declines to coarsen at all: the initial partition is then grown from
-    // scratch on all 20,000 vertices, four times, and each vertex it adds
-    // costs a scan of every vertex it has not added. That is seconds of work
-    // in one call, and it is the piece the recursion used to hand over
-    // without a cutoff.
-    //
-    // The wall clock is what the portfolio runs against here, so this is a
-    // real deadline rather than an armed meter, and the bound is loose enough
-    // for a loaded machine while still being a fraction of what the
-    // uninterrupted bisection costs.
-    let n = 20_000u32;
-    let connected = 1_200u32;
+/// `n` vertices of which a sixteenth carry every edge. The matching pairs those
+/// and leaves the rest to cross the level alone, so the first coarsening level
+/// shrinks the graph by less than a tenth and the sweep declines to coarsen at
+/// all: the initial partition is then grown from scratch on all `n` vertices,
+/// four times, and each vertex it adds costs a scan of every vertex
+/// it has not added. That is quadratic in `n`, and it is the piece the
+/// recursion used to hand over without a cutoff.
+fn graph_whose_coarsening_declines(n: u32) -> (u32, Vec<(u32, u32)>) {
+    let connected = n / 16;
     let mut edges = Vec::new();
     for v in 0..connected {
         edges.push((v, (v + 1) % connected));
         edges.push((v, (v + 7) % connected));
     }
+    (n, edges)
+}
+
+#[test]
+fn a_level_stops_inside_its_bisection_instead_of_running_it_out() {
+    // The wall clock is what the portfolio runs against, so this is a real
+    // deadline rather than an armed meter, and the bound is loose enough for a
+    // loaded machine while still being a fraction of what the uninterrupted
+    // bisection costs.
+    let (n, edges) = graph_whose_coarsening_declines(20_000);
     let active: Vec<u32> = (0..n).collect();
     let salt: Vec<u32> = (0..n).map(|i| i.wrapping_mul(2_654_435_761)).collect();
 
@@ -136,4 +140,39 @@ fn a_level_stops_inside_its_bisection_instead_of_running_it_out() {
         overrun <= std::time::Duration::from_millis(500),
         "the level ran {overrun:?} past the hard deadline"
     );
+}
+
+#[test]
+fn a_stopped_level_still_returns_a_decomposition() {
+    // The stage the portfolio calls, on a cutoff that has already been
+    // reached: every level takes the fallback order, and what comes back has
+    // to be bags rather than nothing, because the order is there and building
+    // it costs one pass. The meter is armed, so both the cutoff and the
+    // allowance that pass is given are counted in work rather than raced
+    // against the wall, which an unoptimized build would lose.
+    let (n, edges) = graph_whose_coarsening_declines(4_000);
+    let mut graph = EliminationGraph::from_edges(n, &edges);
+    let salt: Vec<u32> = (0..n).map(|i| i.wrapping_mul(2_654_435_761)).collect();
+    let mut bags = Vec::new();
+    let mut ranks = Vec::new();
+    let sink = ElimSink::new(&mut bags, &mut ranks, 0);
+
+    let epoch = std::time::Instant::now();
+    let _meter = crate::meter::arm(epoch);
+    let exit = eliminate_nested_dissection(
+        &mut graph,
+        &salt,
+        0,
+        sink,
+        ElimStop {
+            hard_deadline: Some(epoch),
+            ..ElimStop::default()
+        },
+    );
+
+    assert_eq!(exit, ElimExit::Complete);
+    assert_eq!(bags.len(), n as usize);
+    let mut eliminated: Vec<u32> = ranks.iter().map(|&(vertex, _)| vertex).collect();
+    eliminated.sort();
+    assert_eq!(eliminated, (0..n).collect::<Vec<u32>>());
 }
