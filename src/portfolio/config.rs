@@ -642,6 +642,11 @@ impl PortfolioConfig {
     /// returns as soon as those have run, however much of the budget is left.
     /// A caller who wants the schedule the budget was measured for wants
     /// [`PortfolioConfig::standard_with_budget`].
+    ///
+    /// The recombination stage is off here. It takes its time off the end of a
+    /// hard window and this set has none to take it from; a caller that wants
+    /// it on a budgeted run of this set turns it on with
+    /// [`PortfolioConfig::with_recombination`].
     pub fn standard() -> Self {
         Self {
             soft_budget: None,
@@ -714,6 +719,11 @@ impl PortfolioConfig {
     /// [`PortfolioConfig::with_sampling_patience`] gives back what the
     /// restarts and the trailing candidate spend after they have stalled, at a
     /// cost in width.
+    ///
+    /// The recombination stage is on here, on graphs small enough for its
+    /// search to fit a share of the window;
+    /// [`PortfolioConfig::without_recombination`] turns it off and
+    /// [`PortfolioConfig::with_recombination`] moves the size it stops at.
     pub fn standard_with_budget(budget: Duration) -> Self {
         Self {
             soft_budget: Some(budget),
