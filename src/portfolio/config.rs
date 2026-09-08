@@ -634,6 +634,11 @@ impl PortfolioConfig {
     /// returns as soon as those have run, however much of the budget is left.
     /// A caller who wants the schedule the budget was measured for wants
     /// [`PortfolioConfig::standard_with_budget`].
+    ///
+    /// The bipartite lift is off here and on in `standard_with_budget`, since
+    /// it runs a portfolio of its own on a share of the window and this set
+    /// has no window to share. [`PortfolioConfig::with_bipartite_lift`] turns
+    /// it on without the budgeted set's other changes.
     pub fn standard() -> Self {
         Self {
             soft_budget: None,
