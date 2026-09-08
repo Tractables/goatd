@@ -14,9 +14,11 @@
 //! because edge cuts and hyperedge cuts change differently when a vertex
 //! moves. The other differences are listed in the shared bookkeeping module.
 
+use std::time::Instant;
+
 use crate::partition::Bisection;
 use crate::partition::common::{
-    index_split, lift_to_fine, project_to_coarse, repair_bisection, tiny_bisection,
+    BisectionStop, index_split, lift_to_fine, project_to_coarse, repair_bisection, tiny_bisection,
     validate_max_imbalance,
 };
 use crate::rng::{Xorshift64, bisector_stream, restart_seed};
@@ -74,12 +76,16 @@ impl GraphBisectionConfig {
 /// it is projected down as the levels are built, coarsening is told to keep its
 /// two sides apart, and no initial partition is taken. That is the V-cycle
 /// (Karypis & Kumar 1998, Section 5.4).
+///
+/// A sweep `stop` cut short returns whatever the phase it was in had reached,
+/// which the caller discards.
 fn multilevel_pass(
     graph: &CsrGraph,
     part: Option<&[u8]>,
     rng: &mut Xorshift64,
     max_imbalance: f64,
     scratch: &mut FmScratch,
+    stop: &mut BisectionStop,
 ) -> Vec<u8> {
     let n = graph.num_vertices();
 
@@ -92,6 +98,9 @@ fn multilevel_pass(
     let mut levels: Vec<CoarseningLevel> = Vec::new();
     let mut current = graph;
     loop {
+        if stop.reached() {
+            return index_split(n);
+        }
         // Full re-projection each level, not incremental: incremental
         // projection degrades partition quality here.
         let mut fine_part: Option<Vec<u8>> = None;
@@ -132,27 +141,30 @@ fn multilevel_pass(
         }
         fine_part
     } else {
-        initial_partition(current, rng, max_imbalance, scratch)
+        initial_partition(current, rng, max_imbalance, scratch, stop)
     };
 
     // Coarse edges carry the summed weight of everything contracted into them,
     // so a move here is worth many fine edges and this is the cheapest place in
     // the sweep to buy cut.
-    refine_level(current, &mut coarse_part, max_imbalance, scratch);
+    refine_level(current, &mut coarse_part, max_imbalance, scratch, stop);
 
     // Uncoarsening. Each step hands every fine vertex its coarse vertex's side,
     // then refines with the freedom the finer graph exposes; only the finest
     // level pays for the localized passes on top.
     let mut result_part = coarse_part;
     for (li, level) in levels.iter().enumerate().rev() {
+        if stop.reached() {
+            break;
+        }
         lift_to_fine(&result_part, &level.mapping, &mut proj_scratch);
         std::mem::swap(&mut result_part, &mut proj_scratch);
 
         let fine_graph = if li > 0 { &levels[li - 1].graph } else { graph };
         if li == 0 {
-            refine_finest_level(fine_graph, &mut result_part, max_imbalance, scratch);
+            refine_finest_level(fine_graph, &mut result_part, max_imbalance, scratch, stop);
         } else {
-            refine_level(fine_graph, &mut result_part, max_imbalance, scratch);
+            refine_level(fine_graph, &mut result_part, max_imbalance, scratch, stop);
         }
     }
 
@@ -164,8 +176,12 @@ fn multilevel_graph_bisect_once(
     rng: &mut Xorshift64,
     max_imbalance: f64,
     scratch: &mut FmScratch,
-) -> Vec<u8> {
-    let mut part = multilevel_pass(graph, None, rng, max_imbalance, scratch);
+    stop: &mut BisectionStop,
+) -> Option<Vec<u8>> {
+    let mut part = multilevel_pass(graph, None, rng, max_imbalance, scratch, stop);
+    if stop.stopped() {
+        return None;
+    }
 
     // Arbitrary tuned thresholds: more V-cycles for larger graphs, where
     // quality matters more.
@@ -180,7 +196,10 @@ fn multilevel_graph_bisect_once(
     // a ceiling rather than a count.
     for _ in 0..num_vcycles {
         let old_cut = edge_cut(graph, &part);
-        let new_part = multilevel_pass(graph, Some(&part), rng, max_imbalance, scratch);
+        let new_part = multilevel_pass(graph, Some(&part), rng, max_imbalance, scratch, stop);
+        if stop.stopped() {
+            return None;
+        }
         let new_cut = edge_cut(graph, &new_part);
         if new_cut < old_cut {
             part = new_part;
@@ -189,7 +208,7 @@ fn multilevel_graph_bisect_once(
         }
     }
 
-    part
+    Some(part)
 }
 
 /// Multilevel 2-way bisection of a simple graph: one pass, refined by V-cycles.
@@ -210,26 +229,46 @@ pub fn multilevel_graph_bisect(
     graph: &Graph,
     config: GraphBisectionConfig,
 ) -> Result<Bisection, Error> {
+    Ok(multilevel_graph_bisect_until(graph, config, None)?
+        .expect("a bisection under no cutoff always finishes"))
+}
+
+/// [`multilevel_graph_bisect`] under a cutoff: `None` where the cutoff passed
+/// before a partition was finished, so that the caller can fall back rather
+/// than use a half-refined one.
+///
+/// The cutoff is read from the loops the sweep spends its time in, so a stop
+/// costs at most one coarsening level, one refinement pass's setup scan, or a
+/// short run of moves. Every other argument means what it does there, and with
+/// `deadline` at `None` this is that function.
+pub(crate) fn multilevel_graph_bisect_until(
+    graph: &Graph,
+    config: GraphBisectionConfig,
+    deadline: Option<Instant>,
+) -> Result<Option<Bisection>, Error> {
     validate_max_imbalance(config.max_imbalance, "graph-bisection")?;
     validate_size(graph.edges.len())?;
     let n = graph.num_vertices as usize;
     if let Some(part) = tiny_bisection(n) {
-        return Ok(Bisection::new(part));
+        return Ok(Some(Bisection::new(part)));
     }
 
     let graph = build_csr(n, &graph.edges);
 
     if graph.neighbors.is_empty() {
-        return Ok(Bisection::new(index_split(n)));
+        return Ok(Some(Bisection::new(index_split(n))));
     }
 
     let mut scratch = FmScratch::new();
+    let mut stop = BisectionStop::new(deadline);
 
     let mut rng = bisector_stream(restart_seed(config.seed, 0));
-    Ok(Bisection::new(multilevel_graph_bisect_once(
+    Ok(multilevel_graph_bisect_once(
         &graph,
         &mut rng,
         config.max_imbalance,
         &mut scratch,
-    )))
+        &mut stop,
+    )
+    .map(Bisection::new))
 }

@@ -9,6 +9,7 @@ mod common;
 mod graph;
 mod hypergraph;
 
+pub(crate) use graph::multilevel_graph_bisect_until;
 pub use graph::{GraphBisectionConfig, multilevel_graph_bisect};
 pub use hypergraph::{Hypergraph, HypergraphBisectionConfig, multilevel_hypergraph_bisect};
 

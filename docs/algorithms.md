@@ -429,7 +429,12 @@ augmenting-path matching. By König's theorem that is the smallest separator
 covering those edges, and it is never larger than all the boundary vertices on
 the smaller side. Small subgraphs, and a level whose bisection leaves nothing
 to recurse on, are ordered by min-fill against the hard deadline; the vertices
-it does not reach follow in a fixed order.
+it does not reach follow in a fixed order. A level's bisection runs against
+that deadline too, and reads it from inside its own loops: on a graph whose
+coarsening declines to shrink anything, growing the initial partition alone
+takes seconds, so a bisection that only checked the clock on the way in would
+carry the whole recursion well past its cutoff. A bisection the deadline stops
+is dropped and its vertices take the same fixed order.
 
 The graph bisector is public on its own, as is a separate hypergraph bisector
 that minimizes cut hyperedges with FM and flow-based refinement. Hypergraph

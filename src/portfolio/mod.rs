@@ -1640,10 +1640,11 @@ fn run_portfolio(
         if i > 0 && residual == Some(Residual::Large) && expensive {
             continue;
         }
-        // Nested dissection reads its deadline between levels, and its
-        // bisection of one level on a graph of a million edges takes seconds
-        // on its own, so a cutoff does not bound it. An admitted residual does
-        // not run it; the slot is traced so a reader can see it was given up.
+        // A residual this size gives nested dissection a window its first
+        // bisection spends whole: the deadline stops that bisection now, but
+        // stopping it leaves the level with nothing to split. An admitted
+        // residual does not run it; the slot is traced so a reader can see it
+        // was given up.
         if residual == Some(Residual::Admitted) && matches!(order, Order::NestedDissection) {
             trace(CandidateTrace {
                 stage: Stage::NestedDissection,

@@ -8,12 +8,22 @@
 
 use super::csr::CsrGraph;
 use super::refine_fm::{FmScratch, refine_level};
-use crate::partition::common::random_bisection;
+use crate::partition::common::{BisectionStop, random_bisection};
 use crate::rng::Xorshift64;
 
 /// Grows side 0 outward from `seed` until it holds half the vertex weight;
 /// everything else lands on side 1.
-pub(super) fn greedy_graph_growing(graph: &CsrGraph, seed: usize) -> Vec<u8> {
+///
+/// Each vertex added is chosen by a scan of all of them, so the growth costs
+/// the square of the vertex count and is the longest single stretch of work in
+/// a bisection of a graph the coarsening declined to shrink. It reads `stop`
+/// as it goes and leaves the rest of the vertices on side 1 when the cutoff
+/// passes, which the caller discards.
+pub(super) fn greedy_graph_growing(
+    graph: &CsrGraph,
+    seed: usize,
+    stop: &mut BisectionStop,
+) -> Vec<u8> {
     let n = graph.num_vertices();
     let total_weight: u32 = graph.vertex_weights.iter().sum();
     let target = total_weight / 2;
@@ -36,6 +46,9 @@ pub(super) fn greedy_graph_growing(graph: &CsrGraph, seed: usize) -> Vec<u8> {
     }
 
     while set_weight < target {
+        if stop.reached() {
+            break;
+        }
         let mut best_v = None;
         let mut best_gain: i64 = i64::MIN;
         for v in 0..n {
@@ -105,6 +118,7 @@ pub(super) fn initial_partition(
     rng: &mut Xorshift64,
     max_imbalance: f64,
     scratch: &mut FmScratch,
+    stop: &mut BisectionStop,
 ) -> Vec<u8> {
     let n = graph.num_vertices();
     if n == 0 {
@@ -121,7 +135,10 @@ pub(super) fn initial_partition(
     // partition bookkeeping.
     for _ in 0..4.min(n) {
         let seed = (rng.next_u64() as usize) % n;
-        let part = greedy_graph_growing(graph, seed);
+        let part = greedy_graph_growing(graph, seed, stop);
+        if stop.stopped() {
+            return part;
+        }
         let cut = edge_cut(graph, &part);
         if cut < best_cut {
             best_cut = cut;
@@ -133,7 +150,10 @@ pub(super) fn initial_partition(
     // as produced.
     for _ in 0..4.min(n) {
         let mut part = random_bisection(&graph.vertex_weights, rng);
-        refine_level(graph, &mut part, max_imbalance, scratch);
+        refine_level(graph, &mut part, max_imbalance, scratch, stop);
+        if stop.stopped() {
+            return part;
+        }
         let cut = edge_cut(graph, &part);
         if cut < best_cut {
             best_cut = cut;

@@ -24,7 +24,7 @@ use super::greedy::eliminate_min_fill;
 use super::vertex_cover_separator;
 use crate::deadline::expired;
 use crate::graph::index_by_vertex;
-use crate::partition::{GraphBisectionConfig, multilevel_graph_bisect};
+use crate::partition::{GraphBisectionConfig, multilevel_graph_bisect_until};
 
 /// Default cutoff: once the induced subgraph has ≤ this many vertices, fall
 /// back to local min-fill. Keeps recursion cost bounded while still letting
@@ -48,8 +48,9 @@ pub(super) struct NestedDissectionParams<'a> {
     pub(super) base_case_size: usize,
     /// Balance tolerance handed to the bisector at every level.
     pub(super) max_imbalance: f64,
-    /// Hard cutoff, checked at each recursion level. Once reached, the current
-    /// vertices are returned in salt order as a complete fallback order.
+    /// Hard cutoff, checked at each recursion level and inside the bisection
+    /// and the min-fill a level runs. Once reached, the current vertices are
+    /// returned in salt order as a complete fallback order.
     pub(super) hard_deadline: Option<Instant>,
     /// The portfolio candidate's seed, carried unchanged down the whole
     /// recursion to `multilevel_graph_bisect`. Without it the standard
@@ -111,10 +112,7 @@ pub(super) fn nested_dissection_order(
         return Vec::new();
     }
     if expired(params.hard_deadline) {
-        // Return a complete fallback permutation.
-        let mut salt_sorted: Vec<u32> = active.to_vec();
-        salt_sorted.sort_by_key(|&v| salt[v as usize]);
-        return salt_sorted;
+        return salt_order(active, salt);
     }
     if n <= params.base_case_size || depth >= MAX_RECURSION_DEPTH {
         return base_min_fill_order(active, edges, params);
@@ -125,11 +123,20 @@ pub(super) fn nested_dissection_order(
     let local_edges = local_edges_for(active, edges);
 
     let partition_graph = crate::Graph::new(n as u32, local_edges.iter().copied());
-    let bisection = multilevel_graph_bisect(
+    let bisection = multilevel_graph_bisect_until(
         &partition_graph,
         GraphBisectionConfig::new(params.max_imbalance, params.base_seed),
+        params.hard_deadline,
     )
     .expect("nested-dissection parameters satisfy the bisection contract");
+    // The bisection of one level is the longest piece of work in the
+    // recursion, and on a graph the coarsening declines to shrink it is
+    // seconds of it, so it runs against the same cutoff and hands back nothing
+    // when that passes. Same answer as a level that finds the cutoff already
+    // reached on the way in.
+    let Some(bisection) = bisection else {
+        return salt_order(active, salt);
+    };
     let sep =
         vertex_cover_separator::minimum_vertex_cover_separator(n, &local_edges, bisection.parts());
 
@@ -157,6 +164,14 @@ pub(super) fn nested_dissection_order(
     sep_sorted.sort_by_key(|&v| salt[v as usize]);
     order.extend(sep_sorted);
     order
+}
+
+/// The fallback order for a stretch of vertices the recursion has no time to
+/// split: a complete permutation of them in salt order.
+fn salt_order(active: &[u32], salt: &[u32]) -> Vec<u32> {
+    let mut salt_sorted: Vec<u32> = active.to_vec();
+    salt_sorted.sort_by_key(|&v| salt[v as usize]);
+    salt_sorted
 }
 
 /// Min-fill on the induced subgraph of `active`, returning the resulting order

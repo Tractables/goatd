@@ -96,3 +96,44 @@ fn the_base_case_stops_at_the_hard_deadline_and_still_returns_a_full_order() {
         "the base case ran {overrun:?} past the hard deadline"
     );
 }
+
+#[test]
+fn a_level_stops_inside_its_bisection_instead_of_running_it_out() {
+    // 20,000 vertices of which 1,200 carry every edge. The matching pairs
+    // those and leaves the rest to cross the level alone, so the first
+    // coarsening level shrinks the graph by less than a tenth and the sweep
+    // declines to coarsen at all: the initial partition is then grown from
+    // scratch on all 20,000 vertices, four times, and each vertex it adds
+    // costs a scan of every vertex it has not added. That is seconds of work
+    // in one call, and it is the piece the recursion used to hand over
+    // without a cutoff.
+    //
+    // The wall clock is what the portfolio runs against here, so this is a
+    // real deadline rather than an armed meter, and the bound is loose enough
+    // for a loaded machine while still being a fraction of what the
+    // uninterrupted bisection costs.
+    let n = 20_000u32;
+    let connected = 1_200u32;
+    let mut edges = Vec::new();
+    for v in 0..connected {
+        edges.push((v, (v + 1) % connected));
+        edges.push((v, (v + 7) % connected));
+    }
+    let active: Vec<u32> = (0..n).collect();
+    let salt: Vec<u32> = (0..n).map(|i| i.wrapping_mul(2_654_435_761)).collect();
+
+    let mut params = params(&salt, 32);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+    params.hard_deadline = Some(deadline);
+
+    let order = nested_dissection_order(&active, &edges, &params, 0);
+    let overrun = std::time::Instant::now().saturating_duration_since(deadline);
+
+    let mut sorted = order.clone();
+    sorted.sort();
+    assert_eq!(sorted, active);
+    assert!(
+        overrun <= std::time::Duration::from_millis(500),
+        "the level ran {overrun:?} past the hard deadline"
+    );
+}
