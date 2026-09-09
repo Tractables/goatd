@@ -13,16 +13,13 @@
 //! and every rule below is a statement about a count reaching 0, 1, or 2.
 
 use super::model::Hypergraph;
-use crate::partition::common::{FmBalance, GainBuckets, Stall, commit_best_prefix, fm_balance};
+use crate::partition::common::{
+    FmBalance, GainBuckets, Stall, commit_best_prefix, fm_balance, select_move,
+};
 
 pub(super) fn fm_refine_pass(hg: &Hypergraph, part: &mut [u8], max_imbalance: f64) -> bool {
     let n = hg.num_vertices;
-    let Some(FmBalance {
-        mut weight,
-        min_part_weight,
-        max_part_weight,
-    }) = fm_balance(n, &hg.vertex_weights, part, max_imbalance)
-    else {
+    let Some(mut balance) = fm_balance(n, &hg.vertex_weights, part, max_imbalance) else {
         return false;
     };
 
@@ -67,46 +64,16 @@ pub(super) fn fm_refine_pass(hg: &Hypergraph, part: &mut [u8], max_imbalance: f6
     let mut stall = Stall::new((n / 2).max(20));
 
     for _ in 0..n {
-        let mut best_v: Option<usize> = None;
-        let mut best_gain = i64::MIN;
-        let mut best_from: usize = 0;
-
-        for side in 0..2 {
-            let to = 1 - side;
-            // Every queued vertex weighs at least one, so a side at the floor
-            // can give none up and a side at the ceiling can take none. Without
-            // this the search walks that side's whole queue to return nothing,
-            // once per move, which is where a pass sits once it drifts to the
-            // balance boundary.
-            if weight[side] <= min_part_weight || weight[to] >= max_part_weight {
-                continue;
-            }
-            let candidate = bq[side].best_satisfying(|vertex| {
-                !locked[vertex]
-                    && weight[side] - hg.vertex_weights[vertex] >= min_part_weight
-                    && weight[to] + hg.vertex_weights[vertex] <= max_part_weight
-            });
-            if let Some(vertex) = candidate {
-                let g = gain[vertex];
-                if g > best_gain {
-                    best_gain = g;
-                    best_v = Some(vertex);
-                    best_from = side;
-                }
-            }
-        }
-
-        let v = match best_v {
-            Some(v) => v,
-            None => break,
+        let Some((v, from, best_gain)) =
+            select_move(&bq, &gain, &locked, &hg.vertex_weights, &balance)
+        else {
+            break;
         };
-
-        let from = best_from;
         let to = 1 - from;
 
         bq[from].remove(v);
-        weight[from] -= hg.vertex_weights[v];
-        weight[to] += hg.vertex_weights[v];
+        balance.weight[from] -= hg.vertex_weights[v];
+        balance.weight[to] += hg.vertex_weights[v];
         part[v] = to as u8;
         locked[v] = true;
 

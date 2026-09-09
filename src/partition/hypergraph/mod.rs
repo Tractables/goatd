@@ -32,12 +32,11 @@ use refine_fm::refine_level;
 use crate::Error;
 use crate::partition::Bisection;
 use crate::partition::common::{
-    index_split, lift_to_fine, project_to_coarse, repair_bisection, tiny_bisection,
-    validate_max_imbalance,
+    MIN_COARSEN_SIZE, index_split, lift_to_fine, max_vcycles, project_to_coarse, repair_bisection,
+    tiny_bisection, validate_max_imbalance,
 };
 use crate::rng::{Xorshift64, bisector_stream, restart_seed};
 
-const MIN_HG_COARSEN_SIZE: usize = 20;
 const MAX_EFFORT: f64 = 100.0;
 
 pub use model::Hypergraph;
@@ -115,7 +114,7 @@ fn multilevel_pass(
     // of its fine vertices are on, ties to side 0.
     loop {
         let coarse_part_ref = projected_part.as_deref();
-        if let Some(level) = coarsen_one_level(current, MIN_HG_COARSEN_SIZE, rng, coarse_part_ref) {
+        if let Some(level) = coarsen_one_level(current, MIN_COARSEN_SIZE, rng, coarse_part_ref) {
             if let Some(ref mut pp) = projected_part {
                 let nc = level.hg.num_vertices;
                 project_to_coarse(
@@ -173,15 +172,7 @@ fn multilevel_bisect_once(
 ) -> Vec<u8> {
     let mut part = multilevel_pass(hg, None, rng, imbalance);
 
-    // Arbitrary tuned thresholds: more V-cycles for larger hypergraphs, where
-    // quality matters more.
-    let vc_base = if hg.num_vertices >= 400 {
-        4
-    } else if hg.num_vertices >= 100 {
-        2
-    } else {
-        1
-    };
+    let vc_base = max_vcycles(hg.num_vertices);
     let num_vcycles = (vc_base as f64 * effort_scale.sqrt()).round() as usize;
     // The first cycle that fails to improve ends the loop, so `num_vcycles` is
     // a ceiling rather than a count.
