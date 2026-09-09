@@ -113,17 +113,30 @@ fn preprocess_with_stop(mut graph: EliminationGraph, stop: &mut PreprocessStop) 
 }
 
 /// Eliminate one vertex and record its bag before the graph changes.
+///
+/// `needs_fill` false takes the removal that skips the fill pass, for a caller
+/// that knows the neighbourhood is already a clique. Both paths take `vertex`
+/// out of each neighbour's row the same way and adjust the edge count the same
+/// way, and with no fill edge to add the fill pass writes nothing else, so the
+/// graph is the same either way; what it saves is the k² membership test and
+/// the per-neighbour stamping in the sparse path, and a pass over the row's
+/// words per neighbour in bitset mode.
 fn eliminate_and_record(
     graph: &mut EliminationGraph,
     prefix: &mut ElimSteps,
     vertex: u32,
+    needs_fill: bool,
 ) -> usize {
     let neighbours = graph.live_neighbours(vertex);
     let degree = neighbours.len();
     let mut bag = Vec::with_capacity(degree + 1);
     bag.push(vertex);
-    bag.extend(neighbours);
-    graph.eliminate(vertex);
+    bag.extend_from_slice(&neighbours);
+    if needs_fill {
+        graph.eliminate_with_nbrs(vertex, &neighbours);
+    } else {
+        graph.remove_without_fill_nbrs(vertex, &neighbours);
+    }
     prefix.sink().record(vertex, bag);
     degree
 }
@@ -144,7 +157,9 @@ fn eliminate_series_vertices(
         }
         let neighbours = graph.live_neighbours(vertex);
         if !graph.contains_edge(neighbours[0], neighbours[1]) {
-            eliminate_and_record(graph, prefix, vertex);
+            // The rule fires exactly when the two neighbours are not adjacent,
+            // so this elimination is the one that adds the edge between them.
+            eliminate_and_record(graph, prefix, vertex, true);
             *treewidth_lower_bound = (*treewidth_lower_bound).max(2);
             fired = true;
         }
@@ -165,7 +180,9 @@ fn eliminate_simplicial_vertices(
         }
         if graph.active[vertex as usize] && graph.degree(vertex) >= 2 && graph.is_simplicial(vertex)
         {
-            let degree = eliminate_and_record(graph, prefix, vertex);
+            // `is_simplicial` has just established that the neighbourhood is a
+            // clique, so there is no fill edge to add.
+            let degree = eliminate_and_record(graph, prefix, vertex, false);
             *treewidth_lower_bound = (*treewidth_lower_bound).max(degree);
             fired = true;
         }
@@ -199,8 +216,10 @@ fn eliminate_almost_simplicial_vertices(
         let Some((left, right)) = graph.almost_simplicial_nonedge(vertex) else {
             continue;
         };
+        // The rule fires on exactly one missing edge, and the line above has
+        // just added it, so the neighbourhood is now a clique.
         graph.add_edge(left, right);
-        eliminate_and_record(graph, prefix, vertex);
+        eliminate_and_record(graph, prefix, vertex, false);
         fired = true;
     }
     fired
@@ -223,9 +242,11 @@ fn peel_low_degree(graph: &mut EliminationGraph, prefix: &mut ElimSteps) -> bool
                     fired = true;
                 }
                 1 => {
-                    let neighbour = graph.live_neighbours(v as u32)[0];
-                    graph.remove_without_fill(v as u32);
-                    prefix.sink().record(v as u32, vec![v as u32, neighbour]);
+                    let neighbours = graph.live_neighbours(v as u32);
+                    graph.remove_without_fill_nbrs(v as u32, &neighbours);
+                    prefix
+                        .sink()
+                        .record(v as u32, vec![v as u32, neighbours[0]]);
                     fired = true;
                 }
                 _ => {}

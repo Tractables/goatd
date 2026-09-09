@@ -65,6 +65,53 @@ fn the_sparse_simplicial_test_agrees_with_the_pairwise_scan() {
     assert!(graph.is_simplicial(spokes));
 }
 
+/// A clique neighbourhood needs no fill edge, and with none to add the two
+/// removal paths leave the same graph: the same rows in the same order, the
+/// same membership maps, the same bitset and the same counts. Preprocessing's
+/// simplicial and almost-simplicial rules take the cheaper path on that.
+#[test]
+fn removing_a_clique_neighbourhood_without_fill_leaves_the_fill_path_graph() {
+    // A triangle in a graph too sparse for the bitset, so short rows answer.
+    let short_rows = (200u32, vec![(0, 1), (0, 2), (1, 2), (2, 3)], 0u32);
+
+    // Vertex 1's neighbourhood is a triangle with a hub whose row carries a
+    // membership map, so the removal takes the indexed branch for the hub and
+    // the scanning one for the other two.
+    let spokes = ROW_INDEX_THRESH as u32 + 4;
+    let mut hub: Vec<(u32, u32)> = (1..=spokes).map(|spoke| (0, spoke)).collect();
+    hub.extend([(1, 2), (1, 3), (2, 3)]);
+    hub.sort_unstable();
+    let indexed_row = (20_000u32, hub, 1u32);
+
+    // A clique dense enough for the bitset path.
+    let clique = 64u32;
+    let mut dense = Vec::new();
+    for u in 0..clique {
+        for v in u + 1..clique {
+            dense.push((u, v));
+        }
+    }
+    let bitset = (clique, dense, 7u32);
+
+    for (n, edges, vertex) in [short_rows, indexed_row, bitset] {
+        let mut with_fill = EliminationGraph::from_edges(n, &edges);
+        let mut without_fill = with_fill.clone();
+        assert!(
+            with_fill.is_simplicial(vertex),
+            "vertex {vertex} of the fixture must be simplicial"
+        );
+        let neighbours = with_fill.live_neighbours(vertex);
+
+        with_fill.eliminate_with_nbrs(vertex, &neighbours);
+        without_fill.remove_without_fill_nbrs(vertex, &neighbours);
+
+        assert!(
+            without_fill.same_state_as(&with_fill),
+            "removing {vertex} without fill left a different graph on {n} vertices"
+        );
+    }
+}
+
 #[test]
 fn from_edges_dedups_repeated_inputs() {
     let g = EliminationGraph::from_edges(2, &[(0, 1), (1, 0), (0, 1)]);

@@ -329,6 +329,27 @@ impl EliminationGraph {
         self.row_index[vertex as usize].is_some()
     }
 
+    /// Whether two graphs hold the same state: the same rows in the same
+    /// order, the same membership maps, the same bitset and the same counts.
+    ///
+    /// The stamp marker is left out. It is scratch space for one call — every
+    /// reader stamps before it reads — so two graphs can agree on everything a
+    /// later step observes while carrying different stamps.
+    #[cfg(test)]
+    pub(super) fn same_state_as(&self, other: &Self) -> bool {
+        self.adj == other.adj
+            && self.row_index == other.row_index
+            && self.active == other.active
+            && self.num_active == other.num_active
+            && self.num_edges == other.num_edges
+            && self.bitset_degree == other.bitset_degree
+            && self.bitset == other.bitset
+            && self.bitset_words == other.bitset_words
+            && self.bitset_slot == other.bitset_slot
+            && self.slot_vertex == other.slot_vertex
+            && self.bitset_compact == other.bitset_compact
+    }
+
     /// Empty `vertex`'s row, as elimination does, and drop its map with it.
     #[inline]
     fn clear_row(&mut self, vertex: u32) {
@@ -659,6 +680,11 @@ impl EliminationGraph {
         neighbours
     }
 
+    /// Collect `v`'s live neighbours, eliminate it, and return them. Every
+    /// caller in the library needs the list for the bag it records, so it
+    /// collects the list itself and calls `eliminate_with_nbrs`; this remains
+    /// as the one-call form the tests check that path against.
+    #[cfg(test)]
     pub(super) fn eliminate(&mut self, v: u32) -> Vec<u32> {
         let neighbours = self.live_neighbours(v);
         self.eliminate_with_nbrs(v, &neighbours);
@@ -886,15 +912,6 @@ impl EliminationGraph {
         }
         self.num_edges -= neighbours.len();
         self.num_edges += pushes / 2;
-    }
-
-    /// Remove vertex `v` without filling its neighbourhood — safe only when
-    /// the caller already knows `v`'s removal cannot need a fill edge.
-    /// Returns the vertex's live neighbours.
-    pub(super) fn remove_without_fill(&mut self, v: u32) -> Vec<u32> {
-        let neighbours = self.live_neighbours(v);
-        self.remove_without_fill_nbrs(v, &neighbours);
-        neighbours
     }
 
     /// Remove `v`, given its live neighbours, without filling — safe only
