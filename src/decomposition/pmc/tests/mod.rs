@@ -441,3 +441,45 @@ fn the_programme_reads_the_widths_it_always_read() {
         assert_eq!(built.quality_key(), (width, total));
     }
 }
+
+/// The pooled programme reads only the bags it was given. The local step
+/// triangulates the piece two of those bags leave between them, so it can hand
+/// the programme bags no pooled tree holds — and on this graph that is a
+/// narrower tree than the pool admits on its own.
+#[test]
+fn the_local_step_beats_the_pooled_bags() {
+    let graph = scattered(30);
+    let mut pool = BagPool::new(Limits::standard());
+    for (slot, order) in [
+        crate::elimination::Order::MinFill,
+        crate::elimination::Order::MinDegree,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let decomposition =
+            crate::elimination::decompose(&graph, order, 0, None).expect("an order");
+        pool.absorb(&decomposition, slot as u32);
+    }
+    let pooled = recombine(&pool, &graph, None).expect("the pool holds a decomposition");
+    assert_eq!(pooled.treewidth(), 13);
+    let built = super::local_merge(&pool, &graph, &pooled, 0, None)
+        .expect("the local step found something narrower");
+    built.validate(&graph).expect("valid");
+    assert_eq!(built.treewidth(), 12);
+}
+
+/// Nothing to improve on: the step hands back nothing rather than the answer it
+/// was given.
+#[test]
+fn the_local_step_declines_a_decomposition_it_cannot_beat() {
+    let graph = path(6);
+    let td = TreeDecomposition::new(
+        &graph,
+        [vec![0, 1], vec![1, 2], vec![2, 3], vec![3, 4], vec![4, 5]],
+        [(0, 1), (1, 2), (2, 3), (3, 4)],
+    )
+    .unwrap();
+    let pool = pool_of(&[&td]);
+    assert!(super::local_merge(&pool, &graph, &td, 0, None).is_none());
+}

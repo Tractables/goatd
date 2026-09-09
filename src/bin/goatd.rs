@@ -116,6 +116,18 @@ options:
   --no-merge            portfolio only: merge no independent decomposition into
                         the run's answer. The stage runs only under --budget,
                         so this needs one too
+  --local-merge-up-to <n>
+                        portfolio only: after the merge loop, re-triangulate the
+                        piece of the graph a bag of the answer and a bag of
+                        another decomposition the run built leave between them,
+                        and search the pooled bags together with the cliques
+                        that come back, on graphs of at most n vertices, in
+                        place of the built-in gate. Like the recombination
+                        stage it takes its share off the end of the hard
+                        window, so it needs --budget
+  --no-local-merge      portfolio only: re-triangulate between no two of the
+                        decompositions the run built. The stage runs only under
+                        --budget, so this needs one too
   --no-hedge            portfolio only: run every candidate once, on uniform
                         weights, instead of repeating the candidates that read
                         weights on a ranking the portfolio computes itself
@@ -245,6 +257,8 @@ struct Args {
     no_recombine: bool,
     merge_up_to: Option<u32>,
     no_merge: bool,
+    local_merge_up_to: Option<u32>,
+    no_local_merge: bool,
     no_hedge: bool,
     no_bipartite_lift: bool,
     bipartite_lift_rate: Option<f64>,
@@ -319,6 +333,8 @@ fn parse_args(argv: &[String]) -> Args {
     let mut no_recombine = false;
     let mut merge_up_to = None;
     let mut no_merge = false;
+    let mut local_merge_up_to = None;
+    let mut no_local_merge = false;
     let mut no_hedge = false;
     let mut no_bipartite_lift = false;
     let mut bipartite_lift_rate = None;
@@ -463,6 +479,17 @@ fn parse_args(argv: &[String]) -> Args {
                 merge_up_to = Some(vertices as u32);
             }
             "--no-merge" => no_merge = true,
+            "--local-merge-up-to" => {
+                let vertices = number(&mut i, arg);
+                if vertices > u64::from(u32::MAX) {
+                    usage_error(&format!(
+                        "--local-merge-up-to wants a vertex count in 0..={}",
+                        u32::MAX
+                    ));
+                }
+                local_merge_up_to = Some(vertices as u32);
+            }
+            "--no-local-merge" => no_local_merge = true,
             "--no-hedge" => no_hedge = true,
             "--no-bipartite-lift" => no_bipartite_lift = true,
             "--bipartite-lift-rate" => {
@@ -723,6 +750,34 @@ fn parse_args(argv: &[String]) -> Args {
             );
         }
     }
+    if local_merge_up_to.is_some() {
+        needs(
+            "--local-merge-up-to",
+            order == Method::Portfolio,
+            "portfolio",
+        );
+        if no_local_merge {
+            usage_error(
+                "--local-merge-up-to gates the local re-triangulation stage and --no-local-merge \
+                 runs none; give one",
+            );
+        }
+        if budget.is_none() {
+            usage_error(
+                "--local-merge-up-to requires --budget: the stage runs on a share of the hard \
+                 window, and a run with no budget has none",
+            );
+        }
+    }
+    if no_local_merge {
+        needs("--no-local-merge", order == Method::Portfolio, "portfolio");
+        if budget.is_none() {
+            usage_error(
+                "--no-local-merge requires --budget: the local re-triangulation stage runs on a \
+                 share of the hard window, and a run with no budget does not run it at all",
+            );
+        }
+    }
     if no_merge {
         needs("--no-merge", order == Method::Portfolio, "portfolio");
         if budget.is_none() {
@@ -823,6 +878,8 @@ fn parse_args(argv: &[String]) -> Args {
         no_recombine,
         merge_up_to,
         no_merge,
+        local_merge_up_to,
+        no_local_merge,
         no_hedge,
         no_bipartite_lift,
         bipartite_lift_rate,
@@ -955,6 +1012,12 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             }
             if args.no_merge {
                 config = config.without_merge_loop();
+            }
+            if let Some(vertices) = args.local_merge_up_to {
+                config = config.with_local_merge(vertices);
+            }
+            if args.no_local_merge {
+                config = config.without_local_merge();
             }
             if args.capped_restarts {
                 config = config.with_restarts_to_deadline(false);

@@ -43,9 +43,11 @@ trailing candidate hands the graph to FlowCutter.
 
 On a budgeted run one more stage follows all of them: it searches over the bags
 of every decomposition the run produced for a narrower tree than any single
-candidate, described under *Recombining the candidates' bags*, and then one
-that builds a decomposition independently of everything above and merges it in,
-described under *Merging independent decompositions*.
+candidate, described under *Recombining the candidates' bags*; then one that
+builds a decomposition independently of everything above and merges it in,
+described under *Merging independent decompositions*; and last one that
+re-triangulates between the trees the run pooled, described under
+*Re-triangulating between two pooled trees*.
 
 The residual left after preprocessing picks between three schedules. At or
 below 10,000 vertices all of the above runs. Above that line it runs where the
@@ -599,6 +601,35 @@ triangulation the first list does not have.
 `decomposition::decompose_by_merging` runs the construction on its own, without
 a portfolio to start it off: it begins from its own initial list, which is what
 the paper's algorithm does.
+
+## Re-triangulating between two pooled trees
+
+The merge loop takes the pair step above between the run's answer and a tree it
+built for the purpose. The stage after it takes the same step between the
+answer and the trees the run already has — the nested-dissection candidate, the
+diverse passes, FlowCutter — which cut the graph in places a randomised
+elimination does not.
+
+The list starts as the answer's bags together with the pool's, kept apart by
+the tree each came from. For each pooled tree in turn, each of the answer's
+sixteen widest bags is the `X` of the pair step and that tree's bags are the
+partners; the pieces the pairs pick out are triangulated and their cliques
+added, and the programme is then run over the longer list. Where it comes back
+narrower the list drops every bag of more than two vertices over the new width,
+since no tree of that width has one, and the pass over the pooled trees is
+repeated once.
+
+A piece of at most sixty vertices is triangulated eight times — once by MCS-M
+and seven times by a randomised min-fill draw made minimal — and the programme
+is run over the bags of all eight together, which is at least as narrow as the
+best of them. That stands in for the exact treatment the paper gives a small
+piece. Larger pieces get the single MCS-M pass the merge loop uses.
+
+`PortfolioConfig::with_local_merge` gates the stage on a vertex count and gives
+it a share of the hard window, for the reason the two stages before it are
+gated and given one. Its share comes off the end first, then the merge loop's,
+then the recombination stage's. It starts from the run's own answer and is kept
+only where it is narrower.
 
 ## Decomposition operations
 
