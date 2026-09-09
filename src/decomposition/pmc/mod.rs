@@ -627,6 +627,12 @@ impl Search<'_> {
                 else {
                     continue;
                 };
+                // The rest of the bag lies in `capped`. Every other bag
+                // vertex must be in its separator, or using this cap would
+                // repeat a vertex outside the block and disconnect its bags.
+                if separator != split.borders[position] {
+                    continue;
+                }
                 let Some(index) = self.block(capped, separator) else {
                     return Some(());
                 };
