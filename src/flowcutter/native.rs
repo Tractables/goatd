@@ -317,6 +317,12 @@ pub(crate) fn first_restart_units(vertices: u64, edges: u64) -> u64 {
         .saturating_add(iteration_work_units(vertices, edges))
 }
 
+/// Charge the vendored backend's work to the meter.
+///
+/// Metered runs only, unlike [`crate::meter::charge`], which counts either
+/// way so that a loop can pace its clock reads by the work it has done: one
+/// call into the backend is one uninterruptible search with no such loop
+/// inside it, so an unarmed run has nothing to pace.
 fn charge_build(vertices: u64, edges: u64, iterations_done: i64, greedy_touches: i64) {
     if !crate::meter::is_armed() {
         return;

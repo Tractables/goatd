@@ -12,8 +12,10 @@ static STOPPED: AtomicBool = AtomicBool::new(false);
 
 /// The flag that ends a running solve.
 ///
-/// Store `true` to stop; store `false` before starting the next one. A handler
-/// that only stores into this flag is async-signal-safe, which is how the
+/// It is one flag for the whole process rather than one per solve, so setting
+/// it stops every construction running in the process, on any thread. Store
+/// `true` to stop; store `false` before starting the next one. A handler that
+/// only stores into this flag is async-signal-safe, which is how the
 /// command-line tool answers `SIGTERM` with the decomposition it already has.
 pub fn stop_flag() -> &'static AtomicBool {
     &STOPPED
