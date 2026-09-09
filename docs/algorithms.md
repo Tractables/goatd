@@ -498,7 +498,8 @@ The search is the dynamic programme of Bouchitté and Todinca restricted to a
 list of candidate bags rather than run over every potential maximal clique of
 the graph. A *block* is a connected component `C` of `G` less a pool bag,
 carried with its separator `N(C)`; a *cap* of a block is a pool bag `Ω` with
-`N(C) ⊆ Ω ⊆ C ∪ N(C)` and a vertex inside `C`. The width of a block is the
+`N(C) ⊆ Ω ⊆ C ∪ N(C)` and a vertex inside `C`. Collection discards caps
+containing vertices outside that block and its separator. The width of a block is the
 cheapest way to decompose `C ∪ N(C)` with `N(C)` in its top bag: everything in
 one bag, or a cap with the blocks it leaves inside `C` under it. Blocks are
 evaluated smallest first, so a block's sub-blocks are settled before it and one

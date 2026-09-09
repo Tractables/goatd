@@ -483,3 +483,19 @@ fn the_local_step_declines_a_decomposition_it_cannot_beat() {
     let pool = pool_of(&[&td]);
     assert!(super::local_merge(&pool, &graph, &td, 0, None).is_none());
 }
+
+#[test]
+fn a_cap_cannot_repeat_vertices_outside_its_block() {
+    let graph = Graph::new(6, [(0, 3), (1, 3), (0, 2), (2, 4), (4, 5)]);
+    let adjacency = Adjacency::of(&graph).unwrap();
+    // With [0, 3] at the root, the block {2, 4, 5} has separator {0}.
+    // The bag [0, 1, 2] cannot cap it: vertex 1 lies outside that block.
+    let bags = [vec![0, 3], vec![0, 1, 2], vec![2, 4], vec![4, 5]];
+    let sets: Vec<_> = bags.iter().map(|bag| adjacency.set_of(bag)).collect();
+    let built = super::search(&sets, &graph, &adjacency, Limits::standard(), None)
+        .expect("the pool can cover the graph");
+    built
+        .validate(&graph)
+        .expect("every vertex's bags stay connected");
+    assert_eq!(built.treewidth(), 2);
+}
