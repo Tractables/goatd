@@ -76,6 +76,18 @@ const DEFAULT_MERGE_LOOP_VERTICES: u32 = DEFAULT_RECOMBINATION_VERTICES;
 /// recombination stage's.
 pub(super) const MERGE_LOOP_WINDOW_SHARE: u32 = RECOMBINATION_WINDOW_SHARE;
 
+/// Graph size at or below which the standard budgeted portfolio re-triangulates
+/// between the trees it pooled. The stage runs the same search over a list of
+/// the same order as the two stages before it, so the same size is where the
+/// reserve it would need stops being worth the window.
+const DEFAULT_LOCAL_MERGE_VERTICES: u32 = DEFAULT_RECOMBINATION_VERTICES;
+
+/// The most of the hard window the local re-triangulation stage is given, taken
+/// off the end before the merge loop takes its own share. It runs one programme
+/// per pooled tree it pairs the answer with, so its share is the same size as
+/// theirs.
+pub(super) const LOCAL_MERGE_WINDOW_SHARE: u32 = RECOMBINATION_WINDOW_SHARE;
+
 /// The most of the hard window the recombination stage is given, taken off the
 /// end so the rest of the schedule finishes that much earlier. It is given the
 /// estimated cost of its own search where that is less.
@@ -543,6 +555,7 @@ pub struct PortfolioConfig {
     pub(super) triangulation_refinement: Option<u32>,
     pub(super) recombination: Option<u32>,
     pub(super) merge_loop: Option<u32>,
+    pub(super) local_merge: Option<u32>,
     pub(super) bipartite_lift: Option<f64>,
     pub(super) bipartite_lift_rate: f64,
 }
@@ -569,6 +582,7 @@ impl PartialEq for PortfolioConfig {
             && self.triangulation_refinement == other.triangulation_refinement
             && self.recombination == other.recombination
             && self.merge_loop == other.merge_loop
+            && self.local_merge == other.local_merge
             && self.bipartite_lift.map(f64::to_bits) == other.bipartite_lift.map(f64::to_bits)
             && self.bipartite_lift_rate.to_bits() == other.bipartite_lift_rate.to_bits()
     }
@@ -600,6 +614,7 @@ impl PortfolioConfig {
             triangulation_refinement: None,
             recombination: None,
             merge_loop: None,
+            local_merge: None,
             bipartite_lift: None,
             bipartite_lift_rate: DEFAULT_BIPARTITE_LIFT_RATE,
         }
@@ -711,6 +726,7 @@ impl PortfolioConfig {
             // no deadline to take one from.
             recombination: None,
             merge_loop: None,
+            local_merge: None,
             bipartite_lift: None,
             bipartite_lift_rate: DEFAULT_BIPARTITE_LIFT_RATE,
         }
@@ -789,6 +805,7 @@ impl PortfolioConfig {
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
             recombination: Some(DEFAULT_RECOMBINATION_VERTICES),
             merge_loop: Some(DEFAULT_MERGE_LOOP_VERTICES),
+            local_merge: Some(DEFAULT_LOCAL_MERGE_VERTICES),
             bipartite_lift: Some(DEFAULT_BIPARTITE_LIFT_EDGE_FACTOR),
             bipartite_lift_rate: DEFAULT_BIPARTITE_LIFT_RATE,
         }
@@ -1080,6 +1097,30 @@ impl PortfolioConfig {
     /// Do not merge independent decompositions into the run's best one.
     pub fn without_merge_loop(mut self) -> Self {
         self.merge_loop = None;
+        self
+    }
+
+    /// Re-triangulate between the trees the run pooled, on graphs of at most
+    /// `max_vertices` vertices.
+    ///
+    /// The stage takes a bag of the best decomposition and a bag of another one
+    /// the run built, triangulates the piece of the graph the two leave between
+    /// them, and searches the pooled bags together with the cliques that come
+    /// back. It keeps the result only where it is narrower than what the run
+    /// already has.
+    ///
+    /// Like [`PortfolioConfig::with_recombination`] it is given a share of the
+    /// hard window taken off the end, so a run with no budget does not run it,
+    /// and the gate is a vertex count because its search costs a pass over the
+    /// graph per bag of the list.
+    pub fn with_local_merge(mut self, max_vertices: u32) -> Self {
+        self.local_merge = Some(max_vertices);
+        self
+    }
+
+    /// Do not re-triangulate between the trees the run pooled.
+    pub fn without_local_merge(mut self) -> Self {
+        self.local_merge = None;
         self
     }
 

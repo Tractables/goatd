@@ -72,11 +72,13 @@ use super::TreeDecomposition;
 use crate::Graph;
 use crate::deadline::expired;
 
+mod local;
 mod merge;
 mod sets;
 
 use sets::{Adjacency, Scratch, Split, VertexSet};
 
+pub(crate) use local::local_merge;
 pub(crate) use merge::merge_loop;
 
 /// Build a decomposition by the merge loop alone: an initial answer of several
@@ -244,6 +246,20 @@ impl BagPool {
         adjacency: &Adjacency,
         deadline: Option<Instant>,
     ) -> Vec<VertexSet> {
+        self.assemble_by_source(graph, adjacency, deadline).concat()
+    }
+
+    /// The same bags, kept apart by the decomposition they came from, narrowest
+    /// first. No bag appears twice across the lists.
+    ///
+    /// The local stage needs to know which tree a bag belongs to: its step
+    /// takes one bag from one tree and one from another.
+    fn assemble_by_source(
+        &self,
+        graph: &Graph,
+        adjacency: &Adjacency,
+        deadline: Option<Instant>,
+    ) -> Vec<Vec<VertexSet>> {
         let mut sources: Vec<TreeDecomposition> = Vec::new();
         let mut order: Vec<&Kept> = self.kept.iter().collect();
         order.sort_by_key(|held| held.decomposition.quality_key());
@@ -259,7 +275,8 @@ impl BagPool {
             });
         }
         let shares = sources.len() + 1;
-        let mut bags: Vec<VertexSet> = Vec::new();
+        let mut bags: Vec<Vec<VertexSet>> = vec![Vec::new(); sources.len()];
+        let mut taken_in_all = 0usize;
         let mut seen: FxHashSet<VertexSet> = FxHashSet::default();
         let mut stored = 0usize;
         let mut widest: Vec<Vec<usize>> = sources
@@ -283,7 +300,7 @@ impl BagPool {
                 let mut left = Vec::new();
                 for index in std::mem::take(&mut widest[rank]) {
                     if taken >= quota
-                        || bags.len() >= self.limits.bags
+                        || taken_in_all >= self.limits.bags
                         || stored >= self.limits.pool_vertices
                     {
                         left.push(index);
@@ -295,8 +312,9 @@ impl BagPool {
                         continue;
                     }
                     stored += bag.len();
+                    taken_in_all += 1;
                     seen.insert(bag.clone());
-                    bags.push(bag);
+                    bags[rank].push(bag);
                 }
                 widest[rank] = left;
             }

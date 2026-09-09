@@ -85,8 +85,10 @@ impl Answer {
     }
 }
 
-/// What every level of the recursion shares.
-struct Loop<'a> {
+/// What every level of the recursion shares. The local stage of [`super`]
+/// builds one of these too, since it re-triangulates between two bags the same
+/// way.
+pub(super) struct Loop<'a> {
     graph: &'a Graph,
     adjacency: &'a Adjacency,
     limits: Limits,
@@ -115,13 +117,7 @@ pub(crate) fn merge_loop(
         return None;
     }
     let adjacency = Adjacency::of(graph)?;
-    let mut state = Loop {
-        graph,
-        adjacency: &adjacency,
-        limits,
-        rng: Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET)),
-        weights: vec![0; graph.num_vertices() as usize],
-    };
+    let mut state = Loop::new(graph, &adjacency, limits, seed);
     let mut answer = match start {
         Some(start) => {
             let minimalised = if crate::decomposition::minimalize_fits(start, graph, deadline) {
@@ -158,7 +154,7 @@ pub(crate) fn merge_loop(
 }
 
 /// The bags of a decomposition, sorted and without repeats.
-fn bags_of(decomposition: &TreeDecomposition, adjacency: &Adjacency) -> Vec<VertexSet> {
+pub(super) fn bags_of(decomposition: &TreeDecomposition, adjacency: &Adjacency) -> Vec<VertexSet> {
     let mut bags: Vec<Vec<u32>> = decomposition
         .bags()
         .iter()
@@ -172,6 +168,25 @@ fn bags_of(decomposition: &TreeDecomposition, adjacency: &Adjacency) -> Vec<Vert
     bags.sort();
     bags.dedup();
     bags.iter().map(|bag| adjacency.set_of(bag)).collect()
+}
+
+impl<'a> Loop<'a> {
+    /// The graph, its rows of words, the caps the search runs under and the
+    /// random source the draws and the choice of bag read.
+    pub(super) fn new(
+        graph: &'a Graph,
+        adjacency: &'a Adjacency,
+        limits: Limits,
+        seed: u64,
+    ) -> Self {
+        Self {
+            graph,
+            adjacency,
+            limits,
+            rng: Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET)),
+            weights: vec![0; graph.num_vertices() as usize],
+        }
+    }
 }
 
 impl Loop<'_> {
@@ -298,17 +313,36 @@ impl Loop<'_> {
     ) -> Option<Vec<Vec<u32>>> {
         let width = answer.width() as usize;
         let pick = (self.rng.next_u64() % answer.bags.len() as u64) as usize;
-        let chosen = &answer.bags[pick];
+        let chosen = answer.bags[pick].clone();
+        Some(self.focuses_from(&chosen, &side.bags, width, scratch, deadline))
+    }
+
+    /// The vertex sets to re-triangulate for one bag `chosen` against the list
+    /// `partners`, smallest first.
+    ///
+    /// `C` is the largest component of `G − chosen`; a partner has to lie
+    /// inside `N[C]` and hold at most `width` vertices.
+    pub(super) fn focuses_from(
+        &self,
+        chosen: &VertexSet,
+        partners: &[VertexSet],
+        width: usize,
+        scratch: &mut Scratch,
+        deadline: Option<Instant>,
+    ) -> Vec<Vec<u32>> {
         let split = self.adjacency.split(chosen, scratch);
-        let largest = split
+        let Some(largest) = split
             .components
             .iter()
             .zip(&split.borders)
-            .max_by_key(|(component, _)| component.len())?;
+            .max_by_key(|(component, _)| component.len())
+        else {
+            return Vec::new();
+        };
         let mut inside = largest.0.clone();
         inside.union_with(largest.1);
         let mut found: Vec<Vec<u32>> = Vec::new();
-        for (index, partner) in side.bags.iter().enumerate() {
+        for (index, partner) in partners.iter().enumerate() {
             if index % DEADLINE_STRIDE == 0 && expired(deadline) {
                 break;
             }
@@ -336,7 +370,7 @@ impl Loop<'_> {
         found.sort_by(|one, other| one.len().cmp(&other.len()).then_with(|| one.cmp(other)));
         found.dedup();
         found.truncate(FOCUSES_PER_MERGE);
-        Some(found)
+        found
     }
 
     /// The cliques of a minimal triangulation of the local graph on `focus`,
@@ -372,6 +406,102 @@ impl Loop<'_> {
         if triangulated.treewidth() > width {
             return Vec::new();
         }
+        self.cliques_of(&triangulated, &order, width, scratch)
+    }
+
+    /// The same piece triangulated harder: `draws` minimal triangulations of
+    /// it, then the restricted programme over the bags of all of them
+    /// together, and the cliques of whichever came out narrowest.
+    ///
+    /// The paper triangulates a piece of at most sixty vertices exactly, which
+    /// is what makes its step worth taking on the pieces that matter. This
+    /// stands in for that: several draws differ on a piece this size, and the
+    /// programme over their bags together is at least as narrow as the best of
+    /// them and often narrower. It is only worth the extra runs on a small
+    /// piece, so the caller asks for one draw on the rest.
+    pub(super) fn triangulate_pooled(
+        &mut self,
+        focus: &[u32],
+        width: u32,
+        draws: usize,
+        scratch: &mut Scratch,
+        deadline: Option<Instant>,
+    ) -> Vec<VertexSet> {
+        let Some((local, order)) = self.local_graph(focus, scratch) else {
+            return Vec::new();
+        };
+        let Some(rows) = Adjacency::of(&local) else {
+            return Vec::new();
+        };
+        let weights = vec![0u32; local.num_vertices() as usize];
+        let mut pooled: Vec<VertexSet> = Vec::new();
+        let mut seen: FxHashSet<VertexSet> = FxHashSet::default();
+        let mut best: Option<TreeDecomposition> = None;
+        for draw in 0..draws.max(1) {
+            if expired(deadline) {
+                break;
+            }
+            let budget = deadline.map(|deadline| remaining(deadline) / LEVEL_TIME_SHARE);
+            // The first draw is the deterministic one, so a piece that one
+            // triangulation settles is settled the same way here as in the
+            // merge loop; the rest are randomised and made minimal.
+            let (choice, seed) = if draw == 0 {
+                (crate::elimination::Order::MinimalTriangulation, 0)
+            } else {
+                (
+                    crate::elimination::Order::MinFillSampled { weights: &weights },
+                    self.rng.next_u64(),
+                )
+            };
+            let Ok(drawn) = crate::elimination::decompose(&local, choice, seed, budget) else {
+                continue;
+            };
+            let drawn = if crate::decomposition::minimalize_fits(&drawn, &local, deadline) {
+                crate::decomposition::minimalize_at(drawn, &local, deadline)
+            } else {
+                drawn
+            };
+            for bag in drawn.bags() {
+                let set = rows.set_of(bag.vertices());
+                if seen.insert(set.clone()) {
+                    pooled.push(set);
+                }
+            }
+            if best
+                .as_ref()
+                .is_none_or(|held| drawn.quality_key() < held.quality_key())
+            {
+                best = Some(drawn);
+            }
+        }
+        let Some(mut chosen) = best else {
+            return Vec::new();
+        };
+        if let Some(searched) = search(&pooled, &local, &rows, self.limits, deadline)
+            && searched.quality_key() < chosen.quality_key()
+        {
+            chosen = searched;
+        }
+        if chosen.treewidth() > width {
+            return Vec::new();
+        }
+        self.cliques_of(&chosen, &order, width, scratch)
+    }
+
+    /// The bags of `triangulated`, in the whole graph's numbering, keeping the
+    /// ones that are potential maximal cliques of it and no wider than `width`.
+    ///
+    /// A clique of a triangulation of the local graph is either a potential
+    /// maximal clique of the whole graph or a minimal separator of it; the
+    /// test drops the separators, which cost the programme a pass over the
+    /// graph and split nothing.
+    fn cliques_of(
+        &self,
+        triangulated: &TreeDecomposition,
+        order: &[u32],
+        width: u32,
+        scratch: &mut Scratch,
+    ) -> Vec<VertexSet> {
         triangulated
             .bags()
             .iter()

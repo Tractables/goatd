@@ -27,9 +27,9 @@ use crate::{Error, Graph, TreeDecomposition};
 pub use candidates::Candidate;
 use candidates::{CandidateSet, ScheduleStop};
 use config::{
-    DIVERSE_PASS_RESERVE, FLOWCUTTER_RESERVE, MERGE_LOOP_WINDOW_SHARE, MIN_FLOWCUTTER_CANDIDATE_MS,
-    MIN_RECOMBINATION_RESERVE, RECOMBINATION_PASSES, RECOMBINATION_RATE_PER_MS,
-    RECOMBINATION_WINDOW_SHARE, VARIETY_SLOT,
+    DIVERSE_PASS_RESERVE, FLOWCUTTER_RESERVE, LOCAL_MERGE_WINDOW_SHARE, MERGE_LOOP_WINDOW_SHARE,
+    MIN_FLOWCUTTER_CANDIDATE_MS, MIN_RECOMBINATION_RESERVE, RECOMBINATION_PASSES,
+    RECOMBINATION_RATE_PER_MS, RECOMBINATION_WINDOW_SHARE, VARIETY_SLOT,
 };
 
 pub use config::{
@@ -1531,14 +1531,20 @@ fn run_portfolio(
     // hard deadline that much earlier and the stage keeps the rest. Where the
     // stage does not run, the two deadlines are the same and nothing moves.
     let window_end = deadlines.hard;
-    // The merge loop runs after the recombination stage and reads its answer,
-    // so its share comes off the end first and the recombination stage's share
-    // comes off what is left.
-    let merge_share = merge_gate(graph, config, window_end)
-        .then(|| merge_reserve(graph, started, window_end))
+    // The local re-triangulation stage runs last of all and reads the answer of
+    // the two before it, so its share comes off the end first; the merge loop
+    // takes its share from what is left, and the recombination stage from what
+    // that leaves.
+    let local_share = local_merge_gate(graph, config, window_end)
+        .then(|| local_merge_reserve(graph, started, window_end))
+        .flatten();
+    let local_merge = local_share.is_some();
+    let merge_end = less_reserve(window_end, local_share, soft_deadline);
+    let merge_share = merge_gate(graph, config, merge_end)
+        .then(|| merge_reserve(graph, started, merge_end))
         .flatten();
     let merge = merge_share.is_some();
-    let recombine_end = less_reserve(window_end, merge_share, soft_deadline);
+    let recombine_end = less_reserve(merge_end, merge_share, soft_deadline);
     let reserve = recombination_gate(graph, config, recombine_end)
         .then(|| recombination_reserve(graph, started, recombine_end))
         .flatten();
@@ -1569,7 +1575,7 @@ fn run_portfolio(
         CandidateRetention::BestOnly => CandidateSet::best_only(),
     }
     .reporting_shape(collection.traced);
-    if recombine {
+    if recombine || local_merge {
         candidates = candidates.collecting_bags(decomposition::BagPoolLimits::standard());
     }
 
@@ -2294,7 +2300,7 @@ fn run_portfolio(
     // everything above, improved on its own until it is no wider than the best
     // the run has, and merged into it. It starts from that best answer, so what
     // it comes back with is never wider.
-    if merge && !expired(window_end) {
+    if merge && !expired(merge_end) {
         let start = candidates
             .best()
             .cloned()
@@ -2305,7 +2311,7 @@ fn run_portfolio(
             Some(&start),
             seed,
             decomposition::BagPoolLimits::standard(),
-            window_end,
+            merge_end,
         );
         let outcome = match found {
             Some(merged) if merged.quality_key() < before => candidates.push(
@@ -2340,6 +2346,42 @@ fn run_portfolio(
         };
         trace(CandidateTrace {
             stage: Stage::Merged,
+            seed,
+            pass: Pass::Only,
+            outcome,
+            elapsed: crate::meter::now().saturating_duration_since(started),
+        });
+    }
+    // Last of all, the local re-triangulations between the answer and the other
+    // trees the run pooled: the piece of the graph a bag of the one and a bag of
+    // the other leave between them, triangulated on its own, and its cliques
+    // added to the list the programme reads. It starts from the best answer the
+    // run has, so what it comes back with is never wider.
+    if local_merge && !expired(window_end) {
+        let start = candidates
+            .best()
+            .cloned()
+            .expect("a candidate has produced a decomposition");
+        let before = start.quality_key();
+        let found = candidates
+            .bag_pool()
+            .and_then(|pool| decomposition::local_merge(pool, graph, &start, seed, window_end));
+        let outcome = match found {
+            Some(built) if built.quality_key() < before => candidates.push(
+                built,
+                CandidateOrigin {
+                    stage: Stage::LocallyMerged,
+                    seed,
+                    pass: Pass::Only,
+                },
+            ),
+            // The stage hands back nothing where it did not beat the answer it
+            // started from, where its share ran out, or where the search would
+            // have held more than its cap allows.
+            _ => CandidateOutcome::DeadlineReached,
+        };
+        trace(CandidateTrace {
+            stage: Stage::LocallyMerged,
             seed,
             pass: Pass::Only,
             outcome,
@@ -2388,6 +2430,33 @@ fn merge_reserve(graph: &Graph, started: Instant, window_end: Option<Instant>) -
     let window = window_end?.saturating_duration_since(started);
     let estimate = search_cost(graph);
     (estimate <= window / MERGE_LOOP_WINDOW_SHARE).then_some(estimate)
+}
+
+/// Whether the local re-triangulation stage runs on this graph: it needs a hard
+/// window to take a share of, and the gate bounds the traversals its search
+/// costs.
+fn local_merge_gate(graph: &Graph, config: PortfolioConfig, window_end: Option<Instant>) -> bool {
+    config
+        .local_merge
+        .is_some_and(|gate| graph.num_vertices() <= gate)
+        && window_end.is_some()
+}
+
+/// What the local re-triangulation stage is given: what one run of its search is
+/// estimated to cost on this graph, or nothing at all where that is more than a
+/// share of the window.
+///
+/// The estimate is the recombination stage's, priced the same way against the
+/// same caps, because the three run the same search over lists of the same order
+/// of size.
+fn local_merge_reserve(
+    graph: &Graph,
+    started: Instant,
+    window_end: Option<Instant>,
+) -> Option<Duration> {
+    let window = window_end?.saturating_duration_since(started);
+    let estimate = search_cost(graph);
+    (estimate <= window / LOCAL_MERGE_WINDOW_SHARE).then_some(estimate)
 }
 
 /// Sampled eliminations run only to feed the recombination pool.
