@@ -234,6 +234,14 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--hard-budget", "--budget", "at least"],
         ),
         (&["--no-hedge"], &["--no-hedge", "minfill", "portfolio"]),
+        (
+            &["--no-bipartite-lift"],
+            &["--no-bipartite-lift", "minfill", "portfolio"],
+        ),
+        (
+            &["--bipartite-lift-rate", "150"],
+            &["--bipartite-lift-rate", "minfill", "portfolio"],
+        ),
         (&["--mcs-up-to", "500"], &["--mcs-up-to", "portfolio"]),
         (&["--no-mcs"], &["--no-mcs", "minfill", "portfolio"]),
         (
@@ -479,10 +487,21 @@ fn the_trace_names_the_candidate_the_decomposition_came_from() {
     assert!(!err.contains("c trace"), "no trace without the flag: {err}");
 }
 
+/// The grid is bipartite, so the lift would take a share of the window and
+/// leave the hedge fewer stages than it counts here; this is about the hedge,
+/// so the lift is off.
 #[test]
 fn the_default_portfolio_hedges_and_no_hedge_turns_that_off() {
     let out = goatd(
-        &["-", "--order", "portfolio", "--budget", "500", "--trace"],
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            "500",
+            "--no-bipartite-lift",
+            "--trace",
+        ],
         Some(&grid_gr()),
     );
 
@@ -528,6 +547,7 @@ fn the_default_portfolio_hedges_and_no_hedge_turns_that_off() {
             "--budget",
             "500",
             "--no-hedge",
+            "--no-bipartite-lift",
             "--trace",
         ],
         Some(&grid_gr()),

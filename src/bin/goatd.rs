@@ -95,6 +95,16 @@ options:
   --no-hedge            portfolio only: run every candidate once, on uniform
                         weights, instead of repeating the candidates that read
                         weights on a ranking the portfolio computes itself
+  --no-bipartite-lift   portfolio only: do not decompose the projection onto
+                        one side of a bipartite graph and put the other side
+                        back, which the budgeted portfolio otherwise tries
+                        before its elimination orders
+  --bipartite-lift-rate R
+                        portfolio only: how much work the bipartite lift may do
+                        per millisecond of the share it takes, in edges of the
+                        input plus edges of the projection it would build
+                        (default 150). Above the rate the stage does not run and
+                        the time stays with the rest of the schedule
   --capped-restarts     portfolio only: stop the ordinary restarts at their
                         count instead of drawing seeds until the restart
                         deadline, which is the hard cutoff less the reserve
@@ -202,6 +212,8 @@ struct Args {
     drop_fill_up_to: Option<u32>,
     no_drop_fill: bool,
     no_hedge: bool,
+    no_bipartite_lift: bool,
+    bipartite_lift_rate: Option<f64>,
     capped_restarts: bool,
     sample_band: Option<u64>,
     sample_band_alternate: bool,
@@ -270,6 +282,8 @@ fn parse_args(argv: &[String]) -> Args {
     let mut drop_fill_up_to = None;
     let mut no_drop_fill = false;
     let mut no_hedge = false;
+    let mut no_bipartite_lift = false;
+    let mut bipartite_lift_rate = None;
     let mut capped_restarts = false;
     let mut sample_band = None;
     let mut sample_band_alternate = false;
@@ -390,6 +404,20 @@ fn parse_args(argv: &[String]) -> Args {
             }
             "--no-drop-fill" => no_drop_fill = true,
             "--no-hedge" => no_hedge = true,
+            "--no-bipartite-lift" => no_bipartite_lift = true,
+            "--bipartite-lift-rate" => {
+                let text = value(&mut i, arg);
+                let rate: f64 = text.parse().unwrap_or_else(|_| {
+                    usage_error(&format!(
+                        "--bipartite-lift-rate wants edges per millisecond above zero, \
+                         such as 150, not {text:?}"
+                    ))
+                });
+                if !rate.is_finite() || rate <= 0.0 {
+                    usage_error("--bipartite-lift-rate wants edges per millisecond above zero");
+                }
+                bipartite_lift_rate = Some(rate);
+            }
             "--capped-restarts" => capped_restarts = true,
             "--sample-band" => sample_band = Some(number(&mut i, arg)),
             "--sample-band-alternate" => sample_band_alternate = true,
@@ -507,6 +535,28 @@ fn parse_args(argv: &[String]) -> Args {
     if no_hedge {
         needs("--no-hedge", order == Method::Portfolio, "portfolio");
     }
+    if no_bipartite_lift {
+        needs(
+            "--no-bipartite-lift",
+            order == Method::Portfolio,
+            "portfolio",
+        );
+    }
+    // The rate decides whether the stage runs, so it says nothing where the
+    // stage is off.
+    if bipartite_lift_rate.is_some() {
+        needs(
+            "--bipartite-lift-rate",
+            order == Method::Portfolio,
+            "portfolio",
+        );
+        if no_bipartite_lift {
+            usage_error(
+                "--bipartite-lift-rate says how much work the bipartite lift may do, and \
+                 --no-bipartite-lift turns it off",
+            );
+        }
+    }
     // Each pair says whether one construction runs and how large a graph it
     // runs on, so giving both leaves one of them with nothing to decide.
     if mcs_up_to.is_some() {
@@ -621,6 +671,8 @@ fn parse_args(argv: &[String]) -> Args {
         drop_fill_up_to,
         no_drop_fill,
         no_hedge,
+        no_bipartite_lift,
+        bipartite_lift_rate,
         capped_restarts,
         sample_band,
         sample_band_alternate,
@@ -703,6 +755,12 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             }
             if args.no_hedge {
                 config = config.with_hedge(Hedge::Off);
+            }
+            if let Some(rate) = args.bipartite_lift_rate {
+                config = config.with_bipartite_lift_rate(rate);
+            }
+            if args.no_bipartite_lift {
+                config = config.without_bipartite_lift();
             }
             if let Some(dims) = &args.hedge_dims {
                 config = config.with_hedge(Hedge::Passes(HedgeSeries::eccentricity_dims(dims)));
