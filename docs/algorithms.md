@@ -521,10 +521,18 @@ answer stops improving, or at the deadline.
 because the search costs a pass over the graph per bag in the pool and the pool
 holds thousands: above the gate the reserve it would need is more of the window
 than the stage can be worth. What the search holds is capped separately, by constants the
-graph's size does not enter: 4,000 bags and 4 MiB of vertex ids in the pool,
-128 MiB of them in the blocks. On reaching a cap it stops taking bags in and
+graph's size does not enter: 4,000 bags and a million vertex ids in the pool,
+32 million in the blocks. On reaching a cap it stops taking bags in and
 searches the part of the pool it has, which is a narrower search rather than a
-wrong one. The reserve the stage takes off the end of the hard window is what
+wrong one.
+
+The sets the programme works with — a bag, a block, a separator — are held as
+words rather than as sorted lists of ids, since it compares and combines them
+far more often than it walks them, and the graph is held as one row of words
+per vertex so that the components of the graph less a bag are read off those
+rows. The rows cost `n²/8` bytes; a graph whose rows would be larger than
+64 MiB is not searched at all, and neither stage runs on one that large in any
+case. The reserve the stage takes off the end of the hard window is what
 its own search is estimated to cost on this graph — the pool it will hold,
 times a pass over the graph each, a few times over — and where that is more
 than an eighth of the window the stage is given no reserve and does not run,

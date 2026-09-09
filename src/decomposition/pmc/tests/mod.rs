@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use super::sets::Adjacency;
 use super::{BagPool, Limits, recombine};
 use crate::{Graph, TreeDecomposition};
 
@@ -172,8 +173,9 @@ fn it_glues_a_narrower_tree_out_of_two_candidates() {
             }
         }
     }
-    let adjacency = super::adjacency_lists(&graph);
-    let built = super::search(&bags, &graph, &adjacency, Limits::standard(), None)
+    let adjacency = Adjacency::of(&graph).expect("the rows fit");
+    let sets: Vec<_> = bags.iter().map(|bag| adjacency.set_of(bag)).collect();
+    let built = super::search(&sets, &graph, &adjacency, Limits::standard(), None)
         .expect("the bags hold a whole decomposition");
     built.validate(&graph).expect("valid");
     // Neither candidate is narrower than 3; the four triangles between them
@@ -263,16 +265,17 @@ fn growth_adds_bags_the_pool_did_not_hold() {
         .map(|bag| bag.vertices().to_vec())
         .collect();
     let held = bags.len();
-    let adjacency = super::adjacency_lists(&graph);
+    let adjacency = Adjacency::of(&graph).expect("the rows fit");
+    let mut sets: Vec<_> = bags.iter().map(|bag| adjacency.set_of(bag)).collect();
     assert!(super::grow(
-        &mut bags,
+        &mut sets,
         &coarse,
         &adjacency,
         Limits::standard(),
         None
     ));
-    assert!(bags.len() > held);
-    let built = super::search(&bags, &graph, &adjacency, Limits::standard(), None)
+    assert!(sets.len() > held);
+    let built = super::search(&sets, &graph, &adjacency, Limits::standard(), None)
         .expect("the longer list holds a decomposition");
     built.validate(&graph).expect("valid");
     assert!(built.treewidth() <= coarse.treewidth());
@@ -285,26 +288,29 @@ fn the_potential_maximal_clique_test_agrees_with_small_graphs() {
     // potential maximal cliques are the four triangles, since every minimal
     // triangulation adds one chord.
     let graph = Graph::new(4, [(0, 1), (1, 2), (2, 3), (3, 0)]);
-    let adjacency = super::adjacency_lists(&graph);
-    let mut neighbourhoods = super::Neighbourhoods::new(&adjacency);
+    let adjacency = Adjacency::of(&graph).expect("the rows fit");
+    let mut scratch = super::sets::Scratch::new(&adjacency);
     for triple in [vec![0, 1, 2], vec![1, 2, 3], vec![0, 2, 3], vec![0, 1, 3]] {
         assert!(super::merge::is_potential_maximal_clique(
             &triple,
-            &mut neighbourhoods
+            &adjacency,
+            &mut scratch
         ));
     }
     // A single edge is a minimal separator, so the two components either side
     // of {0,2} both have it whole on their border and it is not one.
     assert!(!super::merge::is_potential_maximal_clique(
         &[0, 2],
-        &mut neighbourhoods
+        &adjacency,
+        &mut scratch
     ));
     // The whole graph is: nothing is left outside it, and both non-adjacent
     // pairs would have to be covered by a component that does not exist — but
     // there is no component at all, so the pairs are uncovered.
     assert!(!super::merge::is_potential_maximal_clique(
         &[0, 1, 2, 3],
-        &mut neighbourhoods
+        &adjacency,
+        &mut scratch
     ));
 }
 
@@ -363,4 +369,75 @@ fn a_disconnected_graph_merges() {
         .expect("the construction answers");
     found.validate(&graph).expect("a valid decomposition");
     assert_eq!(found.treewidth(), 1);
+}
+
+/// Three graphs and, for each, a fixed list of bags: what the programme reads
+/// off a list is a property of the list and the graph, so these numbers hold
+/// whatever the sets are held in.
+fn fixed_lists() -> Vec<(Graph, Vec<Vec<u32>>)> {
+    let mut cases = Vec::new();
+    for graph in [square_grid(4), square_grid(5), scattered(30)] {
+        let mut bags: Vec<Vec<u32>> = Vec::new();
+        for order in [
+            crate::elimination::Order::MinFill,
+            crate::elimination::Order::MinDegree,
+            crate::elimination::Order::MinimalTriangulation,
+        ] {
+            let decomposition =
+                crate::elimination::decompose(&graph, order, 0, None).expect("an order");
+            for bag in decomposition.bags() {
+                let mut vertices = bag.vertices().to_vec();
+                vertices.sort_unstable();
+                if !bags.contains(&vertices) {
+                    bags.push(vertices);
+                }
+            }
+        }
+        cases.push((graph, bags));
+    }
+    cases
+}
+
+/// The `n × n` grid, vertex `n * row + column`.
+fn square_grid(n: u32) -> Graph {
+    let mut edges = Vec::new();
+    for row in 0..n {
+        for column in 0..n {
+            let vertex = row * n + column;
+            if column + 1 < n {
+                edges.push((vertex, vertex + 1));
+            }
+            if row + 1 < n {
+                edges.push((vertex, vertex + n));
+            }
+        }
+    }
+    Graph::new(n * n, edges)
+}
+
+/// A graph with no structure to it, built from a fixed rule so the list the
+/// test reads is the same on every machine.
+fn scattered(n: u32) -> Graph {
+    let mut edges = Vec::new();
+    for left in 0..n {
+        for right in left + 1..n {
+            if (left * 7 + right * 13 + left * right) % 11 < 3 {
+                edges.push((left, right));
+            }
+        }
+    }
+    Graph::new(n, edges)
+}
+
+#[test]
+fn the_programme_reads_the_widths_it_always_read() {
+    let expected = [(4u32, 48usize), (5, 87), (13, 150)];
+    for ((graph, bags), (width, total)) in fixed_lists().into_iter().zip(expected) {
+        let adjacency = Adjacency::of(&graph).expect("the rows fit");
+        let sets: Vec<_> = bags.iter().map(|bag| adjacency.set_of(bag)).collect();
+        let built = super::search(&sets, &graph, &adjacency, Limits::standard(), None)
+            .expect("the list holds a decomposition");
+        built.validate(&graph).expect("valid");
+        assert_eq!(built.quality_key(), (width, total));
+    }
 }

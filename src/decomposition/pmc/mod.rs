@@ -73,6 +73,9 @@ use crate::Graph;
 use crate::deadline::expired;
 
 mod merge;
+mod sets;
+
+use sets::{Adjacency, Scratch, Split, VertexSet};
 
 pub(crate) use merge::merge_loop;
 
@@ -235,7 +238,12 @@ impl BagPool {
     /// its narrowest bags first, since the width of a decomposition is in its
     /// widest bags and those are what the search is being asked to beat. What
     /// one of them leaves unused is filled from the others afterwards.
-    fn assemble(&self, graph: &Graph, deadline: Option<Instant>) -> Vec<Vec<u32>> {
+    fn assemble(
+        &self,
+        graph: &Graph,
+        adjacency: &Adjacency,
+        deadline: Option<Instant>,
+    ) -> Vec<VertexSet> {
         let mut sources: Vec<TreeDecomposition> = Vec::new();
         let mut order: Vec<&Kept> = self.kept.iter().collect();
         order.sort_by_key(|held| held.decomposition.quality_key());
@@ -251,8 +259,8 @@ impl BagPool {
             });
         }
         let shares = sources.len() + 1;
-        let mut bags: Vec<Vec<u32>> = Vec::new();
-        let mut seen: FxHashSet<Vec<u32>> = FxHashSet::default();
+        let mut bags: Vec<VertexSet> = Vec::new();
+        let mut seen: FxHashSet<VertexSet> = FxHashSet::default();
         let mut stored = 0usize;
         let mut widest: Vec<Vec<usize>> = sources
             .iter()
@@ -281,16 +289,14 @@ impl BagPool {
                         left.push(index);
                         continue;
                     }
-                    let mut vertices = source.bags()[index].vertices().to_vec();
-                    vertices.sort_unstable();
-                    vertices.dedup();
+                    let bag = adjacency.set_of(source.bags()[index].vertices());
                     taken += 1;
-                    if seen.contains(&vertices) {
+                    if seen.contains(&bag) {
                         continue;
                     }
-                    stored += vertices.len();
-                    seen.insert(vertices.clone());
-                    bags.push(vertices);
+                    stored += bag.len();
+                    seen.insert(bag.clone());
+                    bags.push(bag);
                 }
                 widest[rank] = left;
             }
@@ -314,8 +320,15 @@ impl BagPool {
 /// separator, the pool bags that cap it, and what the dynamic programme
 /// settled.
 struct Block {
-    component: Vec<u32>,
-    separator: Vec<u32>,
+    component: VertexSet,
+    separator: VertexSet,
+    /// The lowest vertex of the component, which settles whether the component
+    /// lies inside another one: two blocks are nested or disjoint.
+    representative: u32,
+    /// How many vertices the component and the separator hold, kept because
+    /// the evaluation order and the caps read them once per block.
+    component_size: usize,
+    separator_size: usize,
     caps: Vec<usize>,
     width: u32,
     /// The cap the width came from, or `None` where `C ∪ S` in one bag was
@@ -340,8 +353,8 @@ pub(crate) fn recombine(
     if pool.is_empty() || expired(deadline) {
         return None;
     }
-    let adjacency = adjacency_lists(graph);
-    let mut bags = pool.assemble(graph, deadline);
+    let adjacency = Adjacency::of(graph)?;
+    let mut bags = pool.assemble(graph, &adjacency, deadline);
     if bags.is_empty() {
         return None;
     }
@@ -363,22 +376,22 @@ pub(crate) fn recombine(
 
 /// One run of the dynamic programme over `bags`.
 fn search(
-    bags: &[Vec<u32>],
+    bags: &[VertexSet],
     graph: &Graph,
-    adjacency: &[Vec<u32>],
+    adjacency: &Adjacency,
     limits: Limits,
     deadline: Option<Instant>,
 ) -> Option<TreeDecomposition> {
     let mut search = Search {
-        adjacency,
         limits,
         blocks: Vec::new(),
         index: FxHashMap::default(),
         stored: 0,
         subblocks: vec![Vec::new(); bags.len()],
         collected: 0,
-        bag_sizes: bags.iter().map(Vec::len).collect(),
-        marks: Neighbourhoods::new(adjacency),
+        bag_sizes: bags.iter().map(VertexSet::len).collect(),
+        scratch: Scratch::new(adjacency),
+        adjacency,
     };
     search.collect(bags, deadline)?;
     search.evaluate(deadline)?;
@@ -394,9 +407,9 @@ fn search(
 /// bags the programme could not have assembled from the pool it was given.
 /// Returns whether anything new was added.
 fn grow(
-    bags: &mut Vec<Vec<u32>>,
+    bags: &mut Vec<VertexSet>,
     answer: &TreeDecomposition,
-    adjacency: &[Vec<u32>],
+    adjacency: &Adjacency,
     limits: Limits,
     deadline: Option<Instant>,
 ) -> bool {
@@ -406,20 +419,20 @@ fn grow(
         .collect();
     widest.sort_by_key(|&index| std::cmp::Reverse(answer.bags()[index].vertices().len()));
     widest.truncate(GROWTH_PIECES);
-    let known: FxHashSet<&Vec<u32>> = bags.iter().collect();
-    let mut fresh: Vec<Vec<u32>> = Vec::new();
-    let mut done: Vec<Vec<u32>> = Vec::new();
-    let mut stored: usize = bags.iter().map(Vec::len).sum();
+    let known: FxHashSet<&VertexSet> = bags.iter().collect();
+    let mut fresh: Vec<VertexSet> = Vec::new();
+    let mut done: Vec<VertexSet> = Vec::new();
+    let mut stored: usize = bags.iter().map(VertexSet::len).sum();
     for index in widest {
         if expired(deadline) || bags.len() + fresh.len() >= limits.bags {
             break;
         }
-        let mut piece: Vec<u32> = answer.bags()[index].vertices().to_vec();
+        let mut piece = adjacency.set_of(answer.bags()[index].vertices());
         for &next in &answer.adjacency()[index] {
-            piece.extend_from_slice(answer.bags()[next].vertices());
+            for &vertex in answer.bags()[next].vertices() {
+                piece.insert(vertex);
+            }
         }
-        piece.sort_unstable();
-        piece.dedup();
         if done.contains(&piece) {
             continue;
         }
@@ -443,25 +456,20 @@ fn grow(
 /// The bags of a minimal triangulation of the subgraph `piece` induces, in the
 /// vertex numbering of the whole graph.
 fn decompose_piece(
-    piece: &[u32],
-    adjacency: &[Vec<u32>],
+    piece: &VertexSet,
+    adjacency: &Adjacency,
     deadline: Option<Instant>,
-) -> Vec<Vec<u32>> {
-    let mut position = FxHashMap::default();
-    for (local, &vertex) in piece.iter().enumerate() {
-        position.insert(vertex, local as u32);
-    }
+) -> Vec<VertexSet> {
+    let vertices = piece.to_vec();
     let mut edges = Vec::new();
-    for (local, &vertex) in piece.iter().enumerate() {
-        for &next in &adjacency[vertex as usize] {
-            if let Some(&other) = position.get(&next)
-                && (other as usize) > local
-            {
-                edges.push((local as u32, other));
+    for (local, &vertex) in vertices.iter().enumerate() {
+        for (other, &next) in vertices.iter().enumerate().skip(local + 1) {
+            if adjacency.adjacent(vertex, next) {
+                edges.push((local as u32, other as u32));
             }
         }
     }
-    let graph = Graph::new(piece.len() as u32, edges);
+    let graph = Graph::new(vertices.len() as u32, edges);
     let budget = deadline.map(|deadline| crate::deadline::remaining(deadline) / 4);
     let Ok(decomposition) = crate::elimination::decompose(
         &graph,
@@ -475,151 +483,20 @@ fn decompose_piece(
         .bags()
         .iter()
         .map(|bag| {
-            let mut vertices: Vec<u32> = bag
-                .vertices()
-                .iter()
-                .map(|&local| piece[local as usize])
-                .collect();
-            vertices.sort_unstable();
-            vertices
+            let mut set = adjacency.empty_set();
+            for &local in bag.vertices() {
+                set.insert(vertices[local as usize]);
+            }
+            set
         })
         .collect()
 }
 
-/// Adjacency lists over `0..num_vertices`.
-fn adjacency_lists(graph: &Graph) -> Vec<Vec<u32>> {
-    let mut adjacency = vec![Vec::new(); graph.num_vertices() as usize];
-    for &(left, right) in graph.edges() {
-        adjacency[left as usize].push(right);
-        adjacency[right as usize].push(left);
-    }
-    adjacency
-}
-
-/// The components of `G − Ω`, with the vertices of `Ω` on each one's border.
-///
-/// The two lists run together: `separators[i]` is `N(C)` for the component
-/// `components[i]`. A component's own vertices are collected only where the
-/// caller asked for them; otherwise `components[i]` is empty.
-struct Split {
-    components: Vec<Vec<u32>>,
-    separators: Vec<Vec<u32>>,
-}
-
-/// The graph as adjacency lists, with the scratch its traversals share.
-///
-/// Membership is stamped rather than cleared, so a vertex set can be marked
-/// and tested without an array being walked per query.
-struct Neighbourhoods<'a> {
-    adjacency: &'a [Vec<u32>],
-    mark: Vec<u32>,
-    stamp: u32,
-    seen: Vec<bool>,
-}
-
-impl<'a> Neighbourhoods<'a> {
-    fn new(adjacency: &'a [Vec<u32>]) -> Self {
-        Self {
-            adjacency,
-            mark: vec![u32::MAX; adjacency.len()],
-            stamp: 0,
-            seen: vec![false; adjacency.len()],
-        }
-    }
-
-    /// Mark `vertices` and return the stamp that identifies them.
-    fn mark_set(&mut self, vertices: &[u32]) -> u32 {
-        self.stamp = self.stamp.wrapping_add(1);
-        for &vertex in vertices {
-            self.mark[vertex as usize] = self.stamp;
-        }
-        self.stamp
-    }
-
-    fn marked(&self, vertex: u32, stamp: u32) -> bool {
-        self.mark[vertex as usize] == stamp
-    }
-
-    fn adjacent(&self, left: u32, right: u32) -> bool {
-        let (left, right) =
-            if self.adjacency[left as usize].len() <= self.adjacency[right as usize].len() {
-                (left, right)
-            } else {
-                (right, left)
-            };
-        self.adjacency[left as usize].contains(&right)
-    }
-
-    /// The connected components of `G − removed`, each with its vertices and
-    /// its border. `removed` is read as a set, so it need not be sorted; the
-    /// vertices and the border of each component come back sorted, the border
-    /// also without repeats.
-    fn split(&mut self, removed: &[u32]) -> Split {
-        self.walk(removed, true)
-    }
-
-    /// The border of every component of `G − removed`. A component with no
-    /// border — a part of a disconnected graph that `removed` does not touch —
-    /// is left out.
-    fn borders(&mut self, removed: &[u32]) -> Vec<Vec<u32>> {
-        self.walk(removed, false)
-            .separators
-            .into_iter()
-            .filter(|border| !border.is_empty())
-            .collect()
-    }
-
-    /// The traversal both of those read. `vertices` says whether each
-    /// component's own vertices are collected as well as its border, which is
-    /// what the two callers differ in.
-    fn walk(&mut self, removed: &[u32], vertices: bool) -> Split {
-        let stamp = self.mark_set(removed);
-        self.seen.fill(false);
-        for &vertex in removed {
-            self.seen[vertex as usize] = true;
-        }
-        let mut components: Vec<Vec<u32>> = Vec::new();
-        let mut separators: Vec<Vec<u32>> = Vec::new();
-        let mut stack = Vec::new();
-        for start in 0..self.adjacency.len() {
-            if self.seen[start] {
-                continue;
-            }
-            self.seen[start] = true;
-            stack.push(start as u32);
-            let mut component = Vec::new();
-            let mut separator = Vec::new();
-            while let Some(vertex) = stack.pop() {
-                if vertices {
-                    component.push(vertex);
-                }
-                for &next in &self.adjacency[vertex as usize] {
-                    if self.marked(next, stamp) {
-                        separator.push(next);
-                    } else if !self.seen[next as usize] {
-                        self.seen[next as usize] = true;
-                        stack.push(next);
-                    }
-                }
-            }
-            component.sort_unstable();
-            separator.sort_unstable();
-            separator.dedup();
-            components.push(component);
-            separators.push(separator);
-        }
-        Split {
-            components,
-            separators,
-        }
-    }
-}
-
 struct Search<'a> {
-    adjacency: &'a [Vec<u32>],
+    adjacency: &'a Adjacency,
     limits: Limits,
     blocks: Vec<Block>,
-    index: FxHashMap<Vec<u32>, usize>,
+    index: FxHashMap<VertexSet, usize>,
     stored: usize,
     /// For each pool bag, the blocks that are the components of `G` less that
     /// bag.
@@ -629,41 +506,33 @@ struct Search<'a> {
     /// register may be read.
     collected: usize,
     bag_sizes: Vec<usize>,
-    /// The traversals and the stamped membership marks they share.
-    marks: Neighbourhoods<'a>,
+    /// The sets the traversals reuse.
+    scratch: Scratch,
 }
 
 impl Search<'_> {
-    /// Mark `vertices` and return the stamp that identifies them.
-    fn mark_set(&mut self, vertices: &[u32]) -> u32 {
-        self.marks.mark_set(vertices)
-    }
-
-    fn marked(&self, vertex: u32, stamp: u32) -> bool {
-        self.marks.marked(vertex, stamp)
-    }
-
-    /// The connected components of `G` less `bag`, each with its separator.
-    fn split(&mut self, bag: &[u32]) -> Split {
-        self.marks.split(bag)
-    }
-
     /// Register a block, or return the one already there. `None` when the
     /// block map is full.
-    fn block(&mut self, component: Vec<u32>, separator: Vec<u32>) -> Option<usize> {
+    fn block(&mut self, component: VertexSet, separator: VertexSet) -> Option<usize> {
         if let Some(&index) = self.index.get(&component) {
             return Some(index);
         }
-        let size = component.len() + separator.len();
+        let component_size = component.len();
+        let separator_size = separator.len();
+        let size = component_size + separator_size;
         if self.stored.saturating_add(size) > self.limits.block_vertices {
             return None;
         }
         self.stored += size;
         let index = self.blocks.len();
+        let representative = component.first()?;
         self.index.insert(component.clone(), index);
         self.blocks.push(Block {
             component,
             separator,
+            representative,
+            component_size,
+            separator_size,
             caps: Vec::new(),
             width: u32::MAX,
             best_cap: None,
@@ -673,46 +542,25 @@ impl Search<'_> {
 
     /// Walk the pool: for each bag, the blocks it splits the graph into, and
     /// the block it caps on the far side of each of them.
-    fn collect(&mut self, bags: &[Vec<u32>], deadline: Option<Instant>) -> Option<()> {
+    fn collect(&mut self, bags: &[VertexSet], deadline: Option<Instant>) -> Option<()> {
         for (bag_index, bag) in bags.iter().enumerate() {
             if expired(deadline) {
                 return None;
             }
-            let split = self.split(bag);
+            let split = self.adjacency.split(bag, &mut self.scratch);
             let mut subblocks = Vec::with_capacity(split.components.len());
-            for (component, separator) in split.components.iter().zip(&split.separators) {
-                let Some(block) = self.block(component.clone(), separator.clone()) else {
+            for (component, border) in split.components.iter().zip(&split.borders) {
+                let Some(block) = self.block(component.clone(), border.clone()) else {
                     return Some(());
                 };
                 subblocks.push(block);
             }
             self.subblocks[bag_index] = subblocks;
-            // Two indexes over the bag, both built once and read once per
-            // component: which components each bag vertex borders, and which
-            // other bag vertices it is adjacent to.
-            let mut borders: FxHashMap<u32, Vec<usize>> = FxHashMap::default();
-            for (id, separator) in split.separators.iter().enumerate() {
-                for &vertex in separator {
-                    borders.entry(vertex).or_default().push(id);
-                }
-            }
-            let inside_bag = self.mark_set(bag);
-            let mut bag_neighbours: FxHashMap<u32, Vec<u32>> = FxHashMap::default();
-            for &vertex in bag {
-                let neighbours: Vec<u32> = self.adjacency[vertex as usize]
-                    .iter()
-                    .copied()
-                    .filter(|&next| self.marked(next, inside_bag))
-                    .collect();
-                bag_neighbours.insert(vertex, neighbours);
-            }
             for position in 0..split.components.len() {
                 if expired(deadline) {
                     return None;
                 }
-                let Some((capped, separator)) =
-                    self.capped_block(bag, &split, &borders, &bag_neighbours, position)
-                else {
+                let Some((capped, separator)) = self.capped_block(bag, &split, position) else {
                     continue;
                 };
                 let Some(index) = self.block(capped, separator) else {
@@ -738,67 +586,64 @@ impl Search<'_> {
     /// Its separator is not the whole of `N(C)`: a vertex there may border `C`
     /// and nothing on the far side. Taking the exact set matters, because a
     /// block's separator is what its parent bag is guaranteed to contain.
+    /// The component of `G` less the `position`-th component's separator that
+    /// holds the rest of `bag`, with that component's own separator. `None`
+    /// where the bag is the separator and so caps nothing.
+    ///
+    /// The far side is what is left of the bag once the separator is taken out,
+    /// plus every other component of `G − Ω` that touches it. Nothing further
+    /// joins: two components of `G − Ω` share no edge, so a component reached
+    /// from one of them would have to be reached through the bag, and the only
+    /// bag vertices left are already there.
+    ///
+    /// Its separator is not the whole of `N(C)`: a vertex there may border `C`
+    /// and nothing on the far side. Taking the exact set matters, because a
+    /// block's separator is what its parent bag is guaranteed to contain.
     fn capped_block(
-        &mut self,
-        bag: &[u32],
+        &self,
+        bag: &VertexSet,
         split: &Split,
-        borders: &FxHashMap<u32, Vec<usize>>,
-        bag_neighbours: &FxHashMap<u32, Vec<u32>>,
         position: usize,
-    ) -> Option<(Vec<u32>, Vec<u32>)> {
-        let border = self.mark_set(&split.separators[position]);
-        let rest: Vec<u32> = bag
-            .iter()
-            .copied()
-            .filter(|&vertex| !self.marked(vertex, border))
-            .collect();
+    ) -> Option<(VertexSet, VertexSet)> {
+        let mut rest = bag.clone();
+        rest.subtract(&split.borders[position]);
         if rest.is_empty() {
             return None;
         }
-        let mut touched = vec![false; split.components.len()];
-        for vertex in &rest {
-            for &id in borders.get(vertex).map(Vec::as_slice).unwrap_or(&[]) {
-                touched[id] = true;
-            }
-        }
-        let far = self.mark_set(&rest);
-        let mut separator = Vec::new();
-        for &vertex in &split.separators[position] {
-            let adjacent_to_rest = bag_neighbours
-                .get(&vertex)
-                .is_some_and(|neighbours| neighbours.iter().any(|&next| self.marked(next, far)));
-            let borders_far_component = borders
-                .get(&vertex)
-                .is_some_and(|ids| ids.iter().any(|&id| id != position && touched[id]));
-            if adjacent_to_rest || borders_far_component {
-                separator.push(vertex);
-            }
-        }
-        let mut capped = rest;
+        let mut capped = rest.clone();
+        // What the far side reaches: the neighbours of the rest of the bag,
+        // and the borders of the components that the rest touches.
+        let mut reach = self.adjacency.empty_set();
         for (id, component) in split.components.iter().enumerate() {
-            if id != position && touched[id] {
-                capped.extend_from_slice(component);
+            if id != position && split.borders[id].intersects(&rest) {
+                capped.union_with(component);
+                reach.union_with(&split.borders[id]);
             }
         }
-        capped.sort_unstable();
-        separator.sort_unstable();
-        separator.dedup();
+        for vertex in rest.iter() {
+            reach.union_row(self.adjacency.row(vertex));
+        }
+        let mut separator = split.borders[position].clone();
+        separator.intersect_with(&reach);
         Some((capped, separator))
     }
 
     /// Settle every block's width, smallest component first.
     fn evaluate(&mut self, deadline: Option<Instant>) -> Option<()> {
         let mut order: Vec<usize> = (0..self.blocks.len()).collect();
-        order.sort_by_key(|&index| self.blocks[index].component.len());
+        order.sort_by_key(|&index| self.blocks[index].component_size);
         for (step, index) in order.into_iter().enumerate() {
             if step % DEADLINE_STRIDE == 0 && expired(deadline) {
                 return None;
             }
-            let inside = self.marks.mark_set(&self.blocks[index].component);
+            // The component is taken out of the block for as long as the
+            // caps are read, so that the widths already settled can be read
+            // beside it.
+            let inside = std::mem::take(&mut self.blocks[index].component);
             // Everything in one bag, which is always available and always
             // valid, against the best cap. A cap that only ties is still
             // preferred: it says the same width in smaller bags.
-            let whole = (self.blocks[index].component.len() + self.blocks[index].separator.len())
+            let whole = (self.blocks[index].component_size + self.blocks[index].separator_size)
                 .saturating_sub(1) as u32;
             let mut best: Option<(u32, usize)> = None;
             for position in 0..self.blocks[index].caps.len() {
@@ -806,7 +651,7 @@ impl Search<'_> {
                 if cap >= self.collected {
                     continue;
                 }
-                let Some(candidate) = self.cap_width(cap, index, inside) else {
+                let Some(candidate) = self.cap_width(cap, index, &inside) else {
                     continue;
                 };
                 if best.is_none_or(|(width, _)| candidate < width) {
@@ -817,6 +662,7 @@ impl Search<'_> {
                 Some((width, cap)) if width <= whole => (width, Some(cap)),
                 _ => (whole, None),
             };
+            self.blocks[index].component = inside;
             self.blocks[index].width = width;
             self.blocks[index].best_cap = best_cap;
         }
@@ -825,7 +671,7 @@ impl Search<'_> {
 
     /// What putting pool bag `cap` at the top of block `block` costs, or
     /// `None` where a sub-block it leaves has no width yet.
-    fn cap_width(&self, cap: usize, block: usize, inside: u32) -> Option<u32> {
+    fn cap_width(&self, cap: usize, block: usize, inside: &VertexSet) -> Option<u32> {
         let mut width = self.bag_sizes[cap].saturating_sub(1) as u32;
         for &sub in &self.subblocks[cap] {
             if sub == block {
@@ -836,8 +682,7 @@ impl Search<'_> {
             let other = &self.blocks[sub];
             // A sub-block lies wholly inside the component or wholly outside
             // it, so one vertex settles it.
-            let representative = *other.component.first()?;
-            if !self.marked(representative, inside) {
+            if !inside.contains(other.representative) {
                 continue;
             }
             if other.width == u32::MAX {
@@ -851,7 +696,7 @@ impl Search<'_> {
     /// Assemble the narrowest decomposition the settled widths describe.
     fn build(
         &mut self,
-        bags_pool: &[Vec<u32>],
+        bags_pool: &[VertexSet],
         graph: &Graph,
         deadline: Option<Instant>,
     ) -> Option<TreeDecomposition> {
@@ -859,8 +704,8 @@ impl Search<'_> {
             return None;
         }
         let mut best: Option<(u32, usize)> = None;
-        for (index, bag) in bags_pool.iter().enumerate().take(self.collected) {
-            let mut width = bag.len().saturating_sub(1) as u32;
+        for index in 0..bags_pool.len().min(self.collected) {
+            let mut width = self.bag_sizes[index].saturating_sub(1) as u32;
             let mut usable = true;
             for &sub in &self.subblocks[index] {
                 if self.blocks[sub].width == u32::MAX {
@@ -874,7 +719,7 @@ impl Search<'_> {
             }
         }
         let (_, root) = best?;
-        let mut bags: Vec<Vec<u32>> = vec![bags_pool[root].clone()];
+        let mut bags: Vec<Vec<u32>> = vec![bags_pool[root].to_vec()];
         let mut edges: Vec<(usize, usize)> = Vec::new();
         let mut pending: Vec<(usize, usize)> =
             self.subblocks[root].iter().map(|&b| (b, 0usize)).collect();
@@ -885,25 +730,21 @@ impl Search<'_> {
             let position = bags.len();
             match self.blocks[block].best_cap {
                 Some(cap) => {
-                    bags.push(bags_pool[cap].clone());
-                    let component = std::mem::take(&mut self.blocks[block].component);
-                    let inside = self.mark_set(&component);
-                    self.blocks[block].component = component;
+                    bags.push(bags_pool[cap].to_vec());
+                    let inside = std::mem::take(&mut self.blocks[block].component);
                     for &sub in &self.subblocks[cap] {
-                        let representative = *self.blocks[sub].component.first()?;
-                        if self.marked(representative, inside) {
+                        if inside.contains(self.blocks[sub].representative) {
                             pending.push((sub, position));
                         }
                     }
+                    self.blocks[block].component = inside;
                 }
                 None => {
                     // No cap was worth it, so the block goes into one bag: its
                     // component and its separator together.
                     let mut bag = self.blocks[block].component.clone();
-                    bag.extend_from_slice(&self.blocks[block].separator);
-                    bag.sort_unstable();
-                    bag.dedup();
-                    bags.push(bag);
+                    bag.union_with(&self.blocks[block].separator);
+                    bags.push(bag.to_vec());
                 }
             }
             edges.push((parent, position));

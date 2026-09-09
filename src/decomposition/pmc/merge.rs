@@ -51,9 +51,10 @@
 
 use std::time::Instant;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 
-use super::{Limits, Neighbourhoods, adjacency_lists, search};
+use super::sets::{Adjacency, Scratch, VertexSet};
+use super::{Limits, search};
 use crate::deadline::{expired, remaining};
 use crate::rng::{SEED_OFFSET, Xorshift64};
 use crate::{Graph, TreeDecomposition};
@@ -74,7 +75,7 @@ const DEADLINE_STRIDE: usize = 16;
 
 /// A list of bags and the narrowest tree the programme builds out of it.
 struct Answer {
-    bags: Vec<Vec<u32>>,
+    bags: Vec<VertexSet>,
     tree: TreeDecomposition,
 }
 
@@ -87,7 +88,7 @@ impl Answer {
 /// What every level of the recursion shares.
 struct Loop<'a> {
     graph: &'a Graph,
-    adjacency: &'a [Vec<u32>],
+    adjacency: &'a Adjacency,
     limits: Limits,
     rng: Xorshift64,
     /// Uniform sampling weights for the randomised draws, one per vertex.
@@ -113,7 +114,7 @@ pub(crate) fn merge_loop(
     if graph.num_vertices() == 0 || expired(deadline) {
         return None;
     }
-    let adjacency = adjacency_lists(graph);
+    let adjacency = Adjacency::of(graph)?;
     let mut state = Loop {
         graph,
         adjacency: &adjacency,
@@ -128,11 +129,11 @@ pub(crate) fn merge_loop(
             } else {
                 start.clone()
             };
-            state.settle(bags_of(&minimalised), deadline)?
+            state.settle(bags_of(&minimalised, &adjacency), deadline)?
         }
         None => state.initial(deadline)?,
     };
-    let mut neighbourhoods = Neighbourhoods::new(&adjacency);
+    let mut scratch = Scratch::new(&adjacency);
     // Every round keeps what it merged in, whether or not the width moved. The
     // list only grows, so the programme over it never reads a wider tree than
     // the round before, and one merge on its own rarely lowers anything: what
@@ -140,7 +141,7 @@ pub(crate) fn merge_loop(
     // adds nothing at all is the one worth stopping on.
     while !expired(deadline) {
         let held = answer.bags.len();
-        let Some(next) = state.improve(&answer, 0, &mut neighbourhoods, deadline) else {
+        let Some(next) = state.improve(&answer, 0, &mut scratch, deadline) else {
             break;
         };
         answer = next;
@@ -157,7 +158,7 @@ pub(crate) fn merge_loop(
 }
 
 /// The bags of a decomposition, sorted and without repeats.
-fn bags_of(decomposition: &TreeDecomposition) -> Vec<Vec<u32>> {
+fn bags_of(decomposition: &TreeDecomposition, adjacency: &Adjacency) -> Vec<VertexSet> {
     let mut bags: Vec<Vec<u32>> = decomposition
         .bags()
         .iter()
@@ -170,12 +171,12 @@ fn bags_of(decomposition: &TreeDecomposition) -> Vec<Vec<u32>> {
         .collect();
     bags.sort();
     bags.dedup();
-    bags
+    bags.iter().map(|bag| adjacency.set_of(bag)).collect()
 }
 
 impl Loop<'_> {
     /// Run the programme over `bags` and keep both.
-    fn settle(&self, bags: Vec<Vec<u32>>, deadline: Option<Instant>) -> Option<Answer> {
+    fn settle(&self, bags: Vec<VertexSet>, deadline: Option<Instant>) -> Option<Answer> {
         let tree = search(&bags, self.graph, self.adjacency, self.limits, deadline)?;
         Some(Answer { bags, tree })
     }
@@ -212,7 +213,7 @@ impl Loop<'_> {
                 best = Some(drawn);
             }
         }
-        self.settle(bags_of(&best?), deadline)
+        self.settle(bags_of(&best?, self.adjacency), deadline)
     }
 
     /// One improvement of `answer`: build a side answer, improve it until it is
@@ -221,14 +222,14 @@ impl Loop<'_> {
         &mut self,
         answer: &Answer,
         depth: usize,
-        neighbourhoods: &mut Neighbourhoods<'_>,
+        scratch: &mut Scratch,
         deadline: Option<Instant>,
     ) -> Option<Answer> {
         let until = share(deadline);
         let mut side = self.initial(until)?;
         while side.width() > answer.width() && depth + 1 < MAX_DEPTH && !expired(until) {
             let held = side.bags.len();
-            let Some(better) = self.improve(&side, depth + 1, neighbourhoods, until) else {
+            let Some(better) = self.improve(&side, depth + 1, scratch, until) else {
                 break;
             };
             side = better;
@@ -236,7 +237,7 @@ impl Loop<'_> {
                 break;
             }
         }
-        let merged = self.merge(answer, &side, neighbourhoods, deadline);
+        let merged = self.merge(answer, &side, scratch, deadline);
         self.settle(merged, deadline)
     }
 
@@ -246,26 +247,26 @@ impl Loop<'_> {
         &mut self,
         answer: &Answer,
         side: &Answer,
-        neighbourhoods: &mut Neighbourhoods<'_>,
+        scratch: &mut Scratch,
         deadline: Option<Instant>,
-    ) -> Vec<Vec<u32>> {
+    ) -> Vec<VertexSet> {
         let width = answer.width();
         let mut bags = answer.bags.clone();
-        let mut held: FxHashSet<Vec<u32>> = bags.iter().cloned().collect();
+        let mut held: FxHashSet<VertexSet> = bags.iter().cloned().collect();
         for bag in &side.bags {
             if held.insert(bag.clone()) {
                 bags.push(bag.clone());
             }
         }
-        let Some(focuses) = self.focuses(answer, side, neighbourhoods, deadline) else {
+        let Some(focuses) = self.focuses(answer, side, scratch, deadline) else {
             return bags;
         };
-        let mut stored: usize = bags.iter().map(Vec::len).sum();
+        let mut stored: usize = bags.iter().map(VertexSet::len).sum();
         for focus in focuses {
             if expired(deadline) || bags.len() >= self.limits.bags {
                 break;
             }
-            for clique in self.triangulate(&focus, width, neighbourhoods, deadline) {
+            for clique in self.triangulate(&focus, width, scratch, deadline) {
                 if bags.len() >= self.limits.bags
                     || stored.saturating_add(clique.len()) > self.limits.pool_vertices
                 {
@@ -292,44 +293,44 @@ impl Loop<'_> {
         &mut self,
         answer: &Answer,
         side: &Answer,
-        neighbourhoods: &mut Neighbourhoods<'_>,
+        scratch: &mut Scratch,
         deadline: Option<Instant>,
     ) -> Option<Vec<Vec<u32>>> {
         let width = answer.width() as usize;
         let pick = (self.rng.next_u64() % answer.bags.len() as u64) as usize;
         let chosen = &answer.bags[pick];
-        let split = neighbourhoods.split(chosen);
+        let split = self.adjacency.split(chosen, scratch);
         let largest = split
             .components
             .iter()
-            .zip(&split.separators)
+            .zip(&split.borders)
             .max_by_key(|(component, _)| component.len())?;
-        let closed = closed_neighbourhood(largest.0, largest.1);
-        let inside: FxHashSet<u32> = closed.iter().copied().collect();
+        let mut inside = largest.0.clone();
+        inside.union_with(largest.1);
         let mut found: Vec<Vec<u32>> = Vec::new();
         for (index, partner) in side.bags.iter().enumerate() {
             if index % DEADLINE_STRIDE == 0 && expired(deadline) {
                 break;
             }
-            if partner.len() > width || !partner.iter().all(|vertex| inside.contains(vertex)) {
+            if partner.len() > width || !partner.is_subset(&inside) {
                 continue;
             }
-            let across = neighbourhoods.split(partner);
-            let Some((component, border)) = across
-                .components
-                .iter()
-                .zip(&across.separators)
-                .find(|(component, border)| holds(component, border, chosen))
-            else {
+            let across = self.adjacency.split(partner, scratch);
+            let mut focus = None;
+            for (component, border) in across.components.iter().zip(&across.borders) {
+                let mut closed = component.clone();
+                closed.union_with(border);
+                if chosen.is_subset(&closed) {
+                    closed.intersect_with(&inside);
+                    focus = Some(closed);
+                    break;
+                }
+            }
+            let Some(focus) = focus else {
                 continue;
             };
-            let far = closed_neighbourhood(component, border);
-            let focus: Vec<u32> = far
-                .into_iter()
-                .filter(|vertex| inside.contains(vertex))
-                .collect();
             if focus.len() > 1 {
-                found.push(focus);
+                found.push(focus.to_vec());
             }
         }
         found.sort_by(|one, other| one.len().cmp(&other.len()).then_with(|| one.cmp(other)));
@@ -352,19 +353,20 @@ impl Loop<'_> {
         &self,
         focus: &[u32],
         width: u32,
-        neighbourhoods: &mut Neighbourhoods<'_>,
+        scratch: &mut Scratch,
         deadline: Option<Instant>,
-    ) -> Vec<Vec<u32>> {
-        let Some((local, order)) = self.local_graph(focus, neighbourhoods) else {
+    ) -> Vec<VertexSet> {
+        let Some((local, order)) = self.local_graph(focus, scratch) else {
             return Vec::new();
         };
         let budget = deadline.map(|deadline| remaining(deadline) / LEVEL_TIME_SHARE);
-        let Ok(triangulated) = crate::elimination::decompose(
+        let triangulated = crate::elimination::decompose(
             &local,
             crate::elimination::Order::MinimalTriangulation,
             0,
             budget,
-        ) else {
+        );
+        let Ok(triangulated) = triangulated else {
             return Vec::new();
         };
         if triangulated.treewidth() > width {
@@ -384,34 +386,32 @@ impl Loop<'_> {
                 vertices
             })
             .filter(|clique| {
-                clique.len() as u32 <= width && is_potential_maximal_clique(clique, neighbourhoods)
+                clique.len() as u32 <= width
+                    && is_potential_maximal_clique(clique, self.adjacency, scratch)
             })
+            .map(|clique| self.adjacency.set_of(&clique))
             .collect()
     }
 
     /// The local graph on `focus`: what `G` induces there, plus the
     /// neighbourhood of every component of `G − focus` filled into a clique.
     /// Comes back with the vertex list the local numbering reads.
-    fn local_graph(
-        &self,
-        focus: &[u32],
-        neighbourhoods: &mut Neighbourhoods<'_>,
-    ) -> Option<(Graph, Vec<u32>)> {
+    fn local_graph(&self, focus: &[u32], scratch: &mut Scratch) -> Option<(Graph, Vec<u32>)> {
         let mut order = focus.to_vec();
         order.sort_unstable();
         order.dedup();
+        let set = self.adjacency.set_of(&order);
         let position = |vertex: u32| order.binary_search(&vertex).ok().map(|index| index as u32);
         let mut edges: FxHashSet<(u32, u32)> = FxHashSet::default();
         for (index, &vertex) in order.iter().enumerate() {
-            for &next in &self.adjacency[vertex as usize] {
-                if let Some(other) = position(next)
-                    && (other as usize) > index
-                {
-                    edges.insert((index as u32, other));
+            for (other, &next) in order.iter().enumerate().skip(index + 1) {
+                if self.adjacency.adjacent(vertex, next) {
+                    edges.insert((index as u32, other as u32));
                 }
             }
         }
-        for border in neighbourhoods.borders(&order) {
+        for border in borders(self.adjacency, &set, scratch) {
+            let border = border.to_vec();
             for (index, &left) in border.iter().enumerate() {
                 let Some(left) = position(left) else {
                     continue;
@@ -430,19 +430,16 @@ impl Loop<'_> {
     }
 }
 
-/// A component's closed neighbourhood, sorted.
-fn closed_neighbourhood(vertices: &[u32], border: &[u32]) -> Vec<u32> {
-    let mut closed = vertices.to_vec();
-    closed.extend_from_slice(border);
-    closed.sort_unstable();
-    closed.dedup();
-    closed
-}
-
-/// Whether every vertex of `set` is in the component or on its border.
-fn holds(component: &[u32], border: &[u32], set: &[u32]) -> bool {
-    let inside: FxHashSet<u32> = component.iter().chain(border).copied().collect();
-    set.iter().all(|vertex| inside.contains(vertex))
+/// The border of every component of `G − removed`. A component with no border
+/// — a part of a disconnected graph that `removed` does not touch — is left
+/// out.
+fn borders(adjacency: &Adjacency, removed: &VertexSet, scratch: &mut Scratch) -> Vec<VertexSet> {
+    adjacency
+        .split(removed, scratch)
+        .borders
+        .into_iter()
+        .filter(|border| !border.is_empty())
+        .collect()
 }
 
 /// Half of what is left, so the level above keeps the other half.
@@ -462,32 +459,28 @@ fn share(deadline: Option<Instant>) -> Option<Instant> {
 /// neighbourhood is filled in, which is what a triangulation does.
 pub(super) fn is_potential_maximal_clique(
     candidate: &[u32],
-    neighbourhoods: &mut Neighbourhoods<'_>,
+    adjacency: &Adjacency,
+    scratch: &mut Scratch,
 ) -> bool {
     let size = candidate.len();
     if size == 0 {
         return false;
     }
-    let mut position: FxHashMap<u32, usize> = FxHashMap::default();
-    for (index, &vertex) in candidate.iter().enumerate() {
-        position.insert(vertex, index);
-    }
+    let set = adjacency.set_of(candidate);
     let mut together = vec![false; size * size];
-    for border in neighbourhoods.borders(candidate) {
+    for border in borders(adjacency, &set, scratch) {
         if border.len() == size {
             // A full component: `K` is contained in one bag of every
             // triangulation that separates on it, so it is not a maximal
             // clique of any of them.
             return false;
         }
+        let border: Vec<usize> = border
+            .iter()
+            .filter_map(|vertex| candidate.binary_search(&vertex).ok())
+            .collect();
         for (index, &left) in border.iter().enumerate() {
-            let Some(&left) = position.get(&left) else {
-                continue;
-            };
             for &right in &border[index + 1..] {
-                let Some(&right) = position.get(&right) else {
-                    continue;
-                };
                 together[left * size + right] = true;
                 together[right * size + left] = true;
             }
@@ -498,7 +491,7 @@ pub(super) fn is_potential_maximal_clique(
             if together[left * size + right] {
                 continue;
             }
-            if !neighbourhoods.adjacent(one, other) {
+            if !adjacency.adjacent(one, other) {
                 return false;
             }
         }
