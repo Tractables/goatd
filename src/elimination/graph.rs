@@ -446,9 +446,8 @@ impl EliminationGraph {
     /// a caller that reads `graph.adj` directly must not call this mid-loop.
     ///
     /// A graph of at most [`BITSET_THRESH`] vertices is indexed by vertex id;
-    /// a larger one is indexed over its active vertices and its rows are
-    /// released, since they are neither read nor maintained afterwards and on
-    /// a dense residual they are the larger of the two.
+    /// a larger one is indexed over its active vertices. Either way the rows
+    /// are released, since they are neither read nor maintained afterwards.
     pub(super) fn promote_bitset(&mut self) {
         debug_assert_eq!(self.bitset_words, 0);
         let n = self.adj.len();
@@ -458,8 +457,8 @@ impl EliminationGraph {
         self.build_bitset(n > BITSET_THRESH);
     }
 
-    /// Build the bitset from the adjacency rows. `compact` indexes it over the
-    /// active vertices and releases the rows; otherwise slots are vertex ids.
+    /// Build the bitset from the adjacency rows and release them. `compact`
+    /// indexes it over the active vertices; otherwise slots are vertex ids.
     fn build_bitset(&mut self, compact: bool) {
         let n = self.adj.len();
         // Slots are vertex ids unless the graph is too large for that, in
@@ -499,11 +498,7 @@ impl EliminationGraph {
                 bitset[vb + us / 64] |= 1u64 << (us % 64);
             }
         }
-        if compact {
-            for row in self.adj.iter_mut() {
-                *row = Vec::new();
-            }
-        } else {
+        if !compact {
             // An inactive vertex keeps the degree its row still reports, as
             // the vertex-indexed build always has.
             for (v, row) in self.adj.iter().enumerate() {
@@ -512,34 +507,17 @@ impl EliminationGraph {
                 }
             }
         }
+        // Every path that reads a row is guarded by `bitset_words == 0`, so
+        // from here the rows are memory holding an answer nobody asks for.
+        for row in self.adj.iter_mut() {
+            *row = Vec::new();
+        }
         self.bitset = bitset;
         self.bitset_degree = degree;
         self.bitset_words = w;
         self.bitset_slot = bitset_slot;
         self.slot_vertex = slot_vertex;
         self.drop_row_indexes();
-    }
-
-    /// Clone preserving only the bitset; adj rows are allocated empty. Only
-    /// valid when `bitset_words > 0`.
-    pub(super) fn clone_bitset_only(&self) -> Self {
-        debug_assert!(self.bitset_words > 0);
-        EliminationGraph {
-            adj: vec![Vec::new(); self.adj.len()],
-            row_index: (0..self.adj.len()).map(|_| None).collect(),
-            active: self.active.clone(),
-            num_active: self.num_active,
-            num_edges: self.num_edges,
-            bitset_degree: self.bitset_degree.clone(),
-            elim_marker: self.elim_marker.clone(),
-            elim_stamp: self.elim_stamp,
-            bitset: self.bitset.clone(),
-            bitset_words: self.bitset_words,
-            bitset_slot: self.bitset_slot.clone(),
-            slot_vertex: self.slot_vertex.clone(),
-            bitset_compact: self.bitset_compact,
-            hardware_popcount: self.hardware_popcount,
-        }
     }
 
     /// Add edge (u, v) using the bitset for O(1) existence check. Assumes
@@ -983,7 +961,11 @@ impl EliminationGraph {
     }
 
     /// Is the live neighbourhood of `v` a clique?
-    pub(super) fn is_simplicial(&self, v: u32) -> bool {
+    ///
+    /// Takes `&mut self` for the stamp marker the sparse path answers from;
+    /// the graph itself is unchanged.
+    #[allow(clippy::wrong_self_convention)]
+    pub(super) fn is_simplicial(&mut self, v: u32) -> bool {
         if self.bitset_words > 0 {
             let w = self.bitset_words;
             let vb = self.slot(v) * w;
@@ -1017,16 +999,52 @@ impl EliminationGraph {
             crate::meter::charge(words_scanned);
             true
         } else {
-            let neighbours = &self.adj[v as usize];
-            for i in 0..neighbours.len() {
-                for j in (i + 1)..neighbours.len() {
-                    if !self.contains_edge(neighbours[i], neighbours[j]) {
-                        return false;
-                    }
+            self.simplicial_by_rows(v)
+        }
+    }
+
+    /// [`is_simplicial`](Self::is_simplicial) against the adjacency rows.
+    ///
+    /// The pairs are the pairs of the nested scan, in the same order, so the
+    /// same missing edge is the one that ends the walk. What differs is how
+    /// each pair is answered: an indexed row is probed, and an unindexed one
+    /// is stamped once and its `k - i - 1` remaining questions answered from
+    /// the marker, rather than scanned again per pair. Each pair still costs
+    /// what the same test costs [`contains_edge`](Self::contains_edge), so
+    /// what a caller spends does not depend on which way it was answered.
+    fn simplicial_by_rows(&mut self, v: u32) -> bool {
+        let k = self.adj[v as usize].len();
+        // The last neighbour has no pair of its own: every pair it is in has
+        // already been tested from the other end.
+        for i in 0..k.saturating_sub(1) {
+            let u = self.adj[v as usize][i] as usize;
+            let units = self.row_lookup_units(u as u32);
+            if self.row_index[u].is_none() {
+                self.elim_stamp = self.elim_stamp.wrapping_add(1);
+                if self.elim_stamp == 0 {
+                    self.elim_marker.fill(0);
+                    self.elim_stamp = 1;
+                }
+                let stamp = self.elim_stamp;
+                let marker = self.elim_marker.as_mut_slice();
+                for &w in &self.adj[u] {
+                    marker[w as usize] = stamp;
                 }
             }
-            true
+            let stamp = self.elim_stamp;
+            let neighbours = &self.adj[v as usize];
+            for &w in &neighbours[i + 1..] {
+                crate::meter::charge(units);
+                let present = match &self.row_index[u] {
+                    Some(index) => index.contains_key(&w),
+                    None => self.elim_marker[w as usize] == stamp,
+                };
+                if !present {
+                    return false;
+                }
+            }
         }
+        true
     }
 
     /// The one edge missing from `v`'s neighbourhood, if exactly one is.
