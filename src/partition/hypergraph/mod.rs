@@ -27,7 +27,7 @@ mod tests;
 use coarsen::{CoarseningLevel, coarsen_one_level};
 use initial::{hyperedge_cut, initial_partition};
 use refine_flow::refine_finest_level;
-use refine_fm::refine_level;
+use refine_fm::{FmScratch, refine_level};
 
 use crate::Error;
 use crate::partition::Bisection;
@@ -99,6 +99,7 @@ fn multilevel_pass(
     existing_part: Option<&[u8]>,
     rng: &mut Xorshift64,
     imbalance: f64,
+    scratch: &mut FmScratch,
 ) -> Vec<u8> {
     let n = hg.num_vertices;
 
@@ -139,12 +140,12 @@ fn multilevel_pass(
     let mut part = if let Some(pp) = projected_part {
         pp
     } else {
-        initial_partition(current, rng, imbalance)
+        initial_partition(current, rng, imbalance, scratch)
     };
 
     // Coarse hyperedges carry the summed weight of every fine hyperedge merged
     // into them, so a move here can be worth many fine hyperedges.
-    refine_level(current, &mut part, imbalance);
+    refine_level(current, &mut part, imbalance, scratch);
 
     // Uncoarsening. Each step hands every fine vertex its coarse vertex's side,
     // then refines with the freedom the finer hypergraph exposes; only the
@@ -155,9 +156,9 @@ fn multilevel_pass(
 
         let fine_hg = if li > 0 { &levels[li - 1].hg } else { hg };
         if li == 0 {
-            refine_finest_level(fine_hg, &mut part, imbalance);
+            refine_finest_level(fine_hg, &mut part, imbalance, scratch);
         } else {
-            refine_level(fine_hg, &mut part, imbalance);
+            refine_level(fine_hg, &mut part, imbalance, scratch);
         }
     }
 
@@ -169,8 +170,9 @@ fn multilevel_bisect_once(
     rng: &mut Xorshift64,
     imbalance: f64,
     effort_scale: f64,
+    scratch: &mut FmScratch,
 ) -> Vec<u8> {
-    let mut part = multilevel_pass(hg, None, rng, imbalance);
+    let mut part = multilevel_pass(hg, None, rng, imbalance, scratch);
 
     let vc_base = max_vcycles(hg.num_vertices);
     let num_vcycles = (vc_base as f64 * effort_scale.sqrt()).round() as usize;
@@ -178,7 +180,7 @@ fn multilevel_bisect_once(
     // a ceiling rather than a count.
     for _ in 0..num_vcycles {
         let old_cut = hyperedge_cut(hg, &part);
-        let new_part = multilevel_pass(hg, Some(&part), rng, imbalance);
+        let new_part = multilevel_pass(hg, Some(&part), rng, imbalance, scratch);
         let new_cut = hyperedge_cut(hg, &new_part);
         if new_cut < old_cut {
             part = new_part;
@@ -229,9 +231,16 @@ pub fn multilevel_hypergraph_bisect(
     // Best-of-N on the cut, the objective the caller asked for here; see "Where
     // the two bisectors differ" in the shared partition bookkeeping.
     let restarts = num_hg_restarts(num_vertices, config.effort);
+    let mut scratch = FmScratch::new();
     for restart in 0..restarts {
         let mut rng = bisector_stream(restart_seed(config.seed, restart));
-        let part = multilevel_bisect_once(hg, &mut rng, config.max_imbalance, config.effort);
+        let part = multilevel_bisect_once(
+            hg,
+            &mut rng,
+            config.max_imbalance,
+            config.effort,
+            &mut scratch,
+        );
         let candidate_cut = hyperedge_cut(hg, &part);
         if candidate_cut < best_cut {
             best_cut = candidate_cut;

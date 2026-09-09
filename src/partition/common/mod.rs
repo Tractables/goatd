@@ -422,7 +422,9 @@ pub(super) struct GainBuckets {
 }
 
 impl GainBuckets {
-    /// An empty queue over `n` vertices.
+    /// An empty queue over `n` vertices, for tests. Both refiners keep their
+    /// queues in scratch and reset them per pass instead.
+    #[cfg(test)]
     pub(super) fn new(n: usize) -> Self {
         let mut queue = GainBuckets::empty();
         queue.reset(n);
