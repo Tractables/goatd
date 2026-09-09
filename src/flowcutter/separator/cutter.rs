@@ -130,6 +130,10 @@ pub(super) struct BasicCutter {
     predecessor: [Vec<u32>; 2],
     flow: Flow,
     tmp_dfs: Vec<u32>,
+    /// Queue for the two hop-distance searches `init` runs. Held here so that
+    /// re-initializing a cutter does not allocate one per initialization;
+    /// `bfs_hop_distance` clears it before each use.
+    bfs_queue: Vec<u32>,
     /// Hop distances from the two original endpoints, fixed at `init` and
     /// never rescored as the cut grows.
     node_dist: [Vec<i32>; 2],
@@ -148,6 +152,7 @@ impl BasicCutter {
             predecessor: [vec![NO_PRED; n_exp as usize], vec![NO_PRED; n_exp as usize]],
             flow: Flow::new(a_exp as usize),
             tmp_dfs: Vec::with_capacity(n_exp as usize),
+            bfs_queue: Vec::with_capacity(n_exp as usize),
             node_dist: [
                 vec![i32::MAX; n_exp as usize],
                 vec![i32::MAX; n_exp as usize],
@@ -156,6 +161,12 @@ impl BasicCutter {
         }
     }
 
+    /// Start a search from the source-target pair `p`, on a graph of the size
+    /// this cutter was built for.
+    ///
+    /// This is a complete reset: every field a search reads is either cleared
+    /// here or overwritten before it is read, so a cutter that has already run
+    /// behaves like a new one.
     fn init(&mut self, exp: &Exp, a_orig: u32, p: (u32, u32)) {
         for s in 0..2 {
             self.assim[s].clear();
@@ -173,9 +184,18 @@ impl BasicCutter {
         self.assim[TARGET_SIDE].set_extra(p.1);
         self.reach[TARGET_SIDE].set_extra(p.1);
 
-        let mut q = Vec::with_capacity(exp.g.n as usize * 2);
-        bfs_hop_distance(exp, p.0, &mut self.node_dist[SOURCE_SIDE], &mut q);
-        bfs_hop_distance(exp, p.1, &mut self.node_dist[TARGET_SIDE], &mut q);
+        bfs_hop_distance(
+            exp,
+            p.0,
+            &mut self.node_dist[SOURCE_SIDE],
+            &mut self.bfs_queue,
+        );
+        bfs_hop_distance(
+            exp,
+            p.1,
+            &mut self.node_dist[TARGET_SIDE],
+            &mut self.bfs_queue,
+        );
 
         self.grow_reachable_sets(exp, a_orig, SOURCE_SIDE);
         self.grow_assimilated_sets(exp, a_orig);
@@ -417,18 +437,6 @@ impl BasicCutter {
         chosen
     }
 
-    fn does_next_advance_increase_cut(&self, exp: &Exp, a_orig: u32) -> bool {
-        let side = self.current_cut_side();
-        if self.assim[side].count >= n_exp(exp.g.n) / 2 {
-            return true;
-        }
-        let py = self.select_pierce_node(exp, a_orig, side);
-        match py {
-            None => true,
-            Some(y) => self.reach[1 - side].inside[y as usize],
-        }
-    }
-
     /// Returns false once no further cut is reachable.
     fn advance(&mut self, exp: &Exp, a_orig: u32) -> bool {
         debug_assert!(self.cut_available);
@@ -452,6 +460,35 @@ impl BasicCutter {
         self.cut_available = true;
         true
     }
+
+    /// Advances while the next step would leave the cut the size it is, which
+    /// is what the reference implementation does by default: it skips the
+    /// sides that are not the maximum.
+    fn advance_while_cut_holds(&mut self, exp: &Exp, a_orig: u32) {
+        debug_assert!(self.cut_available);
+        let mut guard = 0u32;
+        loop {
+            let side = self.current_cut_side();
+            if self.assim[side].count >= n_exp(exp.g.n) / 2 {
+                break;
+            }
+            let Some(pierce) = self.select_pierce_node(exp, a_orig, side) else {
+                break;
+            };
+            if self.reach[1 - side].inside[pierce as usize] {
+                break;
+            }
+            self.assim[side].set_extra(pierce);
+            self.reach[side].set_extra(pierce);
+            self.grow_reachable_sets(exp, a_orig, side);
+            self.grow_assimilated_sets(exp, a_orig);
+            self.cut_available = true;
+            guard += 1;
+            if guard > 1_000_000 {
+                break;
+            }
+        }
+    }
 }
 
 pub(super) struct MultiCutter {
@@ -464,18 +501,20 @@ pub(super) struct MultiCutter {
 }
 
 impl MultiCutter {
-    pub(super) fn new(n_exp: u32, a_exp: u32, count: u32) -> Self {
-        let mut cutters = Vec::with_capacity(count as usize);
-        for _ in 0..count {
-            cutters.push(BasicCutter::new(n_exp, a_exp));
-        }
+    /// An empty cutter set. [`MultiCutter::init`] both sizes it to the pairs it
+    /// is given and resets the cutters it keeps, so one of these serves every
+    /// iteration of a search rather than one iteration.
+    pub(super) fn new() -> Self {
         MultiCutter {
-            cutters,
+            cutters: Vec::new(),
             current_id: 0,
             current_smaller: 0,
         }
     }
 
+    /// Start one cutter per source-target pair in `pairs`, reusing the cutters
+    /// already held. Reuse is sound because `BasicCutter::init` is a complete
+    /// reset and the graph, hence every array length, is the same.
     pub(super) fn init(&mut self, exp: &Exp, a_orig: u32, pairs: &[(u32, u32)]) {
         let n_exp_v = n_exp(exp.g.n);
         let a_exp_v = a_exp(exp.g.n, a_orig);
@@ -488,21 +527,7 @@ impl MultiCutter {
 
         for (i, &p) in pairs.iter().enumerate() {
             self.cutters[i].init(exp, a_orig, p);
-            // Arbitrary: matches the reference implementation's default of
-            // skipping non-maximum sides.
-            let mut iter_guard = 0u32;
-            loop {
-                if self.cutters[i].does_next_advance_increase_cut(exp, a_orig) {
-                    break;
-                }
-                if !self.cutters[i].advance(exp, a_orig) {
-                    break;
-                }
-                iter_guard += 1;
-                if iter_guard > 1_000_000 {
-                    break;
-                }
-            }
+            self.cutters[i].advance_while_cut_holds(exp, a_orig);
         }
 
         let mut best_id = 0usize;
@@ -553,19 +578,7 @@ impl MultiCutter {
                 if !advanced {
                     continue;
                 }
-                let mut iter_guard = 0u32;
-                loop {
-                    if self.cutters[i].does_next_advance_increase_cut(exp, a_orig) {
-                        break;
-                    }
-                    if !self.cutters[i].advance(exp, a_orig) {
-                        break;
-                    }
-                    iter_guard += 1;
-                    if iter_guard > 1_000_000 {
-                        break;
-                    }
-                }
+                self.cutters[i].advance_while_cut_holds(exp, a_orig);
             }
 
             let Some(next_size) = self
