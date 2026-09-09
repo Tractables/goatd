@@ -259,7 +259,7 @@ fn growth_adds_bags_the_pool_did_not_hold() {
     );
     let coarse =
         TreeDecomposition::new(&graph, [vec![0, 1, 2, 3], vec![3, 4, 5, 6]], [(0, 1)]).unwrap();
-    let mut bags: Vec<Vec<u32>> = coarse
+    let bags: Vec<Vec<u32>> = coarse
         .bags()
         .iter()
         .map(|bag| bag.vertices().to_vec())
