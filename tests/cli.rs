@@ -433,6 +433,24 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             ],
             &["--hedge-reserve", "--budget"],
         ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--no-hedge",
+                "--hedge-reserve",
+                "0.5",
+            ],
+            &["--hedge-reserve", "--no-hedge", "give one"],
+        ),
+        (
+            &["--order", "portfolio", "--refine"],
+            &["--refine", "portfolio"],
+        ),
+        (
+            &["--order", "portfolio", "--sampling-patience", "0"],
+            &["--sampling-patience", "positive"],
+        ),
         (&["--ties", "salt"], &["--ties"]),
         (&["--budget", "0"], &["--budget", "positive"]),
         (&["--order", "treewidth"], &["--order"]),

@@ -180,7 +180,8 @@ options:
   --steps <n>           flowcutter only: a step budget in place of a clock,
                         for a run that repeats exactly
   --refine              re-cut the decomposition along FlowCutter separators
-                        before writing it
+                        before writing it. Not with --order portfolio, whose
+                        trailing candidate is FlowCutter already
   -h, --help            this text
 ";
 
@@ -480,7 +481,17 @@ fn parse_args(argv: &[String]) -> Args {
             "--capped-restarts" => capped_restarts = true,
             "--sample-band" => sample_band = Some(number(&mut i, arg)),
             "--sample-band-alternate" => sample_band_alternate = true,
-            "--sampling-patience" => sampling_patience = Some(number(&mut i, arg)),
+            "--sampling-patience" => {
+                let restarts = number(&mut i, arg);
+                if restarts == 0 {
+                    usage_error(
+                        "--sampling-patience wants a positive restart floor; a floor of zero \
+                         stops the restarts before the first one runs, and \
+                         --no-sampling-patience is how the rule is turned off",
+                    );
+                }
+                sampling_patience = Some(restarts);
+            }
             "--no-sampling-patience" => no_sampling_patience = true,
             "--expensive-orders-up-to" => {
                 let vertices = number(&mut i, arg);
@@ -588,6 +599,12 @@ fn parse_args(argv: &[String]) -> Args {
                 "--hedge-reserve decides how many weighted stages run after the first, and \
                  the first runs on any budget; give --hedge-dims or --hedge-random with two \
                  or more stages",
+            );
+        }
+        if no_hedge {
+            usage_error(
+                "--hedge-reserve says how much of the budget the hedge's weighted stages may \
+                 spend and --no-hedge runs none; give one",
             );
         }
         if budget.is_none() {
@@ -773,6 +790,15 @@ fn parse_args(argv: &[String]) -> Args {
     }
     if trace {
         needs("--trace", order == Method::Portfolio, "portfolio");
+    }
+    // The portfolio's trailing candidate is FlowCutter, so the winner has
+    // already been cut along FlowCutter separators when the run ends.
+    if refine && order == Method::Portfolio {
+        usage_error(
+            "--refine is not valid with --order portfolio: the portfolio's own trailing \
+             FlowCutter candidate runs inside the budget, and there is nothing left for a \
+             refinement pass to do afterwards",
+        );
     }
 
     Args {
