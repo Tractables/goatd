@@ -30,7 +30,6 @@ pub(super) struct DegreeQueue {
     tie: Vec<u64>,
     /// A lower bound on the smallest non-empty bucket. Exact after a pop.
     cursor: usize,
-    len: usize,
 }
 
 impl DegreeQueue {
@@ -40,7 +39,6 @@ impl DegreeQueue {
             degree: vec![ABSENT; vertices],
             tie: vec![0; vertices],
             cursor: 0,
-            len: 0,
         }
     }
 
@@ -57,7 +55,6 @@ impl DegreeQueue {
         self.degree[v as usize] = u32::try_from(bucket).expect("degree fits a u32");
         self.tie[v as usize] = tie;
         self.cursor = self.cursor.min(bucket);
-        self.len += 1;
     }
 
     /// The degree `v` is filed under, or `None` if it is not queued.
@@ -74,7 +71,6 @@ impl DegreeQueue {
         }
         self.buckets[bucket as usize].remove(&(self.tie[v as usize], v));
         self.degree[v as usize] = ABSENT;
-        self.len -= 1;
     }
 
     /// The smallest `(degree, tie, vertex)` in the queue, removed.
@@ -85,7 +81,6 @@ impl DegreeQueue {
         let bucket = self.buckets.get_mut(self.cursor)?;
         let (tie, v) = bucket.pop_first()?;
         self.degree[v as usize] = ABSENT;
-        self.len -= 1;
         Some((self.cursor as u64, tie, v))
     }
 }

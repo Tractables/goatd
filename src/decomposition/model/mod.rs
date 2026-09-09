@@ -205,9 +205,17 @@ impl TreeDecomposition {
             };
         }
 
-        let mut holders = vec![Vec::new(); graph.num_vertices as usize];
+        // Which bags hold each vertex, as one flat array rather than a `Vec`
+        // per vertex. The first pass checks each bag's contents and counts the
+        // holders, the second places them through prefix-sum offsets. Bags are
+        // visited in ascending order in both, so a vertex's run stays ascending
+        // and `sorted_lists_intersect` still sees sorted input. `seen_in_bag`
+        // carries the position of the bag a vertex was last seen in, which
+        // catches a repeat within one bag without a set per bag.
+        let num_vertices = graph.num_vertices as usize;
+        let mut holder_offsets = vec![0usize; num_vertices + 1];
+        let mut seen_in_bag = vec![usize::MAX; num_vertices];
         for (position, bag) in self.bags.iter().enumerate() {
-            let mut in_bag = FxHashSet::default();
             for &vertex in &bag.vertices {
                 if vertex >= graph.num_vertices {
                     return invalid(format!(
@@ -215,12 +223,24 @@ impl TreeDecomposition {
                         graph.num_vertices
                     ));
                 }
-                if !in_bag.insert(vertex) {
+                if seen_in_bag[vertex as usize] == position {
                     return invalid(format!(
                         "bag {position} contains vertex {vertex} more than once"
                     ));
                 }
-                holders[vertex as usize].push(position);
+                seen_in_bag[vertex as usize] = position;
+                holder_offsets[vertex as usize + 1] += 1;
+            }
+        }
+        for vertex in 0..num_vertices {
+            holder_offsets[vertex + 1] += holder_offsets[vertex];
+        }
+        let mut holder_bags = vec![0usize; holder_offsets[num_vertices]];
+        let mut holder_cursor = holder_offsets[..num_vertices].to_vec();
+        for (position, bag) in self.bags.iter().enumerate() {
+            for &vertex in &bag.vertices {
+                holder_bags[holder_cursor[vertex as usize]] = position;
+                holder_cursor[vertex as usize] += 1;
             }
         }
 
@@ -276,8 +296,8 @@ impl TreeDecomposition {
             ));
         }
 
-        for (vertex, vertex_holders) in holders.iter().enumerate() {
-            if vertex_holders.is_empty() {
+        for vertex in 0..num_vertices {
+            if holder_run(&holder_offsets, &holder_bags, vertex).is_empty() {
                 return invalid(format!("vertex {vertex} is in no bag"));
             }
         }
@@ -289,14 +309,19 @@ impl TreeDecomposition {
                     graph.num_vertices
                 ));
             }
-            if !sorted_lists_intersect(&holders[u as usize], &holders[v as usize]) {
+            if !sorted_lists_intersect(
+                holder_run(&holder_offsets, &holder_bags, u as usize),
+                holder_run(&holder_offsets, &holder_bags, v as usize),
+            ) {
                 return invalid(format!("edge ({u}, {v}) is covered by no bag"));
             }
         }
 
         let mut holding_mark = vec![0usize; num_bags];
         let mut reached_mark = vec![0usize; num_bags];
-        for (vertex, vertex_holders) in holders.iter().enumerate() {
+        let mut stack: Vec<usize> = Vec::new();
+        for vertex in 0..num_vertices {
+            let vertex_holders = holder_run(&holder_offsets, &holder_bags, vertex);
             if vertex_holders.len() < 2 {
                 continue;
             }
@@ -304,7 +329,8 @@ impl TreeDecomposition {
             for &bag in vertex_holders {
                 holding_mark[bag] = mark;
             }
-            let mut stack = vec![vertex_holders[0]];
+            stack.clear();
+            stack.push(vertex_holders[0]);
             reached_mark[vertex_holders[0]] = mark;
             let mut reached = 1usize;
             while let Some(bag) = stack.pop() {
@@ -325,6 +351,12 @@ impl TreeDecomposition {
 
         Ok(())
     }
+}
+
+/// The bags holding `vertex`, as a run of the flat holder array `validate`
+/// builds.
+fn holder_run<'a>(offsets: &[usize], bags: &'a [usize], vertex: usize) -> &'a [usize] {
+    &bags[offsets[vertex]..offsets[vertex + 1]]
 }
 
 fn sorted_lists_intersect(left: &[usize], right: &[usize]) -> bool {

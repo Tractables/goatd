@@ -7,8 +7,6 @@
 //! merge, a hyperedge left with one pin disappears, and hyperedges that end up
 //! with identical pin sets become one with their weights summed.
 
-use rustc_hash::FxHashMap;
-
 use super::model::Hypergraph;
 use crate::rng::Xorshift64;
 
@@ -63,6 +61,12 @@ pub(super) fn coarsen_one_level(
     let mut coarse_id: Vec<u32> = vec![0; n];
     let mut num_coarse: u32 = 0;
 
+    // Shared weight per candidate, indexed by vertex and cleared over
+    // `candidates` after each match: a map per vertex per level is one
+    // allocation for every vertex of every level of every restart.
+    let mut connectivity: Vec<u32> = vec![0; n];
+    let mut candidates: Vec<u32> = Vec::new();
+
     for &v in &perm {
         if match_of[v].is_some() {
             continue;
@@ -72,27 +76,31 @@ pub(super) fn coarsen_one_level(
         // share with `v`. This makes an explicitly weighted hyperedge, including
         // canonicalized repeats whose weights were added, influence coarsening
         // by the same amount that it influences the cut objective.
-        let mut connectivity: FxHashMap<u32, u32> = FxHashMap::default();
-
+        candidates.clear();
         for &hei in hg.vertex_hyperedges(v) {
             let weight = hg.hyperedge_weights[hei as usize];
             for &u in hg.charged_hyperedge_pins(hei as usize) {
                 let u = u as usize;
                 if u != v && match_of[u].is_none() {
-                    let shared_weight = connectivity.entry(u as u32).or_insert(0);
-                    *shared_weight = shared_weight
+                    // Hyperedge weights are positive, so a candidate's entry is
+                    // zero exactly until it is first reached.
+                    if connectivity[u] == 0 {
+                        candidates.push(u as u32);
+                    }
+                    connectivity[u] = connectivity[u]
                         .checked_add(weight)
                         .expect("validated total hyperedge weight fits in u32");
                 }
             }
         }
 
-        // An explicit lowest-index tie-break makes selection independent of
-        // hash-table iteration order.
+        // An explicit lowest-index tie-break makes selection independent of the
+        // order the candidates were reached in.
         let mut best_neighbor = None;
         let mut best_conn: u32 = 0;
         let mut best_same_part = false;
-        for (&nb, &conn) in &connectivity {
+        for &nb in &candidates {
+            let conn = connectivity[nb as usize];
             let same_part = part.is_some_and(|p| p[nb as usize] == p[v]);
             if same_part && !best_same_part {
                 best_conn = conn;
@@ -105,6 +113,9 @@ pub(super) fn coarsen_one_level(
                 best_conn = conn;
                 best_neighbor = Some(nb);
             }
+        }
+        for &nb in &candidates {
+            connectivity[nb as usize] = 0;
         }
 
         if let Some(neighbor) = best_neighbor {

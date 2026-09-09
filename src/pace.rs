@@ -14,11 +14,20 @@ use crate::graph::Graph;
 impl Graph {
     /// Render as a PACE `.gr` graph (1-indexed vertices).
     pub fn to_gr(&self) -> String {
-        let mut out = format!("p tw {} {}\n", self.num_vertices, self.edges.len());
+        let mut out = Vec::new();
+        let mut line = Vec::new();
+        line.extend_from_slice(b"p tw ");
+        push_decimal(&mut line, self.num_vertices as usize);
+        line.push(b' ');
+        push_decimal(&mut line, self.edges.len());
+        write_line(&mut out, &mut line).expect("writing a graph into memory cannot fail");
         for &(u, v) in &self.edges {
-            out.push_str(&format!("{} {}\n", u + 1, v + 1));
+            push_decimal(&mut line, u as usize + 1);
+            line.push(b' ');
+            push_decimal(&mut line, v as usize + 1);
+            write_line(&mut out, &mut line).expect("writing a graph into memory cannot fail");
         }
-        out
+        String::from_utf8(out).expect("PACE output contains only ASCII")
     }
 
     /// Read a PACE `.gr` graph. Self-loops are dropped and repeated edges kept
@@ -235,7 +244,26 @@ impl TreeDecomposition {
                     num_bags = parse_count("bag count", tokens[2])?;
                     declared_max_bag_size = parse_count("maximum bag size", tokens[3])?;
                     declared_vertices = parse_count("vertex count", tokens[4])?;
-                    bags = Vec::with_capacity(num_bags);
+                    // Every declared bag needs its own "b" line and every
+                    // declared vertex has to appear in one of them, so a count
+                    // wider than the input cannot be met. Rejecting it here
+                    // keeps the allocations below sized by the file rather
+                    // than by a number an ill-formed header asked for.
+                    if num_bags > text.len() {
+                        return Err(Error::Parse(format!(
+                            "the solution line declares {num_bags} bags, more than the {} bytes \
+                             of input can define",
+                            text.len()
+                        )));
+                    }
+                    if declared_vertices as usize > text.len() {
+                        return Err(Error::Parse(format!(
+                            "the solution line declares {declared_vertices} vertices, more than \
+                             the {} bytes of input can list",
+                            text.len()
+                        )));
+                    }
+                    bags = Vec::with_capacity(num_bags.min(text.len() / 4));
                     adj = vec![Vec::new(); num_bags];
                     saw_solution_line = true;
                 }

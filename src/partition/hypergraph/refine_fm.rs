@@ -72,8 +72,16 @@ pub(super) fn fm_refine_pass(hg: &Hypergraph, part: &mut [u8], max_imbalance: f6
         let mut best_from: usize = 0;
 
         for side in 0..2 {
+            let to = 1 - side;
+            // Every queued vertex weighs at least one, so a side at the floor
+            // can give none up and a side at the ceiling can take none. Without
+            // this the search walks that side's whole queue to return nothing,
+            // once per move, which is where a pass sits once it drifts to the
+            // balance boundary.
+            if weight[side] <= min_part_weight || weight[to] >= max_part_weight {
+                continue;
+            }
             let candidate = bq[side].best_satisfying(|vertex| {
-                let to = 1 - side;
                 !locked[vertex]
                     && weight[side] - hg.vertex_weights[vertex] >= min_part_weight
                     && weight[to] + hg.vertex_weights[vertex] <= max_part_weight

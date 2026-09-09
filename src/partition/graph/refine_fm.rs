@@ -8,6 +8,8 @@
 //! make their prefix profitable. This lets FM leave a single-move local
 //! minimum.
 
+use std::collections::VecDeque;
+
 use super::csr::CsrGraph;
 use crate::partition::common::{
     BisectionStop, FmBalance, GainBuckets, Stall, commit_best_prefix, fm_balance,
@@ -20,6 +22,7 @@ pub(super) struct FmScratch {
     moves: Vec<usize>,
     cumulative_gain: Vec<i64>,
     bq: [GainBuckets; 2],
+    region: RegionScratch,
 }
 
 impl FmScratch {
@@ -31,6 +34,7 @@ impl FmScratch {
             moves: Vec::new(),
             cumulative_gain: Vec::new(),
             bq: [GainBuckets::empty(), GainBuckets::empty()],
+            region: RegionScratch::new(),
         }
     }
 
@@ -45,6 +49,65 @@ impl FmScratch {
         self.cumulative_gain.clear();
         self.bq[0].reset(n);
         self.bq[1].reset(n);
+    }
+}
+
+/// Working storage for [`localized_fm_pass`], held across the four tries of a
+/// level and across the levels of a sweep.
+///
+/// A localized pass touches at most `max_region` vertices out of `n`, so the
+/// per-vertex arrays are cleared over the region the pass built rather than
+/// over the whole graph. That leaves every array as the pass found it, which is
+/// what lets `prepare` be a resize that usually does nothing.
+pub(super) struct RegionScratch {
+    gain: Vec<i64>,
+    in_region: Vec<bool>,
+    locked: Vec<bool>,
+    /// Whether a vertex has a neighbour on the other side, for the span of one
+    /// pass: 0 not yet computed, 1 interior, 2 on the boundary.
+    boundary: Vec<u8>,
+    /// The vertices whose `boundary` entry this pass wrote.
+    boundary_touched: Vec<usize>,
+    region_list: Vec<usize>,
+    queue: VecDeque<usize>,
+    moves: Vec<usize>,
+    cumulative_gain: Vec<i64>,
+}
+
+impl RegionScratch {
+    pub(super) fn new() -> Self {
+        RegionScratch {
+            gain: Vec::new(),
+            in_region: Vec::new(),
+            locked: Vec::new(),
+            boundary: Vec::new(),
+            boundary_touched: Vec::new(),
+            region_list: Vec::new(),
+            queue: VecDeque::new(),
+            moves: Vec::new(),
+            cumulative_gain: Vec::new(),
+        }
+    }
+
+    /// Size the per-vertex arrays for a graph of `n` vertices and empty the
+    /// lists. The arrays keep the values they hold, which the previous pass
+    /// left cleared; a length that grows is filled with the same cleared value.
+    fn prepare(&mut self, n: usize) {
+        self.gain.resize(n, 0);
+        self.in_region.resize(n, false);
+        self.locked.resize(n, false);
+        self.boundary.resize(n, 0);
+        // The pass that ends leaves these as it found them. `gain` is exempt:
+        // every region vertex is written before it is read, and no other entry
+        // is read at all.
+        debug_assert!(self.in_region.iter().all(|&member| !member));
+        debug_assert!(self.locked.iter().all(|&locked| !locked));
+        debug_assert!(self.boundary.iter().all(|&state| state == 0));
+        self.boundary_touched.clear();
+        self.region_list.clear();
+        self.queue.clear();
+        self.moves.clear();
+        self.cumulative_gain.clear();
     }
 }
 
@@ -120,8 +183,16 @@ pub(super) fn fm_refine_pass(
         let mut best_from: usize = 0;
 
         for side in 0..2 {
+            let to = 1 - side;
+            // Every queued vertex weighs at least one, so a side at the floor
+            // can give none up and a side at the ceiling can take none. Without
+            // this the search walks that side's whole queue to return nothing,
+            // once per move, which is where a pass sits once it drifts to the
+            // balance boundary.
+            if weight[side] <= min_part_weight || weight[to] >= max_part_weight {
+                continue;
+            }
             let candidate = bq[side].best_satisfying(|vertex| {
-                let to = 1 - side;
                 !locked[vertex]
                     && weight[side] - graph.vertex_weights[vertex] >= min_part_weight
                     && weight[to] + graph.vertex_weights[vertex] <= max_part_weight
@@ -209,6 +280,7 @@ pub(super) fn localized_fm_pass(
     part: &mut [u8],
     seed: usize,
     max_imbalance: f64,
+    scratch: &mut RegionScratch,
     stop: &mut BisectionStop,
 ) -> bool {
     let n = graph.num_vertices();
@@ -221,12 +293,16 @@ pub(super) fn localized_fm_pass(
         return false;
     };
 
+    scratch.prepare(n);
+    let in_region = scratch.in_region.as_mut_slice();
+    let boundary = scratch.boundary.as_mut_slice();
+    let boundary_touched = &mut scratch.boundary_touched;
+    let region_list = &mut scratch.region_list;
+    let queue = &mut scratch.queue;
+
     // region_list is collected alongside in_region to avoid a separate O(n)
     // scan in the selection loop below.
     let max_region = (n / 4).max(20).min(n);
-    let mut in_region = vec![false; n];
-    let mut region_list: Vec<usize> = Vec::with_capacity(max_region);
-    let mut queue = std::collections::VecDeque::new();
     in_region[seed] = true;
     queue.push_back(seed);
     region_list.push(seed);
@@ -250,11 +326,24 @@ pub(super) fn localized_fm_pass(
         for &nb in graph.neighbors(v) {
             let nb = nb as usize;
             if !in_region[nb] && region_list.len() < max_region {
-                let nb_part = part[nb];
-                let is_boundary = graph
-                    .neighbors(nb)
-                    .iter()
-                    .any(|&nnb| part[nnb as usize] != nb_part);
+                // No move happens until the region is grown, so whether `nb`
+                // has a neighbour on the other side does not change while this
+                // loop runs. A vertex the region keeps reaching but never
+                // admits is reached once per region neighbour it has, and
+                // without the record below its adjacency is walked every time.
+                let is_boundary = match boundary[nb] {
+                    0 => {
+                        let nb_part = part[nb];
+                        let on_boundary = graph
+                            .neighbors(nb)
+                            .iter()
+                            .any(|&nnb| part[nnb as usize] != nb_part);
+                        boundary[nb] = 1 + u8::from(on_boundary);
+                        boundary_touched.push(nb);
+                        on_boundary
+                    }
+                    known => known == 2,
+                };
                 if is_boundary {
                     in_region[nb] = true;
                     queue.push_back(nb);
@@ -264,9 +353,11 @@ pub(super) fn localized_fm_pass(
         }
     }
 
-    // Gains only for region vertices: O(region × deg), not O(n × deg).
-    let mut gain = vec![0i64; n];
-    for &v in &region_list {
+    // Gains only for region vertices: O(region × deg), not O(n × deg). A
+    // non-region entry is never read, so `gain` is written here and left alone
+    // rather than cleared.
+    let gain = scratch.gain.as_mut_slice();
+    for &v in region_list.iter() {
         let my_part = part[v];
         let start = graph.offsets[v] as usize;
         let end = graph.offsets[v + 1] as usize;
@@ -284,9 +375,9 @@ pub(super) fn localized_fm_pass(
         gain[v] = g;
     }
 
-    let mut locked = vec![false; n];
-    let mut moves: Vec<usize> = Vec::new();
-    let mut cumulative_gain: Vec<i64> = Vec::new();
+    let locked = scratch.locked.as_mut_slice();
+    let moves = &mut scratch.moves;
+    let cumulative_gain = &mut scratch.cumulative_gain;
     let mut running_gain: i64 = 0;
     let mut stall = Stall::new(region_list.len() / 2);
 
@@ -299,7 +390,7 @@ pub(super) fn localized_fm_pass(
         }
         let mut best_v = None;
         let mut best_g = i64::MIN;
-        for &v in &region_list {
+        for &v in region_list.iter() {
             if locked[v] {
                 continue;
             }
@@ -351,7 +442,19 @@ pub(super) fn localized_fm_pass(
         }
     }
 
-    commit_best_prefix(&moves, &cumulative_gain, part)
+    let improved = commit_best_prefix(moves, cumulative_gain, part);
+
+    // Hand the arrays back the way they were found. Only region vertices are
+    // marked in `in_region` and `locked`, and `boundary_touched` names every
+    // vertex whose `boundary` entry was written.
+    for &v in region_list.iter() {
+        in_region[v] = false;
+        locked[v] = false;
+    }
+    for &v in boundary_touched.iter() {
+        boundary[v] = 0;
+    }
+    improved
 }
 
 /// Standard FM refinement (global passes only).
@@ -413,6 +516,6 @@ pub(super) fn refine_finest_level(
             break;
         }
         let seed = boundary[(i * 7919) % boundary.len()];
-        localized_fm_pass(graph, part, seed, max_imbalance, stop);
+        localized_fm_pass(graph, part, seed, max_imbalance, &mut scratch.region, stop);
     }
 }

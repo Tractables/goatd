@@ -300,6 +300,11 @@ pub(super) struct GainBuckets {
     gain_of: Vec<Option<i64>>,
     /// Position of `v` within its bucket while it is queued.
     pos_in_bucket: Vec<usize>,
+    /// Emptied buckets, kept for the next gain that needs one. A move
+    /// re-files every neighbour of the moved vertex, so gains are occupied and
+    /// vacated throughout a pass; without this each transition is a free and a
+    /// malloc in the innermost loop of the bisector.
+    spare: Vec<Vec<usize>>,
 }
 
 impl GainBuckets {
@@ -316,12 +321,16 @@ impl GainBuckets {
             buckets: BTreeMap::new(),
             gain_of: Vec::new(),
             pos_in_bucket: Vec::new(),
+            spare: Vec::new(),
         }
     }
 
     /// Empty the queue and resize its per-vertex index.
     pub(super) fn reset(&mut self, n: usize) {
-        self.buckets.clear();
+        for mut bucket in std::mem::take(&mut self.buckets).into_values() {
+            bucket.clear();
+            self.spare.push(bucket);
+        }
         self.gain_of.clear();
         self.gain_of.resize(n, None);
         self.pos_in_bucket.clear();
@@ -352,7 +361,11 @@ impl GainBuckets {
     /// recent vertex rather than an arbitrary one.
     pub(super) fn insert(&mut self, v: usize, gain: i64) {
         debug_assert!(self.gain_of[v].is_none());
-        let bucket = self.buckets.entry(gain).or_default();
+        let spare = &mut self.spare;
+        let bucket = self
+            .buckets
+            .entry(gain)
+            .or_insert_with(|| spare.pop().unwrap_or_default());
         self.pos_in_bucket[v] = bucket.len();
         bucket.push(v);
         self.gain_of[v] = Some(gain);
@@ -374,7 +387,11 @@ impl GainBuckets {
             bucket.is_empty()
         };
         if remove_bucket {
-            self.buckets.remove(&gain);
+            let emptied = self
+                .buckets
+                .remove(&gain)
+                .expect("the bucket was just read");
+            self.spare.push(emptied);
         }
         self.pos_in_bucket[v] = usize::MAX;
     }

@@ -16,7 +16,7 @@
 //! library is single-threaded. [`meter::arm`] makes duration budgets advance by
 //! charged graph work instead of wall time when repeatable stopping points are
 //! needed. [`stop_flag`] ends a running solve early and returns the best
-//! decomposition found so far.
+//! decomposition found so far; it is one flag for the whole process.
 //!
 //! ```
 //! use goatd::Graph;

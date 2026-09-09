@@ -15,9 +15,9 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 cargo fmt --check
 ```
 
-`bindings/python/` and `bindings/c/` each declare an empty `[workspace]`
-table, so none of the above touches them. A change under either directory
-additionally needs:
+`bindings/python/`, `bindings/c/` and `bindings/wasm/` each declare an empty
+`[workspace]` table, so none of the above touches them. A change under any of
+those directories additionally needs:
 
 ```sh
 cargo fmt --check --manifest-path bindings/python/Cargo.toml
@@ -25,7 +25,12 @@ cargo clippy --manifest-path bindings/python/Cargo.toml --release --locked -- -D
 
 cargo fmt --check --manifest-path bindings/c/Cargo.toml
 cargo clippy --manifest-path bindings/c/Cargo.toml --release --all-targets -- -D warnings
+
+cargo fmt --check --manifest-path bindings/wasm/Cargo.toml
 ```
+
+The wasm binding's clippy run needs the emscripten target, which
+`.github/workflows/wasm.yml` installs; the format check does not.
 
 A change to `bindings/c/src/lib.rs` or `bindings/c/cbindgen.toml` also needs
 the committed header checked against cbindgen at the version

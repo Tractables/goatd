@@ -99,8 +99,8 @@ pub(crate) struct RunSpec<'a> {
 }
 
 /// Run a single spec using a preprocessed graph. The first sampled min-fill
-/// run populates its reusable fill-count cache; every run clones the reduced
-/// graph before mutating it.
+/// run populates its reusable fill-count cache; a run that eliminates on the
+/// residual itself clones it first.
 pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> OrderRun {
     if spec.order.uses_initial_fill_cache() && prebuilt.initial_fill.is_none() {
         let graph = &prebuilt.reduced.graph;
@@ -138,22 +138,36 @@ pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> 
         };
         prebuilt.initial_fill = Some(fill);
     }
-    let clone_bitset_only =
-        prebuilt.components.len() == 1 && prebuilt.reduced.graph.bitset_words > 0;
-    let reduced = if clone_bitset_only {
-        Reduced {
-            graph: prebuilt.reduced.graph.clone_bitset_only(),
-            prefix: prebuilt.reduced.prefix.clone(),
-        }
-    } else {
-        prebuilt.reduced.clone()
-    };
+    // The per-component path only reads the residual: it eliminates on the
+    // component subgraphs it builds from it. Copying the residual for it would
+    // be a graph-sized allocation per candidate that nothing writes to.
+    if prebuilt.components.len() > 1 {
+        let salt = salt_for(prebuilt.reduced.graph.len(), spec.seed);
+        return run_order_per_component(
+            &prebuilt.reduced.graph,
+            prebuilt.reduced.prefix.clone(),
+            &prebuilt.components,
+            &salt,
+            prebuilt.initial_fill.as_deref(),
+            spec,
+        );
+    }
     run_order_on_reduced(
-        reduced,
+        prebuilt.reduced.clone(),
         &prebuilt.components,
         prebuilt.initial_fill.as_deref(),
         spec,
     )
+}
+
+/// The per-vertex tie-break salt one run draws from its seed.
+///
+/// `+ SEED_OFFSET` avoids xorshift64's zero fixed point. The update-order
+/// min-degree variant does not read the salt, but keeping allocation here
+/// avoids another representation in component remapping.
+fn salt_for(n: usize, seed: u64) -> Vec<u32> {
+    let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
+    (0..n).map(|_| rng.next_u32()).collect()
 }
 
 /// BFS connected-component finder on the active residual. Returns one Vec<u32>
@@ -296,19 +310,24 @@ fn run_elimination_raw(
 /// Key invariant: prefix bags use original vertex ids; per-component bags use
 /// component-local ids that must be translated back to originals before
 /// appending to `all_bags`.
+///
+/// `graph` is the preprocessed residual, read for its neighbour lists and
+/// never eliminated on: each component is eliminated on the subgraph built
+/// from it below.
 fn run_order_per_component(
-    reduced: Reduced,
+    graph: &EliminationGraph,
+    prefix: ElimSteps,
     components: &[Vec<u32>],
     salt: &[u32],
     initial_fill: Option<&[u64]>,
     spec: RunSpec<'_>,
 ) -> OrderRun {
-    let n = reduced.graph.len();
-    let mut all_bags: Vec<Vec<u32>> = reduced.prefix.bags;
+    let n = graph.len();
+    let mut all_bags: Vec<Vec<u32>> = prefix.bags;
     let mut global_rank: Vec<u32> = vec![u32::MAX; n];
 
     // Prefix ranks: (vertex, step) where step == bag index.
-    for &(v, s) in &reduced.prefix.rank_pairs {
+    for &(v, s) in &prefix.rank_pairs {
         global_rank[v as usize] = s as u32;
     }
 
@@ -328,7 +347,7 @@ fn run_order_per_component(
         let mut comp_edges: Vec<(u32, u32)> = Vec::new();
         for &v in comp {
             nbrs_buf.clear();
-            reduced.graph.collect_live_nbrs_into(v, &mut nbrs_buf);
+            graph.collect_live_nbrs_into(v, &mut nbrs_buf);
             for &u in &nbrs_buf {
                 if u > v {
                     comp_edges.push((local_of[v as usize], local_of[u as usize]));
@@ -426,16 +445,13 @@ pub(super) fn run_order_on_reduced(
     spec: RunSpec<'_>,
 ) -> OrderRun {
     let n = reduced.graph.len();
-    // `+ SEED_OFFSET` avoids xorshift64's zero fixed point. The update-order
-    // min-degree variant does not read the salt, but keeping allocation here
-    // avoids another representation in component remapping.
-    let mut rng = Xorshift64::from_state(spec.seed.wrapping_add(SEED_OFFSET));
-    let salt: Vec<u32> = (0..n).map(|_| rng.next_u32()).collect();
+    let salt = salt_for(n, spec.seed);
 
     // Solve each connected component independently. Components arise
     // naturally after preprocessing removes low-degree vertices.
     if components.len() > 1 {
-        return run_order_per_component(reduced, components, &salt, initial_fill, spec);
+        let Reduced { graph, prefix } = reduced;
+        return run_order_per_component(&graph, prefix, components, &salt, initial_fill, spec);
     }
 
     // Only the whole-residual path checks this: the per-component path

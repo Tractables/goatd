@@ -7,8 +7,9 @@
 //! the result whenever they did in the input. The per-function docs say how.
 
 use std::collections::VecDeque;
+use std::ops::ControlFlow;
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{TdBag, TreeDecomposition};
 use crate::Error;
@@ -52,7 +53,7 @@ impl RootedForest {
     }
 }
 
-/// Root a bag forest at `roots` and walk it breadth-first.
+/// Walk a bag forest breadth-first and report where each bag was reached from.
 ///
 /// A decomposition need not be connected — a projection that drops a separator
 /// leaves several components behind — so this roots a forest rather than a
@@ -61,36 +62,61 @@ impl RootedForest {
 /// says "these bags first, then whatever they missed", and starting from
 /// `0..n` alone says "no preference": either way every bag is reached exactly
 /// once.
-fn rooted_forest_from_adjacency(
+///
+/// `visit` sees each bag as it leaves the queue together with its distance from
+/// its component root, so a distance of zero marks a root, and returns
+/// [`ControlFlow::Break`] to end the walk there. A bag's parent is set when the
+/// bag is discovered and never changes, so a caller that wants only the chain
+/// up to one bag can stop as soon as that bag is visited. The returned entry is
+/// `None` for a component root and for any bag an early stop left unreached.
+fn walk_bag_forest(
     adj: &[Vec<usize>],
     roots: impl IntoIterator<Item = usize>,
-) -> RootedForest {
-    let n = adj.len();
-    let mut parent = vec![None; n];
-    let mut depth = vec![0usize; n];
-    let mut order = Vec::with_capacity(n);
-    let mut visited = vec![false; n];
-    let mut component_roots = Vec::new();
+    mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
+) -> Vec<Option<usize>> {
+    let mut parent = vec![None; adj.len()];
+    let mut visited = vec![false; adj.len()];
     let mut queue = VecDeque::new();
     for start in roots {
         if visited[start] {
             continue;
         }
-        component_roots.push(start);
         visited[start] = true;
-        queue.push_back(start);
-        while let Some(t) = queue.pop_front() {
-            order.push(t);
-            for &nb in &adj[t] {
-                if !visited[nb] {
-                    visited[nb] = true;
-                    parent[nb] = Some(t);
-                    depth[nb] = depth[t] + 1;
-                    queue.push_back(nb);
+        queue.push_back((start, 0usize));
+        while let Some((bag, depth)) = queue.pop_front() {
+            if visit(bag, depth).is_break() {
+                return parent;
+            }
+            for &neighbour in &adj[bag] {
+                if !visited[neighbour] {
+                    visited[neighbour] = true;
+                    parent[neighbour] = Some(bag);
+                    queue.push_back((neighbour, depth + 1));
                 }
             }
         }
     }
+    parent
+}
+
+/// Root a bag forest at `roots` and keep everything one breadth-first walk
+/// produces. `roots` is read as [`walk_bag_forest`] reads it.
+fn rooted_forest_from_adjacency(
+    adj: &[Vec<usize>],
+    roots: impl IntoIterator<Item = usize>,
+) -> RootedForest {
+    let n = adj.len();
+    let mut order = Vec::with_capacity(n);
+    let mut depth = vec![0usize; n];
+    let mut component_roots = Vec::new();
+    let parent = walk_bag_forest(adj, roots, |bag, bag_depth| {
+        order.push(bag);
+        depth[bag] = bag_depth;
+        if bag_depth == 0 {
+            component_roots.push(bag);
+        }
+        ControlFlow::Continue(())
+    });
     RootedForest {
         order,
         parent,
@@ -170,7 +196,7 @@ pub(super) fn project_td_keeping_global_ids(
     let new_count = non_empty.len();
     let mut new_adj: Vec<Vec<usize>> = vec![Vec::new(); new_count];
 
-    let parent_in_td = rooted_forest_from_adjacency(&td.adj, 0..n).parent;
+    let parent_in_td = walk_bag_forest(&td.adj, 0..n, |_, _| ControlFlow::Continue(()));
 
     for &old_i in &non_empty {
         let new_i = old_to_new[old_i].unwrap();
@@ -494,11 +520,24 @@ fn augment_for_separator(td: &mut TreeDecomposition, sep: &[u32]) -> Option<usiz
             .count()
     })?;
 
+    // The loop below only ever pushes the separator vertex it is currently
+    // carrying, so an earlier iteration cannot move a later one's first
+    // holder. One sweep over the bags answers every lookup; the ascending
+    // bag order makes `or_insert` keep the same bag the scan would find.
+    let mut first_holder: FxHashMap<u32, usize> = FxHashMap::default();
+    for (index, bag) in td.bags.iter().enumerate() {
+        for &vertex in &bag.vertices {
+            if sep_set.contains(&vertex) {
+                first_holder.entry(vertex).or_insert(index);
+            }
+        }
+    }
+
     for &v in sep {
         if td.bags[anchor].vertices.contains(&v) {
             continue;
         }
-        let src = (0..td.bags.len()).find(|&i| td.bags[i].vertices.contains(&v))?;
+        let src = *first_holder.get(&v)?;
         if src != anchor {
             match bag_path_bfs(&td.adj, src, anchor) {
                 Some(path) => {
@@ -538,7 +577,16 @@ fn bag_path_bfs(adj: &[Vec<usize>], src: usize, dst: usize) -> Option<Vec<usize>
     if src == dst {
         return Some(vec![src]);
     }
-    let parent = rooted_forest_from_adjacency(adj, [src]).parent;
+    // Every bag on the path is discovered before `dst` leaves the queue, so
+    // the walk can stop there: the chain it leaves behind is the one a walk
+    // over the whole component would leave.
+    let parent = walk_bag_forest(adj, [src], |bag, _| {
+        if bag == dst {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    });
     let mut path = vec![dst];
     let mut x = dst;
     while x != src {

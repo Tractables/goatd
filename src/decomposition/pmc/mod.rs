@@ -252,11 +252,7 @@ impl BagPool {
                 break;
             }
             let kept = &held.decomposition;
-            sources.push(if super::minimalize_fits(kept, graph, deadline) {
-                super::minimalize_at(kept.clone(), graph, deadline)
-            } else {
-                kept.clone()
-            });
+            sources.push(super::minimalize_at(kept.clone(), graph, deadline));
         }
         let shares = sources.len() + 1;
         let mut bags: Vec<VertexSet> = Vec::new();
@@ -492,9 +488,9 @@ fn decompose_piece(
         .collect()
 }
 
-/// The component of `G` less the `position`-th component's separator that holds
-/// the rest of `bag`, with that component's own separator. `None` where the bag
-/// is the separator and so caps nothing.
+/// The components of `G` less the `position`-th component's separator that the
+/// rest of `bag` reaches, with that component's own separator. `None` where the
+/// bag is the separator and so caps nothing.
 ///
 /// The far side is what is left of the bag once the separator is taken out,
 /// plus every other component of `G − Ω` that touches it. Nothing further
@@ -623,19 +619,6 @@ impl Search<'_> {
         Some(())
     }
 
-    /// The component of `G` less the `position`-th component's separator that
-    /// holds the rest of `bag`, with that component's own separator. `None`
-    /// where the bag is the separator and so caps nothing.
-    ///
-    /// The far side is what is left of the bag once the separator is taken out,
-    /// plus every other component of `G − Ω` that touches it. Nothing further
-    /// joins: two components of `G − Ω` share no edge, so a component reached
-    /// from one of them would have to be reached through the bag, and the only
-    /// bag vertices left are already there.
-    ///
-    /// Its separator is not the whole of `N(C)`: a vertex there may border `C`
-    /// and nothing on the far side. Taking the exact set matters, because a
-    /// block's separator is what its parent bag is guaranteed to contain.
     /// Settle every block's width, smallest component first.
     fn evaluate(&mut self, deadline: Option<Instant>) -> Option<()> {
         let mut order: Vec<usize> = (0..self.blocks.len()).collect();
