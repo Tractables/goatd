@@ -122,8 +122,8 @@ fn eliminate_and_record(
     let degree = neighbours.len();
     let mut bag = Vec::with_capacity(degree + 1);
     bag.push(vertex);
-    bag.extend(neighbours);
-    graph.eliminate(vertex);
+    bag.extend_from_slice(&neighbours);
+    graph.eliminate_with_nbrs(vertex, &neighbours);
     prefix.sink().record(vertex, bag);
     degree
 }
@@ -223,9 +223,11 @@ fn peel_low_degree(graph: &mut EliminationGraph, prefix: &mut ElimSteps) -> bool
                     fired = true;
                 }
                 1 => {
-                    let neighbour = graph.live_neighbours(v as u32)[0];
-                    graph.remove_without_fill(v as u32);
-                    prefix.sink().record(v as u32, vec![v as u32, neighbour]);
+                    let neighbours = graph.live_neighbours(v as u32);
+                    graph.remove_without_fill_nbrs(v as u32, &neighbours);
+                    prefix
+                        .sink()
+                        .record(v as u32, vec![v as u32, neighbours[0]]);
                     fired = true;
                 }
                 _ => {}

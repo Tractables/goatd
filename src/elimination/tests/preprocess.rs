@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::elimination::graph::EliminationGraph;
 use crate::elimination::preprocess::*;
 
@@ -130,4 +132,154 @@ fn the_almost_simplicial_rule_fires_on_a_single_missing_edge() {
     let reduced = preprocess(EliminationGraph::from_edges(6, &edges), None);
     assert_eq!(reduced.graph.num_active, 0);
     assert!(reduced.prefix.bags.iter().all(|bag| bag.len() <= 6));
+}
+
+/// Gadgets the five rules fire on, appended to `edges` from index `base`, and
+/// the first index past them: an isolate, a pendant path, a square, a K4 that
+/// raises the treewidth bound to three, and a K4 missing one edge with a twin
+/// of one of its vertices. The last gadget has no simplicial vertex, so the
+/// almost-simplicial rule is what clears it.
+fn reduction_gadgets(base: u32, edges: &mut Vec<(u32, u32)>) -> u32 {
+    // The isolate.
+    let mut next = base + 1;
+
+    // A pendant path onto the square, peeled by the twig rule before the
+    // square's vertices reach degree two.
+    let path = next;
+    next += 2;
+    let square = next;
+    next += 4;
+    edges.extend([(path, path + 1), (path + 1, square)]);
+    edges.extend([
+        (square, square + 1),
+        (square + 1, square + 2),
+        (square + 2, square + 3),
+        (square, square + 3),
+    ]);
+
+    let k4 = next;
+    next += 4;
+    for a in 0..4 {
+        for b in a + 1..4 {
+            edges.push((k4 + a, k4 + b));
+        }
+    }
+
+    let almost = next;
+    next += 5;
+    edges.extend([
+        (almost, almost + 1),
+        (almost, almost + 2),
+        (almost, almost + 3),
+        (almost + 1, almost + 2),
+        (almost + 1, almost + 3),
+        (almost + 4, almost + 1),
+        (almost + 4, almost + 2),
+        (almost + 4, almost + 3),
+    ]);
+
+    next
+}
+
+/// A chorded ring, which no rule fires on, so it is what the gadgets beside it
+/// leave as the residual — and it holds enough vertices to keep the graph out
+/// of bitset mode.
+fn chorded_ring(vertices: u32, edges: &mut Vec<(u32, u32)>) {
+    for vertex in 0..vertices {
+        edges.push((vertex, (vertex + 1) % vertices));
+        edges.push((vertex, (vertex + 7) % vertices));
+        edges.push((vertex, (vertex + 53) % vertices));
+    }
+}
+
+/// Every recorded bag is the eliminated vertex followed by the neighbours it
+/// had at that step, and the residual holds what eliminating those vertices
+/// with fill leaves. The check runs on neighbourhoods rather than adjacency
+/// rows, so it reads the same in both representations.
+fn assert_bags_and_residual_match_fill_eliminations(n: u32, edges: &[(u32, u32)]) {
+    let reduced = preprocess(EliminationGraph::from_edges(n, edges), None);
+
+    let mut neighbourhood: Vec<BTreeSet<u32>> = vec![BTreeSet::new(); n as usize];
+    for &(u, v) in edges {
+        neighbourhood[u as usize].insert(v);
+        neighbourhood[v as usize].insert(u);
+    }
+    let mut live = vec![true; n as usize];
+
+    let steps = reduced.prefix.bags.iter().zip(&reduced.prefix.rank_pairs);
+    for (index, (bag, &(vertex, step))) in steps.enumerate() {
+        assert_eq!(step, index, "bag {index} is not the step it is ranked at");
+        assert_eq!(bag[0], vertex, "bag {index} does not start with its vertex");
+        let recorded: BTreeSet<u32> = bag[1..].iter().copied().collect();
+        assert_eq!(
+            recorded.len(),
+            bag.len() - 1,
+            "bag {index} lists a neighbour twice"
+        );
+        assert_eq!(
+            recorded, neighbourhood[vertex as usize],
+            "bag {index} is not {vertex} and its neighbours"
+        );
+
+        // Eliminating with fill: the neighbourhood becomes a clique, then the
+        // vertex leaves it.
+        let nbrs: Vec<u32> = neighbourhood[vertex as usize].iter().copied().collect();
+        for (position, &u) in nbrs.iter().enumerate() {
+            for &w in &nbrs[position + 1..] {
+                neighbourhood[u as usize].insert(w);
+                neighbourhood[w as usize].insert(u);
+            }
+        }
+        for &u in &nbrs {
+            neighbourhood[u as usize].remove(&vertex);
+        }
+        neighbourhood[vertex as usize].clear();
+        live[vertex as usize] = false;
+    }
+
+    let mut residual_ends = 0usize;
+    for vertex in 0..n {
+        assert_eq!(
+            reduced.graph.active[vertex as usize], live[vertex as usize],
+            "vertex {vertex} is on the wrong side of the residual"
+        );
+        if !live[vertex as usize] {
+            continue;
+        }
+        let mut have = reduced.graph.live_neighbours(vertex);
+        have.sort_unstable();
+        let want: Vec<u32> = neighbourhood[vertex as usize].iter().copied().collect();
+        assert_eq!(have, want, "residual neighbours of {vertex}");
+        residual_ends += want.len();
+    }
+    assert_eq!(reduced.graph.num_edges, residual_ends / 2);
+    assert_eq!(
+        reduced.graph.num_active,
+        live.iter().filter(|&&alive| alive).count()
+    );
+}
+
+#[test]
+fn recorded_bags_and_the_residual_match_eliminating_with_fill() {
+    // All five rules on a graph dense enough for the bitset path.
+    let mut dense = Vec::new();
+    let dense_n = reduction_gadgets(0, &mut dense);
+    assert_bags_and_residual_match_fill_eliminations(dense_n, &dense);
+
+    // The same rules on a graph too sparse for it, so short adjacency rows
+    // answer, and with a residual left over.
+    let mut sparse = Vec::new();
+    let ring = 2_000u32;
+    chorded_ring(ring, &mut sparse);
+    let sparse_n = reduction_gadgets(ring, &mut sparse);
+    assert_bags_and_residual_match_fill_eliminations(sparse_n, &sparse);
+
+    // A clique whose rows are long enough to carry membership maps, in a graph
+    // past the bitset vertex bound: every vertex is simplicial, so this is the
+    // rule that removes a clique neighbourhood, on indexed rows.
+    let clique = 260u32;
+    let mut indexed = complete_graph(clique);
+    let indexed_n = reduction_gadgets(clique, &mut indexed);
+    assert!(indexed_n < 20_000, "past BITSET_THRESH, so the rows answer");
+    assert_bags_and_residual_match_fill_eliminations(20_000, &indexed);
 }
