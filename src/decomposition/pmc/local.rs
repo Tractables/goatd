@@ -4,9 +4,9 @@
 //! produced and searches that pool; the merge loop of [`super::merge`] builds a
 //! fresh tree, improves it on its own and merges it in. Neither adds the
 //! cliques of a *local re-triangulation* between a bag of one tree and a bag of
-//! another, which is the step of Tamaki, "Heuristic computation of exact
-//! treewidth", 2022, section 3, and where that paper says the tree decompositions
-//! neither list admits on its own come from.
+//! another. That step is section 3 of Tamaki, "Heuristic computation of exact
+//! treewidth", 2022, and it is what lets a tree take some bags from one list,
+//! some from the other, and the cliques that join the two.
 //!
 //! The step, for a bag `X` of the answer and a bag `Y` of another pooled tree:
 //! `C` is the largest component of `G − X`, and `Y` has to lie inside `N[C]`
@@ -22,9 +22,8 @@
 //!
 //! What is new here against the merge loop is where the partner comes from:
 //! the trees of the run's own portfolio, which cut the graph in places a
-//! randomised elimination does not, rather than one more randomised
-//! elimination. The bags `X` are the answer's own widest, since a re-triangulation
-//! anywhere else cannot lower the width.
+//! randomised elimination does not. The bags `X` are the answer's own widest,
+//! since that is where its width is.
 
 use std::time::Instant;
 
