@@ -283,6 +283,16 @@ fn a_rejected_td_names_the_offending_id_and_the_count_it_was_checked_against() {
             "a vertex whose bags are disconnected",
             &["vertex 0", "not connected"],
         ),
+        (
+            "s td 18446744073709551615 1 1\nb 1 1\n",
+            "a bag count wider than the input",
+            &["declares 18446744073709551615 bags", "bytes of input"],
+        ),
+        (
+            "s td 1 1 4294967295\nb 1 1\n",
+            "a vertex count wider than the input",
+            &["declares 4294967295 vertices", "bytes of input"],
+        ),
     ];
     for &(td_str, what, expected) in cases {
         let err = TreeDecomposition::from_td(td_str)
