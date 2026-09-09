@@ -652,6 +652,12 @@ once and checks connectivity through parent links. Each graph edge is checked
 in the deeper of its endpoints’ root-most holder bags. Validation takes linear
 time in the graph size, bag count, and total bag size.
 
+`TreeDecomposition::new` always validates. `new_trusted` checks only in debug
+builds and lets callers construct an already-valid decomposition without a
+full validation pass in release builds. Call `validate` to request that check
+explicitly. Solver-generated FlowCutter, bipartite-lift and recombined trees
+use debug checks; refinement and minimalization still validate caller input.
+
 Elimination reads the clock on the work it has charged rather than on the
 iterations it has run: once a millisecond's worth of charged work has passed,
 or 64 iterations, whichever comes first. Iterations differ in cost by orders of

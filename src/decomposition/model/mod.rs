@@ -53,9 +53,47 @@ pub struct TreeDecomposition {
 impl TreeDecomposition {
     /// Build and validate a tree decomposition of `graph`.
     ///
-    /// `tree_edges` are undirected pairs of indices into `bags`.
+    /// `tree_edges` are undirected pairs of indices into `bags`. For data
+    /// whose validity is established by its construction, [`Self::new_trusted`]
+    /// skips full validation in release builds.
     pub fn new(
         graph: &Graph,
+        bags: impl IntoIterator<Item = Vec<u32>>,
+        tree_edges: impl IntoIterator<Item = (usize, usize)>,
+    ) -> Result<Self, Error> {
+        let td = Self::assemble(graph.num_vertices, bags, tree_edges)?;
+        td.validate(graph)?;
+        Ok(td)
+    }
+
+    /// Build a decomposition supplied by a trusted algorithm.
+    ///
+    /// The caller must ensure that the bags and edges form a valid tree
+    /// decomposition of `graph`. Debug builds check this contract; release
+    /// builds skip full validation. Call [`Self::validate`] explicitly when
+    /// a release build also needs the check, or use [`Self::new`] for data
+    /// whose validity is not established.
+    ///
+    /// Bags and tree edges are canonicalized as in [`Self::new`]. Out-of-range
+    /// bag-tree endpoints return an error in every build.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if the decomposition is invalid. Supplying
+    /// invalid data in release builds may cause later operations to panic or
+    /// produce incorrect results.
+    pub fn new_trusted(
+        graph: &Graph,
+        bags: impl IntoIterator<Item = Vec<u32>>,
+        tree_edges: impl IntoIterator<Item = (usize, usize)>,
+    ) -> Result<Self, Error> {
+        let td = Self::assemble(graph.num_vertices, bags, tree_edges)?;
+        td.debug_validate(graph);
+        Ok(td)
+    }
+
+    fn assemble(
+        num_vertices: u32,
         bags: impl IntoIterator<Item = Vec<u32>>,
         tree_edges: impl IntoIterator<Item = (usize, usize)>,
     ) -> Result<Self, Error> {
@@ -76,9 +114,14 @@ impl TreeDecomposition {
             adj[left].push(right);
             adj[right].push(left);
         }
-        let td = Self::from_parts(graph.num_vertices, bags, adj);
-        td.validate(graph)?;
-        Ok(td)
+        Ok(Self::from_parts(num_vertices, bags, adj))
+    }
+
+    pub(crate) fn debug_validate(&self, graph: &Graph) {
+        debug_assert!(
+            self.validate(graph).is_ok(),
+            "invalid trusted decomposition"
+        );
     }
 
     pub(crate) fn from_parts(num_vertices: u32, bags: Vec<TdBag>, adj: Vec<Vec<usize>>) -> Self {

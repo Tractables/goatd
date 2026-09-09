@@ -290,8 +290,7 @@ impl Projection {
     /// # Errors
     ///
     /// Returns an error when no bag holds an eliminated vertex's neighbourhood,
-    /// which cannot happen for a decomposition of this projection, or when the
-    /// result does not validate against `graph`.
+    /// which cannot happen for a valid decomposition of this projection.
     pub(super) fn lift(
         &self,
         graph: &Graph,
@@ -355,7 +354,7 @@ impl Projection {
             bags.push(bag);
             edges.push((bags.len() - 1, host));
         }
-        TreeDecomposition::new(graph, bags, edges)
+        TreeDecomposition::new_trusted(graph, bags, edges)
     }
 
     /// Depth of every bag from the root of its component, and for every
