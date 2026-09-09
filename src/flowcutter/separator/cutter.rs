@@ -122,6 +122,9 @@ pub(super) struct BasicCutter {
     /// Arc IDs, not node IDs: arcs leaving `assim[side]` that carry flow.
     front: [Vec<u32>; 2],
     reach: [NodeSet; 2],
+    /// Nodes the reachable search has set since the last reset, so the reset
+    /// can restore those entries instead of rewriting the whole array.
+    reach_touched: [Vec<u32>; 2],
     /// Arc IDs indexed by node: the arc used to reach each node, for walking
     /// an augmenting path back to its source.
     predecessor: [Vec<u32>; 2],
@@ -141,6 +144,7 @@ impl BasicCutter {
             assim: [NodeSet::new(n_exp), NodeSet::new(n_exp)],
             front: [Vec::new(), Vec::new()],
             reach: [NodeSet::new(n_exp), NodeSet::new(n_exp)],
+            reach_touched: [Vec::new(), Vec::new()],
             predecessor: [vec![NO_PRED; n_exp as usize], vec![NO_PRED; n_exp as usize]],
             flow: Flow::new(a_exp as usize),
             tmp_dfs: Vec::with_capacity(n_exp as usize),
@@ -156,6 +160,7 @@ impl BasicCutter {
         for s in 0..2 {
             self.assim[s].clear();
             self.reach[s].clear();
+            self.reach_touched[s].clear();
             self.front[s].clear();
             for p in self.predecessor[s].iter_mut() {
                 *p = NO_PRED;
@@ -224,6 +229,7 @@ impl BasicCutter {
                     }
                     self.predecessor[my_src][y as usize] = xy;
                     self.reach[my_src].inside[y as usize] = true;
+                    self.reach_touched[my_src].push(y);
                     self.reach[my_src].count += 1;
                     if self.assim[my_tgt].inside[y as usize] {
                         found_in_iter = Some(y);
@@ -268,6 +274,7 @@ impl BasicCutter {
                     }
                     self.predecessor[my_tgt][y as usize] = xy;
                     self.reach[my_tgt].inside[y as usize] = true;
+                    self.reach_touched[my_tgt].push(y);
                     self.reach[my_tgt].count += 1;
                     self.tmp_dfs.push(y);
                 });
@@ -297,14 +304,27 @@ impl BasicCutter {
         }
     }
 
+    /// Put `reach[side]` back to `assim[side]`.
+    ///
+    /// Only the nodes the search set since the last reset can differ, so those
+    /// are the only ones restored. That relies on the assimilated set being a
+    /// subset of the reachable one, which the reference implementation asserts
+    /// (`flow_cutter.hpp`, "assimilated must be a subset of reachable") and
+    /// which `current_cut_side` already assumes when it compares the two
+    /// counts.
     fn reset_reachable(&mut self, side: usize) {
-        for (r, a) in self.reach[side]
-            .inside
-            .iter_mut()
-            .zip(self.assim[side].inside.iter())
-        {
-            *r = *a;
+        debug_assert!(
+            self.assim[side]
+                .inside
+                .iter()
+                .zip(self.reach[side].inside.iter())
+                .all(|(&a, &r)| !a || r),
+            "assimilated must be a subset of reachable"
+        );
+        for &node in &self.reach_touched[side] {
+            self.reach[side].inside[node as usize] = self.assim[side].inside[node as usize];
         }
+        self.reach_touched[side].clear();
         self.reach[side].count = self.assim[side].count;
         self.reach[side].extra = self.assim[side].extra;
     }
