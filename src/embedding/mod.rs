@@ -186,9 +186,10 @@ impl Embedding {
     /// and would draw almost uniformly.
     pub fn rank_weights(&self, peripheral_first: bool) -> Vec<u32> {
         let count = self.num_vertices();
+        let distances: Vec<f32> = (0..count as u32).map(|v| self.eccentricity(v)).collect();
         let mut order: Vec<u32> = (0..count as u32).collect();
         order.sort_by(|&left, &right| {
-            let (a, b) = (self.eccentricity(left), self.eccentricity(right));
+            let (a, b) = (distances[left as usize], distances[right as usize]);
             let by_eccentricity = if peripheral_first {
                 b.total_cmp(&a)
             } else {
@@ -279,7 +280,7 @@ fn run_rounds(
 
         // The leading axis settles long before the whole cloud does, so a
         // consumer that reads only one axis can stop much earlier than this.
-        if largest_invariant_change(coords, &next, dim, &starts, &targets) <= budget.tolerance {
+        if is_settled(coords, &next, dim, &starts, &targets, budget.tolerance) {
             settled += 1;
             if settled >= patience {
                 break;
@@ -317,22 +318,25 @@ fn adjacency(graph: &Graph) -> (Vec<usize>, Vec<u32>) {
     (starts, targets)
 }
 
-/// The largest change between two whitened clouds in the quantities read back
-/// out of one: the squared distance of a vertex from the centre, and the
+/// Whether two whitened clouds agree to `tolerance` in the quantities read
+/// back out of one: the squared distance of a vertex from the centre, and the
 /// squared length of an edge.
 ///
 /// Whitening fixes the frame only up to a rotation — two axes with close
 /// eigenvalues can come back swapped or flipped — so comparing coordinates
 /// directly reports movement in a cloud whose geometry has stopped changing.
 /// These two quantities are invariant under that rotation.
-fn largest_invariant_change(
+///
+/// The comparison is strict, so a change that is not a number counts as no
+/// change, which is what taking the maximum over the changes did.
+fn is_settled(
     coords: &[f32],
     previous: &[f32],
     dim: usize,
     starts: &[usize],
     targets: &[u32],
-) -> f32 {
-    let mut largest = 0.0f32;
+    tolerance: f32,
+) -> bool {
     for (row, was) in coords.chunks_exact(dim).zip(previous.chunks_exact(dim)) {
         let mut now = 0.0f32;
         let mut before = 0.0f32;
@@ -340,7 +344,9 @@ fn largest_invariant_change(
             now += value * value;
             before += earlier * earlier;
         }
-        largest = largest.max((now - before).abs());
+        if (now - before).abs() > tolerance {
+            return false;
+        }
     }
     for vertex in 0..starts.len().saturating_sub(1) {
         let base = vertex * dim;
@@ -358,10 +364,12 @@ fn largest_invariant_change(
                 let earlier = previous[base + axis] - previous[other + axis];
                 before += earlier * earlier;
             }
-            largest = largest.max((now - before).abs());
+            if (now - before).abs() > tolerance {
+                return false;
+            }
         }
     }
-    largest
+    true
 }
 
 /// Recentre the cloud, rotate it onto the eigenvectors of its covariance, and
@@ -440,18 +448,20 @@ fn whiten(coords: &mut [f32], dim: usize, moving: &[u32], rng: &mut Xorshift64) 
         }
     }
 
+    // One axis at a time: every step here reads and writes a single column, so
+    // an axis is jittered and rescaled before the next is measured without
+    // changing what any of them sees, and the generator is drawn from in the
+    // same axis order.
     for axis in 0..dim {
-        if axis_spread(coords, dim, moving, axis).1 > FLAT_AXIS_DEVIATION {
-            continue;
+        let (mut mean, mut deviation) = axis_spread(coords, dim, moving, axis);
+        if deviation <= FLAT_AXIS_DEVIATION {
+            // A flat axis carries no direction to rescale. Spread it from the
+            // generator so the cloud keeps its dimension in the next round.
+            for row in coords.chunks_exact_mut(dim) {
+                row[axis] += unit_interval(rng) - 0.5;
+            }
+            (mean, deviation) = axis_spread(coords, dim, moving, axis);
         }
-        // A flat axis carries no direction to rescale. Spread it from the
-        // generator so the cloud keeps its dimension in the next round.
-        for row in coords.chunks_exact_mut(dim) {
-            row[axis] += unit_interval(rng) - 0.5;
-        }
-    }
-    for axis in 0..dim {
-        let (mean, deviation) = axis_spread(coords, dim, moving, axis);
         let scale = if deviation > FLAT_AXIS_DEVIATION {
             1.0 / deviation
         } else {
