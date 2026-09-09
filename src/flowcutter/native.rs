@@ -268,7 +268,7 @@ fn extract(native: &NativeDecomposition, graph: &Graph) -> Result<TreeDecomposit
 
         let adjacency = reconstruct_native_adjacency(&adjacency);
         let decomposition = TreeDecomposition::from_parts(graph.num_vertices, bags, adjacency);
-        decomposition.validate(graph)?;
+        decomposition.debug_validate(graph);
         Ok(decomposition)
     }
 }

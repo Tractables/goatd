@@ -758,6 +758,6 @@ impl Search<'_> {
             }
             edges.push((parent, position));
         }
-        TreeDecomposition::new(graph, bags, edges).ok()
+        TreeDecomposition::new_trusted(graph, bags, edges).ok()
     }
 }
