@@ -31,6 +31,34 @@ use crate::deadline::expired;
 use crate::elimination::execution::DeadlinePacer;
 use crate::rng::Xorshift64;
 
+/// The vertex count at or below which coarsening stops and the coarsest level
+/// is partitioned.
+pub(super) const MIN_COARSEN_SIZE: usize = 20;
+
+/// Whether a level that contracted `num_fine` vertices into `num_coarse` shrank
+/// enough to be worth keeping.
+///
+/// Tuned floor of 10%: matching can leave most vertices unmatched, and a level
+/// that barely shrinks costs a pass over the structure and a rebuild while
+/// buying almost nothing above it.
+pub(super) fn shrank_enough(num_fine: usize, num_coarse: usize) -> bool {
+    num_coarse < num_fine * 9 / 10
+}
+
+/// How many V-cycles at most follow the first sweep, by vertex count.
+///
+/// Arbitrary tuned thresholds: more cycles for larger inputs, where quality
+/// matters more. The hypergraph side scales this by its effort budget.
+pub(super) fn max_vcycles(num_vertices: usize) -> usize {
+    if num_vertices >= 400 {
+        4
+    } else if num_vertices >= 100 {
+        2
+    } else {
+        1
+    }
+}
+
 /// The cutoff a bisection runs under, and the pacing of its clock reads.
 ///
 /// A bisection is a tree of loops — coarsening levels, refinement passes, the
@@ -223,6 +251,92 @@ pub(super) fn fm_balance(
     })
 }
 
+/// The order a coarsening level's matching sweep visits vertices in: degree
+/// ascending, with each run of equal degree shuffled.
+///
+/// Sorted Heavy-Edge Matching (Karypis & Kumar 1998): the ascending degree
+/// leaves high-degree hubs to match last, with connected partners. Leaving ties
+/// in vertex-index order would make every level of every restart match the same
+/// pairs first, which is what the shuffle is for.
+///
+/// `degree` answers for a vertex of the graph or hypergraph being coarsened —
+/// its edge count or its incident-hyperedge count — and `vertex_weights` is that
+/// structure's.
+pub(super) fn matching_order(
+    n: usize,
+    degree: impl Fn(usize) -> u32,
+    vertex_weights: &[u32],
+    rng: &mut Xorshift64,
+) -> Vec<usize> {
+    let mut perm: Vec<usize> = (0..n).collect();
+    perm.sort_by_key(|&v| (degree(v), vertex_weights[v]));
+    let mut i = 0;
+    while i < n {
+        let mut j = i + 1;
+        let run_degree = degree(perm[i]);
+        while j < n && degree(perm[j]) == run_degree {
+            j += 1;
+        }
+        for k in (i + 1..j).rev() {
+            let l = i + (rng.next_u64() as usize) % (k - i + 1);
+            perm.swap(k, l);
+        }
+        i = j;
+    }
+    perm
+}
+
+/// The move a Fiduccia-Mattheyses pass makes next: the highest-gain queued
+/// vertex the balance window admits, as `(vertex, the side it leaves, its
+/// gain)`.
+///
+/// `bq[side]` holds the queued vertices currently on `side`, and `gain`,
+/// `locked` and `vertex_weights` are indexed by vertex. Side 0 is searched
+/// first and the comparison is strict, so a gain tie between the sides goes to
+/// side 0.
+pub(super) fn select_move(
+    bq: &[GainBuckets; 2],
+    gain: &[i64],
+    locked: &[bool],
+    vertex_weights: &[u32],
+    balance: &FmBalance,
+) -> Option<(usize, usize, i64)> {
+    let &FmBalance {
+        weight,
+        min_part_weight,
+        max_part_weight,
+    } = balance;
+    let mut best_vertex: Option<usize> = None;
+    let mut best_gain = i64::MIN;
+    let mut best_from: usize = 0;
+
+    for side in 0..2 {
+        let to = 1 - side;
+        // Every queued vertex weighs at least one, so a side at the floor can
+        // give none up and a side at the ceiling can take none. Without this the
+        // search walks that side's whole queue to return nothing, once per move,
+        // which is where a pass sits once it drifts to the balance boundary.
+        if weight[side] <= min_part_weight || weight[to] >= max_part_weight {
+            continue;
+        }
+        let candidate = bq[side].best_satisfying(|vertex| {
+            !locked[vertex]
+                && weight[side] - vertex_weights[vertex] >= min_part_weight
+                && weight[to] + vertex_weights[vertex] <= max_part_weight
+        });
+        if let Some(vertex) = candidate {
+            let g = gain[vertex];
+            if g > best_gain {
+                best_gain = g;
+                best_vertex = Some(vertex);
+                best_from = side;
+            }
+        }
+    }
+
+    best_vertex.map(|vertex| (vertex, best_from, best_gain))
+}
+
 /// Fills side 0 in random order while the next vertex still fits under half the
 /// total weight.
 ///
@@ -308,7 +422,9 @@ pub(super) struct GainBuckets {
 }
 
 impl GainBuckets {
-    /// An empty queue over `n` vertices.
+    /// An empty queue over `n` vertices, for tests. Both refiners keep their
+    /// queues in scratch and reset them per pass instead.
+    #[cfg(test)]
     pub(super) fn new(n: usize) -> Self {
         let mut queue = GainBuckets::empty();
         queue.reset(n);

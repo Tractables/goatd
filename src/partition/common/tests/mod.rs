@@ -1,6 +1,7 @@
 use crate::partition::common::{
-    GainBuckets, Stall, balance_bounds, commit_best_prefix, fm_balance, index_split, lift_to_fine,
-    project_to_coarse, random_bisection, repair_bisection, tiny_bisection,
+    FmBalance, GainBuckets, Stall, balance_bounds, commit_best_prefix, fm_balance, index_split,
+    lift_to_fine, matching_order, max_vcycles, project_to_coarse, random_bisection,
+    repair_bisection, select_move, shrank_enough, tiny_bisection,
 };
 use crate::rng::Xorshift64;
 
@@ -75,6 +76,80 @@ fn a_random_bisection_repeats_and_never_overfills_its_first_side() {
         .map(|(&weight, &side)| if side == 0 { weight } else { 0 })
         .sum();
     assert!(weight0 <= weights.iter().sum::<u32>() / 2);
+}
+
+#[test]
+fn the_matching_order_is_degree_ascending_and_shuffles_only_inside_a_run() {
+    let degrees = [3u32, 1, 2, 1, 3, 1];
+    let weights = [1u32; 6];
+    let order = matching_order(6, |v| degrees[v], &weights, &mut Xorshift64::from_state(17));
+
+    let visited: Vec<u32> = order.iter().map(|&v| degrees[v]).collect();
+    assert_eq!(visited, [1, 1, 1, 2, 3, 3]);
+    let mut vertices = order.clone();
+    vertices.sort_unstable();
+    assert_eq!(vertices, [0, 1, 2, 3, 4, 5]);
+
+    // One stream, one order.
+    let repeat = matching_order(6, |v| degrees[v], &weights, &mut Xorshift64::from_state(17));
+    assert_eq!(order, repeat);
+}
+
+#[test]
+fn move_selection_takes_the_best_gain_and_skips_a_side_the_window_blocks() {
+    let mut bq = [GainBuckets::new(4), GainBuckets::new(4)];
+    bq[0].insert(0, 1);
+    bq[0].insert(1, 5);
+    bq[1].insert(2, 3);
+    bq[1].insert(3, 5);
+    let gain = [1i64, 5, 3, 5];
+    let locked = [false; 4];
+    let vertex_weights = [1u32; 4];
+
+    // Both sides can move, and side 0 keeps a gain tie.
+    let open = FmBalance {
+        weight: [2, 2],
+        min_part_weight: 1,
+        max_part_weight: 3,
+    };
+    assert_eq!(
+        select_move(&bq, &gain, &locked, &vertex_weights, &open),
+        Some((1, 0, 5))
+    );
+
+    // Side 0 is at the floor, so only side 1 is searched.
+    let floor = FmBalance {
+        weight: [1, 3],
+        min_part_weight: 1,
+        max_part_weight: 3,
+    };
+    assert_eq!(
+        select_move(&bq, &gain, &locked, &vertex_weights, &floor),
+        Some((3, 1, 5))
+    );
+
+    // Both sides are at the floor and the ceiling at once: no legal move.
+    let pinned = FmBalance {
+        weight: [1, 1],
+        min_part_weight: 1,
+        max_part_weight: 1,
+    };
+    assert_eq!(
+        select_move(&bq, &gain, &locked, &vertex_weights, &pinned),
+        None
+    );
+}
+
+#[test]
+fn the_coarsening_floor_and_vcycle_counts_are_read_from_here() {
+    assert!(shrank_enough(100, 89));
+    assert!(!shrank_enough(100, 90));
+    assert!(!shrank_enough(20, 20));
+
+    assert_eq!(max_vcycles(99), 1);
+    assert_eq!(max_vcycles(100), 2);
+    assert_eq!(max_vcycles(399), 2);
+    assert_eq!(max_vcycles(400), 4);
 }
 
 #[test]

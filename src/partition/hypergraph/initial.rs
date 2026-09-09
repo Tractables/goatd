@@ -7,7 +7,7 @@
 //! module picks between whole partitions rather than single moves.
 
 use super::model::Hypergraph;
-use super::refine_fm::refine_level;
+use super::refine_fm::{FmScratch, refine_level};
 use crate::partition::common::random_bisection;
 use crate::rng::Xorshift64;
 
@@ -99,7 +99,12 @@ pub(super) fn hyperedge_cut(hg: &Hypergraph, part: &[u8]) -> u32 {
     cut_weight
 }
 
-pub(super) fn initial_partition(hg: &Hypergraph, rng: &mut Xorshift64, imbalance: f64) -> Vec<u8> {
+pub(super) fn initial_partition(
+    hg: &Hypergraph,
+    rng: &mut Xorshift64,
+    imbalance: f64,
+    scratch: &mut FmScratch,
+) -> Vec<u8> {
     let n = hg.num_vertices;
     if n == 0 {
         return Vec::new();
@@ -130,7 +135,7 @@ pub(super) fn initial_partition(hg: &Hypergraph, rng: &mut Xorshift64, imbalance
     // as produced.
     for _ in 0..num_rand.min(n) {
         let mut part = random_bisection(&hg.vertex_weights, rng);
-        refine_level(hg, &mut part, imbalance);
+        refine_level(hg, &mut part, imbalance, scratch);
         let candidate_cut = hyperedge_cut(hg, &part);
         if candidate_cut < best_cut {
             best_cut = candidate_cut;

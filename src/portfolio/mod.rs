@@ -2208,34 +2208,11 @@ fn run_portfolio(
     {
         let before = best.quality_key();
         let minimalized = decomposition::minimalize_at(best, graph, hard_deadline);
-        let (width, total_bag_size) = minimalized.quality_key();
         // The pass returns its input where it found nothing to drop, and the
         // set holds that decomposition already, so only an improvement is
         // recorded. The trace reports the pass either way, so a caller can see
         // what it cost on a graph where it changed nothing.
-        let outcome = if (width, total_bag_size) < before {
-            candidates.push(
-                minimalized,
-                CandidateOrigin {
-                    stage: Stage::Minimalized,
-                    seed,
-                    pass: Pass::Only,
-                },
-            )
-        } else {
-            CandidateOutcome::Produced {
-                width,
-                total_bag_size,
-                shape: collection.traced.then(|| {
-                    let (bag_mass, max_separator) = minimalized.shape();
-                    Shape {
-                        bag_mass,
-                        max_separator,
-                    }
-                }),
-                best: false,
-            }
-        };
+        let outcome = candidates.record_stage(Stage::Minimalized, seed, before, Some(minimalized));
         trace(CandidateTrace {
             stage: Stage::Minimalized,
             seed,
@@ -2257,37 +2234,9 @@ fn run_portfolio(
             .best()
             .map(TreeDecomposition::quality_key)
             .expect("a candidate has produced a decomposition");
-        let outcome = match found {
-            Some(recombined) if recombined.quality_key() < before => candidates.push(
-                recombined,
-                CandidateOrigin {
-                    stage: Stage::Recombined,
-                    seed,
-                    pass: Pass::Only,
-                },
-            ),
-            // The search found nothing the set does not already have. It reads
-            // the same bags the winner is made of, so this is the ordinary
-            // outcome rather than a failure.
-            Some(recombined) => {
-                let (width, total_bag_size) = recombined.quality_key();
-                CandidateOutcome::Produced {
-                    width,
-                    total_bag_size,
-                    shape: collection.traced.then(|| {
-                        let (bag_mass, max_separator) = recombined.shape();
-                        Shape {
-                            bag_mass,
-                            max_separator,
-                        }
-                    }),
-                    best: false,
-                }
-            }
-            // The pool was empty, the search ran past its share, or it would
-            // have held more than its cap allows.
-            None => CandidateOutcome::DeadlineReached,
-        };
+        // Nothing comes back where the pool was empty, the search ran past its
+        // share, or it would have held more than its cap allows.
+        let outcome = candidates.record_stage(Stage::Recombined, seed, before, found);
         trace(CandidateTrace {
             stage: Stage::Recombined,
             seed,
@@ -2313,37 +2262,10 @@ fn run_portfolio(
             decomposition::BagPoolLimits::standard(),
             merge_end,
         );
-        let outcome = match found {
-            Some(merged) if merged.quality_key() < before => candidates.push(
-                merged,
-                CandidateOrigin {
-                    stage: Stage::Merged,
-                    seed,
-                    pass: Pass::Only,
-                },
-            ),
-            // The loop settled on the answer it started from. It reads that
-            // answer's own bags among the rest, so this is the ordinary
-            // outcome rather than a failure.
-            Some(merged) => {
-                let (width, total_bag_size) = merged.quality_key();
-                CandidateOutcome::Produced {
-                    width,
-                    total_bag_size,
-                    shape: collection.traced.then(|| {
-                        let (bag_mass, max_separator) = merged.shape();
-                        Shape {
-                            bag_mass,
-                            max_separator,
-                        }
-                    }),
-                    best: false,
-                }
-            }
-            // The share ran out before the programme settled anything, or the
-            // search would have held more than its cap allows.
-            None => CandidateOutcome::DeadlineReached,
-        };
+        // Nothing comes back where the share ran out before the programme
+        // settled anything, or where the search would have held more than its
+        // cap allows.
+        let outcome = candidates.record_stage(Stage::Merged, seed, before, found);
         trace(CandidateTrace {
             stage: Stage::Merged,
             seed,
@@ -2366,20 +2288,10 @@ fn run_portfolio(
         let found = candidates
             .bag_pool()
             .and_then(|pool| decomposition::local_merge(pool, graph, &start, seed, window_end));
-        let outcome = match found {
-            Some(built) if built.quality_key() < before => candidates.push(
-                built,
-                CandidateOrigin {
-                    stage: Stage::LocallyMerged,
-                    seed,
-                    pass: Pass::Only,
-                },
-            ),
-            // The stage hands back nothing where it did not beat the answer it
-            // started from, where its share ran out, or where the search would
-            // have held more than its cap allows.
-            _ => CandidateOutcome::DeadlineReached,
-        };
+        // Nothing comes back where the stage did not beat the answer it started
+        // from, where its share ran out, or where the search would have held
+        // more than its cap allows.
+        let outcome = candidates.record_stage(Stage::LocallyMerged, seed, before, found);
         trace(CandidateTrace {
             stage: Stage::LocallyMerged,
             seed,

@@ -7,6 +7,7 @@
 //! kept by the caller, since uncoarsening needs it back.
 
 use super::csr::CsrGraph;
+use crate::partition::common::{matching_order, shrank_enough};
 use crate::rng::Xorshift64;
 
 pub(super) struct CoarseningLevel {
@@ -36,30 +37,12 @@ pub(super) fn coarsen_one_level(
         return None;
     }
 
-    // Sorted Heavy-Edge Matching (SHEM): degree-ascending order leaves
-    // high-degree hubs to match last, with connected partners
-    // (Karypis & Kumar 1998).
-    let mut perm: Vec<usize> = (0..n).collect();
-    perm.sort_by_key(|&v| {
-        let degree = graph.offsets[v + 1] - graph.offsets[v];
-        (degree, graph.vertex_weights[v])
-    });
-    // Shuffle within each equal-degree run: the degree order itself is what
-    // SHEM wants, but leaving ties in vertex-index order makes every level of
-    // every restart match the same pairs first.
-    let mut i = 0;
-    while i < n {
-        let mut j = i + 1;
-        let degree = graph.offsets[perm[i] + 1] - graph.offsets[perm[i]];
-        while j < n && (graph.offsets[perm[j] + 1] - graph.offsets[perm[j]]) == degree {
-            j += 1;
-        }
-        for k in (i + 1..j).rev() {
-            let l = i + (rng.next_u64() as usize) % (k - i + 1);
-            perm.swap(k, l);
-        }
-        i = j;
-    }
+    let perm = matching_order(
+        n,
+        |v| graph.offsets[v + 1] - graph.offsets[v],
+        &graph.vertex_weights,
+        rng,
+    );
     let mut match_of = vec![None; n];
     let mut coarse_id: Vec<u32> = vec![0; n];
     let mut num_coarse: u32 = 0;
@@ -117,8 +100,8 @@ pub(super) fn coarsen_one_level(
     }
 
     let nc = num_coarse as usize;
-    if nc >= n * 9 / 10 {
-        return None; // tuned 10% floor: stop once a level barely shrinks
+    if !shrank_enough(n, nc) {
+        return None;
     }
 
     let mut coarse_vwgt = vec![0u32; nc];
