@@ -400,32 +400,54 @@ impl Loop<'_> {
         let mut order = focus.to_vec();
         order.sort_unstable();
         order.dedup();
+        let size = order.len();
+        let words = size.div_ceil(64).max(1);
         let set = self.adjacency.set_of(&order);
-        let position = |vertex: u32| order.binary_search(&vertex).ok().map(|index| index as u32);
-        let mut edges: FxHashSet<(u32, u32)> = FxHashSet::default();
+        for (index, &vertex) in order.iter().enumerate() {
+            scratch.position[vertex as usize] = index as u32;
+        }
+        // The local graph is built as its own rows of words and read out as
+        // edges once, so that filling a component's neighbourhood into a
+        // clique costs a word per row rather than a pair at a time.
+        let mut rows = vec![0u64; words * size];
         for (index, &vertex) in order.iter().enumerate() {
             for (other, &next) in order.iter().enumerate().skip(index + 1) {
                 if self.adjacency.adjacent(vertex, next) {
-                    edges.insert((index as u32, other as u32));
+                    rows[index * words + other / 64] |= 1 << (other % 64);
+                    rows[other * words + index / 64] |= 1 << (index % 64);
                 }
             }
         }
         for border in borders(self.adjacency, &set, scratch) {
-            let border = border.to_vec();
-            for (index, &left) in border.iter().enumerate() {
-                let Some(left) = position(left) else {
-                    continue;
-                };
-                for &right in &border[index + 1..] {
-                    let Some(right) = position(right) else {
-                        continue;
-                    };
-                    edges.insert((left.min(right), left.max(right)));
+            scratch.row.clear();
+            scratch.row.resize(words, 0);
+            for vertex in border.iter() {
+                let local = scratch.position[vertex as usize] as usize;
+                scratch.row[local / 64] |= 1 << (local % 64);
+            }
+            for vertex in border.iter() {
+                let local = scratch.position[vertex as usize] as usize;
+                let row = &mut rows[local * words..(local + 1) * words];
+                for (word, &mask) in row.iter_mut().zip(&scratch.row) {
+                    *word |= mask;
+                }
+                row[local / 64] &= !(1 << (local % 64));
+            }
+        }
+        let mut edges: Vec<(u32, u32)> = Vec::new();
+        for left in 0..size {
+            for word in 0..words {
+                let mut bits = rows[left * words + word];
+                while bits != 0 {
+                    let right = word * 64 + bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    if right > left {
+                        edges.push((left as u32, right as u32));
+                    }
                 }
             }
         }
-        let edges: Vec<(u32, u32)> = edges.into_iter().collect();
-        let graph = Graph::new(order.len() as u32, edges);
+        let graph = Graph::new(size as u32, edges);
         Some((graph, order))
     }
 }
@@ -467,28 +489,72 @@ pub(super) fn is_potential_maximal_clique(
         return false;
     }
     let set = adjacency.set_of(candidate);
-    let mut together = vec![false; size * size];
-    for border in borders(adjacency, &set, scratch) {
+    for (index, &vertex) in candidate.iter().enumerate() {
+        scratch.position[vertex as usize] = index as u32;
+    }
+    let components = borders(adjacency, &set, scratch);
+    // The pairs of `K` some component's border holds together, a row of bits
+    // per vertex of `K`, in the room the caller keeps for it.
+    let words = size.div_ceil(64).max(1);
+    let mut together = std::mem::take(&mut scratch.square);
+    let mut row = std::mem::take(&mut scratch.row);
+    together.clear();
+    together.resize(words * size, 0);
+    let answer = every_pair_is_together(
+        candidate,
+        adjacency,
+        &components,
+        &scratch.position,
+        &mut together,
+        &mut row,
+        words,
+    );
+    scratch.square = together;
+    scratch.row = row;
+    answer
+}
+
+/// The two halves of the test, over the borders `components`: no border may
+/// hold the whole of `candidate`, and every non-adjacent pair of it must lie
+/// on one of them.
+fn every_pair_is_together(
+    candidate: &[u32],
+    adjacency: &Adjacency,
+    components: &[VertexSet],
+    position: &[u32],
+    together: &mut [u64],
+    row: &mut Vec<u64>,
+    words: usize,
+) -> bool {
+    let size = candidate.len();
+    for border in components {
         if border.len() == size {
             // A full component: `K` is contained in one bag of every
             // triangulation that separates on it, so it is not a maximal
             // clique of any of them.
             return false;
         }
-        let border: Vec<usize> = border
-            .iter()
-            .filter_map(|vertex| candidate.binary_search(&vertex).ok())
-            .collect();
-        for (index, &left) in border.iter().enumerate() {
-            for &right in &border[index + 1..] {
-                together[left * size + right] = true;
-                together[right * size + left] = true;
+        // A component's border is a set of `K`'s own vertices, so the pairs it
+        // covers are one row of bits added to each vertex of it.
+        row.clear();
+        row.resize(words, 0);
+        for vertex in border.iter() {
+            let local = position[vertex as usize] as usize;
+            row[local / 64] |= 1 << (local % 64);
+        }
+        for vertex in border.iter() {
+            let local = position[vertex as usize] as usize;
+            for (word, &mask) in together[local * words..(local + 1) * words]
+                .iter_mut()
+                .zip(row.iter())
+            {
+                *word |= mask;
             }
         }
     }
     for (left, &one) in candidate.iter().enumerate() {
         for (right, &other) in candidate.iter().enumerate().skip(left + 1) {
-            if together[left * size + right] {
+            if together[left * words + right / 64] & (1 << (right % 64)) != 0 {
                 continue;
             }
             if !adjacency.adjacent(one, other) {

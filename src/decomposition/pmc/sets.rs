@@ -258,11 +258,22 @@ impl Adjacency {
     }
 }
 
-/// The sets a traversal reuses, so a split allocates only what it returns.
+/// What the traversals and the tests reuse, so that a set is allocated once
+/// rather than once per call.
 pub(crate) struct Scratch {
     left: VertexSet,
     frontier: VertexSet,
     next: VertexSet,
+    /// Two sets the callers borrow for a set they build and throw away.
+    pub(crate) held: VertexSet,
+    pub(crate) reach: VertexSet,
+    /// Where a vertex sits in the list a caller is working with. Only the
+    /// entries of that list are written, so it is never cleared.
+    pub(crate) position: Vec<u32>,
+    /// Room for a square of bits over a vertex list.
+    pub(crate) square: Vec<u64>,
+    /// Room for a row of bits over a vertex list.
+    pub(crate) row: Vec<u64>,
 }
 
 impl Scratch {
@@ -271,6 +282,11 @@ impl Scratch {
             left: adjacency.empty_set(),
             frontier: adjacency.empty_set(),
             next: adjacency.empty_set(),
+            held: adjacency.empty_set(),
+            reach: adjacency.empty_set(),
+            position: vec![0; adjacency.rows.len() / adjacency.words],
+            square: Vec::new(),
+            row: Vec::new(),
         }
     }
 }

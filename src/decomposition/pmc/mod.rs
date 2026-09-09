@@ -492,6 +492,54 @@ fn decompose_piece(
         .collect()
 }
 
+/// The component of `G` less the `position`-th component's separator that holds
+/// the rest of `bag`, with that component's own separator. `None` where the bag
+/// is the separator and so caps nothing.
+///
+/// The far side is what is left of the bag once the separator is taken out,
+/// plus every other component of `G − Ω` that touches it. Nothing further
+/// joins: two components of `G − Ω` share no edge, so a component reached from
+/// one of them would have to be reached through the bag, and the only bag
+/// vertices left are already there.
+///
+/// Its separator is not the whole of `N(C)`: a vertex there may border `C` and
+/// nothing on the far side. Taking the exact set matters, because a block's
+/// separator is what its parent bag is guaranteed to contain.
+fn capped_block(
+    adjacency: &Adjacency,
+    scratch: &mut Scratch,
+    bag: &VertexSet,
+    split: &Split,
+    position: usize,
+) -> Option<(VertexSet, VertexSet)> {
+    let mut rest = std::mem::take(&mut scratch.held);
+    rest.copy_from(bag);
+    rest.subtract(&split.borders[position]);
+    if rest.is_empty() {
+        scratch.held = rest;
+        return None;
+    }
+    let mut capped = rest.clone();
+    // What the far side reaches: the neighbours of the rest of the bag, and
+    // the borders of the components that the rest touches.
+    let mut reach = std::mem::take(&mut scratch.reach);
+    reach.clear();
+    for (id, component) in split.components.iter().enumerate() {
+        if id != position && split.borders[id].intersects(&rest) {
+            capped.union_with(component);
+            reach.union_with(&split.borders[id]);
+        }
+    }
+    for vertex in rest.iter() {
+        reach.union_row(adjacency.row(vertex));
+    }
+    let mut separator = split.borders[position].clone();
+    separator.intersect_with(&reach);
+    scratch.held = rest;
+    scratch.reach = reach;
+    Some((capped, separator))
+}
+
 struct Search<'a> {
     adjacency: &'a Adjacency,
     limits: Limits,
@@ -560,7 +608,9 @@ impl Search<'_> {
                 if expired(deadline) {
                     return None;
                 }
-                let Some((capped, separator)) = self.capped_block(bag, &split, position) else {
+                let Some((capped, separator)) =
+                    capped_block(self.adjacency, &mut self.scratch, bag, &split, position)
+                else {
                     continue;
                 };
                 let Some(index) = self.block(capped, separator) else {
@@ -586,48 +636,6 @@ impl Search<'_> {
     /// Its separator is not the whole of `N(C)`: a vertex there may border `C`
     /// and nothing on the far side. Taking the exact set matters, because a
     /// block's separator is what its parent bag is guaranteed to contain.
-    /// The component of `G` less the `position`-th component's separator that
-    /// holds the rest of `bag`, with that component's own separator. `None`
-    /// where the bag is the separator and so caps nothing.
-    ///
-    /// The far side is what is left of the bag once the separator is taken out,
-    /// plus every other component of `G − Ω` that touches it. Nothing further
-    /// joins: two components of `G − Ω` share no edge, so a component reached
-    /// from one of them would have to be reached through the bag, and the only
-    /// bag vertices left are already there.
-    ///
-    /// Its separator is not the whole of `N(C)`: a vertex there may border `C`
-    /// and nothing on the far side. Taking the exact set matters, because a
-    /// block's separator is what its parent bag is guaranteed to contain.
-    fn capped_block(
-        &self,
-        bag: &VertexSet,
-        split: &Split,
-        position: usize,
-    ) -> Option<(VertexSet, VertexSet)> {
-        let mut rest = bag.clone();
-        rest.subtract(&split.borders[position]);
-        if rest.is_empty() {
-            return None;
-        }
-        let mut capped = rest.clone();
-        // What the far side reaches: the neighbours of the rest of the bag,
-        // and the borders of the components that the rest touches.
-        let mut reach = self.adjacency.empty_set();
-        for (id, component) in split.components.iter().enumerate() {
-            if id != position && split.borders[id].intersects(&rest) {
-                capped.union_with(component);
-                reach.union_with(&split.borders[id]);
-            }
-        }
-        for vertex in rest.iter() {
-            reach.union_row(self.adjacency.row(vertex));
-        }
-        let mut separator = split.borders[position].clone();
-        separator.intersect_with(&reach);
-        Some((capped, separator))
-    }
-
     /// Settle every block's width, smallest component first.
     fn evaluate(&mut self, deadline: Option<Instant>) -> Option<()> {
         let mut order: Vec<usize> = (0..self.blocks.len()).collect();
