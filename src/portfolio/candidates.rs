@@ -5,7 +5,7 @@ use crate::decomposition::{BagPool, BagPoolLimits, SubsumedBagCompaction};
 use crate::elimination::engine::OrderRun;
 use crate::elimination::execution::Cutoff;
 
-use super::trace::{CandidateOrigin, CandidateOutcome, Shape};
+use super::trace::{CandidateOrigin, CandidateOutcome, Pass, Shape, Stage};
 
 /// Whether the portfolio may start another candidate after this one.
 ///
@@ -143,13 +143,7 @@ impl CandidateSet {
             // size, so the four numbers describe one set of bags. A candidate
             // the set drops is never returned, so nothing ranks it and its
             // shape is not computed.
-            shape = self.report_shape.then(|| {
-                let (bag_mass, max_separator) = decomposition.shape();
-                Shape {
-                    bag_mass,
-                    max_separator,
-                }
-            });
+            shape = shape_of(self.report_shape, &decomposition);
             let compaction = decomposition.subsumed_bag_compaction();
             let quality_key = (width, compaction.total_bag_size());
             best = self
@@ -214,6 +208,44 @@ impl CandidateSet {
         }
     }
 
+    /// Record what one of the closing stages returned, against `before`: the
+    /// quality key the set held when the stage started.
+    ///
+    /// Those stages all read the bags of the answer the set already holds and
+    /// start from it, so a result no better than `before` is the ordinary
+    /// outcome rather than a failure: it is reported with its numbers and not
+    /// kept, because the set holds that decomposition already. A stage that
+    /// hands back nothing ran out of its share of the window, or would have
+    /// held more bags than its cap allows.
+    pub(super) fn record_stage(
+        &mut self,
+        stage: Stage,
+        seed: u64,
+        before: (u32, usize),
+        produced: Option<TreeDecomposition>,
+    ) -> CandidateOutcome {
+        let Some(decomposition) = produced else {
+            return CandidateOutcome::DeadlineReached;
+        };
+        let (width, total_bag_size) = decomposition.quality_key();
+        if (width, total_bag_size) < before {
+            return self.push(
+                decomposition,
+                CandidateOrigin {
+                    stage,
+                    seed,
+                    pass: Pass::Only,
+                },
+            );
+        }
+        CandidateOutcome::Produced {
+            width,
+            total_bag_size,
+            shape: shape_of(self.report_shape, &decomposition),
+            best: false,
+        }
+    }
+
     /// Every retained decomposition, compacted, with its origin, sorted
     /// ascending by width and then total bag size with ties kept in candidate
     /// order. A decomposition several candidates produced is listed once,
@@ -240,6 +272,19 @@ impl CandidateSet {
             .map(|candidate| candidate.decomposition)
             .collect()
     }
+}
+
+/// A decomposition's shape numbers, where `traced` says something is going to
+/// read them. They cost a pass over the bags, so a run with no trace sink does
+/// not compute them.
+fn shape_of(traced: bool, decomposition: &TreeDecomposition) -> Option<Shape> {
+    traced.then(|| {
+        let (bag_mass, max_separator) = decomposition.shape();
+        Shape {
+            bag_mass,
+            max_separator,
+        }
+    })
 }
 
 /// The bags and bag tree of a decomposition in a form that does not depend on
