@@ -70,7 +70,8 @@ options:
                         more only while that fits. The first stage runs on any
                         budget, so this needs a series of two or more stages —
                         the default one, or --hedge-dims or --hedge-random
-                        asking for that many
+                        asking for that many. The share is a share of a
+                        deadline, so it needs --budget
   --mcs-up-to <n>       portfolio only: run the maximum cardinality search
                         candidate while the preprocessed residual has at most n
                         vertices, in place of the built-in gate. The search
@@ -103,7 +104,8 @@ options:
                         estimated to cost off the end of the hard window, so it
                         needs --budget, and it costs a pass over the graph per
                         bag it pooled, which is what the gate bounds
-  --no-recombine        portfolio only: return the best single candidate
+  --no-recombine        portfolio only: return the best single candidate. The
+                        stage runs only under --budget, so this needs one too
   --merge-up-to <n>     portfolio only: after the recombination stage, build a
                         decomposition independently of everything the run has,
                         improve it until it is no wider, and search the two
@@ -112,7 +114,8 @@ options:
                         recombination stage it takes its share off the end of
                         the hard window, so it needs --budget
   --no-merge            portfolio only: merge no independent decomposition into
-                        the run's answer
+                        the run's answer. The stage runs only under --budget,
+                        so this needs one too
   --local-merge-up-to <n>
                         portfolio only: after the merge loop, re-triangulate the
                         piece of the graph a bag of the answer and a bag of
@@ -123,20 +126,23 @@ options:
                         stage it takes its share off the end of the hard
                         window, so it needs --budget
   --no-local-merge      portfolio only: re-triangulate between no two of the
-                        decompositions the run built
+                        decompositions the run built. The stage runs only under
+                        --budget, so this needs one too
   --no-hedge            portfolio only: run every candidate once, on uniform
                         weights, instead of repeating the candidates that read
                         weights on a ranking the portfolio computes itself
   --no-bipartite-lift   portfolio only: do not decompose the projection onto
                         one side of a bipartite graph and put the other side
                         back, which the budgeted portfolio otherwise tries
-                        before its elimination orders
+                        before its elimination orders. Only a budgeted run has
+                        the stage, so this needs --budget
   --bipartite-lift-rate R
                         portfolio only: how much work the bipartite lift may do
                         per millisecond of the share it takes, in edges of the
                         input plus edges of the projection it would build
                         (default 150). Above the rate the stage does not run and
-                        the time stays with the rest of the schedule
+                        the time stays with the rest of the schedule. Only a
+                        budgeted run has the stage, so this needs --budget
   --capped-restarts     portfolio only: stop the ordinary restarts at their
                         count instead of drawing seeds until the restart
                         deadline, which is the hard cutoff less the reserve
@@ -186,7 +192,8 @@ options:
   --steps <n>           flowcutter only: a step budget in place of a clock,
                         for a run that repeats exactly
   --refine              re-cut the decomposition along FlowCutter separators
-                        before writing it
+                        before writing it. Not with --order portfolio, whose
+                        trailing candidate is FlowCutter already
   -h, --help            this text
 ";
 
@@ -501,7 +508,17 @@ fn parse_args(argv: &[String]) -> Args {
             "--capped-restarts" => capped_restarts = true,
             "--sample-band" => sample_band = Some(number(&mut i, arg)),
             "--sample-band-alternate" => sample_band_alternate = true,
-            "--sampling-patience" => sampling_patience = Some(number(&mut i, arg)),
+            "--sampling-patience" => {
+                let restarts = number(&mut i, arg);
+                if restarts == 0 {
+                    usage_error(
+                        "--sampling-patience wants a positive restart floor; a floor of zero \
+                         stops the restarts before the first one runs, and \
+                         --no-sampling-patience is how the rule is turned off",
+                    );
+                }
+                sampling_patience = Some(restarts);
+            }
             "--no-sampling-patience" => no_sampling_patience = true,
             "--expensive-orders-up-to" => {
                 let vertices = number(&mut i, arg);
@@ -611,6 +628,19 @@ fn parse_args(argv: &[String]) -> Args {
                  or more stages",
             );
         }
+        if no_hedge {
+            usage_error(
+                "--hedge-reserve says how much of the budget the hedge's weighted stages may \
+                 spend and --no-hedge runs none; give one",
+            );
+        }
+        if budget.is_none() {
+            usage_error(
+                "--hedge-reserve requires --budget: the reserve is a fraction of the time the \
+                 restarts would otherwise take, and a run with no budget leaves every stage \
+                 unbounded",
+            );
+        }
     }
     if no_hedge {
         needs("--no-hedge", order == Method::Portfolio, "portfolio");
@@ -621,6 +651,12 @@ fn parse_args(argv: &[String]) -> Args {
             order == Method::Portfolio,
             "portfolio",
         );
+        if budget.is_none() {
+            usage_error(
+                "--no-bipartite-lift requires --budget: the lift runs on a share of the soft \
+                 budget, and a run with no budget does not run it at all",
+            );
+        }
     }
     // The rate decides whether the stage runs, so it says nothing where the
     // stage is off.
@@ -634,6 +670,12 @@ fn parse_args(argv: &[String]) -> Args {
             usage_error(
                 "--bipartite-lift-rate says how much work the bipartite lift may do, and \
                  --no-bipartite-lift turns it off",
+            );
+        }
+        if budget.is_none() {
+            usage_error(
+                "--bipartite-lift-rate requires --budget: the lift runs on a share of the \
+                 soft budget, and a run with no budget does not run it at all",
             );
         }
     }
@@ -689,6 +731,12 @@ fn parse_args(argv: &[String]) -> Args {
     }
     if no_recombine {
         needs("--no-recombine", order == Method::Portfolio, "portfolio");
+        if budget.is_none() {
+            usage_error(
+                "--no-recombine requires --budget: the recombination stage runs on a share of \
+                 the hard window, and a run with no budget does not run it at all",
+            );
+        }
     }
     if merge_up_to.is_some() {
         needs("--merge-up-to", order == Method::Portfolio, "portfolio");
@@ -723,9 +771,21 @@ fn parse_args(argv: &[String]) -> Args {
     }
     if no_local_merge {
         needs("--no-local-merge", order == Method::Portfolio, "portfolio");
+        if budget.is_none() {
+            usage_error(
+                "--no-local-merge requires --budget: the local re-triangulation stage runs on a \
+                 share of the hard window, and a run with no budget does not run it at all",
+            );
+        }
     }
     if no_merge {
         needs("--no-merge", order == Method::Portfolio, "portfolio");
+        if budget.is_none() {
+            usage_error(
+                "--no-merge requires --budget: the merge loop runs on a share of the hard \
+                 window, and a run with no budget does not run it at all",
+            );
+        }
     }
     // The count is what stops the restarts of a run with no deadline, so the
     // flag decides nothing there.
@@ -785,6 +845,15 @@ fn parse_args(argv: &[String]) -> Args {
     }
     if trace {
         needs("--trace", order == Method::Portfolio, "portfolio");
+    }
+    // The portfolio's trailing candidate is FlowCutter, so the winner has
+    // already been cut along FlowCutter separators when the run ends.
+    if refine && order == Method::Portfolio {
+        usage_error(
+            "--refine is not valid with --order portfolio: the portfolio's own trailing \
+             FlowCutter candidate runs inside the budget, and there is nothing left for a \
+             refinement pass to do afterwards",
+        );
     }
 
     Args {

@@ -53,7 +53,7 @@ solver runs [in the browser](https://tractables.github.io/goatd/).
 
 ```toml
 [dependencies]
-goatd = "0.1"
+goatd = "0.2"
 ```
 
 The [`basic` example](examples/basic.rs) constructs a graph, computes a

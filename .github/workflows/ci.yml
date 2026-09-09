@@ -45,6 +45,16 @@ jobs:
       - name: Test the documentation examples
         run: cargo test --release --doc --locked
 
+      # Every other test job is `--release`, which compiles the debug
+      # assertions out, so without this one the crate's invariant checks never
+      # run anywhere. Release speed with the assertions live; once, on Linux,
+      # since the assertions do not vary with the platform.
+      - name: Test with debug assertions
+        if: runner.os == 'Linux'
+        env:
+          RUSTFLAGS: -C debug-assertions
+        run: cargo test --release --all-targets --locked
+
       # Warnings denied: a broken intra-doc link fails the job rather than
       # shipping.
       - name: Build documentation
@@ -92,5 +102,10 @@ jobs:
       - name: Install the declared minimum toolchain
         run: rustup toolchain install ${{ env.MSRV }} --profile minimal --no-self-update
 
+      # `--all-targets` so the binary, the tests and the examples are compiled
+      # at the floor too: a newer construct in the CLI would otherwise break
+      # `cargo install` for a consumer on the declared minimum and leave this
+      # job green. The crate has no dev-dependencies, so it costs one more
+      # target set and nothing else.
       - name: Check
-        run: cargo +${{ env.MSRV }} check --locked
+        run: cargo +${{ env.MSRV }} check --locked --all-targets

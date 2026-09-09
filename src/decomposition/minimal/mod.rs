@@ -334,7 +334,9 @@ pub(crate) fn minimalize_fits(
 }
 
 /// [`minimalize_triangulation`] against an absolute deadline, for a caller that
-/// already holds one and has already checked the decomposition.
+/// already holds one. The decomposition comes back unchanged when the pass
+/// does not fit in what is left of the deadline, so a caller does not check
+/// [`minimalize_fits`] itself.
 pub(crate) fn minimalize_at(
     decomposition: TreeDecomposition,
     graph: &Graph,

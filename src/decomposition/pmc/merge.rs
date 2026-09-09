@@ -120,11 +120,7 @@ pub(crate) fn merge_loop(
     let mut state = Loop::new(graph, &adjacency, limits, seed);
     let mut answer = match start {
         Some(start) => {
-            let minimalised = if crate::decomposition::minimalize_fits(start, graph, deadline) {
-                crate::decomposition::minimalize_at(start.clone(), graph, deadline)
-            } else {
-                start.clone()
-            };
+            let minimalised = crate::decomposition::minimalize_at(start.clone(), graph, deadline);
             state.settle(bags_of(&minimalised, &adjacency), deadline)?
         }
         None => state.initial(deadline)?,
@@ -216,11 +212,7 @@ impl Loop<'_> {
             let Ok(drawn) = crate::elimination::decompose(self.graph, order, seed, each) else {
                 break;
             };
-            let drawn = if crate::decomposition::minimalize_fits(&drawn, self.graph, until) {
-                crate::decomposition::minimalize_at(drawn, self.graph, until)
-            } else {
-                drawn
-            };
+            let drawn = crate::decomposition::minimalize_at(drawn, self.graph, until);
             if best
                 .as_ref()
                 .is_none_or(|best| drawn.quality_key() < best.quality_key())

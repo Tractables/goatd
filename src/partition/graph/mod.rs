@@ -97,27 +97,34 @@ fn multilevel_pass(
     // ordered finest-first and `current` walks down to the coarsest graph.
     let mut levels: Vec<CoarseningLevel> = Vec::new();
     let mut current = graph;
+    // The caller's partition carried down the levels built so far. It is still
+    // the caller's fine partition that is projected, one level at a time, and
+    // not a partition the refinement produced — projecting a refined coarse
+    // partition instead degrades quality here. `project_to_coarse` clears its
+    // scratch and reads only the partition and the mapping, so extending this
+    // by a level gives what replaying every level from the fine partition gave.
+    let mut carried: Option<Vec<u8>> = part.map(<[u8]>::to_vec);
     loop {
         if stop.reached() {
             return index_split(n);
         }
-        // Full re-projection each level, not incremental: incremental
-        // projection degrades partition quality here.
-        let mut fine_part: Option<Vec<u8>> = None;
-        if let Some(p) = part {
-            let mut fp = p.to_vec();
-            for lv in &levels {
-                let nc = lv.graph.num_vertices();
-                project_to_coarse(&fp, &lv.mapping, nc, &mut count_scratch, &mut proj_scratch);
-                std::mem::swap(&mut fp, &mut proj_scratch);
-            }
-            fine_part = Some(fp);
-        }
-        let level = coarsen_one_level(current, MIN_COARSEN_SIZE, rng, fine_part.as_deref());
+        let level = coarsen_one_level(current, MIN_COARSEN_SIZE, rng, carried.as_deref());
 
         if let Some(level) = level {
             levels.push(level);
-            current = &levels.last().unwrap().graph;
+            let pushed = levels.last().expect("a level was just pushed");
+            if let Some(carried) = carried.as_mut() {
+                let nc = pushed.graph.num_vertices();
+                project_to_coarse(
+                    carried,
+                    &pushed.mapping,
+                    nc,
+                    &mut count_scratch,
+                    &mut proj_scratch,
+                );
+                std::mem::swap(carried, &mut proj_scratch);
+            }
+            current = &levels.last().expect("a level was just pushed").graph;
         } else {
             break;
         }
@@ -126,20 +133,8 @@ fn multilevel_pass(
     // Coarsest level: either the caller's partition projected the whole way
     // down, or a fresh one grown here. This is the only point in the sweep
     // where a partition is created rather than improved.
-    let mut coarse_part = if let Some(p) = part {
-        let mut fine_part = p.to_vec();
-        for level in &levels {
-            let nc = level.graph.num_vertices();
-            project_to_coarse(
-                &fine_part,
-                &level.mapping,
-                nc,
-                &mut count_scratch,
-                &mut proj_scratch,
-            );
-            std::mem::swap(&mut fine_part, &mut proj_scratch);
-        }
-        fine_part
+    let mut coarse_part = if let Some(carried) = carried {
+        carried
     } else {
         initial_partition(current, rng, max_imbalance, scratch, stop)
     };

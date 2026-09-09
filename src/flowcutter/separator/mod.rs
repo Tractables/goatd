@@ -188,6 +188,12 @@ fn compute_vertices(
     let mut best: Option<Vec<u32>> = None;
     let mut best_size = i32::MAX;
 
+    // One cutter for the whole search. Every iteration starts it over, and
+    // starting it over costs nothing beyond the clearing `init` already does,
+    // whereas a fresh one allocates and zeroes several graph-sized arrays that
+    // `init` then overwrites.
+    let mut multi = MultiCutter::new();
+
     let n_orig = g.n as i64;
     let m_arc = (g.tail.len() as i64).max(1);
     let step_cost = (((n_orig as f64).sqrt() * (m_arc as f64).sqrt()) / 50.0).max(1.0) as i64;
@@ -231,7 +237,8 @@ fn compute_vertices(
             min_small_side_size: min_small_side,
         };
 
-        if let Some(sep) = compute_separator_one(&g, &cfg, deadline_ms, start, has_deadline)
+        if let Some(sep) =
+            compute_separator_one(&g, &mut multi, &cfg, deadline_ms, start, has_deadline)
             && !sep.is_empty()
             && (sep.len() as i32) < best_size
         {
@@ -255,6 +262,7 @@ struct SearchConfig {
 // the only one IFlowCutter uses; other branches aren't implemented here.
 fn compute_separator_one(
     g: &OrigGraph,
+    multi: &mut MultiCutter,
     cfg: &SearchConfig,
     deadline_ms: u128,
     start: Instant,
@@ -263,7 +271,6 @@ fn compute_separator_one(
     let n_orig = g.n;
     let a_orig = g.tail.len() as u32;
     let n_exp_v = n_exp(n_orig);
-    let a_exp_v = a_exp(n_orig, a_orig);
     let exp = Exp { g, a_orig };
 
     let pairs = select_random_st_pairs(n_orig, cfg.cutter_count, cfg.random_seed);
@@ -276,7 +283,6 @@ fn compute_separator_one(
         .map(|&(s, t)| (orig_node_to_exp(s, false), orig_node_to_exp(t, true)))
         .collect();
 
-    let mut multi = MultiCutter::new(n_exp_v, a_exp_v, exp_pairs.len() as u32);
     multi.init(&exp, a_orig, &exp_pairs);
 
     let mut best: Option<Vec<u32>> = None;
@@ -308,7 +314,7 @@ fn compute_separator_one(
 
         if score < best_score {
             best_score = score;
-            let sep = extract_original_separator(g, a_orig, &multi);
+            let sep = extract_original_separator(g, a_orig, multi);
             if (sep.len() as i32) > cfg.max_cut_size {
                 best = Some(sep);
                 break;

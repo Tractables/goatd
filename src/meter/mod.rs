@@ -26,6 +26,10 @@ thread_local! {
 /// The meter is armed for as long as this value lives. Dropping it restores
 /// whatever was armed before, so a nested construction cannot leave the meter
 /// running for the one that contains it.
+///
+/// Guards must be dropped in the reverse of the order they were created, which
+/// is what a `let` binding in a nested scope does. Dropping an inner guard
+/// after an outer one restores the inner epoch and leaves the meter armed.
 #[must_use = "the meter is armed only while the guard is alive"]
 pub struct Guard {
     previous: Option<(Instant, u64)>,

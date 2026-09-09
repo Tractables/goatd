@@ -16,6 +16,43 @@ fn rooted_forest_walks_each_component_in_breadth_first_order() {
 }
 
 #[test]
+fn a_bag_path_runs_along_the_tree_and_stops_at_a_component_boundary() {
+    // A path 0-1-2-3 with 4 hanging off 1, and a second component 5-6.
+    let adj = vec![
+        vec![1],
+        vec![0, 2, 4],
+        vec![1, 3],
+        vec![2],
+        vec![1],
+        vec![6],
+        vec![5],
+    ];
+
+    assert_eq!(bag_path_bfs(&adj, 3, 4), Some(vec![3, 2, 1, 4]));
+    assert_eq!(bag_path_bfs(&adj, 4, 3), Some(vec![4, 1, 2, 3]));
+    assert_eq!(bag_path_bfs(&adj, 2, 2), Some(vec![2]));
+    assert_eq!(bag_path_bfs(&adj, 0, 5), None);
+}
+
+#[test]
+fn breaking_out_of_a_bag_walk_leaves_the_bags_beyond_it_unreached() {
+    let adj = vec![vec![1], vec![0, 2], vec![1, 3], vec![2]];
+
+    let mut visited = Vec::new();
+    let parent = walk_bag_forest(&adj, [0], |bag, _| {
+        visited.push(bag);
+        if bag == 2 {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    });
+
+    assert_eq!(visited, vec![0, 1, 2]);
+    assert_eq!(parent, vec![None, Some(0), Some(1), None]);
+}
+
+#[test]
 fn compact_subsumed_bags_keeps_incomparable_branches() {
     let graph = Graph::new(3, [(0, 1), (0, 2)]);
     let td = make_td_for(

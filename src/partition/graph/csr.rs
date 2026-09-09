@@ -47,25 +47,48 @@ impl CsrGraph {
 /// `edges` does not reach `edge_weights` — a weight above 1 only ever comes from
 /// coarsening.
 pub(super) fn build_csr(n: usize, edges: &[(u32, u32)]) -> CsrGraph {
-    let mut adj_list: Vec<Vec<u32>> = vec![Vec::new(); n];
+    // Counted, then scattered into one buffer. A `Vec` per vertex costs n
+    // allocations and n headers before any adjacency is written; the arc count
+    // per vertex is known after one pass over `edges`, so the rows can be
+    // placed directly and sorted where they lie.
+    let mut bounds = vec![0u32; n + 1];
     for &(u, v) in edges {
         let (u, v) = (u as usize, v as usize);
         assert!(u < n && v < n, "partition edge endpoint outside 0..{n}");
         if u != v {
-            adj_list[u].push(v as u32);
-            adj_list[v].push(u as u32);
+            bounds[u + 1] += 1;
+            bounds[v + 1] += 1;
         }
     }
-    for list in &mut adj_list {
-        list.sort_unstable();
-        list.dedup();
+    for v in 0..n {
+        bounds[v + 1] += bounds[v];
+    }
+    let mut scattered = vec![0u32; bounds[n] as usize];
+    let mut cursor = bounds[..n].to_vec();
+    for &(u, v) in edges {
+        if u != v {
+            scattered[cursor[u as usize] as usize] = v;
+            cursor[u as usize] += 1;
+            scattered[cursor[v as usize] as usize] = u;
+            cursor[v as usize] += 1;
+        }
     }
 
+    // Repeats collapse here, so a row can end shorter than it was counted and
+    // the offsets are rewritten as each row is copied out in vertex order.
     let mut offsets = Vec::with_capacity(n + 1);
-    let mut neighbors = Vec::new();
+    let mut neighbors = Vec::with_capacity(scattered.len());
     offsets.push(0u32);
-    for list in &adj_list {
-        neighbors.extend_from_slice(list);
+    for v in 0..n {
+        let row = &mut scattered[bounds[v] as usize..bounds[v + 1] as usize];
+        row.sort_unstable();
+        let mut previous = None;
+        for &neighbor in row.iter() {
+            if previous != Some(neighbor) {
+                neighbors.push(neighbor);
+                previous = Some(neighbor);
+            }
+        }
         offsets.push(neighbors.len() as u32);
     }
     let edge_weights = vec![1u32; neighbors.len()];

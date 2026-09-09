@@ -35,11 +35,34 @@ fn eliminating_records_each_new_fill_edge_once() {
 
 #[test]
 fn simplicial_detection() {
-    let g = EliminationGraph::from_edges(3, &[(0, 1), (0, 2), (1, 2)]);
+    let mut g = EliminationGraph::from_edges(3, &[(0, 1), (0, 2), (1, 2)]);
     assert!(g.is_simplicial(0));
-    let g = EliminationGraph::from_edges(3, &[(0, 1), (1, 2)]);
+    let mut g = EliminationGraph::from_edges(3, &[(0, 1), (1, 2)]);
     assert!(!g.is_simplicial(1));
     assert!(g.is_simplicial(0));
+}
+
+#[test]
+fn the_sparse_simplicial_test_agrees_with_the_pairwise_scan() {
+    // Past BITSET_THRESH, so the rows answer the test. The hub's row carries a
+    // membership map and a spoke's does not, so a scan of `is_simplicial(1)`
+    // asks it both ways.
+    let spokes = ROW_INDEX_THRESH as u32 + 4;
+    let mut edges: Vec<(u32, u32)> = (1..=spokes).map(|spoke| (0, spoke)).collect();
+    edges.extend([(1, 2), (1, 3), (2, 3)]);
+    edges.sort_unstable();
+    let mut graph = EliminationGraph::from_edges(20_000, &edges);
+    assert_eq!(graph.bitset_words, 0, "sparse path expected");
+    assert!(graph.row_is_indexed(0) && !graph.row_is_indexed(1));
+
+    // N(1) = {0, 2, 3}, a triangle with the hub.
+    assert!(graph.is_simplicial(1));
+    // N(2) = {0, 1, 3} likewise, reached through the hub's indexed row first.
+    assert!(graph.is_simplicial(2));
+    // Spokes 4 and 5 are not adjacent, so the hub is not simplicial.
+    assert!(!graph.is_simplicial(0));
+    // A spoke with one neighbour has no pair to test.
+    assert!(graph.is_simplicial(spokes));
 }
 
 #[test]
@@ -51,12 +74,17 @@ fn from_edges_dedups_repeated_inputs() {
 
 #[test]
 fn edge_query_agrees_with_the_adjacency_lists() {
-    let g = EliminationGraph::from_edges(5, &[(0, 1), (1, 2), (2, 3), (3, 4), (0, 4)]);
-    assert!(g.bitset_words > 0);
+    let edges = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 4)];
+    let bits = EliminationGraph::from_edges(5, &edges);
+    // Bitset mode releases the rows, so the same ring padded past
+    // BITSET_THRESH — which keeps its rows — is what the bitset is read
+    // against.
+    let rows = EliminationGraph::from_edges(20_000, &edges);
+    assert!(bits.bitset_words > 0 && rows.bitset_words == 0);
     for u in 0u32..5 {
         for v in 0u32..5 {
-            let adj_has = g.adj[u as usize].contains(&v);
-            let bs_has = g.contains_edge(u, v);
+            let adj_has = rows.adj[u as usize].contains(&v);
+            let bs_has = bits.contains_edge(u, v);
             assert_eq!(adj_has, bs_has, "u={u} v={v}");
         }
     }
@@ -141,6 +169,10 @@ fn promote_bitset_from_sparse_graph() {
     assert!(!g.should_promote_bitset(), "sparse density below threshold");
     g.promote_bitset();
     assert!(g.bitset_words > 0, "bitset populated after promotion");
+    assert!(
+        g.adj.iter().all(|row| row.is_empty()),
+        "promotion releases the rows it stops maintaining"
+    );
     assert_eq!(g.degree(0), 1);
     assert_eq!(g.degree(100), 2);
     for v in 0..n - 1 {
