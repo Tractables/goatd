@@ -406,6 +406,33 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--order", "flowcutter", "--trace"],
             &["--trace", "flowcutter", "portfolio"],
         ),
+        (
+            &["--order", "portfolio", "--no-bipartite-lift"],
+            &["--no-bipartite-lift", "--budget"],
+        ),
+        (
+            &["--order", "portfolio", "--bipartite-lift-rate", "150"],
+            &["--bipartite-lift-rate", "--budget"],
+        ),
+        (
+            &["--order", "portfolio", "--no-recombine"],
+            &["--no-recombine", "--budget"],
+        ),
+        (
+            &["--order", "portfolio", "--no-merge"],
+            &["--no-merge", "--budget"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--hedge-dims",
+                "1,2",
+                "--hedge-reserve",
+                "0.5",
+            ],
+            &["--hedge-reserve", "--budget"],
+        ),
         (&["--ties", "salt"], &["--ties"]),
         (&["--budget", "0"], &["--budget", "positive"]),
         (&["--order", "treewidth"], &["--order"]),
