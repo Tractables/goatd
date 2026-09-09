@@ -172,9 +172,12 @@ pub(super) fn coarsen_one_level(
     // parallel entries sums their weights, which is what makes heavy-edge
     // matching meaningful one level up: a coarse edge's weight is the number of
     // fine edges that would be cut by separating its two endpoints.
+    //
+    // `total` counts the entries before merging, so it is an upper bound on the
+    // merged rows: neither output array has to grow.
     let mut coarse_offsets = Vec::with_capacity(nc + 1);
-    let mut coarse_neighbors = Vec::new();
-    let mut coarse_edge_weights = Vec::new();
+    let mut coarse_neighbors = Vec::with_capacity(total);
+    let mut coarse_edge_weights = Vec::with_capacity(total);
     coarse_offsets.push(0u32);
     for v in 0..nc {
         let start = offsets[v] as usize;

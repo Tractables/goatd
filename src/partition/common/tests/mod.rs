@@ -116,6 +116,34 @@ fn gain_buckets_track_the_best_gain_and_most_recent_tie() {
 }
 
 #[test]
+fn a_gain_bucket_reused_after_it_emptied_holds_only_its_new_vertex() {
+    let mut queue = GainBuckets::new(3);
+    queue.insert(0, 5);
+    queue.insert(1, 5);
+    queue.remove(0);
+    // Emptying the gain-5 bucket puts it on the free list, and the next vertex
+    // filed at that gain gets it back.
+    queue.remove(1);
+    queue.insert(2, 5);
+
+    assert_eq!(queue.best_satisfying(|_| true), Some(2));
+    queue.remove(2);
+    assert_eq!(queue.best_satisfying(|_| true), None);
+}
+
+#[test]
+fn a_reset_queue_keeps_nothing_of_the_pass_before_it() {
+    let mut queue = GainBuckets::new(2);
+    queue.insert(0, 7);
+    queue.reset(2);
+
+    assert_eq!(queue.best_satisfying(|_| true), None);
+    assert!(!queue.contains(0));
+    queue.insert(1, 7);
+    assert_eq!(queue.best_satisfying(|_| true), Some(1));
+}
+
+#[test]
 fn gain_buckets_do_not_allocate_the_numeric_range_between_gains() {
     let mut queue = GainBuckets::new(2);
     queue.insert(0, i64::MIN);

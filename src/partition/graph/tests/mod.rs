@@ -1,6 +1,7 @@
 //! Tests of the graph partitioner's private scoring representation.
 
 mod initial;
+mod refine_fm;
 
 use super::csr::build_csr;
 use super::{MAX_BISECTION_EDGES, validate_size};
