@@ -647,7 +647,10 @@ adapter boundary.
 ## Correctness and reproducibility
 
 `TreeDecomposition::validate` checks bag contents, the bag forest, vertex and
-edge coverage, and the running intersection property.
+edge coverage, and the running intersection property. It roots the bag forest
+once and checks connectivity through parent links. Each graph edge is checked
+in the deeper of its endpoints’ root-most holder bags. Validation takes linear
+time in the graph size, bag count, and total bag size.
 
 Elimination reads the clock on the work it has charged rather than on the
 iterations it has run: once a millisecond's worth of charged work has passed,

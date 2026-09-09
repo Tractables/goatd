@@ -208,8 +208,7 @@ impl TreeDecomposition {
         // Which bags hold each vertex, as one flat array rather than a `Vec`
         // per vertex. The first pass checks each bag's contents and counts the
         // holders, the second places them through prefix-sum offsets. Bags are
-        // visited in ascending order in both, so a vertex's run stays ascending
-        // and `sorted_lists_intersect` still sees sorted input. `seen_in_bag`
+        // visited in ascending order in both. `seen_in_bag`
         // carries the position of the bag a vertex was last seen in, which
         // catches a repeat within one bag without a set per bag.
         let num_vertices = graph.num_vertices as usize;
@@ -271,6 +270,8 @@ impl TreeDecomposition {
         }
 
         let mut seen = vec![false; num_bags];
+        let mut parent = vec![usize::MAX; num_bags];
+        let mut depth = vec![0usize; num_bags];
         let mut num_components = 0usize;
         for start in 0..num_bags {
             if seen[start] {
@@ -283,6 +284,8 @@ impl TreeDecomposition {
                 for &neighbour in &self.adj[bag] {
                     if !seen[neighbour] {
                         seen[neighbour] = true;
+                        parent[neighbour] = bag;
+                        depth[neighbour] = depth[bag] + 1;
                         stack.push(neighbour);
                     }
                 }
@@ -302,50 +305,62 @@ impl TreeDecomposition {
             }
         }
 
-        for &(u, v) in &graph.edges {
+        // In a rooted forest, a nonempty set of bags is connected exactly
+        // when only one of its bags has no parent in the set. That bag is
+        // the root-most holder. Marking holders avoids walking the neighbours
+        // of a high-degree bag once for every vertex it contains.
+        let mut top = vec![usize::MAX; num_vertices];
+        let mut holding_mark = vec![usize::MAX; num_bags];
+        for (vertex, vertex_top) in top.iter_mut().enumerate() {
+            let vertex_holders = holder_run(&holder_offsets, &holder_bags, vertex);
+            for &bag in vertex_holders {
+                holding_mark[bag] = vertex;
+            }
+            for &bag in vertex_holders {
+                if parent[bag] == usize::MAX || holding_mark[parent[bag]] != vertex {
+                    if *vertex_top != usize::MAX {
+                        return invalid(format!(
+                            "the bags holding vertex {vertex} are not connected"
+                        ));
+                    }
+                    *vertex_top = bag;
+                }
+            }
+        }
+
+        // Two connected holder subtrees intersect iff the deeper root-most
+        // holder contains both vertices. Group edges by that bag, then mark
+        // its vertices once to check every assigned edge in constant time.
+        let mut first_edge = vec![usize::MAX; num_bags];
+        let mut next_edge = vec![usize::MAX; graph.edges.len()];
+        for (edge, &(u, v)) in graph.edges.iter().enumerate() {
             if u >= graph.num_vertices || v >= graph.num_vertices {
                 return invalid(format!(
                     "graph edge ({u}, {v}) has an endpoint outside 0..{}",
                     graph.num_vertices
                 ));
             }
-            if !sorted_lists_intersect(
-                holder_run(&holder_offsets, &holder_bags, u as usize),
-                holder_run(&holder_offsets, &holder_bags, v as usize),
-            ) {
-                return invalid(format!("edge ({u}, {v}) is covered by no bag"));
-            }
+            let (left, right) = (top[u as usize], top[v as usize]);
+            let bag = if depth[left] >= depth[right] {
+                left
+            } else {
+                right
+            };
+            next_edge[edge] = first_edge[bag];
+            first_edge[bag] = edge;
         }
-
-        let mut holding_mark = vec![0usize; num_bags];
-        let mut reached_mark = vec![0usize; num_bags];
-        let mut stack: Vec<usize> = Vec::new();
-        for vertex in 0..num_vertices {
-            let vertex_holders = holder_run(&holder_offsets, &holder_bags, vertex);
-            if vertex_holders.len() < 2 {
-                continue;
+        seen_in_bag.fill(usize::MAX);
+        for (position, bag) in self.bags.iter().enumerate() {
+            for &vertex in &bag.vertices {
+                seen_in_bag[vertex as usize] = position;
             }
-            let mark = vertex + 1;
-            for &bag in vertex_holders {
-                holding_mark[bag] = mark;
-            }
-            stack.clear();
-            stack.push(vertex_holders[0]);
-            reached_mark[vertex_holders[0]] = mark;
-            let mut reached = 1usize;
-            while let Some(bag) = stack.pop() {
-                for &neighbour in &self.adj[bag] {
-                    if holding_mark[neighbour] == mark && reached_mark[neighbour] != mark {
-                        reached_mark[neighbour] = mark;
-                        reached += 1;
-                        stack.push(neighbour);
-                    }
+            let mut edge = first_edge[position];
+            while edge != usize::MAX {
+                let (u, v) = graph.edges[edge];
+                if seen_in_bag[u as usize] != position || seen_in_bag[v as usize] != position {
+                    return invalid(format!("edge ({u}, {v}) is covered by no bag"));
                 }
-            }
-            if reached != vertex_holders.len() {
-                return invalid(format!(
-                    "the bags holding vertex {vertex} are not connected"
-                ));
+                edge = next_edge[edge];
             }
         }
 
@@ -357,18 +372,6 @@ impl TreeDecomposition {
 /// builds.
 fn holder_run<'a>(offsets: &[usize], bags: &'a [usize], vertex: usize) -> &'a [usize] {
     &bags[offsets[vertex]..offsets[vertex + 1]]
-}
-
-fn sorted_lists_intersect(left: &[usize], right: &[usize]) -> bool {
-    let (mut left_index, mut right_index) = (0, 0);
-    while left_index < left.len() && right_index < right.len() {
-        match left[left_index].cmp(&right[right_index]) {
-            std::cmp::Ordering::Less => left_index += 1,
-            std::cmp::Ordering::Greater => right_index += 1,
-            std::cmp::Ordering::Equal => return true,
-        }
-    }
-    false
 }
 
 fn invalid<T>(message: impl Into<String>) -> Result<T, Error> {
