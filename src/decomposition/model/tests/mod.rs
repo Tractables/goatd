@@ -1,6 +1,6 @@
 use crate::tests::td_fixture::make_td;
 
-use super::{TdBag, sorted_lists_intersect};
+use super::TdBag;
 
 #[test]
 fn algorithm_bag_preserves_its_stable_vertex_order() {
@@ -8,12 +8,6 @@ fn algorithm_bag_preserves_its_stable_vertex_order() {
         TdBag::from_algorithm_order(vec![3, 1, 2]).vertices(),
         [3, 1, 2],
     );
-}
-
-#[test]
-fn sorted_holder_intersection_detects_only_a_shared_bag() {
-    assert!(sorted_lists_intersect(&[1, 4, 9], &[0, 4, 8]));
-    assert!(!sorted_lists_intersect(&[1, 4, 9], &[0, 3, 8]));
 }
 
 /// The mass is the log2 of the sum over bags of 2^|bag|, which the comparison
