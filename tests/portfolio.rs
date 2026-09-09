@@ -656,3 +656,45 @@ fn every_candidate_is_compacted_and_names_the_stage_that_made_it() {
     assert!(keys.windows(2).all(|pair| pair[0] <= pair[1]));
     assert!(traced.iter().any(|c| c.origin.stage == Stage::MinDegree));
 }
+
+#[test]
+fn recombination_runs_under_a_budget_and_never_widens_the_winner() {
+    let graph = grid(6);
+    let weight = vec![1; graph.num_vertices() as usize];
+    let budget = Duration::from_millis(500);
+    let mut stages = Vec::new();
+    let recombined = decompose_traced(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard_with_budget(budget),
+        &mut |candidate| stages.push(candidate.stage),
+    )
+    .unwrap();
+    recombined.validate(&graph).unwrap();
+    assert!(stages.contains(&Stage::Recombined));
+    let alone = decompose(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard_with_budget(budget).without_recombination(),
+    )
+    .unwrap();
+    assert!(recombined.treewidth() <= alone.treewidth());
+}
+
+#[test]
+fn the_unbudgeted_portfolio_does_not_recombine() {
+    let graph = grid(5);
+    let weight = vec![1; graph.num_vertices() as usize];
+    let mut stages = Vec::new();
+    decompose_traced(
+        &graph,
+        &weight,
+        0,
+        PortfolioConfig::standard(),
+        &mut |candidate| stages.push(candidate.stage),
+    )
+    .unwrap();
+    assert!(!stages.contains(&Stage::Recombined));
+}

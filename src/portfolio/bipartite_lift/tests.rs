@@ -34,9 +34,9 @@ fn projecting_the_clause_side_gives_the_primal_graph() {
     // Two clauses over three variables: {0,1,2} and {1,2}.
     let graph = incidence(3, &[&[0, 1, 2], &[1, 2]]);
     let adjacency = adjacency(&graph);
-    let pairs = projected_pairs(&adjacency, &[3, 4], usize::MAX).expect("under the limit");
+    let priced = price(&adjacency, &[3, 4], u32::MAX, usize::MAX).expect("under the limit");
     let projection =
-        project(&graph, &adjacency, &[0, 1, 2], &[3, 4], pairs).expect("the projection fits");
+        project(&graph, &adjacency, &[0, 1, 2], &[3, 4], priced).expect("the projection fits");
     assert_eq!(projection.graph.num_vertices(), 3);
     assert_eq!(
         projection.graph.edges().to_vec(),
@@ -53,22 +53,91 @@ fn refuses_a_projection_that_is_too_large() {
     let graph = incidence(6, &[&[0, 1, 2, 3, 4, 5]]);
     let wide = adjacency(&graph);
     // Refused before the cliques are built, by the edge limit.
-    assert!(projected_pairs(&wide, &[6], 14).is_none());
+    assert!(price(&wide, &[6], u32::MAX, 14).is_none());
     // And refused after them, because the projection holds more edges than the
     // input does.
-    let pairs = projected_pairs(&wide, &[6], usize::MAX).expect("under the limit");
-    assert_eq!(pairs, 15);
-    assert!(project(&graph, &wide, &[0, 1, 2, 3, 4, 5], &[6], pairs).is_none());
+    let priced = price(&wide, &[6], u32::MAX, usize::MAX).expect("under the limit");
+    assert_eq!(priced.pairs, 15);
+    assert!(project(&graph, &wide, &[0, 1, 2, 3, 4, 5], &[6], priced).is_none());
 
     // A projection smaller than the input on both counts is kept: five edges in,
     // three out, and an estimate of four, which is a bound and not the count.
     let smaller = incidence(3, &[&[0, 1, 2], &[1, 2]]);
     let smaller_adjacency = adjacency(&smaller);
-    let pairs = projected_pairs(&smaller_adjacency, &[3, 4], usize::MAX).expect("under the limit");
-    assert_eq!(pairs, 4);
-    let projection = project(&smaller, &smaller_adjacency, &[0, 1, 2], &[3, 4], pairs)
+    let priced = price(&smaller_adjacency, &[3, 4], u32::MAX, usize::MAX).expect("under the limit");
+    assert_eq!(priced.pairs, 4);
+    let projection = project(&smaller, &smaller_adjacency, &[0, 1, 2], &[3, 4], priced)
         .expect("the projection fits");
     assert_eq!(projection.graph.edges().len(), 3);
+}
+
+#[test]
+fn a_cutoff_keeps_the_long_vertices_as_vertices() {
+    // Four short clauses and one long one over eight variables. At a cutoff of
+    // two the long clause stays a vertex, so the projection is the primal graph
+    // of the short clauses plus that vertex with its own edges, and the width
+    // the eliminated side contributes is the cutoff rather than the long
+    // clause's length.
+    let graph = incidence(8, &[&[0, 1], &[2, 3], &[4, 5], &[6, 7], &[0, 2, 4, 6, 7]]);
+    let adjacency = adjacency(&graph);
+    let keep: Vec<u32> = (0..8).collect();
+    let drop: Vec<u32> = (8..13).collect();
+
+    let whole = price(&adjacency, &drop, u32::MAX, usize::MAX).expect("under the limit");
+    assert_eq!(whole.kept, 0);
+    // Four clauses of two, one pair each, and the long clause's ten.
+    assert_eq!(whole.pairs, 14);
+
+    let partial = price(&adjacency, &drop, 2, usize::MAX).expect("under the limit");
+    assert_eq!((partial.kept, partial.kept_edges, partial.pairs), (1, 5, 4));
+
+    let projection =
+        project(&graph, &adjacency, &keep, &drop, partial).expect("the projection fits");
+    assert_eq!(
+        projection.graph.num_vertices(),
+        9,
+        "eight variables and the long clause"
+    );
+    assert_eq!(projection.eliminated_width, 2);
+
+    let projected = crate::elimination::decompose(
+        &projection.graph,
+        crate::elimination::Order::MinFill,
+        0,
+        None,
+    )
+    .expect("the projection decomposes");
+    let lifted = projection
+        .lift(&graph, &projected)
+        .expect("every eliminated neighbourhood is a clique of the projection");
+    lifted
+        .validate(&graph)
+        .expect("the partial lift is a decomposition of the whole graph");
+    assert_eq!(lifted.treewidth(), projection.lifted_width(&projected));
+}
+
+#[test]
+fn the_cutoffs_are_the_sides_own_degrees() {
+    // A side of uniform degree has one rung, which is the whole side.
+    let uniform = incidence(4, &[&[0, 1], &[1, 2], &[2, 3]]);
+    let uniform_adjacency = adjacency(&uniform);
+    assert_eq!(cutoffs(&uniform_adjacency, &[4, 5, 6]), vec![u32::MAX]);
+
+    // A side with a long vertex among short ones has rungs below the whole
+    // side, largest first, and none of them equals the largest degree.
+    let mixed = incidence(
+        6,
+        &[&[0, 1], &[1, 2], &[2, 3], &[3, 4], &[0, 1, 2, 3, 4, 5]],
+    );
+    let mixed_adjacency = adjacency(&mixed);
+    let rungs = cutoffs(&mixed_adjacency, &[6, 7, 8, 9, 10]);
+    assert_eq!(rungs[0], u32::MAX);
+    assert!(
+        rungs.len() > 1,
+        "a mixed side has more than one rung: {rungs:?}"
+    );
+    assert!(rungs.windows(2).all(|pair| pair[0] > pair[1]), "{rungs:?}");
+    assert!(!rungs[1..].contains(&6), "no rung repeats the whole side");
 }
 
 #[test]
@@ -161,8 +230,9 @@ fn lifts_a_decomposition_of_the_projection() {
     let adjacency = adjacency(&graph);
     let keep: Vec<u32> = (0..5).collect();
     let drop: Vec<u32> = (5..9).collect();
-    let pairs = projected_pairs(&adjacency, &drop, usize::MAX).expect("under the limit");
-    let projection = project(&graph, &adjacency, &keep, &drop, pairs).expect("the projection fits");
+    let priced = price(&adjacency, &drop, u32::MAX, usize::MAX).expect("under the limit");
+    let projection =
+        project(&graph, &adjacency, &keep, &drop, priced).expect("the projection fits");
     let projected = crate::elimination::decompose(
         &projection.graph,
         crate::elimination::Order::MinFill,

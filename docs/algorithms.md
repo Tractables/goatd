@@ -41,6 +41,12 @@ fill/degree scores, where what the candidates above cost says it fits, then
 further min-fill seeds, which the rest of this page calls the restarts. A
 trailing candidate hands the graph to FlowCutter.
 
+On a budgeted run one more stage follows all of them: it searches over the bags
+of every decomposition the run produced for a narrower tree than any single
+candidate, described under *Recombining the candidates' bags*, and then one
+that builds a decomposition independently of everything above and merges it in,
+described under *Merging independent decompositions*.
+
 The residual left after preprocessing picks between three schedules. At or
 below 10,000 vertices all of the above runs. Above that line it runs where the
 budget is wide enough for it: the portfolio times its first candidate, prices
@@ -154,17 +160,30 @@ single-threaded throughout.
 
 ## The bipartite lift
 
-One side of a bipartite graph is an independent set, so eliminating that whole
-side first adds no edge inside it, and each of its vertices leaves a bag of
-itself and its neighbours. What is left is the projection: the other side, with
-every neighbourhood of an eliminated vertex completed to a clique. A
-decomposition of the projection therefore lifts to one of the whole graph — each
-eliminated vertex goes into a new bag beside a bag holding its neighbourhood,
-which exists because that neighbourhood is a clique of the projection — of width
+One side of a bipartite graph is an independent set, so eliminating any part of
+that side first adds no edge among the vertices eliminated, and each of them
+leaves a bag of itself and its neighbours. What is left is the projection:
+everything else, with every neighbourhood of an eliminated vertex completed to
+a clique. A decomposition of the projection therefore lifts to one of the whole
+graph — each eliminated vertex goes into a new bag beside a bag holding its
+neighbourhood, which exists because that neighbourhood is a clique of the
+projection — of width
 
 ```text
-max(width of the projection, largest degree over the eliminated side)
+max(width of the projection, largest degree over the eliminated vertices)
 ```
+
+Eliminating the whole side gives the smallest projection to search and the
+weakest bound: a vertex of degree d puts a clique of size d into the
+projection, so on an incidence graph the projection is the primal graph and the
+lift can never be narrower than the primal width, however much narrower the
+incidence graph is. A cutoff on the side's degrees keeps the long vertices as
+vertices and eliminates only the short ones, which gives a larger graph to
+search and a bound between the two. So the stage does not pick one cutoff: it
+walks the quantiles of the side's own degrees from the largest down, spends on
+each rung what its share of the work is worth, and keeps the narrowest lift any
+of them produced. A side whose degrees are all the same has one rung, which is
+the whole side.
 
 `PortfolioConfig::with_bipartite_lift` turns the stage on; the budgeted
 standard portfolio runs it. It 2-colours the graph, and on a graph with an odd
@@ -181,13 +200,16 @@ built only if the first turns out to hold more edges than the input. The lift
 is one more candidate: the portfolio keeps whichever decomposition is narrower,
 so the stage spends time and never width.
 
-Whether the stage runs at all is a question about the budget, not about the
-size of the graph. `PortfolioConfig::with_bipartite_lift_rate` sets how much
-work it may do per millisecond of the share it would take, in edges: the
-input's edges, which the colouring and the pricing each walk, plus the cheaper
-side's estimate, which is what building the projection costs and stands for the
-search over it. Over that rate the stage does not run and its share stays with
-the rest of the schedule, so the same graph is refused under a ten-second
+Whether the stage runs at all, and how many cutoffs it tries, is a question
+about the budget, not about the size of the graph.
+`PortfolioConfig::with_bipartite_lift_rate` sets how much work it may do per
+millisecond of the share it would take, in edges: the input's edges, which the
+colouring and the pricing each walk, plus what building the projections costs,
+which stands for the search over them. The whole side is the first rung and is
+what the rate admits or refuses; further rungs are added while the total stays
+under what the share pays for, and the rungs then split the share evenly. Over
+the rate the stage does not run at all and its share stays
+with the rest of the schedule, so the same graph is refused under a ten-second
 budget and decomposed under a four-minute one.
 
 It runs first, so the width it finds is the incumbent the elimination orders
@@ -407,7 +429,16 @@ augmenting-path matching. By König's theorem that is the smallest separator
 covering those edges, and it is never larger than all the boundary vertices on
 the smaller side. Small subgraphs, and a level whose bisection leaves nothing
 to recurse on, are ordered by min-fill against the hard deadline; the vertices
-it does not reach follow in a fixed order.
+it does not reach follow in a fixed order. A level's bisection runs against
+that deadline too, and reads it from inside its own loops: on a graph whose
+coarsening declines to shrink anything, growing the initial partition alone
+takes seconds, so a bisection that only checked the clock on the way in would
+carry the whole recursion well past its cutoff. A bisection the deadline stops
+is dropped and its vertices take the same fixed order. The order still covers
+the whole subgraph, so the closing elimination gets what a pass over the
+residual is projected to cost past the deadline and builds its bags from it; a
+pass that needs longer than the projection is stopped and the candidate returns
+nothing.
 
 The graph bisector is public on its own, as is a separate hypergraph bisector
 that minimizes cut hyperedges with FM and flow-based refinement. Hypergraph
@@ -443,6 +474,131 @@ heap-position arithmetic, bounded greedy-order passes with work-unit metering,
 an early-convergence patience limit, and a density gate on a shortcut order
 that is expensive on clique-dominated graphs.
 [THIRD-PARTY.md](THIRD-PARTY.md) lists every source change and licence.
+
+## Recombining the candidates' bags
+
+Every candidate above produces a whole tree decomposition and the portfolio
+keeps the narrowest, which throws away the good bags of all the others. The
+last stage of a budgeted run keeps them instead: it holds the best
+decomposition of every stage above, pools their bags, and searches that pool
+for the narrowest tree decomposition whose bags all come from it. It is keyed
+by stage rather than by width because what the search needs from a candidate is
+a tree shaped differently from the others, and the narrowest few are usually
+near copies of one another. Where they do not all fit, the bags are shared out —
+the narrowest tree twice the share of the rest, each giving up its narrowest
+bags first — and each is minimalised on the way in where there is time for it,
+so the bags pooled are the cliques of a minimal triangulation of the same
+graph. Where the reserve has time to spare before the search, a few extra
+sampled eliminations are drawn on scores the schedule did not run and put
+straight into the pool; they are never offered as answers.
+
+The search is the dynamic programme of Bouchitté and Todinca restricted to a
+list of candidate bags rather than run over every potential maximal clique of
+the graph. A *block* is a connected component `C` of `G` less a pool bag,
+carried with its separator `N(C)`; a *cap* of a block is a pool bag `Ω` with
+`N(C) ⊆ Ω ⊆ C ∪ N(C)` and a vertex inside `C`. The width of a block is the
+cheapest way to decompose `C ∪ N(C)` with `N(C)` in its top bag: everything in
+one bag, or a cap with the blocks it leaves inside `C` under it. Blocks are
+evaluated smallest first, so a block's sub-blocks are settled before it and one
+pass is enough; the answer is the same expression over the whole graph,
+minimised over the choice of top bag.
+
+The tree that comes out is a valid decomposition whatever the pool holds, so no
+bag is tested for being a potential maximal clique: a cap and the blocks below
+it cover every edge inside `C ∪ N(C)`, and each vertex's bags form a subtree
+because a block's bags stay inside it. The pool holds the winner's own bags, so
+the search cannot come back wider than the portfolio already has, and the
+portfolio keeps the result only where it is narrower.
+
+After the first answer the stage grows the list: the widest bags of it, each
+with the bags next to it in the tree, are small overlapping pieces of the
+graph, and decomposing one of them on its own by MCS-M gives cliques of a
+minimal triangulation of that piece which the pool did not hold. The programme
+runs again over the longer list, and stops when a round adds nothing, when the
+answer stops improving, or at the deadline.
+
+`PortfolioConfig::with_recombination` gates the stage on a vertex count,
+because the search costs a pass over the graph per bag in the pool and the pool
+holds thousands: above the gate the reserve it would need is more of the window
+than the stage can be worth. What the search holds is capped separately, by constants the
+graph's size does not enter: 4,000 bags and a million vertex ids in the pool,
+32 million in the blocks. On reaching a cap it stops taking bags in and
+searches the part of the pool it has, which is a narrower search rather than a
+wrong one.
+
+The sets the programme works with — a bag, a block, a separator — are held as
+words rather than as sorted lists of ids, since it compares and combines them
+far more often than it walks them, and the graph is held as one row of words
+per vertex so that the components of the graph less a bag are read off those
+rows. The rows cost `n²/8` bytes; a graph whose rows would be larger than
+64 MiB is not searched at all, and neither stage runs on one that large in any
+case. The reserve the stage takes off the end of the hard window is what
+its own search is estimated to cost on this graph — the pool it will hold,
+times a pass over the graph each, a few times over — and where that is more
+than an eighth of the window the stage is given no reserve and does not run,
+because it would reach the deadline with nothing and the schedule would have
+stopped early for it. A run with no budget at all has no window to take a share
+of and does not run the stage either. At its deadline the search hands back nothing rather
+than a part-built answer, and the portfolio returns what it had.
+
+The reference for the dynamic programme is Bouchitté and Todinca, "Treewidth
+and minimum fill-in: grouping the minimal separators", SIAM Journal on
+Computing 31(1), 2001. Running it over a heuristic list rather than the
+complete one is Tamaki, "Computing treewidth via exact and heuristic lists of
+minimal separators", 2019.
+
+## Merging independent decompositions
+
+The recombination stage reads the bags of the trees a run already built, so
+every bag in its pool comes from a tree the same schedule produced. The stage
+after it builds a tree the schedule had nothing to do with and merges that in.
+It is the improvement loop of Tamaki, "Heuristic computation of exact
+treewidth", 2022, over the same restricted programme.
+
+A *list* is a set of bags, and its width is what the programme above reads off
+it: the narrowest tree decomposition all of whose bags are in the list. The
+stage starts from the list of the best decomposition the run has, minimalised
+where there is time for it, and improves it:
+
+- build a second list from scratch — several randomised min-fill draws, each
+  minimalised, the narrowest kept;
+- while that list is wider than the one being improved, improve it the same way,
+  which is a chain of independent searches rather than a walk outwards from the
+  tree in hand;
+- merge the two. A bag `X` of the first list is drawn at random and `C` is the
+  largest component of `G` less `X`. A partner `Y` from the second list has to
+  lie inside `C ∪ N(C)`, so that neither of the two crosses the other, and to be
+  no wider than the list already is, so that the tree the merge admits can be
+  narrower than the one there is. The piece the pair picks out is
+  `(C ∪ N(C)) ∩ (D ∪ N(D))`, where `D` is the component of `G` less `Y` that
+  holds `X`. The smallest pieces are taken first: the local graph on one of them
+  — what `G` induces there with the neighbourhood of every component outside it
+  filled into a clique — is triangulated minimally by MCS-M, and where that
+  comes back no wider its cliques join the merged list. Filling those
+  neighbourhoods is what makes a triangulation of the piece extend to one of the
+  graph, so a clique of it is a potential maximal clique of the graph or a
+  minimal separator of it; the separators are dropped, since they cost the
+  programme a pass over the graph and split nothing.
+
+The merged list holds both lists and everything so added, and admits trees that
+neither admits on its own: a tree can take some bags from one, some from the
+other, and the added cliques to join the two. The programme is run over it and
+the stage stops when the width stops improving or at its deadline. It starts
+from the run's own answer, so it never comes back wider.
+
+`PortfolioConfig::with_merge_loop` gates the stage on a vertex count and it
+takes a share of the hard window off the end, both for the reason the
+recombination stage does: the search is the same and costs a pass over the
+graph per bag of the list. Its share comes off first and the recombination
+stage takes its own out of what is left. A level of the recursion may spend
+half of what is left when it starts, so the levels below it cannot spend the
+window on their own, and where the deadline stops a side list above the width
+it was aiming at it is merged anyway — its bags are still bags of a
+triangulation the first list does not have.
+
+`decomposition::decompose_by_merging` runs the construction on its own, without
+a portfolio to start it off: it begins from its own initial list, which is what
+the paper's algorithm does.
 
 ## Decomposition operations
 

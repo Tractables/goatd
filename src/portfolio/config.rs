@@ -57,6 +57,41 @@ const DEFAULT_MAXIMUM_CARDINALITY_VERTICES: u32 = 40_000;
 /// bounded.
 const DEFAULT_TRIANGULATION_REFINEMENT_VERTICES: u32 = 2_000;
 
+/// Graph size at or below which the standard budgeted portfolio recombines the
+/// bags of its candidates. The search costs a pass over the graph per bag in
+/// the pool, and the pool holds thousands, so above this the reserve it would
+/// need is more of the window than the stage can be worth. It is the cheap
+/// filter; the reserve priced against the pool is what settles the rest.
+const DEFAULT_RECOMBINATION_VERTICES: u32 = 2_000;
+
+/// Graph size at or below which the standard budgeted portfolio runs the merge
+/// loop. Its search is the same restricted Bouchitte-Todinca programme the
+/// recombination stage runs, over a list of the same order, so the same size is
+/// where the reserve it would need stops being worth the window.
+const DEFAULT_MERGE_LOOP_VERTICES: u32 = DEFAULT_RECOMBINATION_VERTICES;
+
+/// The most of the hard window the merge loop is given, taken off the end
+/// before the recombination stage takes its own share. The loop runs one
+/// programme per side answer it builds, so its share is the same size as the
+/// recombination stage's.
+pub(super) const MERGE_LOOP_WINDOW_SHARE: u32 = RECOMBINATION_WINDOW_SHARE;
+
+/// The most of the hard window the recombination stage is given, taken off the
+/// end so the rest of the schedule finishes that much earlier. It is given the
+/// estimated cost of its own search where that is less.
+pub(super) const RECOMBINATION_WINDOW_SHARE: u32 = 8;
+/// The least the stage is given, whatever the estimate comes to.
+pub(super) const MIN_RECOMBINATION_RESERVE: Duration = Duration::from_millis(50);
+/// Passes over the pool the estimate pays for: the first search, and the growth
+/// rounds after it where there is time for them.
+pub(super) const RECOMBINATION_PASSES: u64 = 3;
+/// What one pass of the search covers in a millisecond, in vertices and edges
+/// of the graph per pool bag. Measured rather than derived: the pass allocates
+/// a vertex list per component it cuts out and hashes each one, which costs far
+/// more per edge than the work the meter is calibrated on.
+pub(super) const RECOMBINATION_RATE_PER_MS: u64 = 12_000;
+/// Where the pool slots of the extra draws start, past every stage's own.
+pub(super) const VARIETY_SLOT: u32 = 400;
 /// How large a projection the bipartite lift will build before it is allowed
 /// to look at it, as a multiple of the input's edge count.
 ///
@@ -506,6 +541,8 @@ pub struct PortfolioConfig {
     pub(super) maximum_cardinality: Option<u32>,
     pub(super) minimal_triangulation: Option<u32>,
     pub(super) triangulation_refinement: Option<u32>,
+    pub(super) recombination: Option<u32>,
+    pub(super) merge_loop: Option<u32>,
     pub(super) bipartite_lift: Option<f64>,
     pub(super) bipartite_lift_rate: f64,
 }
@@ -530,6 +567,8 @@ impl PartialEq for PortfolioConfig {
             && self.maximum_cardinality == other.maximum_cardinality
             && self.minimal_triangulation == other.minimal_triangulation
             && self.triangulation_refinement == other.triangulation_refinement
+            && self.recombination == other.recombination
+            && self.merge_loop == other.merge_loop
             && self.bipartite_lift.map(f64::to_bits) == other.bipartite_lift.map(f64::to_bits)
             && self.bipartite_lift_rate.to_bits() == other.bipartite_lift_rate.to_bits()
     }
@@ -559,6 +598,8 @@ impl PortfolioConfig {
             maximum_cardinality: None,
             minimal_triangulation: None,
             triangulation_refinement: None,
+            recombination: None,
+            merge_loop: None,
             bipartite_lift: None,
             bipartite_lift_rate: DEFAULT_BIPARTITE_LIFT_RATE,
         }
@@ -643,10 +684,12 @@ impl PortfolioConfig {
     /// A caller who wants the schedule the budget was measured for wants
     /// [`PortfolioConfig::standard_with_budget`].
     ///
-    /// The bipartite lift is off here and on in `standard_with_budget`, since
-    /// it runs a portfolio of its own on a share of the window and this set
-    /// has no window to share. [`PortfolioConfig::with_bipartite_lift`] turns
-    /// it on without the budgeted set's other changes.
+    /// The bipartite lift and the recombination stage are both off here. The
+    /// lift runs a portfolio of its own on a share of the window and the
+    /// recombination stage takes its time off the end of one, and this set has
+    /// no window to give either. [`PortfolioConfig::with_bipartite_lift`] and
+    /// [`PortfolioConfig::with_recombination`] turn them on without the
+    /// budgeted set's other changes.
     pub fn standard() -> Self {
         Self {
             soft_budget: None,
@@ -664,6 +707,10 @@ impl PortfolioConfig {
             maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
+            // The stage wants a share of a hard window, and this schedule has
+            // no deadline to take one from.
+            recombination: None,
+            merge_loop: None,
             bipartite_lift: None,
             bipartite_lift_rate: DEFAULT_BIPARTITE_LIFT_RATE,
         }
@@ -718,6 +765,11 @@ impl PortfolioConfig {
     /// [`PortfolioConfig::with_sampling_patience`] gives back what the
     /// restarts and the trailing candidate spend after they have stalled, at a
     /// cost in width.
+    ///
+    /// The recombination stage is on here, on graphs small enough for its
+    /// search to fit a share of the window;
+    /// [`PortfolioConfig::without_recombination`] turns it off and
+    /// [`PortfolioConfig::with_recombination`] moves the size it stops at.
     pub fn standard_with_budget(budget: Duration) -> Self {
         Self {
             soft_budget: Some(budget),
@@ -735,6 +787,8 @@ impl PortfolioConfig {
             maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
+            recombination: Some(DEFAULT_RECOMBINATION_VERTICES),
+            merge_loop: Some(DEFAULT_MERGE_LOOP_VERTICES),
             bipartite_lift: Some(DEFAULT_BIPARTITE_LIFT_EDGE_FACTOR),
             bipartite_lift_rate: DEFAULT_BIPARTITE_LIFT_RATE,
         }
@@ -976,6 +1030,59 @@ impl PortfolioConfig {
         self
     }
 
+    /// Recombine the bags of the candidates on graphs of at most
+    /// `max_vertices` vertices.
+    ///
+    /// The last stage of the schedule collects the bags of every decomposition
+    /// the run produced and searches over that pool for the narrowest tree
+    /// decomposition whose bags all come from it. The pool holds the winner's
+    /// own bags, so the search cannot come back wider, and the portfolio keeps
+    /// the result only where it is narrower.
+    ///
+    /// The stage is given what its search is estimated to cost, never more than
+    /// a share of the hard window, and it is taken off the end, so every other
+    /// candidate stops that much earlier. A run with no budget at all has no
+    /// window to take a share of, and does not run the stage. The gate is a
+    /// vertex count because the search costs a pass over the graph per bag in
+    /// the pool: above it the reserve the stage would need is more of the
+    /// window than it can be worth. What the search holds is capped separately,
+    /// by a constant the graph's size does not enter.
+    pub fn with_recombination(mut self, max_vertices: u32) -> Self {
+        self.recombination = Some(max_vertices);
+        self
+    }
+
+    /// Return the best single candidate instead of recombining the bags of all
+    /// of them.
+    pub fn without_recombination(mut self) -> Self {
+        self.recombination = None;
+        self
+    }
+
+    /// Improve the best decomposition the run has by merging independent ones
+    /// into it, on graphs of at most `max_vertices` vertices.
+    ///
+    /// The stage builds a second decomposition from scratch, improves that one
+    /// on its own until it is no wider, and then searches the two lists of bags
+    /// together with the cliques that join them, which is Tamaki's improvement
+    /// loop. It keeps the result only where it is narrower than what the run
+    /// already has.
+    ///
+    /// Like [`PortfolioConfig::with_recombination`] it is given a share of the
+    /// hard window taken off the end, so a run with no budget does not run it,
+    /// and the gate is a vertex count because its search costs a pass over the
+    /// graph per bag of the list.
+    pub fn with_merge_loop(mut self, max_vertices: u32) -> Self {
+        self.merge_loop = Some(max_vertices);
+        self
+    }
+
+    /// Do not merge independent decompositions into the run's best one.
+    pub fn without_merge_loop(mut self) -> Self {
+        self.merge_loop = None;
+        self
+    }
+
     /// Run the bipartite lift on a bipartite graph, on the side whose
     /// eliminations add fewer than `edge_factor` times the input's edges.
     ///
@@ -984,6 +1091,15 @@ impl PortfolioConfig {
     /// add no fill among themselves and each leaves a bag of its own
     /// neighbourhood — decomposes what is left with a share of the budget, and
     /// puts the eliminated side back.
+    ///
+    /// Eliminating a vertex of degree d makes the projection hold a clique of
+    /// size d, so the whole side gives the smallest graph to search and the
+    /// weakest bound on the width. The stage therefore also tries cutoffs on
+    /// the side's degrees, keeping the longer vertices as vertices and
+    /// eliminating only the short ones. The cutoffs are quantiles of the
+    /// side's own degrees, and how many of them run is what the share pays
+    /// for at the rate below, so a side of uniform degrees is one search and a
+    /// short window is still one search.
     ///
     /// `edge_factor` is measured against the sum of d(d-1)/2 over the side
     /// being eliminated, which counts a projected edge once per elimination

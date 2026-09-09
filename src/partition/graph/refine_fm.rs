@@ -9,7 +9,9 @@
 //! minimum.
 
 use super::csr::CsrGraph;
-use crate::partition::common::{FmBalance, GainBuckets, Stall, commit_best_prefix, fm_balance};
+use crate::partition::common::{
+    BisectionStop, FmBalance, GainBuckets, Stall, commit_best_prefix, fm_balance,
+};
 
 pub(super) struct FmScratch {
     gain: Vec<i64>,
@@ -55,6 +57,7 @@ pub(super) fn fm_refine_pass(
     part: &mut [u8],
     max_imbalance: f64,
     scratch: &mut FmScratch,
+    stop: &mut BisectionStop,
 ) -> bool {
     // One pass: the gain build below walks the whole graph, and the move loop
     // walks the neighbourhood of everything it moves.
@@ -109,6 +112,9 @@ pub(super) fn fm_refine_pass(
     let mut stall = Stall::new((n / 2).max(20));
 
     for _ in 0..n {
+        if stop.reached() {
+            break;
+        }
         let mut best_v: Option<usize> = None;
         let mut best_gain = i64::MIN;
         let mut best_from: usize = 0;
@@ -203,6 +209,7 @@ pub(super) fn localized_fm_pass(
     part: &mut [u8],
     seed: usize,
     max_imbalance: f64,
+    stop: &mut BisectionStop,
 ) -> bool {
     let n = graph.num_vertices();
     let Some(FmBalance {
@@ -287,6 +294,9 @@ pub(super) fn localized_fm_pass(
     // Ties go to whichever vertex BFS reached first because `gain[v] > best_g`
     // is strict. The hypergraph pass scans its region in ascending index order.
     for _ in 0..region_list.len() {
+        if stop.reached() {
+            break;
+        }
         let mut best_v = None;
         let mut best_g = i64::MIN;
         for &v in &region_list {
@@ -353,10 +363,11 @@ pub(super) fn refine_level(
     part: &mut [u8],
     max_imbalance: f64,
     scratch: &mut FmScratch,
+    stop: &mut BisectionStop,
 ) {
     let max_passes = 10;
     for _ in 0..max_passes {
-        if !fm_refine_pass(graph, part, max_imbalance, scratch) {
+        if !fm_refine_pass(graph, part, max_imbalance, scratch, stop) || stop.stopped() {
             break;
         }
     }
@@ -368,8 +379,12 @@ pub(super) fn refine_finest_level(
     part: &mut [u8],
     max_imbalance: f64,
     scratch: &mut FmScratch,
+    stop: &mut BisectionStop,
 ) {
-    refine_level(graph, part, max_imbalance, scratch);
+    refine_level(graph, part, max_imbalance, scratch, stop);
+    if stop.stopped() {
+        return;
+    }
 
     let n = graph.num_vertices();
     if n < 20 {
@@ -394,7 +409,10 @@ pub(super) fn refine_finest_level(
     // 7919 is prime, so successive tries land in unrelated stretches of the
     // boundary list rather than in one region's worth of adjacent vertices.
     for i in 0..num_tries {
+        if stop.stopped() {
+            break;
+        }
         let seed = boundary[(i * 7919) % boundary.len()];
-        localized_fm_pass(graph, part, seed, max_imbalance);
+        localized_fm_pass(graph, part, seed, max_imbalance, stop);
     }
 }

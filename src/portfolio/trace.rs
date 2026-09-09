@@ -32,6 +32,11 @@ pub enum Stage {
     MinimalTriangulation,
     /// The pass that drops the fill edges the winner's bags do not need.
     Minimalized,
+    /// The stage that recombines the bags of all the candidates.
+    Recombined,
+    /// The stage that merges independently built decompositions into the best
+    /// one the run has.
+    Merged,
     /// The trailing FlowCutter candidate.
     FlowCutter,
     /// The lift of a decomposition of one side's projection, on a bipartite
@@ -41,6 +46,35 @@ pub enum Stage {
     WeightedStage,
     /// The ordinary sampled restarts as a whole, rather than one of them.
     SampledRestarts,
+}
+
+impl Stage {
+    /// Which slot of the recombination pool this stage's decompositions go in.
+    ///
+    /// The pool keeps the best decomposition of each slot, so every stage that
+    /// produced one is represented in the bags the recombination reads however
+    /// wide it came out: what the search needs from a candidate is a tree
+    /// shaped differently from the others, and the stages are what differ.
+    pub(crate) fn slot(self) -> u32 {
+        match self {
+            Stage::MinFill => 0,
+            Stage::MinDegree => 1,
+            Stage::NestedDissection => 2,
+            Stage::Sample => 3,
+            Stage::MaximumCardinality => 4,
+            Stage::MinimalTriangulation => 5,
+            Stage::Minimalized => 6,
+            Stage::Recombined => 7,
+            Stage::Merged => 12,
+            Stage::FlowCutter => 8,
+            Stage::WeightedStage => 9,
+            Stage::SampledRestarts => 10,
+            Stage::BipartiteLift => 11,
+            Stage::Diverse { degree_coefficient } => {
+                100 + u32::from(degree_coefficient.cast_unsigned())
+            }
+        }
+    }
 }
 
 impl fmt::Display for Stage {
@@ -57,6 +91,8 @@ impl fmt::Display for Stage {
             Stage::BipartiteLift => formatter.write_str("bipartite-lift"),
             Stage::MinimalTriangulation => formatter.write_str("minimal-triangulation"),
             Stage::Minimalized => formatter.write_str("minimalized"),
+            Stage::Recombined => formatter.write_str("recombined"),
+            Stage::Merged => formatter.write_str("merged"),
             Stage::FlowCutter => formatter.write_str("flowcutter"),
             Stage::WeightedStage => formatter.write_str("weighted-stage"),
             Stage::SampledRestarts => formatter.write_str("sampled-restarts"),
@@ -122,9 +158,9 @@ pub enum CandidateOutcome {
     DeadlineReached,
     /// A candidate the portfolio did not start, and so has no result for. The
     /// nested-dissection slot reports this on a residual in the middle band
-    /// (see [`PortfolioConfig`](crate::portfolio::PortfolioConfig)): it reads
-    /// its deadline between levels, and at that size one level can run past the
-    /// portfolio's hard deadline.
+    /// (see [`PortfolioConfig`](crate::portfolio::PortfolioConfig)): at that
+    /// size its first bisection spends the whole window the slot has, and a
+    /// bisection the deadline stops leaves the level nothing to split.
     NotStarted,
     /// A weighted stage the budget rule did not start: what one more stage was
     /// projected to cost did not fit in what the stages may spend, so the

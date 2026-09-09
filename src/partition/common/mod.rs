@@ -24,9 +24,55 @@
 mod tests;
 
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use crate::Error;
+use crate::deadline::expired;
+use crate::elimination::execution::DeadlinePacer;
 use crate::rng::Xorshift64;
+
+/// The cutoff a bisection runs under, and the pacing of its clock reads.
+///
+/// A bisection is a tree of loops — coarsening levels, refinement passes, the
+/// moves inside a pass, the growth of an initial partition — and any of them
+/// can be the one running when the cutoff passes, so all of them ask here. The
+/// answer is sticky: the first loop to see the cutoff reached sets it, and
+/// every enclosing loop reads it and stops too, without another clock read.
+///
+/// With no cutoff nothing here reads a clock, which is what lets
+/// [`multilevel_graph_bisect`](crate::partition::multilevel_graph_bisect) say
+/// that one seed gives one bisection.
+pub(super) struct BisectionStop {
+    deadline: Option<Instant>,
+    pacer: DeadlinePacer,
+    stopped: bool,
+}
+
+impl BisectionStop {
+    pub(super) fn new(deadline: Option<Instant>) -> Self {
+        Self {
+            deadline,
+            pacer: DeadlinePacer::new(),
+            stopped: false,
+        }
+    }
+
+    /// Count one iteration and report whether the bisection should stop,
+    /// reading the clock as often as the rest of the library does.
+    pub(super) fn reached(&mut self) -> bool {
+        if !self.stopped && self.deadline.is_some() && self.pacer.due() && expired(self.deadline) {
+            self.stopped = true;
+        }
+        self.stopped
+    }
+
+    /// Whether the cutoff has already stopped this bisection, without counting
+    /// an iteration or reading the clock. For the loops that only need to know
+    /// whether an inner one gave up.
+    pub(super) fn stopped(&self) -> bool {
+        self.stopped
+    }
+}
 
 /// Check the balance tolerance shared by both public bisectors.
 pub(super) fn validate_max_imbalance(value: f64, kind: &str) -> Result<(), Error> {
