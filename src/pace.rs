@@ -14,11 +14,20 @@ use crate::graph::Graph;
 impl Graph {
     /// Render as a PACE `.gr` graph (1-indexed vertices).
     pub fn to_gr(&self) -> String {
-        let mut out = format!("p tw {} {}\n", self.num_vertices, self.edges.len());
+        let mut out = Vec::new();
+        let mut line = Vec::new();
+        line.extend_from_slice(b"p tw ");
+        push_decimal(&mut line, self.num_vertices as usize);
+        line.push(b' ');
+        push_decimal(&mut line, self.edges.len());
+        write_line(&mut out, &mut line).expect("writing a graph into memory cannot fail");
         for &(u, v) in &self.edges {
-            out.push_str(&format!("{} {}\n", u + 1, v + 1));
+            push_decimal(&mut line, u as usize + 1);
+            line.push(b' ');
+            push_decimal(&mut line, v as usize + 1);
+            write_line(&mut out, &mut line).expect("writing a graph into memory cannot fail");
         }
-        out
+        String::from_utf8(out).expect("PACE output contains only ASCII")
     }
 
     /// Read a PACE `.gr` graph. Self-loops are dropped and repeated edges kept
