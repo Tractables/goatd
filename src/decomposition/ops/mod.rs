@@ -8,7 +8,7 @@
 
 use std::collections::VecDeque;
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{TdBag, TreeDecomposition};
 use crate::Error;
@@ -494,11 +494,24 @@ fn augment_for_separator(td: &mut TreeDecomposition, sep: &[u32]) -> Option<usiz
             .count()
     })?;
 
+    // The loop below only ever pushes the separator vertex it is currently
+    // carrying, so an earlier iteration cannot move a later one's first
+    // holder. One sweep over the bags answers every lookup; the ascending
+    // bag order makes `or_insert` keep the same bag the scan would find.
+    let mut first_holder: FxHashMap<u32, usize> = FxHashMap::default();
+    for (index, bag) in td.bags.iter().enumerate() {
+        for &vertex in &bag.vertices {
+            if sep_set.contains(&vertex) {
+                first_holder.entry(vertex).or_insert(index);
+            }
+        }
+    }
+
     for &v in sep {
         if td.bags[anchor].vertices.contains(&v) {
             continue;
         }
-        let src = (0..td.bags.len()).find(|&i| td.bags[i].vertices.contains(&v))?;
+        let src = *first_holder.get(&v)?;
         if src != anchor {
             match bag_path_bfs(&td.adj, src, anchor) {
                 Some(path) => {
