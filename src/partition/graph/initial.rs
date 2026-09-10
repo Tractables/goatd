@@ -10,13 +10,17 @@ use super::csr::CsrGraph;
 use super::refine_fm::{FmScratch, refine_level};
 use crate::partition::common::{BisectionStop, random_bisection};
 use crate::rng::Xorshift64;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 
 /// Grows side 0 outward from `seed` until it holds half the vertex weight;
 /// everything else lands on side 1.
 ///
-/// Each vertex added is chosen by a scan of all of them, so the growth costs
-/// the square of the vertex count and is the longest single stretch of work in
-/// a bisection of a graph the coarsening declined to shrink. It reads `stop`
+/// The vertex added each round is the one with the largest gain, ties going to
+/// the lowest index. Gains only ever rise (an edge is added at `2 * w`), so a
+/// max-heap keyed by `(gain, Reverse(v))` picks the same vertex a scan of all
+/// of them would: an entry whose gain no longer matches the vertex's is stale
+/// and a larger one for the same vertex is still in the heap. It reads `stop`
 /// as it goes and leaves the rest of the vertices on side 1 when the cutoff
 /// passes, which the caller discards.
 pub(super) fn greedy_graph_growing(
@@ -45,21 +49,26 @@ pub(super) fn greedy_graph_growing(
         gain[nb as usize] += w as i64;
     }
 
+    // Every vertex outside the set is a candidate from the start, including the
+    // ones no edge has touched yet, so all of them go in.
+    let mut heap: BinaryHeap<(i64, Reverse<usize>)> = (0..n)
+        .filter(|&v| v != seed)
+        .map(|v| (gain[v], Reverse(v)))
+        .collect();
+
     while set_weight < target {
-        // The scan below reads every vertex, so the growth of one side costs a
-        // pass over the graph per vertex it adds. Charged like any other pass:
-        // without it this loop is the one long stretch of a bisection that a
-        // work-based clock cannot see.
+        // Still charged a pass over the vertices per vertex added, which is
+        // what the heap replaced. The cutoff below reads the meter, so a
+        // different charge would move where a budgeted bisection stops.
         crate::meter::charge(n as u64);
         if stop.reached() {
             break;
         }
         let mut best_v = None;
-        let mut best_gain: i64 = i64::MIN;
-        for v in 0..n {
-            if !in_set[v] && (best_v.is_none() || gain[v] > best_gain) {
-                best_gain = gain[v];
+        while let Some((g, Reverse(v))) = heap.pop() {
+            if !in_set[v] && g == gain[v] {
                 best_v = Some(v);
+                break;
             }
         }
 
@@ -87,6 +96,9 @@ pub(super) fn greedy_graph_growing(
                 // not the cut reduction the textbook version tracks. See "Where
                 // the two bisectors differ" in the shared partition bookkeeping.
                 gain[nb] += 2 * w as i64;
+                if w > 0 {
+                    heap.push((gain[nb], Reverse(nb)));
+                }
             }
         }
     }

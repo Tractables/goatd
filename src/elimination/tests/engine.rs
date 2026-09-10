@@ -106,10 +106,11 @@ pub(super) fn run_order(
     seed: u64,
 ) -> crate::TreeDecomposition {
     let graph = EliminationGraph::from_edges(num_vertices, edges);
-    let reduced = preprocess(graph, None);
+    let mut reduced = preprocess(graph, None);
     let components = find_connected_components(&reduced.graph);
-    match run_order_on_reduced(
-        reduced,
+    match run_order_on_residual(
+        &mut reduced.graph,
+        &reduced.prefix,
         &components,
         None,
         RunSpec {

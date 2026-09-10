@@ -173,7 +173,6 @@ fn difference_popcount_by(
 
 /// Mutable graph used by goatd during preprocessing, min-fill, and nested
 /// dissection. Supports active/inactive vertices for constant-time elimination.
-#[derive(Clone)]
 pub(super) struct EliminationGraph {
     pub(super) adj: Vec<Vec<u32>>,
     /// Position of each neighbour within `adj[v]`, for the rows long enough to
@@ -214,6 +213,80 @@ pub(super) struct EliminationGraph {
     /// is what the graphs small enough to index by vertex id always did.
     bitset_compact: bool,
     hardware_popcount: bool,
+}
+
+/// Written out rather than derived so that `clone_from` refills the buffers a
+/// working copy already has. The portfolio takes a copy of the preprocessed
+/// residual for every candidate it runs, and on a graph with a few hundred
+/// thousand vertices a fresh copy means an allocation per adjacency row.
+impl Clone for EliminationGraph {
+    fn clone(&self) -> Self {
+        let Self {
+            adj,
+            row_index,
+            active,
+            num_active,
+            num_edges,
+            bitset_degree,
+            elim_marker,
+            elim_stamp,
+            bitset,
+            bitset_words,
+            bitset_slot,
+            slot_vertex,
+            bitset_compact,
+            hardware_popcount,
+        } = self;
+        Self {
+            adj: adj.clone(),
+            row_index: row_index.clone(),
+            active: active.clone(),
+            num_active: *num_active,
+            num_edges: *num_edges,
+            bitset_degree: bitset_degree.clone(),
+            elim_marker: elim_marker.clone(),
+            elim_stamp: *elim_stamp,
+            bitset: bitset.clone(),
+            bitset_words: *bitset_words,
+            bitset_slot: bitset_slot.clone(),
+            slot_vertex: slot_vertex.clone(),
+            bitset_compact: *bitset_compact,
+            hardware_popcount: *hardware_popcount,
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        let Self {
+            adj,
+            row_index,
+            active,
+            num_active,
+            num_edges,
+            bitset_degree,
+            elim_marker,
+            elim_stamp,
+            bitset,
+            bitset_words,
+            bitset_slot,
+            slot_vertex,
+            bitset_compact,
+            hardware_popcount,
+        } = source;
+        self.adj.clone_from(adj);
+        self.row_index.clone_from(row_index);
+        self.active.clone_from(active);
+        self.num_active = *num_active;
+        self.num_edges = *num_edges;
+        self.bitset_degree.clone_from(bitset_degree);
+        self.elim_marker.clone_from(elim_marker);
+        self.elim_stamp = *elim_stamp;
+        self.bitset.clone_from(bitset);
+        self.bitset_words = *bitset_words;
+        self.bitset_slot.clone_from(bitset_slot);
+        self.slot_vertex.clone_from(slot_vertex);
+        self.bitset_compact = *bitset_compact;
+        self.hardware_popcount = *hardware_popcount;
+    }
 }
 
 impl EliminationGraph {
