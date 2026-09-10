@@ -192,6 +192,21 @@ pub fn improve(
     deadline: Instant,
 ) -> Result<(TreeDecomposition, Stats), crate::Error> {
     start.validate(graph)?;
+    Ok(improve_trusted(graph, start, deadline))
+}
+
+/// Search from a decomposition whose validity the caller has established.
+/// The construction and objective are the same as [`improve`].
+///
+/// # Panics
+/// Debug builds assert that `start` is valid for `graph`. Callers must uphold
+/// that contract in release builds, where the input validation is omitted.
+pub fn improve_trusted(
+    graph: &Graph,
+    start: &TreeDecomposition,
+    deadline: Instant,
+) -> (TreeDecomposition, Stats) {
+    debug_assert!(start.validate(graph).is_ok());
     let started = Instant::now();
     let mut best = compact(start.clone());
     let mut stats = Stats::default();
@@ -230,5 +245,5 @@ pub fn improve(
             break;
         }
     }
-    Ok((best, stats))
+    (best, stats)
 }

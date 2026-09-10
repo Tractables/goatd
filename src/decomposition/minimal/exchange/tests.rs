@@ -176,3 +176,85 @@ fn mass_uses_one_bag_for_a_chain_of_equal_bags() {
     assert_eq!(next.bags().len(), 1);
     assert_eq!(quality(&next), (1, 1, vec![4]));
 }
+
+#[test]
+fn an_exchange_narrows_a_minimal_triangulation() {
+    let graph = Graph::new(
+        14,
+        [
+            (0, 5),
+            (1, 3),
+            (1, 4),
+            (1, 7),
+            (1, 8),
+            (1, 10),
+            (1, 11),
+            (2, 3),
+            (2, 4),
+            (2, 8),
+            (2, 10),
+            (2, 12),
+            (2, 13),
+            (3, 4),
+            (3, 5),
+            (3, 6),
+            (3, 7),
+            (4, 6),
+            (4, 7),
+            (4, 10),
+            (4, 11),
+            (4, 12),
+            (5, 7),
+            (5, 11),
+            (5, 12),
+            (6, 7),
+            (6, 9),
+            (6, 11),
+            (6, 12),
+            (6, 13),
+            (7, 8),
+            (7, 12),
+            (7, 13),
+            (8, 9),
+            (8, 10),
+            (8, 11),
+            (8, 12),
+            (9, 10),
+            (9, 11),
+            (10, 12),
+            (10, 13),
+            (11, 12),
+            (11, 13),
+            (12, 13),
+        ],
+    );
+    let seed = TreeDecomposition::new(
+        &graph,
+        [
+            vec![0, 5],
+            vec![6, 8, 9, 10, 11],
+            vec![3, 5, 7, 11, 12],
+            vec![1, 3, 4, 7, 8, 10, 11],
+            vec![2, 6, 7, 10, 11, 12, 13],
+            vec![2, 3, 4, 6, 7, 8, 10, 11, 12],
+        ],
+        [(0, 2), (1, 5), (2, 5), (3, 5), (4, 5)],
+    )
+    .unwrap();
+    let mut filled = super::super::completion(&seed, 14, None).unwrap();
+    assert_eq!(super::super::minimalize(&mut filled, &graph, 14, None), 0);
+    assert_eq!(seed.treewidth(), 8);
+    let (next, stats) = improve_trusted(&graph, &seed, Instant::now() + Duration::from_secs(1));
+    next.validate(&graph).unwrap();
+    assert_eq!(next.treewidth(), 7);
+    assert!(quality(&next) < quality(&seed));
+    assert!(stats.improved > 0);
+}
+
+#[test]
+fn the_checked_entry_rejects_a_tree_for_a_different_graph() {
+    let empty = Graph::new(2, []);
+    let tree = TreeDecomposition::new(&empty, [vec![0], vec![1]], [(0, 1)]).unwrap();
+    let graph = Graph::new(2, [(0, 1)]);
+    assert!(improve(&graph, &tree, Instant::now()).is_err());
+}
