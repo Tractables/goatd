@@ -31,8 +31,12 @@ fn uniform_sampling_repeats_the_generic_weighted_choices() {
     let mut generic = fast;
 
     for len in 2..=weights.len() {
-        let mut fast_buckets = super::BucketMap::with_weights(&weights, Some(uniform_mass));
-        let mut generic_buckets = super::BucketMap::with_weights(&weights, None);
+        let mut fast_storage = super::BucketStorage::new();
+        let mut generic_storage = super::BucketStorage::new();
+        let mut fast_buckets =
+            super::BucketMap::with_weights(&mut fast_storage, &weights, Some(uniform_mass));
+        let mut generic_buckets =
+            super::BucketMap::with_weights(&mut generic_storage, &weights, None);
         for v in 0..len as u32 {
             fast_buckets.insert(v, 3);
             generic_buckets.insert(v, 3);
