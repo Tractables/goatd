@@ -77,7 +77,7 @@ fn update_neighbours(
                     .key_of(u)
                     .expect("an active vertex has a fill bucket"),
             };
-            let new_fill = affected.neighbour_fill(u, old_fill);
+            let new_fill = affected.neighbour_fill(graph, u, old_fill);
             if let Some(fills) = fills {
                 fills[u as usize] = new_fill;
             }
@@ -272,7 +272,7 @@ fn eliminate_sampled_fill_based(
             if !prepared {
                 return ElimExit::DeadlineReached(Cutoff::Hard);
             }
-            while let Some((u, delta)) = affected.pop_delta() {
+            while let Some((u, delta)) = affected.pop_delta(graph) {
                 if expired(hard_deadline) {
                     affected.clear();
                     return ElimExit::DeadlineReached(Cutoff::Hard);

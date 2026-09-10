@@ -185,12 +185,16 @@ struct FillAffected {
     inside: Vec<u64>,
     marker: Vec<u16>,
     stamp: u16,
-    /// Fill decrease of a vertex outside N(v), by vertex id.
+    /// Fill decrease of a vertex outside N(v). Counted per bit of the
+    /// common-neighbour words, so indexed the way the words are: by slot in
+    /// bitset mode, by vertex id otherwise. `pop_delta` maps back once per
+    /// vertex.
     delta: Vec<u64>,
-    /// The vertices with a non-zero `delta`, in first-touch order.
+    /// The indices with a non-zero `delta`, in first-touch order.
     vertices: Vec<u32>,
-    /// For a neighbour `u` of `v`, by vertex id: |A \ B|, |B \ A|,
-    /// nonadj(A ∩ B) and e(A \ B, B \ A). Read and reset by
+    /// For a neighbour `u` of `v`: |A \ B|, |B \ A|, nonadj(A ∩ B) and
+    /// e(A \ B, B \ A). `inside_fill` is counted per bit and indexed like
+    /// `delta`; the others are by vertex id. Read and reset by
     /// [`neighbour_fill`](Self::neighbour_fill).
     kept: Vec<u32>,
     gained: Vec<u32>,
@@ -220,13 +224,23 @@ impl FillAffected {
         self.vertices.clear();
     }
 
-    fn clear_neighbours(&mut self, nbrs: &[u32]) {
+    fn clear_neighbours(&mut self, graph: &EliminationGraph, nbrs: &[u32]) {
         for &u in nbrs {
+            self.inside_fill[Self::bit_index(graph, u)] = 0;
             let u = u as usize;
             self.kept[u] = 0;
             self.gained[u] = 0;
-            self.inside_fill[u] = 0;
             self.cross[u] = 0;
+        }
+    }
+
+    /// Where the per-bit counters keep vertex `u`.
+    #[inline]
+    fn bit_index(graph: &EliminationGraph, u: u32) -> usize {
+        if graph.bitset_words > 0 {
+            graph.bitset_slot_of(u)
+        } else {
+            u as usize
         }
     }
 
@@ -240,13 +254,12 @@ impl FillAffected {
     }
 
     #[inline]
-    fn increment(&mut self, vertex: u32) {
-        let index = vertex as usize;
-        let delta = &mut self.delta[index];
+    fn increment(&mut self, index: u32) {
+        let delta = &mut self.delta[index as usize];
         let first = *delta == 0;
         *delta += 1;
         if first {
-            self.vertices.push(vertex);
+            self.vertices.push(index);
         }
     }
 
@@ -315,7 +328,7 @@ impl FillAffected {
         self.clear_inside(nbrs, graph.bitset_words);
         if !done {
             self.clear();
-            self.clear_neighbours(nbrs);
+            self.clear_neighbours(graph, nbrs);
         }
         done
     }
@@ -385,21 +398,27 @@ impl FillAffected {
         let xs = graph.bitset_slot_of(x) * w;
         let ys = graph.bitset_slot_of(y) * w;
         let mut out = 0u64;
-        for word in 0..w {
-            let common = graph.bitset[xs + word] & graph.bitset[ys + word];
-            let mut ins = common & self.inside[word];
+        let x_row = &graph.bitset[xs..xs + w];
+        let y_row = &graph.bitset[ys..ys + w];
+        for (word, (&x_word, &y_word)) in x_row.iter().zip(y_row).enumerate() {
+            let common = x_word & y_word;
+            let inside_word = self.inside[word];
+            let mut ins = common & inside_word;
             while ins != 0 {
-                let z = graph.bitset_vertex_at(word * 64 + ins.trailing_zeros() as usize);
-                self.inside_fill[z as usize] += 1;
+                let slot = word * 64 + ins.trailing_zeros() as usize;
+                // SAFETY: a set bit of a row is a slot the bitset was built
+                // with, and the counters have one entry per vertex of the
+                // graph, which is at least one per slot.
+                unsafe { *self.inside_fill.get_unchecked_mut(slot) += 1 };
                 ins &= ins - 1;
             }
-            let mut outs = common & !self.inside[word];
+            let mut outs = common & !inside_word;
             if word == vi / 64 {
                 outs &= !(1u64 << (vi % 64));
             }
             while outs != 0 {
-                let z = graph.bitset_vertex_at(word * 64 + outs.trailing_zeros() as usize);
-                self.increment(z);
+                let slot = word * 64 + outs.trailing_zeros() as usize;
+                self.increment(slot as u32);
                 out += 1;
                 outs &= outs - 1;
             }
@@ -479,9 +498,16 @@ impl FillAffected {
         self.cross[y as usize] += out;
     }
 
-    fn pop_delta(&mut self) -> Option<(u32, u64)> {
-        self.vertices.pop().map(|vertex| {
-            let delta = std::mem::replace(&mut self.delta[vertex as usize], 0);
+    /// The next vertex outside N(v) whose fill changed, and by how much, in
+    /// reverse first-touch order.
+    fn pop_delta(&mut self, graph: &EliminationGraph) -> Option<(u32, u64)> {
+        self.vertices.pop().map(|index| {
+            let delta = std::mem::replace(&mut self.delta[index as usize], 0);
+            let vertex = if graph.bitset_words > 0 {
+                graph.bitset_vertex_at(index as usize)
+            } else {
+                index
+            };
             (vertex, delta)
         })
     }
@@ -490,11 +516,11 @@ impl FillAffected {
     /// was given, after that elimination, from its fill `old` before it.
     /// Consumes u's terms.
     #[inline]
-    fn neighbour_fill(&mut self, u: u32, old: u64) -> u64 {
+    fn neighbour_fill(&mut self, graph: &EliminationGraph, u: u32, old: u64) -> u64 {
+        let inside_fill = std::mem::take(&mut self.inside_fill[Self::bit_index(graph, u)]);
         let u = u as usize;
         let kept = u64::from(std::mem::take(&mut self.kept[u]));
         let gained = u64::from(std::mem::take(&mut self.gained[u]));
-        let inside_fill = std::mem::take(&mut self.inside_fill[u]);
         let cross = std::mem::take(&mut self.cross[u]);
         let added = kept * gained;
         let removed = inside_fill + cross + kept;

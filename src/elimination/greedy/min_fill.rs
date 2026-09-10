@@ -226,7 +226,7 @@ impl ElimPolicy for MinFill<'_> {
             return self.deadline_outcome(graph);
         }
         if filled_neighbourhood {
-            while let Some((vertex, delta)) = self.affected.pop_delta() {
+            while let Some((vertex, delta)) = self.affected.pop_delta(graph) {
                 if expired(deadline) {
                     self.affected.clear();
                     return self.deadline_outcome(graph);
@@ -241,7 +241,7 @@ impl ElimPolicy for MinFill<'_> {
             if graph.active[vertex as usize] {
                 let live = self
                     .affected
-                    .neighbour_fill(vertex, self.score[vertex as usize]);
+                    .neighbour_fill(graph, vertex, self.score[vertex as usize]);
                 self.push(graph, vertex, live);
             }
         }

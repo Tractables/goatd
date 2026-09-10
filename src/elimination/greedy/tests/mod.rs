@@ -212,14 +212,14 @@ fn affected_membership_excludes_the_eliminated_neighbourhood() {
 
     assert!(affected.prepare(&graph, 0, &[1, 2, 65], true, None));
     graph.eliminate_with_nbrs(0, &[1, 2, 65]);
-    assert_eq!(affected.pop_delta(), Some((129, 1)));
-    assert_eq!(affected.pop_delta(), None);
+    assert_eq!(affected.pop_delta(&graph), Some((129, 1)));
+    assert_eq!(affected.pop_delta(&graph), None);
     // 1 keeps 129 and gains 2, which are adjacent: of its pairs (0, 129) and
     // (65, 129), the first goes with 0 and (2, 65) is an edge.
-    assert_eq!(affected.neighbour_fill(1, 2), 1);
-    assert_eq!(affected.neighbour_fill(2, 2), 1);
+    assert_eq!(affected.neighbour_fill(&graph, 1, 2), 1);
+    assert_eq!(affected.neighbour_fill(&graph, 2, 2), 1);
     // 65's one missing pair was (1, 2), now filled.
-    assert_eq!(affected.neighbour_fill(65, 1), 0);
+    assert_eq!(affected.neighbour_fill(&graph, 65, 1), 0);
 }
 
 /// Every score `FillAffected` maintains, checked against a fresh count over a
@@ -266,13 +266,13 @@ fn assert_updates_match_recounts(
             graph.eliminate_with_nbrs(v, &nbrs);
         }
         touched.clear();
-        while let Some((u, delta)) = affected.pop_delta() {
+        while let Some((u, delta)) = affected.pop_delta(&graph) {
             assert!(!nbrs.contains(&u), "delta for a neighbour {u} of {v}");
             fill[u as usize] -= delta;
             touched.push(u);
         }
         for &u in &nbrs {
-            fill[u as usize] = affected.neighbour_fill(u, fill[u as usize]);
+            fill[u as usize] = affected.neighbour_fill(&graph, u, fill[u as usize]);
             touched.push(u);
         }
         if step % full_every == 0 {
