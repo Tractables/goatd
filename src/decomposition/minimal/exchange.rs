@@ -33,7 +33,7 @@ pub struct Stats {
 
 // Integer limbs prevent bag order or tiny floating-point differences from
 // making an unchanged triangulation look like an improvement.
-fn quality(tree: &TreeDecomposition) -> (u32, usize, Vec<u64>) {
+pub(super) fn quality(tree: &TreeDecomposition) -> (u32, usize, Vec<u64>) {
     let mut mass = Vec::<u64>::new();
     for bag in tree.bags() {
         let size = bag.vertices().len();
@@ -54,7 +54,7 @@ fn quality(tree: &TreeDecomposition) -> (u32, usize, Vec<u64>) {
     (tree.treewidth(), mass.len(), mass)
 }
 
-fn compact(mut tree: TreeDecomposition) -> TreeDecomposition {
+pub(super) fn compact(mut tree: TreeDecomposition) -> TreeDecomposition {
     loop {
         let before = tree.bags().len();
         tree = tree.subsumed_bag_compaction().apply(tree);
