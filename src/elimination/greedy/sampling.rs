@@ -272,8 +272,11 @@ fn eliminate_sampled_fill_based(
             if !prepared {
                 return ElimExit::DeadlineReached(Cutoff::Hard);
             }
+            // Applying one delta is a bucket move, so this loop reads the
+            // deadline on the pacer's stride.
+            let mut delta_pacer = DeadlinePacer::new();
             while let Some((u, delta)) = affected.pop_delta(graph) {
-                if expired(hard_deadline) {
+                if delta_pacer.due() && expired(hard_deadline) {
                     affected.clear();
                     return ElimExit::DeadlineReached(Cutoff::Hard);
                 }

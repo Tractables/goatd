@@ -827,26 +827,39 @@ impl EliminationGraph {
         let vb = vi * w;
         let mut pushes: usize = 0;
 
+        let v_word = vi / 64;
+        let v_bit = 1u64 << (vi % 64);
+        debug_assert!(
+            self.bitset[vb + v_word] & v_bit == 0,
+            "vertex {v} is its own neighbour"
+        );
+
         for &u_raw in neighbours {
             let u = self.slot(u_raw);
             let ub = u * w;
+            let u_word = u / 64;
+            let u_bit = 1u64 << (u % 64);
+            debug_assert!(
+                self.bitset[vb + u_word] & u_bit != 0,
+                "eliminating {v} with a vertex that is not its neighbour"
+            );
+            // Take u out of v's row for the scan below, rather than masking
+            // its bit off once per word, and put it back before the next
+            // neighbour reads the row. v's own bit needs no such care: the
+            // graph holds no self-loop, so v's row never carries it.
+            self.bitset[vb + u_word] &= !u_bit;
             // The symmetric fill edge (bitset[wj] gaining bit u) is set when
             // wj's own outer-loop iteration runs, not here — bitset[wj] still
             // lacks bit u at that point, so u still shows up in wj's mask.
             for j in 0..w {
-                let mut fill_mask = self.bitset[vb + j] & !self.bitset[ub + j];
-                if j == vi / 64 {
-                    fill_mask &= !(1u64 << (vi % 64));
-                }
-                if j == u / 64 {
-                    fill_mask &= !(1u64 << (u % 64));
-                }
+                let fill_mask = self.bitset[vb + j] & !self.bitset[ub + j];
                 self.bitset[ub + j] |= fill_mask;
                 let added = popcount(fill_mask);
                 self.bitset_degree[u] += added;
                 pushes += added as usize;
             }
-            self.bitset[ub + vi / 64] &= !(1u64 << (vi % 64));
+            self.bitset[vb + u_word] |= u_bit;
+            self.bitset[ub + v_word] &= !v_bit;
             self.bitset_degree[u] -= 1;
         }
 
