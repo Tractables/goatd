@@ -74,6 +74,20 @@ fn residual_bitset_mode(num_active: usize, num_edges: usize) -> bool {
     (num_edges as u128) * 128 > (num_active as u128) * (num_active as u128)
 }
 
+/// Two distinct rows of `w` words each, starting at `a` and `b`, borrowed
+/// together so a pass over both carries no bounds check per word.
+#[inline(always)]
+fn rows_mut(bitset: &mut [u64], a: usize, b: usize, w: usize) -> (&mut [u64], &mut [u64]) {
+    debug_assert!(a != b);
+    if a < b {
+        let (low, high) = bitset.split_at_mut(b);
+        (&mut low[a..a + w], &mut high[..w])
+    } else {
+        let (low, high) = bitset.split_at_mut(a);
+        (&mut high[..w], &mut low[b..b + w])
+    }
+}
+
 /// Build the membership map of one adjacency row.
 fn build_row_index(row: &[u32], slot: &mut Option<Box<FxHashMap<u32, u32>>>) {
     let mut index: FxHashMap<u32, u32> = FxHashMap::default();
@@ -851,21 +865,21 @@ impl EliminationGraph {
             // The symmetric fill edge (bitset[wj] gaining bit u) is set when
             // wj's own outer-loop iteration runs, not here — bitset[wj] still
             // lacks bit u at that point, so u still shows up in wj's mask.
-            for j in 0..w {
-                let fill_mask = self.bitset[vb + j] & !self.bitset[ub + j];
-                self.bitset[ub + j] |= fill_mask;
-                let added = popcount(fill_mask);
-                self.bitset_degree[u] += added;
-                pushes += added as usize;
+            let (v_row, u_row) = rows_mut(&mut self.bitset, vb, ub, w);
+            let mut added = 0u32;
+            for (&v_word, u_word) in v_row.iter().zip(u_row.iter_mut()) {
+                let fill_mask = v_word & !*u_word;
+                *u_word |= fill_mask;
+                added += popcount(fill_mask);
             }
+            self.bitset_degree[u] += added;
+            pushes += added as usize;
             self.bitset[vb + u_word] |= u_bit;
             self.bitset[ub + v_word] &= !v_bit;
             self.bitset_degree[u] -= 1;
         }
 
-        for j in 0..w {
-            self.bitset[vb + j] = 0;
-        }
+        self.bitset[vb..vb + w].fill(0);
         self.bitset_degree[vi] = 0;
         if self.active[v as usize] {
             self.active[v as usize] = false;

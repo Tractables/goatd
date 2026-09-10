@@ -225,47 +225,18 @@ fn eliminate_sampled_fill_based(
         sink.record(v, bag);
 
         if sampled_fill == 0 {
-            // Bitset mode: exact Δfill update in O(w) before removing v.
-            // When v is simplicial, N(v) is a clique so no fill edges are added.
-            // Δfill(u) = -|N(u) \ N(v) \ {v}| = -(popcount(bs[u] & ~bs[v]) - 1).
-            if graph.bitset_words > 0 {
-                for &u in &live_nbrs {
-                    let ui = u as usize;
-                    let o_count = graph.bitset_difference_count(u, v).saturating_sub(1); // exclude v's own bit
-                    if let Some(fills) = &mut fills {
-                        fills[ui] = fills[ui].saturating_sub(o_count);
-                    } else {
-                        let old_fill = buckets
-                            .key_of(u)
-                            .expect("an active vertex has a fill bucket");
-                        buckets.update(u, old_fill.saturating_sub(o_count));
-                    }
-                }
-                graph.remove_without_fill_nbrs(v, &live_nbrs);
-                if let Some(fills) = &fills {
-                    for &u in &live_nbrs {
-                        buckets.update(
-                            u,
-                            priority.key(
-                                fills[u as usize],
-                                graph.degree(u) as u64,
-                                graph.len() as u64,
-                            ),
-                        );
-                    }
-                }
-            } else {
-                affected.prepare(graph, v, &live_nbrs, false, None);
-                graph.remove_without_fill_nbrs(v, &live_nbrs);
-                update_neighbours(
-                    &mut affected,
-                    graph,
-                    &live_nbrs,
-                    &mut buckets,
-                    &mut fills,
-                    priority,
-                );
-            }
+            // N(v) is a clique: no fill edge is added, and each neighbour
+            // loses the missing pairs it had with v alone.
+            affected.prepare(graph, v, &live_nbrs, false, None);
+            graph.remove_without_fill_nbrs(v, &live_nbrs);
+            update_neighbours(
+                &mut affected,
+                graph,
+                &live_nbrs,
+                &mut buckets,
+                &mut fills,
+                priority,
+            );
         } else {
             let prepared = affected.prepare(graph, v, &live_nbrs, true, hard_deadline);
             graph.eliminate_with_nbrs(v, &live_nbrs);

@@ -170,11 +170,12 @@ impl FillScratch {
 /// e(A \ B, B \ A) counts the edges between the neighbours `u` keeps and the
 /// ones it gains, which, summed over the fill edges (u, b), is their common
 /// neighbours outside N[v]. Both fall out of the one pass over the fill
-/// edges that finds the outside deltas, and the two set sizes are one
-/// masked popcount, or one row scan, per neighbour. Before this the
-/// neighbours were recounted from scratch after every elimination, at the
-/// degree times the row width each, and that recount was most of a min-fill
-/// run.
+/// edges that finds the outside deltas. |B \ A| is the number of fill edges
+/// at `u`, which that same pass counts as it finds them, and |A \ B| follows
+/// from it and the degrees; a neighbourhood known to be a clique has no
+/// fill edges and reads no row at all. Before this the neighbours were
+/// recounted from scratch after every elimination, at the degree times the
+/// row width each, and that recount was most of a min-fill run.
 ///
 /// The order vertices are first touched in is the order they are re-filed
 /// in, which the sampled cores' draw depends on, so both passes visit the
@@ -197,9 +198,9 @@ struct FillAffected {
     /// The indices with a non-zero `delta`, in first-touch order.
     vertices: Vec<u32>,
     /// For a neighbour `u` of `v`: |A \ B|, |B \ A|, nonadj(A ∩ B) and
-    /// e(A \ B, B \ A). `inside_fill` is counted per bit and indexed like
-    /// `delta`; the others are by vertex id. Read and reset by
-    /// [`neighbour_fill`](Self::neighbour_fill).
+    /// e(A \ B, B \ A). `inside_fill` is counted per bit and `cross` per
+    /// fill edge, both indexed like `delta`; the set sizes are by vertex
+    /// id. Read and reset by [`neighbour_fill`](Self::neighbour_fill).
     kept: Vec<u32>,
     gained: Vec<u32>,
     inside_fill: Vec<u64>,
@@ -231,11 +232,24 @@ impl FillAffected {
 
     fn clear_neighbours(&mut self, graph: &EliminationGraph, nbrs: &[u32]) {
         for &u in nbrs {
-            self.inside_fill[Self::bit_index(graph, u)] = 0;
+            let index = Self::bit_index(graph, u);
+            self.inside_fill[index] = 0;
+            self.cross[index] = 0;
             let u = u as usize;
             self.kept[u] = 0;
             self.gained[u] = 0;
-            self.cross[u] = 0;
+        }
+    }
+
+    /// The set sizes of every neighbour when N(v) is a clique: nothing is
+    /// gained, and what is kept is the neighbour's degree less v and its
+    /// other neighbours.
+    fn prepare_clique(&mut self, graph: &EliminationGraph, nbrs: &[u32]) {
+        let k = nbrs.len();
+        crate::meter::charge(k as u64);
+        for &u in nbrs {
+            self.kept[u as usize] = (graph.degree(u) - k) as u32;
+            self.gained[u as usize] = 0;
         }
     }
 
@@ -359,19 +373,11 @@ impl FillAffected {
     ) -> bool {
         let w = graph.bitset_words;
         let k = nbrs.len();
-        let vi = graph.bitset_slot_of(v);
-        for &u in nbrs {
-            // Both counts include v's own bit in u's row, which the fill
-            // count never sees.
-            crate::meter::charge(w as u64);
-            let kept = graph.bitset_difference_count(u, v) - 1;
-            self.kept[u as usize] = kept as u32;
-            // |B \ A| = |B| − |A ∩ B|, both counted without u and v.
-            self.gained[u as usize] = (k as u64 + kept - graph.degree(u) as u64) as u32;
-        }
         if !fill {
+            self.prepare_clique(graph, nbrs);
             return true;
         }
+        let vi = graph.bitset_slot_of(v);
         // `inside` is v's row, which never carries v's own bit since the
         // graph holds no self-loop; `outside` is its complement without v.
         // Both are taken out of the scratch for the pass so the loops below
@@ -388,6 +394,7 @@ impl FillAffected {
         outside[vi / 64] &= !(1u64 << (vi % 64));
         // The fill edges in the order the elimination would record them: by
         // neighbour, then by slot, each pair once from its smaller vertex.
+        // Slots run in vertex-id order, so the slots say which is smaller.
         let mut done = true;
         let mut pacer = DeadlinePacer::new();
         'neighbours: for &u_raw in nbrs {
@@ -400,47 +407,56 @@ impl FillAffected {
             // edge, so the pass over each edge does not see the difference.
             inside[u / 64] &= !(1u64 << (u % 64));
             let u_row = &graph.bitset[ub..ub + w];
+            let mut gained = 0u32;
             for (j, (&inside_word, &u_word)) in inside[..w].iter().zip(u_row).enumerate() {
                 let mut mask = inside_word & !u_word;
                 while mask != 0 {
-                    let other = graph.bitset_vertex_at(j * 64 + mask.trailing_zeros() as usize);
+                    let other = j * 64 + mask.trailing_zeros() as usize;
                     mask &= mask - 1;
-                    if u_raw < other {
+                    gained += 1;
+                    if u < other {
                         if pacer.due() && crate::deadline::expired(deadline) {
                             done = false;
                             break 'neighbours;
                         }
-                        self.fill_edge_bs(graph, &inside[..w], &outside[..w], u_raw, other);
+                        self.fill_edge_bs(graph, &inside[..w], &outside[..w], u, other);
                     }
                 }
             }
             inside[u / 64] |= 1u64 << (u % 64);
+            // The fill edges at u are B \ A. A ∩ B is the rest of B, and
+            // A \ B the rest of A, whose size is u's degree less v.
+            self.gained[u_raw as usize] = gained;
+            self.kept[u_raw as usize] = (graph.degree(u_raw) + gained as usize - k) as u32;
         }
         self.inside = inside;
         self.outside = outside;
         done
     }
 
-    /// One fill edge (x, y) of v, both in N(v): its common neighbours
-    /// inside N(v) each lose one missing pair from A ∩ B, those outside lose
-    /// one from their own fill, and their number is what x and y each gain
-    /// in e(A \ B, B \ A).
+    /// One fill edge of v between the slots `x` and `y`, both in N(v): its
+    /// common neighbours inside N(v) each lose one missing pair from A ∩ B,
+    /// those outside lose one from their own fill, and their number is what
+    /// x and y each gain in e(A \ B, B \ A).
     #[inline]
     fn fill_edge_bs(
         &mut self,
         graph: &EliminationGraph,
         inside: &[u64],
         outside: &[u64],
-        x: u32,
-        y: u32,
+        x: usize,
+        y: usize,
     ) {
         let w = graph.bitset_words;
         crate::meter::charge(w as u64);
-        let xs = graph.bitset_slot_of(x) * w;
-        let ys = graph.bitset_slot_of(y) * w;
+        let xs = x * w;
+        let ys = y * w;
         let mut out = 0u64;
-        let x_row = &graph.bitset[xs..xs + w];
-        let y_row = &graph.bitset[ys..ys + w];
+        debug_assert!(xs + w <= graph.bitset.len() && ys + w <= graph.bitset.len());
+        // SAFETY: x and y are slots read from the bitset's own rows, and the
+        // bitset holds `w` words for every slot.
+        let x_row = unsafe { graph.bitset.get_unchecked(xs..xs + w) };
+        let y_row = unsafe { graph.bitset.get_unchecked(ys..ys + w) };
         let words = x_row.iter().zip(y_row).zip(inside).zip(outside);
         for (word, (((&x_word, &y_word), &inside_word), &outside_word)) in words.enumerate() {
             let common = x_word & y_word;
@@ -461,8 +477,8 @@ impl FillAffected {
                 outs &= outs - 1;
             }
         }
-        self.cross[x as usize] += out;
-        self.cross[y as usize] += out;
+        self.cross[x] += out;
+        self.cross[y] += out;
     }
 
     fn prepare_marker(
@@ -474,6 +490,10 @@ impl FillAffected {
         deadline: Option<Instant>,
     ) -> bool {
         let k = nbrs.len();
+        if !fill {
+            self.prepare_clique(graph, nbrs);
+            return true;
+        }
         let mut pacer = DeadlinePacer::new();
         for &u in nbrs {
             // Stamp u's row: it says which of v's other neighbours u lacks,
@@ -483,32 +503,31 @@ impl FillAffected {
             let stamp = self.stamp;
             let row = &graph.adj[u as usize];
             crate::meter::charge((row.len() + k) as u64);
-            let mut kept = 0u32;
             for &z in row {
                 debug_assert!((z as usize) < self.marker.len());
                 // SAFETY: a row holds vertex ids of the graph this scratch was
                 // sized for, and `marker` has an entry per vertex.
                 unsafe { *self.marker.get_unchecked_mut(z as usize) = stamp };
-                if z != v && !self.is_inside(z) {
-                    kept += 1;
-                }
-            }
-            self.kept[u as usize] = kept;
-            self.gained[u as usize] = (k as u32 + kept) - row.len() as u32;
-            if !fill {
-                continue;
             }
             // The fill edges in the order the elimination would record them:
             // by neighbour, then by the neighbour list, each pair once from
             // its smaller vertex.
+            let mut gained = 0u32;
             for &y in nbrs {
-                if y != u && u < y && self.marker[y as usize] != stamp {
-                    if pacer.due() && crate::deadline::expired(deadline) {
-                        return false;
+                if y != u && self.marker[y as usize] != stamp {
+                    gained += 1;
+                    if u < y {
+                        if pacer.due() && crate::deadline::expired(deadline) {
+                            return false;
+                        }
+                        self.fill_edge_marker(graph, v, u, y, stamp);
                     }
-                    self.fill_edge_marker(graph, v, u, y, stamp);
                 }
             }
+            // As in the bitset pass: the fill edges at u are B \ A, and A \ B
+            // is the rest of u's row less v.
+            self.gained[u as usize] = gained;
+            self.kept[u as usize] = (row.len() + gained as usize - k) as u32;
         }
         true
     }
@@ -561,11 +580,12 @@ impl FillAffected {
     /// Consumes u's terms.
     #[inline]
     fn neighbour_fill(&mut self, graph: &EliminationGraph, u: u32, old: u64) -> u64 {
-        let inside_fill = std::mem::take(&mut self.inside_fill[Self::bit_index(graph, u)]);
+        let index = Self::bit_index(graph, u);
+        let inside_fill = std::mem::take(&mut self.inside_fill[index]);
+        let cross = std::mem::take(&mut self.cross[index]);
         let u = u as usize;
         let kept = u64::from(std::mem::take(&mut self.kept[u]));
         let gained = u64::from(std::mem::take(&mut self.gained[u]));
-        let cross = std::mem::take(&mut self.cross[u]);
         let added = kept * gained;
         let removed = inside_fill + cross + kept;
         debug_assert!(old + added >= removed, "fill of {u} would go negative");
@@ -736,6 +756,7 @@ impl PriorityBuckets {
     /// Drop the bucket `key` names, which has to be empty. Dense storage goes
     /// back on the free list with its vertex allocation; an overflow bucket
     /// hands that allocation to `spare`.
+    #[inline]
     fn remove_empty(&mut self, key: u64, spare: &mut Vec<Vec<u32>>) {
         match self.dense_index(key) {
             Some(index) => {
@@ -811,6 +832,9 @@ impl<'a> BucketMap<'a> {
         }
     }
 
+    /// Inlined with `remove_at` into `update`, the score repair's one call
+    /// per changed vertex, so a move between buckets is one function.
+    #[inline(always)]
     fn insert(&mut self, v: u32, key: u64) {
         let (bucket, created) = self.buckets.get_or_insert(key, &mut self.spare_vertices);
         let idx = bucket.vertices.len();
@@ -832,7 +856,7 @@ impl<'a> BucketMap<'a> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn remove_at(&mut self, v: u32, position: BucketPosition) {
         let bucket = self.buckets.get_mut(position.key).expect("bucket missing");
         if Self::remove_from_bucket(
@@ -874,6 +898,7 @@ impl<'a> BucketMap<'a> {
         bucket.vertices.is_empty()
     }
 
+    #[inline]
     fn update(&mut self, v: u32, new_key: u64) {
         let position = self.position[v as usize];
         if !position.is_vacant() && position.key == new_key {
