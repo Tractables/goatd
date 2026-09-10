@@ -13,7 +13,7 @@ mod ops;
 mod pmc;
 mod refine;
 
-pub use minimal::minimalize_triangulation;
+pub use minimal::{exchange, minimalize_triangulation};
 pub(crate) use minimal::{minimalize_at, minimalize_fits};
 pub use model::{TdBag, TreeDecomposition};
 pub(crate) use ops::SubsumedBagCompaction;

@@ -14,6 +14,8 @@
 //! left gives a minimal triangulation, and its clique tree is a decomposition
 //! no wider than the one it started from.
 
+pub mod exchange;
+
 use std::time::{Duration, Instant};
 
 use super::TreeDecomposition;
@@ -342,13 +344,23 @@ pub(crate) fn minimalize_at(
     graph: &Graph,
     deadline: Option<Instant>,
 ) -> TreeDecomposition {
-    let vertices = graph.num_vertices() as usize;
-    if vertices == 0 || !minimalize_fits(&decomposition, graph, deadline) {
-        return decomposition;
+    match minimalization_candidate(&decomposition, graph, deadline) {
+        Some(rebuilt) if rebuilt.quality_key() < decomposition.quality_key() => rebuilt,
+        _ => decomposition,
     }
-    let Some(mut completion) = completion(&decomposition, vertices, deadline) else {
-        return decomposition;
-    };
+}
+
+/// Build the refined triangulation, leaving the caller's selection policy out.
+fn minimalization_candidate(
+    decomposition: &TreeDecomposition,
+    graph: &Graph,
+    deadline: Option<Instant>,
+) -> Option<TreeDecomposition> {
+    let vertices = graph.num_vertices() as usize;
+    if vertices == 0 || !minimalize_fits(decomposition, graph, deadline) {
+        return None;
+    }
+    let mut completion = completion(decomposition, vertices, deadline)?;
     // The sweeps stop early enough to leave the rebuild its own time. Without
     // that they would run to the deadline itself and the rebuild would put the
     // whole pass past it, which is the one outcome a caller cannot use: it has
@@ -362,16 +374,9 @@ pub(crate) fn minimalize_at(
     );
     let sweep_deadline = deadline.map(|deadline| deadline.checked_sub(rebuild).unwrap_or(deadline));
     if minimalize(&mut completion, graph, vertices, sweep_deadline) == 0 {
-        return decomposition;
+        return None;
     }
-    let Some(rebuilt) = decompose_completion(&completion, vertices, deadline) else {
-        return decomposition;
-    };
-    if rebuilt.quality_key() < decomposition.quality_key() {
-        rebuilt
-    } else {
-        decomposition
-    }
+    decompose_completion(&completion, vertices, deadline)
 }
 
 /// What rebuilding the bags from a completion of `vertices` vertices and
