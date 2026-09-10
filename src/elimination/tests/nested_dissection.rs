@@ -17,7 +17,7 @@ fn params<'a>(salt: &'a [u32], base_case_size: usize) -> NestedDissectionParams<
 
 #[test]
 fn empty_graph_returns_empty_order() {
-    let order = nested_dissection_order(&[], &[], &params(&[], 32), 0);
+    let order = nested_dissection_order(&[], &[], &params(&[], 32), &mut LocalIds::new(0), 0);
     assert!(order.is_empty());
 }
 
@@ -26,7 +26,13 @@ fn small_graph_falls_through_to_base_case() {
     let active = vec![0, 1, 2];
     let edges = vec![(0, 1), (0, 2), (1, 2)];
     let salt = vec![7, 3, 11];
-    let order = nested_dissection_order(&active, &edges, &params(&salt, 32), 0);
+    let order = nested_dissection_order(
+        &active,
+        &edges,
+        &params(&salt, 32),
+        &mut LocalIds::new(salt.len()),
+        0,
+    );
     assert_eq!(order.len(), 3);
     let mut s: Vec<u32> = order.clone();
     s.sort();
@@ -51,7 +57,13 @@ fn grid_10x10_produces_full_order() {
     let salt: Vec<u32> = (0..100)
         .map(|i| (i as u32).wrapping_mul(2_654_435_761))
         .collect();
-    let order = nested_dissection_order(&active, &edges, &params(&salt, 8), 0);
+    let order = nested_dissection_order(
+        &active,
+        &edges,
+        &params(&salt, 8),
+        &mut LocalIds::new(salt.len()),
+        0,
+    );
     assert_eq!(order.len(), 100);
     let mut s = order.clone();
     s.sort();
@@ -87,7 +99,8 @@ fn the_base_case_stops_at_the_hard_deadline_and_still_returns_a_full_order() {
     let mut params = params(&salt, n as usize);
     params.hard_deadline = Some(deadline);
 
-    let order = nested_dissection_order(&active, &edges, &params, 0);
+    let order =
+        nested_dissection_order(&active, &edges, &params, &mut LocalIds::new(salt.len()), 0);
 
     let mut sorted = order.clone();
     sorted.sort();
@@ -130,7 +143,8 @@ fn a_level_stops_inside_its_bisection_instead_of_running_it_out() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
     params.hard_deadline = Some(deadline);
 
-    let order = nested_dissection_order(&active, &edges, &params, 0);
+    let order =
+        nested_dissection_order(&active, &edges, &params, &mut LocalIds::new(salt.len()), 0);
     let overrun = std::time::Instant::now().saturating_duration_since(deadline);
 
     let mut sorted = order.clone();

@@ -8,6 +8,7 @@
 //! with identical pin sets become one with their weights summed.
 
 use super::model::Hypergraph;
+use crate::partition::common::{matching_order, shrank_enough};
 use crate::rng::Xorshift64;
 
 pub(super) struct CoarseningLevel {
@@ -27,35 +28,13 @@ pub(super) fn coarsen_one_level(
         return None;
     }
 
-    // SHEM analog for hypergraphs: degree-ascending order leaves high-degree
-    // hubs to match last, with connected partners.
-    let mut perm: Vec<usize> = (0..n).collect();
-    perm.sort_by_key(|&v| {
-        let degree = hg.vertex_hyperedge_offsets[v + 1] - hg.vertex_hyperedge_offsets[v];
-        (degree, hg.vertex_weights[v])
-    });
-    // Shuffle within each equal-degree run: the degree order itself is what
-    // this wants, but leaving ties in vertex-index order makes every level of
-    // every restart match the same pairs first.
-    {
-        let mut i = 0;
-        while i < n {
-            let mut j = i + 1;
-            let degree =
-                hg.vertex_hyperedge_offsets[perm[i] + 1] - hg.vertex_hyperedge_offsets[perm[i]];
-            while j < n
-                && (hg.vertex_hyperedge_offsets[perm[j] + 1] - hg.vertex_hyperedge_offsets[perm[j]])
-                    == degree
-            {
-                j += 1;
-            }
-            for k in (i + 1..j).rev() {
-                let l = i + (rng.next_u64() as usize) % (k - i + 1);
-                perm.swap(k, l);
-            }
-            i = j;
-        }
-    }
+    // A vertex's degree here is the number of hyperedges it is a pin of.
+    let perm = matching_order(
+        n,
+        |v| hg.vertex_hyperedge_offsets[v + 1] - hg.vertex_hyperedge_offsets[v],
+        &hg.vertex_weights,
+        rng,
+    );
 
     let mut match_of = vec![None; n];
     let mut coarse_id: Vec<u32> = vec![0; n];
@@ -135,8 +114,8 @@ pub(super) fn coarsen_one_level(
     }
 
     let nc = num_coarse as usize;
-    if nc >= n * 9 / 10 {
-        return None; // tuned 10% floor: stop once a level barely shrinks
+    if !shrank_enough(n, nc) {
+        return None;
     }
 
     let mut coarse_vertex_weights = vec![0u32; nc];

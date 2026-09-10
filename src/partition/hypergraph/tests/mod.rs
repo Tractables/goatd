@@ -1,3 +1,5 @@
+mod refine_fm;
+
 use super::coarsen::coarsen_one_level;
 use super::initial::{greedy_growing, hyperedge_cut};
 use super::model::Hypergraph;

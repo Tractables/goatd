@@ -9,7 +9,7 @@
 
 use super::initial::hyperedge_cut;
 use super::model::Hypergraph;
-use super::refine_fm::{localized_fm_pass, refine_level};
+use super::refine_fm::{FmScratch, localized_fm_pass, refine_level};
 use crate::partition::common::balance_bounds;
 
 /// A directed flow network with residual arcs stored in adjacent pairs.
@@ -238,8 +238,13 @@ pub(super) fn flow_refine(hg: &Hypergraph, part: &mut [u8], max_imbalance: f64) 
 /// flow pass over what is left. Each stage starts from the previous stage's
 /// output, and the flow pass declines outright on a boundary wider than its own
 /// cap, so the FM stages also decide whether it runs at all.
-pub(super) fn refine_finest_level(hg: &Hypergraph, part: &mut [u8], imbalance: f64) {
-    refine_level(hg, part, imbalance);
+pub(super) fn refine_finest_level(
+    hg: &Hypergraph,
+    part: &mut [u8],
+    imbalance: f64,
+    scratch: &mut FmScratch,
+) {
+    refine_level(hg, part, imbalance, scratch);
 
     let n = hg.num_vertices;
     if n < 20 {
@@ -264,7 +269,7 @@ pub(super) fn refine_finest_level(hg: &Hypergraph, part: &mut [u8], imbalance: f
     if !boundary.is_empty() {
         for i in 0..num_tries {
             let seed = boundary[(i * 7919) % boundary.len()];
-            localized_fm_pass(hg, part, seed, imbalance);
+            localized_fm_pass(hg, part, seed, imbalance, &mut scratch.region);
         }
     }
 

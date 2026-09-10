@@ -18,8 +18,8 @@ use std::time::Instant;
 
 use crate::partition::Bisection;
 use crate::partition::common::{
-    BisectionStop, index_split, lift_to_fine, project_to_coarse, repair_bisection, tiny_bisection,
-    validate_max_imbalance,
+    BisectionStop, MIN_COARSEN_SIZE, index_split, lift_to_fine, max_vcycles, project_to_coarse,
+    repair_bisection, tiny_bisection, validate_max_imbalance,
 };
 use crate::rng::{Xorshift64, bisector_stream, restart_seed};
 use crate::{Error, Graph};
@@ -37,7 +37,6 @@ use csr::{CsrGraph, build_csr};
 use initial::{edge_cut, initial_partition};
 use refine_fm::{FmScratch, refine_finest_level, refine_level};
 
-const MIN_COARSEN_SIZE: usize = 20;
 const MAX_BISECTION_EDGES: usize = u32::MAX as usize / 2;
 
 fn validate_size(num_edges: usize) -> Result<(), Error> {
@@ -178,15 +177,7 @@ fn multilevel_graph_bisect_once(
         return None;
     }
 
-    // Arbitrary tuned thresholds: more V-cycles for larger graphs, where
-    // quality matters more.
-    let num_vcycles = if graph.num_vertices() >= 400 {
-        4
-    } else if graph.num_vertices() >= 100 {
-        2
-    } else {
-        1
-    };
+    let num_vcycles = max_vcycles(graph.num_vertices());
     // The first cycle that fails to improve ends the loop, so `num_vcycles` is
     // a ceiling rather than a count.
     for _ in 0..num_vcycles {

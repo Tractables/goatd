@@ -12,24 +12,111 @@
 //! single edge's endpoints, so `pin_counts` is maintained alongside the partition
 //! and every rule below is a statement about a count reaching 0, 1, or 2.
 
-use super::model::Hypergraph;
-use crate::partition::common::{FmBalance, GainBuckets, Stall, commit_best_prefix, fm_balance};
+use std::collections::VecDeque;
 
-pub(super) fn fm_refine_pass(hg: &Hypergraph, part: &mut [u8], max_imbalance: f64) -> bool {
+use super::model::Hypergraph;
+use crate::partition::common::{
+    FmBalance, GainBuckets, Stall, commit_best_prefix, fm_balance, select_move,
+};
+
+pub(super) struct FmScratch {
+    gain: Vec<i64>,
+    locked: Vec<bool>,
+    moves: Vec<usize>,
+    cumulative_gain: Vec<i64>,
+    bq: [GainBuckets; 2],
+    pub(super) region: RegionScratch,
+}
+
+impl FmScratch {
+    pub(super) fn new() -> Self {
+        FmScratch {
+            gain: Vec::new(),
+            locked: Vec::new(),
+            moves: Vec::new(),
+            cumulative_gain: Vec::new(),
+            bq: [GainBuckets::empty(), GainBuckets::empty()],
+            region: RegionScratch::new(),
+        }
+    }
+
+    fn prepare(&mut self, n: usize) {
+        self.gain.clear();
+        self.gain.resize(n, 0);
+        self.locked.clear();
+        self.locked.resize(n, false);
+        self.moves.clear();
+        self.cumulative_gain.clear();
+        self.bq[0].reset(n);
+        self.bq[1].reset(n);
+    }
+}
+
+/// Working storage for [`localized_fm_pass`], held across the four tries of a
+/// level and across the levels of a sweep.
+///
+/// A localized pass touches at most `max_region` vertices out of `n`, so the
+/// per-vertex arrays are cleared over the region the pass built rather than over
+/// the whole hypergraph. That leaves every array as the pass found it, which is
+/// what lets `prepare` be a resize that usually does nothing.
+pub(super) struct RegionScratch {
+    gain: Vec<i64>,
+    in_region: Vec<bool>,
+    locked: Vec<bool>,
+    region_list: Vec<usize>,
+    queue: VecDeque<usize>,
+    moves: Vec<usize>,
+    cumulative_gain: Vec<i64>,
+}
+
+impl RegionScratch {
+    pub(super) fn new() -> Self {
+        RegionScratch {
+            gain: Vec::new(),
+            in_region: Vec::new(),
+            locked: Vec::new(),
+            region_list: Vec::new(),
+            queue: VecDeque::new(),
+            moves: Vec::new(),
+            cumulative_gain: Vec::new(),
+        }
+    }
+
+    /// Size the per-vertex arrays for a hypergraph of `n` vertices and empty the
+    /// lists. The arrays keep the values they hold, which the previous pass left
+    /// cleared; a length that grows is filled with the same cleared value.
+    fn prepare(&mut self, n: usize) {
+        self.gain.resize(n, 0);
+        self.in_region.resize(n, false);
+        self.locked.resize(n, false);
+        // The pass that ends leaves these as it found them. `gain` is exempt:
+        // every region vertex is written before it is read, and no other entry
+        // is read at all.
+        debug_assert!(self.in_region.iter().all(|&member| !member));
+        debug_assert!(self.locked.iter().all(|&locked| !locked));
+        self.region_list.clear();
+        self.queue.clear();
+        self.moves.clear();
+        self.cumulative_gain.clear();
+    }
+}
+
+pub(super) fn fm_refine_pass(
+    hg: &Hypergraph,
+    part: &mut [u8],
+    max_imbalance: f64,
+    scratch: &mut FmScratch,
+) -> bool {
     let n = hg.num_vertices;
-    let Some(FmBalance {
-        mut weight,
-        min_part_weight,
-        max_part_weight,
-    }) = fm_balance(n, &hg.vertex_weights, part, max_imbalance)
-    else {
+    let Some(mut balance) = fm_balance(n, &hg.vertex_weights, part, max_imbalance) else {
         return false;
     };
 
     let mut pin_counts = hg.pin_counts(part);
 
-    let mut gain = vec![0i64; n];
-    let mut bq = [GainBuckets::new(n), GainBuckets::new(n)];
+    scratch.prepare(n);
+    let gain = scratch.gain.as_mut_slice();
+    let bq = &mut scratch.bq;
 
     for v in 0..n {
         let from = part[v] as usize;
@@ -60,53 +147,23 @@ pub(super) fn fm_refine_pass(hg: &Hypergraph, part: &mut [u8], max_imbalance: f6
         }
     }
 
-    let mut locked = vec![false; n];
-    let mut moves: Vec<usize> = Vec::with_capacity(n);
-    let mut cumulative_gain: Vec<i64> = Vec::with_capacity(n);
+    let locked = scratch.locked.as_mut_slice();
+    let moves = &mut scratch.moves;
+    let cumulative_gain = &mut scratch.cumulative_gain;
     let mut running_gain: i64 = 0;
     let mut stall = Stall::new((n / 2).max(20));
 
     for _ in 0..n {
-        let mut best_v: Option<usize> = None;
-        let mut best_gain = i64::MIN;
-        let mut best_from: usize = 0;
-
-        for side in 0..2 {
-            let to = 1 - side;
-            // Every queued vertex weighs at least one, so a side at the floor
-            // can give none up and a side at the ceiling can take none. Without
-            // this the search walks that side's whole queue to return nothing,
-            // once per move, which is where a pass sits once it drifts to the
-            // balance boundary.
-            if weight[side] <= min_part_weight || weight[to] >= max_part_weight {
-                continue;
-            }
-            let candidate = bq[side].best_satisfying(|vertex| {
-                !locked[vertex]
-                    && weight[side] - hg.vertex_weights[vertex] >= min_part_weight
-                    && weight[to] + hg.vertex_weights[vertex] <= max_part_weight
-            });
-            if let Some(vertex) = candidate {
-                let g = gain[vertex];
-                if g > best_gain {
-                    best_gain = g;
-                    best_v = Some(vertex);
-                    best_from = side;
-                }
-            }
-        }
-
-        let v = match best_v {
-            Some(v) => v,
-            None => break,
+        let Some((v, from, best_gain)) =
+            select_move(bq, gain, locked, &hg.vertex_weights, &balance)
+        else {
+            break;
         };
-
-        let from = best_from;
         let to = 1 - from;
 
         bq[from].remove(v);
-        weight[from] -= hg.vertex_weights[v];
-        weight[to] += hg.vertex_weights[v];
+        balance.weight[from] -= hg.vertex_weights[v];
+        balance.weight[to] += hg.vertex_weights[v];
         part[v] = to as u8;
         locked[v] = true;
 
@@ -205,7 +262,7 @@ pub(super) fn fm_refine_pass(hg: &Hypergraph, part: &mut [u8], max_imbalance: f6
         }
     }
 
-    commit_best_prefix(&moves, &cumulative_gain, part)
+    commit_best_prefix(moves, cumulative_gain, part)
 }
 
 /// Returns true if the partition was improved.
@@ -214,13 +271,14 @@ pub(super) fn fm_refine_pass(hg: &Hypergraph, part: &mut [u8], max_imbalance: f6
 /// the global passes have stopped improving. The region is capped, so selection
 /// is a linear scan over its vertices rather than a bucket queue, and a move
 /// updates only region pins; a vertex outside the region is never a candidate,
-/// so its gain entry stays at zero. On `false` the partition is restored to
-/// exactly what was passed in.
+/// so its gain entry is neither written nor read. On `false` the partition is
+/// restored to exactly what was passed in.
 pub(super) fn localized_fm_pass(
     hg: &Hypergraph,
     part: &mut [u8],
     seed: usize,
     max_imbalance: f64,
+    scratch: &mut RegionScratch,
 ) -> bool {
     let n = hg.num_vertices;
     let Some(FmBalance {
@@ -234,9 +292,11 @@ pub(super) fn localized_fm_pass(
 
     let mut pin_counts = hg.pin_counts(part);
 
+    scratch.prepare(n);
+    let in_region = scratch.in_region.as_mut_slice();
+    let region_queue = &mut scratch.queue;
+
     let max_region = (n / 4).max(20).min(n);
-    let mut in_region = vec![false; n];
-    let mut region_queue = std::collections::VecDeque::new();
     in_region[seed] = true;
     region_queue.push_back(seed);
     let mut region_size = 1usize;
@@ -265,40 +325,44 @@ pub(super) fn localized_fm_pass(
         }
     }
 
-    let mut gain = vec![0i64; n];
-    for v in 0..n {
-        if !in_region[v] {
-            continue;
-        }
+    // Ascending index order (not BFS discovery order) preserves the lowest-index
+    // tie-break in the move loop: `gain[v] > best_gain` keeps the first vertex
+    // reaching the max.
+    let region_list = &mut scratch.region_list;
+    region_list.extend((0..n).filter(|&v| in_region[v]));
+    debug_assert_eq!(region_list.len(), region_size);
+
+    // Gains only for region vertices. A non-region entry is never read, so
+    // `gain` is written here and left alone rather than cleared.
+    let gain = scratch.gain.as_mut_slice();
+    for &v in region_list.iter() {
         let from = part[v] as usize;
         let to = 1 - from;
+        let mut g = 0i64;
         for &hei in hg.vertex_hyperedges(v) {
             let hei = hei as usize;
             let w = i64::from(hg.hyperedge_weights[hei]);
             if pin_counts[hei][from] == 1 {
-                gain[v] += w;
+                g += w;
             }
             if pin_counts[hei][to] == 0 {
-                gain[v] -= w;
+                g -= w;
             }
         }
+        gain[v] = g;
     }
 
-    let mut locked = vec![false; n];
-    let mut moves: Vec<usize> = Vec::new();
-    let mut cumulative_gain: Vec<i64> = Vec::new();
+    let locked = scratch.locked.as_mut_slice();
+    let moves = &mut scratch.moves;
+    let cumulative_gain = &mut scratch.cumulative_gain;
     let mut running_gain: i64 = 0;
-    let mut stall = Stall::new(region_size / 2);
+    let mut stall = Stall::new(region_list.len() / 2);
 
     // O(region²), not O(region·n): region_list, not 0..n, is scanned per move.
-    // Ascending index order (not BFS discovery order) preserves the lowest-index
-    // tie-break: `gain[v] > best_gain` keeps the first vertex reaching the max.
-    let region_list: Vec<usize> = (0..n).filter(|&v| in_region[v]).collect();
-
-    for _ in 0..region_size {
+    for _ in 0..region_list.len() {
         let mut best_v = None;
         let mut best_gain = i64::MIN;
-        for &v in &region_list {
+        for &v in region_list.iter() {
             if locked[v] {
                 continue;
             }
@@ -373,17 +437,30 @@ pub(super) fn localized_fm_pass(
         }
     }
 
-    commit_best_prefix(&moves, &cumulative_gain, part)
+    let improved = commit_best_prefix(moves, cumulative_gain, part);
+
+    // Hand the arrays back the way they were found. Only region vertices are
+    // marked in `in_region`, and only region vertices are ever locked.
+    for &v in region_list.iter() {
+        in_region[v] = false;
+        locked[v] = false;
+    }
+    improved
 }
 
 /// Standard FM refinement (global passes only).
 ///
 /// Passes repeat until one fails to improve. The cap bounds the case where each
 /// pass finds a single-move improvement and would otherwise keep going.
-pub(super) fn refine_level(hg: &Hypergraph, part: &mut [u8], imbalance: f64) {
+pub(super) fn refine_level(
+    hg: &Hypergraph,
+    part: &mut [u8],
+    imbalance: f64,
+    scratch: &mut FmScratch,
+) {
     let max_passes = 10;
     for _ in 0..max_passes {
-        if !fm_refine_pass(hg, part, imbalance) {
+        if !fm_refine_pass(hg, part, imbalance, scratch) {
             break;
         }
     }
