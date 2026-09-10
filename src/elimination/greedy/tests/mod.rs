@@ -106,13 +106,13 @@ fn priority_buckets_recompute_an_emptied_minimum() {
 }
 
 #[test]
-fn priority_buckets_preserve_entries_when_falling_back_to_hashing() {
+fn priority_buckets_keep_their_slots_when_a_key_overflows() {
     let weights = [1, 1];
     let mut buckets = super::BucketMap::with_weights(&weights, Some(super::sampling_mass(1)));
 
     buckets.insert(0, 3);
     buckets.insert(1, u64::MAX);
-    assert!(matches!(buckets.buckets, super::PriorityBuckets::Hashed(_)));
+    assert!(buckets.buckets.overflow.contains_key(&u64::MAX));
     assert_eq!(buckets.minimum(), Some(3));
 
     buckets.remove_vertex(0);
@@ -147,13 +147,13 @@ fn a_band_collects_the_buckets_above_the_minimum() {
 }
 
 #[test]
-fn a_band_collects_hashed_buckets_too() {
+fn a_band_collects_overflowing_buckets_too() {
     let weights = [1, 1];
     let mass = super::sampling_mass(1);
     let mut buckets = super::BucketMap::with_weights(&weights, Some(mass));
     buckets.insert(0, u64::MAX - 1);
     buckets.insert(1, u64::MAX);
-    assert!(matches!(buckets.buckets, super::PriorityBuckets::Hashed(_)));
+    assert_eq!(buckets.buckets.overflow.len(), 2);
     let mut scratch = Vec::new();
 
     let (vertices, total_mass) = buckets.min_band(1, &mut scratch).unwrap();
@@ -175,14 +175,27 @@ fn empty_priority_buckets_reuse_their_vertex_storage() {
     let weights = [1];
     let mut buckets = super::BucketMap::with_weights(&weights, Some(super::sampling_mass(1)));
 
+    // A dense key hands its emptied bucket back on the free list.
     buckets.insert(0, 3);
     let capacity = buckets.bucket(3).unwrap().vertices.capacity();
     buckets.remove_vertex(0);
-    assert_eq!(buckets.spare_vertices.len(), 1);
+    assert_eq!(buckets.buckets.free.len(), 1);
 
     buckets.insert(0, 7);
-    assert!(buckets.spare_vertices.is_empty());
+    assert!(buckets.buckets.free.is_empty());
+    assert_eq!(buckets.buckets.buckets.len(), 1);
     assert_eq!(buckets.bucket(7).unwrap().vertices.capacity(), capacity);
+
+    // A key above the dense range keeps its storage in `spare_vertices`.
+    buckets.update(0, u64::MAX);
+    buckets.remove_vertex(0);
+    assert_eq!(buckets.spare_vertices.len(), 1);
+    buckets.insert(0, u64::MAX);
+    assert!(buckets.spare_vertices.is_empty());
+    assert_eq!(
+        buckets.bucket(u64::MAX).unwrap().vertices.capacity(),
+        capacity
+    );
 }
 
 #[test]
