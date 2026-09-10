@@ -45,6 +45,10 @@ pub(crate) struct Prebuilt {
     /// Initial fill count of each residual vertex. Computed on the first
     /// sampled min-fill run, then reused by later seeds.
     initial_fill: Option<Vec<u64>>,
+    /// A copy of the residual for the candidate currently running, kept from
+    /// one candidate to the next so its buffers are refilled rather than
+    /// allocated again. Only the whole-residual path uses it.
+    work: Option<EliminationGraph>,
 }
 
 /// Build the elimination representation and preprocess it once for reuse
@@ -57,6 +61,7 @@ pub(crate) fn prebuild(input: &crate::Graph, soft_deadline: Option<Instant>) -> 
         reduced,
         components,
         initial_fill: None,
+        work: None,
     }
 }
 
@@ -152,8 +157,20 @@ pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> 
             spec,
         );
     }
-    run_order_on_reduced(
-        prebuilt.reduced.clone(),
+    // Refresh the working copy of the residual, or take the first one. Keeping
+    // it between candidates means the copy refills buffers it already has
+    // instead of allocating a row per vertex on every run.
+    let residual = &prebuilt.reduced.graph;
+    let work = match &mut prebuilt.work {
+        Some(work) => {
+            work.clone_from(residual);
+            work
+        }
+        slot => slot.insert(residual.clone()),
+    };
+    run_order_on_residual(
+        work,
+        &prebuilt.reduced.prefix,
         &prebuilt.components,
         prebuilt.initial_fill.as_deref(),
         spec,
@@ -220,25 +237,23 @@ pub(super) fn find_connected_components(graph: &EliminationGraph) -> Vec<Vec<u32
 /// graph; the min-fill sampling cores are the only ones that read it. A
 /// component run remaps the counts into its local numbering.
 fn run_elimination_raw(
-    reduced: Reduced,
+    graph: &mut EliminationGraph,
+    prefix: &ElimSteps,
     salt: &[u32],
     initial_fill: Option<&[u64]>,
     spec: RunSpec<'_>,
 ) -> (ElimSteps, ElimExit, Vec<u32>) {
-    let mut steps = reduced.prefix;
-    let mut g = reduced.graph;
+    // The run continues from what preprocessing already eliminated and appends
+    // to it, so it needs its own copy of those steps.
+    let mut steps = prefix.clone();
 
     let exit = match spec.order {
-        Order::MinFill => eliminate_min_fill(&mut g, salt, steps.sink(), spec.stop),
-        Order::MinDegree => eliminate_min_degree(
-            &mut g,
-            salt,
-            spec.update_order_ties,
-            steps.sink(),
-            spec.stop,
-        ),
+        Order::MinFill => eliminate_min_fill(graph, salt, steps.sink(), spec.stop),
+        Order::MinDegree => {
+            eliminate_min_degree(graph, salt, spec.update_order_ties, steps.sink(), spec.stop)
+        }
         Order::MinFillSampled { weights } => eliminate_sampled_min_fill(
-            &mut g,
+            graph,
             SampleDraw {
                 weights,
                 band: spec.sample_band,
@@ -252,7 +267,7 @@ fn run_elimination_raw(
             initial_fill,
         ),
         Order::MinDegreeSampled { weights } => eliminate_sampled_min_degree(
-            &mut g,
+            graph,
             SampleDraw {
                 weights,
                 band: spec.sample_band,
@@ -268,7 +283,7 @@ fn run_elimination_raw(
             weights,
             degree_coefficient,
         } => eliminate_sampled_fill_degree(
-            &mut g,
+            graph,
             SampleDraw {
                 weights,
                 band: spec.sample_band,
@@ -283,18 +298,18 @@ fn run_elimination_raw(
             degree_coefficient,
         ),
         Order::NestedDissection => {
-            eliminate_nested_dissection(&mut g, salt, spec.seed, steps.sink(), spec.stop)
+            eliminate_nested_dissection(graph, salt, spec.seed, steps.sink(), spec.stop)
         }
         Order::MinimalTriangulation => {
-            eliminate_cardinality_search(&mut g, Reach::LowerPaths, steps.sink(), spec.stop)
+            eliminate_cardinality_search(graph, Reach::LowerPaths, steps.sink(), spec.stop)
         }
         Order::MaximumCardinality => {
-            eliminate_cardinality_search(&mut g, Reach::Neighbours, steps.sink(), spec.stop)
+            eliminate_cardinality_search(graph, Reach::Neighbours, steps.sink(), spec.stop)
         }
     };
 
     let residual = if spec.complete_on_deadline && matches!(exit, ElimExit::DeadlineReached(_)) {
-        execution::active_vertices(&g)
+        execution::active_vertices(graph)
     } else {
         Vec::new()
     };
@@ -358,7 +373,7 @@ fn run_order_per_component(
         // Global preprocessing already reached a fixed point. Restricting the
         // residual to one connected component changes no neighborhood, so a
         // second preprocessing pass could not fire another rule.
-        let sub_reduced = Reduced {
+        let mut sub_reduced = Reduced {
             graph: EliminationGraph::from_edges(comp_n, &comp_edges),
             prefix: ElimSteps::default(),
         };
@@ -384,7 +399,8 @@ fn run_order_per_component(
         };
 
         let (comp_steps, comp_exit, comp_residual) = run_elimination_raw(
-            sub_reduced,
+            &mut sub_reduced.graph,
+            &sub_reduced.prefix,
             &sub_salt,
             sub_initial_fill.as_deref(),
             sub_spec,
@@ -438,20 +454,32 @@ fn run_order_per_component(
     finish(all_bags, global_rank, exit, spec.complete_on_deadline)
 }
 
-pub(super) fn run_order_on_reduced(
-    reduced: Reduced,
+/// Run one order over a preprocessed residual the caller owns.
+///
+/// The graph is eliminated on and comes back spent, so a caller running one
+/// candidate after another hands in a working copy it refreshes rather than a
+/// fresh one each time.
+pub(super) fn run_order_on_residual(
+    graph: &mut EliminationGraph,
+    prefix: &ElimSteps,
     components: &[Vec<u32>],
     initial_fill: Option<&[u64]>,
     spec: RunSpec<'_>,
 ) -> OrderRun {
-    let n = reduced.graph.len();
+    let n = graph.len();
     let salt = salt_for(n, spec.seed);
 
     // Solve each connected component independently. Components arise
     // naturally after preprocessing removes low-degree vertices.
     if components.len() > 1 {
-        let Reduced { graph, prefix } = reduced;
-        return run_order_per_component(&graph, prefix, components, &salt, initial_fill, spec);
+        return run_order_per_component(
+            graph,
+            prefix.clone(),
+            components,
+            &salt,
+            initial_fill,
+            spec,
+        );
     }
 
     // Only the whole-residual path checks this: the per-component path
@@ -465,7 +493,7 @@ pub(super) fn run_order_on_reduced(
         );
     }
 
-    let (steps, exit, residual) = run_elimination_raw(reduced, &salt, initial_fill, spec);
+    let (steps, exit, residual) = run_elimination_raw(graph, prefix, &salt, initial_fill, spec);
     finalize(steps, n, exit, spec.complete_on_deadline, residual)
 }
 
