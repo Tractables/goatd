@@ -79,6 +79,22 @@ fn an_articulation_vertex_joins_the_residual_forest_on_reinsertion() {
 }
 
 #[test]
+fn vertex_reconstruction_escapes_a_minimal_triangulation() {
+    let graph = Graph::new(5, (0..2).flat_map(|u| (2..5).map(move |v| (u, v))));
+    let tree =
+        TreeDecomposition::new(&graph, [vec![0, 2, 3, 4], vec![1, 2, 3, 4]], [(0, 1)]).unwrap();
+    // Completing the three-vertex side is minimal: removing any of its
+    // fill edges leaves a chordless cycle through vertices 0 and 1.
+    let mut filled = super::super::completion(&tree, 5, None).unwrap();
+    assert_eq!(super::super::minimalize(&mut filled, &graph, 5, None), 0);
+    assert_eq!(tree.treewidth(), 3);
+    let (next, stats) = improve_trusted(&graph, &tree, Instant::now() + Duration::from_secs(1));
+    next.validate(&graph).unwrap();
+    assert_eq!(next.treewidth(), 2);
+    assert!(stats.improved > 0);
+}
+
+#[test]
 fn the_checked_entry_rejects_a_tree_for_a_different_graph() {
     let graph = Graph::new(2, []);
     let tree = TreeDecomposition::new(&graph, [vec![0], vec![1]], [(0, 1)]).unwrap();

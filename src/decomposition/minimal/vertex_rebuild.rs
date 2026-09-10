@@ -35,7 +35,7 @@ fn edges(tree: &TreeDecomposition) -> Vec<(usize, usize)> {
         .collect()
 }
 
-/// A connected set of bags meeting every required vertex's occurrence tree.
+/// A connected support in each needed component, meeting every required vertex.
 fn support(tree: &TreeDecomposition, required: &[bool]) -> Vec<bool> {
     let count = required.iter().filter(|&&yes| yes).count();
     let mut single = None;
@@ -107,33 +107,19 @@ fn rebuild(
     }
     let lower = |v: u32| v - u32::from(v > vertex);
     let mut required = vec![false; graph.num_vertices() as usize - 1];
-    let mut small_edges = Vec::with_capacity(graph.edges().len());
     for &(a, b) in graph.edges() {
         if a == vertex {
             required[lower(b) as usize] = true;
         } else if b == vertex {
             required[lower(a) as usize] = true;
-        } else {
-            small_edges.push((lower(a), lower(b)));
         }
     }
     if !required.iter().any(|&yes| yes) {
         return None;
     }
-    let small_graph = Graph::new(graph.num_vertices() - 1, small_edges);
-    let bags: Vec<Vec<u32>> = tree
-        .bags()
-        .iter()
-        .map(|bag| {
-            bag.vertices()
-                .iter()
-                .copied()
-                .filter(|&v| v != vertex)
-                .map(lower)
-                .collect()
-        })
-        .collect();
-    let small = TreeDecomposition::new_trusted(&small_graph, bags, edges(tree)).ok()?;
+    let keep: Vec<_> = (0..graph.num_vertices()).filter(|&v| v != vertex).collect();
+    let small_graph = graph.induced_subgraph(&keep).ok()?;
+    let (small, _) = tree.project(&keep).ok()?.into_parts();
     let small = compact(small);
     let small = minimalization_candidate(&small, &small_graph, Some(deadline)).unwrap_or(small);
     let small = compact(small);
