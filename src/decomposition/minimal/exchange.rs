@@ -54,6 +54,16 @@ fn quality(tree: &TreeDecomposition) -> (u32, usize, Vec<u64>) {
     (tree.treewidth(), mass.len(), mass)
 }
 
+fn compact(mut tree: TreeDecomposition) -> TreeDecomposition {
+    loop {
+        let before = tree.bags().len();
+        tree = tree.subsumed_bag_compaction().apply(tree);
+        if tree.bags().len() == before {
+            return tree;
+        }
+    }
+}
+
 /// Replace the connected set of bags containing a non-input edge `uv`.
 /// Callers provide valid input and enforce the chosen width ceiling.
 fn flip(graph: &Graph, tree: &TreeDecomposition, u: u32, v: u32) -> Option<TreeDecomposition> {
@@ -183,7 +193,7 @@ pub fn improve(
 ) -> Result<(TreeDecomposition, Stats), crate::Error> {
     start.validate(graph)?;
     let started = Instant::now();
-    let mut best = start.subsumed_bag_compaction().apply(start.clone());
+    let mut best = compact(start.clone());
     let mut stats = Stats::default();
     while !crate::deadline::expired(Some(deadline)) {
         stats.rounds += 1;
@@ -199,10 +209,10 @@ pub fn improve(
             };
             debug_assert!(candidate.treewidth() <= best.treewidth());
             stats.tried += 1;
-            let candidate = candidate.subsumed_bag_compaction().apply(candidate);
+            let candidate = compact(candidate);
             let candidate =
                 minimalization_candidate(&candidate, graph, Some(deadline)).unwrap_or(candidate);
-            let candidate = candidate.subsumed_bag_compaction().apply(candidate);
+            let candidate = compact(candidate);
             if quality(&candidate) < quality(&best) {
                 best = candidate;
                 stats.improved += 1;

@@ -166,3 +166,13 @@ fn redundant_elimination_bags_do_not_distort_the_search_objective() {
         next.subsumed_bag_compaction().total_bag_size()
     );
 }
+
+#[test]
+fn mass_uses_one_bag_for_a_chain_of_equal_bags() {
+    let graph = Graph::new(2, [(0, 1)]);
+    let seed = TreeDecomposition::new(&graph, vec![vec![0, 1]; 3], [(0, 2), (2, 1)]).unwrap();
+    let (next, _) = improve(&graph, &seed, Instant::now()).unwrap();
+    next.validate(&graph).unwrap();
+    assert_eq!(next.bags().len(), 1);
+    assert_eq!(quality(&next), (1, 1, vec![4]));
+}
