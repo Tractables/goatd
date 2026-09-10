@@ -51,6 +51,43 @@ pub(super) use sampling::{
 /// on deadline rather than attempting cheap-mode elimination at this scale.
 pub(super) const CHEAP_MODE_MAX_ACTIVE: usize = 512;
 
+/// The graph-sized buffers one sampled elimination works in.
+///
+/// A portfolio runs a sampled core thousands of times over the same residual,
+/// and a fresh set of these is a few hundred kilobytes of zeroed pages per
+/// run — enough to be mapped and unmapped each time. The caller keeps one set
+/// and hands it to every run instead. A run resets what it takes rather than
+/// what it leaves, since a run that stops at its deadline stops in the middle
+/// of its own state.
+pub(super) struct SampleScratch {
+    fill: FillScratch,
+    affected: FillAffected,
+    buckets: BucketStorage,
+    /// The live neighbours of the vertex being eliminated.
+    live_nbrs: Vec<u32>,
+    /// The tie set a draw with a band collects.
+    tie_set: Vec<u32>,
+    /// Each vertex's fill, for the scores that do not file it as the key.
+    fills: Vec<u64>,
+    /// Which degrees the min-degree sampler has still to re-file.
+    degree_stale: Vec<bool>,
+}
+
+impl SampleScratch {
+    /// Buffers for no graph at all: every run sizes them to its own.
+    pub(super) fn new() -> Self {
+        Self {
+            fill: FillScratch::new(0),
+            affected: FillAffected::new(0),
+            buckets: BucketStorage::new(),
+            live_nbrs: Vec::new(),
+            tie_set: Vec::new(),
+            fills: Vec::new(),
+            degree_stale: Vec::new(),
+        }
+    }
+}
+
 /// Scratch state for min-fill's fill-count computation, reused across calls
 /// to avoid reallocating per vertex.
 pub(super) struct FillScratch {
@@ -69,6 +106,14 @@ impl FillScratch {
         FillScratch {
             marker: vec![0; n],
             stamp: 0,
+        }
+    }
+
+    /// Make room for a graph of `n` vertices, keeping the marks that are
+    /// there. A stamp is never 0, so the entries this adds read as unmarked.
+    fn size_for(&mut self, n: usize) {
+        if self.marker.len() < n {
+            self.marker.resize(n, 0);
         }
     }
 
@@ -129,9 +174,9 @@ impl FillScratch {
         // SAFETY: every index below is a vertex id in [0, graph.len()) — the
         // graph only ever stores ids it was built with, and elimination
         // deactivates vertices rather than renumbering or removing them, so
-        // that bound holds for the whole run. `marker` is allocated to
-        // `graph.len()` by `FillScratch::new` and the scratch is built from
-        // the same graph it is used with, so the two lengths agree; the
+        // that bound holds for the whole run. `marker` has an entry for every
+        // vertex of the graph the scratch was sized for, which is the graph it
+        // is used with or a larger one it is being reused after; the
         // bounds-checked store into `marker[u]` a few lines above has already
         // proved that for every `u` this loop visits. Bounds checks cost ~30%
         // of this loop's instructions (a scalar gather on a u16 marker LLVM
@@ -239,6 +284,38 @@ impl FillAffected {
             starts: Vec::new(),
             v_position: Vec::new(),
         }
+    }
+
+    /// Make room for a graph of `n` vertices, keeping what is there.
+    ///
+    /// Every counter is left at zero by the run that used it, so the entries
+    /// this adds start where a fresh scratch's would.
+    fn size_for(&mut self, n: usize) {
+        let words = n.div_ceil(64);
+        if self.inside.len() < words {
+            self.inside.resize(words, 0);
+            self.outside.resize(words, 0);
+            self.x_inside.resize(words, 0);
+            self.x_outside.resize(words, 0);
+        }
+        if self.marker.len() < n {
+            self.marker.resize(n, 0);
+            self.delta.resize(n, 0);
+            self.kept.resize(n, 0);
+            self.gained.resize(n, 0);
+            self.inside_fill.resize(n, 0);
+            self.cross.resize(n, 0);
+        }
+        debug_assert!(self.vertices.is_empty(), "a run leaves no deltas behind");
+        debug_assert!(
+            self.delta.iter().all(|&delta| delta == 0),
+            "a run leaves no deltas behind"
+        );
+        debug_assert!(
+            self.cross.iter().all(|&cross| cross == 0)
+                && self.inside_fill.iter().all(|&fill| fill == 0),
+            "a run leaves no neighbour terms behind"
+        );
     }
 
     /// The fill edges the last successful [`prepare`](Self::prepare) with
@@ -741,11 +818,16 @@ impl PriorityBuckets {
             slots: Vec::new(),
             buckets: Vec::new(),
             free: Vec::new(),
-            dense_keys: vertex_count
-                .saturating_mul(DENSE_KEYS_PER_VERTEX)
-                .clamp(256, MAX_DENSE_PRIORITY_KEYS),
+            dense_keys: Self::dense_keys_for(vertex_count),
             overflow: PriorityHashMap::default(),
         }
+    }
+
+    /// How many keys get a slot on a graph of `vertex_count` vertices.
+    fn dense_keys_for(vertex_count: usize) -> usize {
+        vertex_count
+            .saturating_mul(DENSE_KEYS_PER_VERTEX)
+            .clamp(256, MAX_DENSE_PRIORITY_KEYS)
     }
 
     #[inline]
@@ -865,27 +947,96 @@ impl BucketPosition {
     }
 }
 
-#[derive(Clone)]
-pub(super) struct BucketMap<'a> {
+/// The storage a [`BucketMap`] files vertices in.
+///
+/// It is the caller's, not the map's, so that a portfolio's restarts refill
+/// one set of buckets rather than allocating a position array and a bucket
+/// per key on every run.
+pub(super) struct BucketStorage {
     buckets: PriorityBuckets,
+    spare_vertices: Vec<Vec<u32>>,
+    position: Vec<BucketPosition>,
+}
+
+impl BucketStorage {
+    pub(super) fn new() -> Self {
+        Self {
+            buckets: PriorityBuckets::new(0),
+            spare_vertices: Vec::new(),
+            position: Vec::new(),
+        }
+    }
+
+    /// Empty the storage and size it for a graph of `vertex_count` vertices.
+    ///
+    /// A run that stopped at its deadline leaves its remaining vertices filed,
+    /// so the buckets are emptied here rather than assumed empty. A run that
+    /// finished has already given every bucket back, which is why the sweep
+    /// over the slots only happens when one is still out.
+    fn reset(&mut self, vertex_count: usize) {
+        let live =
+            self.buckets.buckets.len() - self.buckets.free.len() + self.buckets.overflow.len();
+        if live > 0 {
+            self.buckets.slots.fill(NO_BUCKET);
+            for bucket in &mut self.buckets.buckets {
+                bucket.vertices.clear();
+                bucket.sampling_mass = 0;
+            }
+            self.buckets.free.clear();
+            let count = u32::try_from(self.buckets.buckets.len()).expect("bucket count fits u32");
+            self.buckets.free.extend(0..count);
+            for (_, mut bucket) in self.buckets.overflow.drain() {
+                // A bucket only reaches the spare pool empty: what comes out
+                // of it becomes another key's bucket as it stands.
+                bucket.vertices.clear();
+                self.spare_vertices.push(bucket.vertices);
+            }
+        }
+        debug_assert!(
+            self.spare_vertices.iter().all(|spare| spare.is_empty()),
+            "spare bucket storage holds no vertices"
+        );
+        self.buckets.dense_keys = PriorityBuckets::dense_keys_for(vertex_count);
+        // Every slot is free by now, so the ones a wider graph left behind
+        // hold nothing and can go.
+        self.buckets.slots.truncate(self.buckets.dense_keys);
+        self.position.clear();
+        self.position.resize(vertex_count, BucketPosition::VACANT);
+    }
+}
+
+pub(super) struct BucketMap<'a> {
+    buckets: &'a mut PriorityBuckets,
     /// Exact while `minimum_dirty` is false. Removing the current minimum
     /// marks it dirty; the next read scans the live priority keys once.
     minimum_key: Option<u64>,
     minimum_dirty: bool,
-    spare_vertices: Vec<Vec<u32>>,
-    position: Vec<BucketPosition>,
+    spare_vertices: &'a mut Vec<Vec<u32>>,
+    position: &'a mut Vec<BucketPosition>,
     weights: &'a [u32],
     uniform_mass: Option<u64>,
 }
 
 impl<'a> BucketMap<'a> {
-    fn with_weights(weights: &'a [u32], uniform_mass: Option<u64>) -> Self {
+    /// An empty map over `storage`, which it empties and sizes for the graph
+    /// `weights` covers.
+    fn with_weights(
+        storage: &'a mut BucketStorage,
+        weights: &'a [u32],
+        uniform_mass: Option<u64>,
+    ) -> Self {
+        storage.reset(weights.len());
+        let BucketStorage {
+            buckets,
+            spare_vertices,
+            position,
+        } = storage;
         BucketMap {
-            buckets: PriorityBuckets::new(weights.len()),
+            buckets,
             minimum_key: None,
             minimum_dirty: false,
-            spare_vertices: Vec::new(),
-            position: vec![BucketPosition::VACANT; weights.len()],
+            spare_vertices,
+            position,
             weights,
             uniform_mass,
         }
@@ -895,7 +1046,7 @@ impl<'a> BucketMap<'a> {
     /// per changed vertex, so a move between buckets is one function.
     #[inline(always)]
     fn insert(&mut self, v: u32, key: u64) {
-        let (bucket, created) = self.buckets.get_or_insert(key, &mut self.spare_vertices);
+        let (bucket, created) = self.buckets.get_or_insert(key, self.spare_vertices);
         let idx = bucket.vertices.len();
         bucket.vertices.push(v);
         if self.uniform_mass.is_none() {
@@ -920,14 +1071,13 @@ impl<'a> BucketMap<'a> {
         let bucket = self.buckets.get_mut(position.key).expect("bucket missing");
         if Self::remove_from_bucket(
             bucket,
-            &mut self.position,
+            self.position.as_mut_slice(),
             self.weights,
             self.uniform_mass,
             v,
             position,
         ) {
-            self.buckets
-                .remove_empty(position.key, &mut self.spare_vertices);
+            self.buckets.remove_empty(position.key, self.spare_vertices);
             self.minimum_dirty |= self.minimum_key == Some(position.key);
         }
     }
@@ -1084,6 +1234,7 @@ fn sample_tie_set(
     total_mass: u64,
 ) -> u32 {
     debug_assert!(!tie_set.is_empty());
+    debug_assert!(total_mass > 0, "a tie set's vertices each carry mass");
     if tie_set.len() == 1 {
         return tie_set[0];
     }

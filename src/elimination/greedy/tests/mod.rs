@@ -41,7 +41,8 @@ fn unequal_sampling_weights_do_not_enable_the_uniform_path() {
 #[test]
 fn priority_buckets_track_their_weighted_sampling_mass() {
     let weights = [0, u32::MAX, 17, 42];
-    let mut buckets = super::BucketMap::with_weights(&weights, None);
+    let mut storage = super::BucketStorage::new();
+    let mut buckets = super::BucketMap::with_weights(&mut storage, &weights, None);
     buckets.insert(0, 3);
     buckets.insert(1, 3);
     buckets.insert(2, 3);
@@ -68,7 +69,8 @@ fn priority_buckets_track_their_weighted_sampling_mass() {
 fn uniform_priority_buckets_derive_mass_from_their_length() {
     let weights = [7, 7];
     let mass = super::sampling_mass(7);
-    let mut buckets = super::BucketMap::with_weights(&weights, Some(mass));
+    let mut storage = super::BucketStorage::new();
+    let mut buckets = super::BucketMap::with_weights(&mut storage, &weights, Some(mass));
     buckets.insert(0, 3);
     buckets.insert(1, 3);
 
@@ -82,7 +84,9 @@ fn uniform_priority_buckets_derive_mass_from_their_length() {
 #[test]
 fn vacant_bucket_positions_do_not_reserve_a_priority_key() {
     let weights = [1];
-    let mut buckets = super::BucketMap::with_weights(&weights, Some(super::sampling_mass(1)));
+    let mut storage = super::BucketStorage::new();
+    let mut buckets =
+        super::BucketMap::with_weights(&mut storage, &weights, Some(super::sampling_mass(1)));
 
     buckets.remove_vertex(0);
     buckets.insert(0, u64::MAX);
@@ -94,7 +98,9 @@ fn vacant_bucket_positions_do_not_reserve_a_priority_key() {
 #[test]
 fn priority_buckets_recompute_an_emptied_minimum() {
     let weights = [1, 1];
-    let mut buckets = super::BucketMap::with_weights(&weights, Some(super::sampling_mass(1)));
+    let mut storage = super::BucketStorage::new();
+    let mut buckets =
+        super::BucketMap::with_weights(&mut storage, &weights, Some(super::sampling_mass(1)));
 
     buckets.insert(0, 3);
     buckets.insert(1, 5);
@@ -108,7 +114,9 @@ fn priority_buckets_recompute_an_emptied_minimum() {
 #[test]
 fn priority_buckets_keep_their_slots_when_a_key_overflows() {
     let weights = [1, 1];
-    let mut buckets = super::BucketMap::with_weights(&weights, Some(super::sampling_mass(1)));
+    let mut storage = super::BucketStorage::new();
+    let mut buckets =
+        super::BucketMap::with_weights(&mut storage, &weights, Some(super::sampling_mass(1)));
 
     buckets.insert(0, 3);
     buckets.insert(1, u64::MAX);
@@ -126,7 +134,8 @@ fn priority_buckets_keep_their_slots_when_a_key_overflows() {
 fn a_band_collects_the_buckets_above_the_minimum() {
     let weights = [1, 1, 1, 1];
     let mass = super::sampling_mass(1);
-    let mut buckets = super::BucketMap::with_weights(&weights, Some(mass));
+    let mut storage = super::BucketStorage::new();
+    let mut buckets = super::BucketMap::with_weights(&mut storage, &weights, Some(mass));
     buckets.insert(0, 3);
     buckets.insert(1, 4);
     buckets.insert(2, 4);
@@ -150,7 +159,8 @@ fn a_band_collects_the_buckets_above_the_minimum() {
 fn a_band_collects_overflowing_buckets_too() {
     let weights = [1, 1];
     let mass = super::sampling_mass(1);
-    let mut buckets = super::BucketMap::with_weights(&weights, Some(mass));
+    let mut storage = super::BucketStorage::new();
+    let mut buckets = super::BucketMap::with_weights(&mut storage, &weights, Some(mass));
     buckets.insert(0, u64::MAX - 1);
     buckets.insert(1, u64::MAX);
     assert_eq!(buckets.buckets.overflow.len(), 2);
@@ -173,7 +183,9 @@ fn bucket_positions_use_less_space_than_the_optional_tuple() {
 #[test]
 fn empty_priority_buckets_reuse_their_vertex_storage() {
     let weights = [1];
-    let mut buckets = super::BucketMap::with_weights(&weights, Some(super::sampling_mass(1)));
+    let mut storage = super::BucketStorage::new();
+    let mut buckets =
+        super::BucketMap::with_weights(&mut storage, &weights, Some(super::sampling_mass(1)));
 
     // A dense key hands its emptied bucket back on the free list.
     buckets.insert(0, 3);

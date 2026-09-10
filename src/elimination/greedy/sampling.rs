@@ -17,8 +17,9 @@ use super::*;
 use crate::deadline::expired;
 use crate::rng::{SEED_OFFSET, Xorshift64};
 
-/// How a sampled core draws: the weights that bias the tie set, and how far
-/// above the minimum score the tie set reaches.
+/// How a sampled core draws: the weights that bias the tie set, how far above
+/// the minimum score the tie set reaches, and which stream the draws come
+/// from.
 #[derive(Clone, Copy)]
 pub(crate) struct SampleDraw<'a> {
     /// One weight per graph vertex; a smaller weight is drawn more often.
@@ -26,6 +27,8 @@ pub(crate) struct SampleDraw<'a> {
     /// The band above the minimum score, in the score's own units. 0 draws
     /// from the vertices tied at the minimum, as the samplers always have.
     pub(crate) band: u64,
+    /// Selects the RNG stream the tie-set draws come from.
+    pub(crate) seed: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -66,19 +69,19 @@ fn update_neighbours(
     graph: &EliminationGraph,
     nbrs: &[u32],
     buckets: &mut BucketMap<'_>,
-    fills: &mut Option<Vec<u64>>,
+    fills: &mut Option<&mut [u64]>,
     priority: FillPriority,
 ) {
     for &u in nbrs {
         if graph.active[u as usize] {
-            let old_fill = match fills {
+            let old_fill = match fills.as_deref() {
                 Some(fills) => fills[u as usize],
                 None => buckets
                     .key_of(u)
                     .expect("an active vertex has a fill bucket"),
             };
             let new_fill = affected.neighbour_fill(graph, u, old_fill);
-            if let Some(fills) = fills {
+            if let Some(fills) = fills.as_deref_mut() {
                 fills[u as usize] = new_fill;
             }
             buckets.update(
@@ -98,19 +101,19 @@ fn update_neighbours(
 pub(crate) fn eliminate_sampled_min_fill(
     graph: &mut EliminationGraph,
     draw: SampleDraw<'_>,
-    seed: u64,
     sink: ElimSink<'_>,
     stop: ElimStop,
     initial_fill: Option<&[u64]>,
+    scratch: &mut SampleScratch,
 ) -> ElimExit {
     eliminate_sampled_fill_based(
         graph,
         draw,
-        seed,
         sink,
         stop,
         initial_fill,
         FillPriority::Fill,
+        scratch,
     )
 }
 
@@ -119,33 +122,37 @@ pub(crate) fn eliminate_sampled_min_fill(
 pub(crate) fn eliminate_sampled_fill_degree(
     graph: &mut EliminationGraph,
     draw: SampleDraw<'_>,
-    seed: u64,
     sink: ElimSink<'_>,
     stop: ElimStop,
     initial_fill: Option<&[u64]>,
     degree_coefficient: i8,
+    scratch: &mut SampleScratch,
 ) -> ElimExit {
     eliminate_sampled_fill_based(
         graph,
         draw,
-        seed,
         sink,
         stop,
         initial_fill,
         FillPriority::FillDegree(degree_coefficient),
+        scratch,
     )
 }
 
 fn eliminate_sampled_fill_based(
     graph: &mut EliminationGraph,
     draw: SampleDraw<'_>,
-    seed: u64,
     mut sink: ElimSink<'_>,
     stop: ElimStop,
     initial_fill: Option<&[u64]>,
     priority: FillPriority,
+    scratch: &mut SampleScratch,
 ) -> ElimExit {
-    let SampleDraw { weights, band } = draw;
+    let SampleDraw {
+        weights,
+        band,
+        seed,
+    } = draw;
     // No cheap mode here to degrade into, so the soft deadline is not this
     // core's to read.
     let ElimStop {
@@ -161,20 +168,34 @@ fn eliminate_sampled_fill_based(
         graph.promote_bitset();
     }
 
-    let mut scratch = FillScratch::new(n);
-    let mut affected = FillAffected::new(n);
-    let mut live_nbrs = Vec::new();
+    let SampleScratch {
+        fill: fill_scratch,
+        affected,
+        buckets: bucket_storage,
+        live_nbrs,
+        tie_set,
+        fills: fill_store,
+        ..
+    } = scratch;
+    fill_scratch.size_for(n);
+    affected.size_for(n);
     // Plain min-fill already stores the current fill as the bucket key. Only
     // composite scores need a second array to recover the fill component.
-    let mut fills = priority.tracks_fill_separately().then(|| vec![0; n]);
-    let mut buckets = BucketMap::with_weights(weights, uniform_mass);
+    let mut fills: Option<&mut [u64]> = if priority.tracks_fill_separately() {
+        fill_store.clear();
+        fill_store.resize(n, 0);
+        Some(fill_store.as_mut_slice())
+    } else {
+        None
+    };
+    let mut buckets = BucketMap::with_weights(bucket_storage, weights, uniform_mass);
     for v in 0..n {
         if graph.active[v] {
             let f = match initial_fill {
                 Some(f) => f[v],
-                None => scratch.fill_count_of(graph, v as u32),
+                None => fill_scratch.fill_count_of(graph, v as u32),
             };
-            if let Some(fills) = &mut fills {
+            if let Some(fills) = fills.as_deref_mut() {
                 fills[v] = f;
             }
             buckets.insert(
@@ -188,9 +209,8 @@ fn eliminate_sampled_fill_based(
     // is part of the tie-break stream this sampler has always drawn.
     let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
     let mut pacer = DeadlinePacer::new();
-    let mut tie_scratch = Vec::new();
 
-    while let Some((tie_set, total_mass)) = buckets.min_band(band, &mut tie_scratch) {
+    while let Some((tie_set, total_mass)) = buckets.min_band(band, tie_set) {
         if pacer.due() {
             if expired(hard_deadline) {
                 return ElimExit::DeadlineReached(Cutoff::Hard);
@@ -204,7 +224,7 @@ fn eliminate_sampled_fill_based(
         // The drawn vertex's own fill, not the band's smallest: the simplicial
         // path below is only correct for a vertex that adds no fill edge, and a
         // band wider than 0 can draw one that does.
-        let sampled_fill = fills.as_ref().map_or_else(
+        let sampled_fill = fills.as_deref().map_or_else(
             || {
                 buckets
                     .key_of(v)
@@ -215,7 +235,7 @@ fn eliminate_sampled_fill_based(
 
         buckets.remove_vertex(v);
 
-        let bag = take_bag(graph, v, &mut live_nbrs);
+        let bag = take_bag(graph, v, live_nbrs);
         let bag_len = bag.len();
         // Recorded before the elimination below removes `v`, because the score
         // repair that follows reads the deadline and returns from the middle of
@@ -227,12 +247,12 @@ fn eliminate_sampled_fill_based(
         if sampled_fill == 0 {
             // N(v) is a clique: no fill edge is added, and each neighbour
             // loses the missing pairs it had with v alone.
-            affected.prepare(graph, v, &live_nbrs, false, None);
-            graph.remove_without_fill_nbrs(v, &live_nbrs);
+            affected.prepare(graph, v, live_nbrs, false, None);
+            graph.remove_without_fill_nbrs(v, live_nbrs);
             update_neighbours(
-                &mut affected,
+                affected,
                 graph,
-                &live_nbrs,
+                live_nbrs,
                 &mut buckets,
                 &mut fills,
                 priority,
@@ -240,20 +260,24 @@ fn eliminate_sampled_fill_based(
         } else {
             // v leaves the graph either way, so the residual bag the deadline
             // exit builds does not hold it beside its own bag.
-            if !affected.prepare(graph, v, &live_nbrs, true, hard_deadline) {
-                graph.eliminate_with_nbrs(v, &live_nbrs);
+            if !affected.prepare(graph, v, live_nbrs, true, hard_deadline) {
+                graph.eliminate_with_nbrs(v, live_nbrs);
                 return ElimExit::DeadlineReached(Cutoff::Hard);
             }
-            graph.eliminate_prepared(v, &live_nbrs, &affected.fill_edges());
+            graph.eliminate_prepared(v, live_nbrs, &affected.fill_edges());
             // Applying one delta is a bucket move, so this loop reads the
             // deadline on the pacer's stride.
             let mut delta_pacer = DeadlinePacer::new();
             while let Some((u, delta)) = affected.pop_delta(graph) {
                 if delta_pacer.due() && expired(hard_deadline) {
+                    // The neighbour terms this run's last prepare left are
+                    // never read now, and the scratch outlives the run, so
+                    // they go back to zero here rather than at the next use.
                     affected.clear();
+                    affected.clear_neighbours(graph, live_nbrs);
                     return ElimExit::DeadlineReached(Cutoff::Hard);
                 }
-                let old_fill = fills.as_ref().map_or_else(
+                let old_fill = fills.as_deref().map_or_else(
                     || {
                         buckets
                             .key_of(u)
@@ -263,7 +287,7 @@ fn eliminate_sampled_fill_based(
                 );
                 debug_assert!(delta <= old_fill);
                 let new_fill = old_fill.saturating_sub(delta);
-                if let Some(fills) = &mut fills {
+                if let Some(fills) = fills.as_deref_mut() {
                     fills[u as usize] = new_fill;
                 }
                 buckets.update(
@@ -272,9 +296,9 @@ fn eliminate_sampled_fill_based(
                 );
             }
             update_neighbours(
-                &mut affected,
+                affected,
                 graph,
-                &live_nbrs,
+                live_nbrs,
                 &mut buckets,
                 &mut fills,
                 priority,
@@ -294,11 +318,15 @@ fn eliminate_sampled_fill_based(
 pub(crate) fn eliminate_sampled_min_degree(
     graph: &mut EliminationGraph,
     draw: SampleDraw<'_>,
-    seed: u64,
     mut sink: ElimSink<'_>,
     stop: ElimStop,
+    scratch: &mut SampleScratch,
 ) -> ElimExit {
-    let SampleDraw { weights, band } = draw;
+    let SampleDraw {
+        weights,
+        band,
+        seed,
+    } = draw;
     // As in `eliminate_sampled_min_fill`: no cheap mode, so no soft deadline.
     let ElimStop {
         hard_deadline,
@@ -309,7 +337,14 @@ pub(crate) fn eliminate_sampled_min_degree(
     assert_eq!(weights.len(), n);
     let uniform_mass = uniform_sampling_mass(weights);
 
-    let mut buckets = BucketMap::with_weights(weights, uniform_mass);
+    let SampleScratch {
+        buckets: bucket_storage,
+        live_nbrs: nbrs_buf,
+        tie_set,
+        degree_stale,
+        ..
+    } = scratch;
+    let mut buckets = BucketMap::with_weights(bucket_storage, weights, uniform_mass);
     for v in 0..n {
         if graph.active[v] {
             buckets.insert(v as u32, graph.degree(v as u32) as u64);
@@ -319,14 +354,13 @@ pub(crate) fn eliminate_sampled_min_degree(
     // `+ SEED_OFFSET` keeps a seed of 0 off xorshift64's zero fixed point, and
     // is part of the tie-break stream this sampler has always drawn.
     let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
-    let mut nbrs_buf = Vec::new();
     let mut pacer = DeadlinePacer::new();
     let mut clique_residual = false;
     // Lazy degree tracking — defer bucket update to sample time.
-    let mut degree_stale: Vec<bool> = vec![false; n];
-    let mut tie_scratch = Vec::new();
+    degree_stale.clear();
+    degree_stale.resize(n, false);
 
-    while let Some((tie_set, total_mass)) = buckets.min_band(band, &mut tie_scratch) {
+    while let Some((tie_set, total_mass)) = buckets.min_band(band, tie_set) {
         if pacer.due() && expired(hard_deadline) {
             return ElimExit::DeadlineReached(Cutoff::Hard);
         }
@@ -348,16 +382,16 @@ pub(crate) fn eliminate_sampled_min_degree(
 
         buckets.remove_vertex(v);
 
-        let bag = take_bag(graph, v, &mut nbrs_buf);
+        let bag = take_bag(graph, v, nbrs_buf);
         let bag_len = bag.len();
 
         if !clique_residual && graph.is_residual_clique() {
             clique_residual = true;
         }
         if clique_residual {
-            graph.remove_without_fill_nbrs(v, &nbrs_buf);
+            graph.remove_without_fill_nbrs(v, nbrs_buf);
         } else {
-            graph.eliminate_with_nbrs(v, &nbrs_buf);
+            graph.eliminate_with_nbrs(v, nbrs_buf);
         }
         sink.record(v, bag);
 
@@ -365,7 +399,7 @@ pub(crate) fn eliminate_sampled_min_degree(
             return ElimExit::WidthLimitExceeded;
         }
 
-        for &u in &nbrs_buf {
+        for &u in nbrs_buf.iter() {
             degree_stale[u as usize] = true;
         }
     }

@@ -122,6 +122,7 @@ pub(super) fn run_order(
             complete_on_deadline: false,
             setup_deadline: None,
         },
+        &mut RunScratch::new(),
     ) {
         OrderRun::Completed(decomposition) => decomposition,
         OrderRun::CompletedAtDeadline(..)
