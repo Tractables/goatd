@@ -238,11 +238,13 @@ fn eliminate_sampled_fill_based(
                 priority,
             );
         } else {
-            let prepared = affected.prepare(graph, v, &live_nbrs, true, hard_deadline);
-            graph.eliminate_with_nbrs(v, &live_nbrs);
-            if !prepared {
+            // v leaves the graph either way, so the residual bag the deadline
+            // exit builds does not hold it beside its own bag.
+            if !affected.prepare(graph, v, &live_nbrs, true, hard_deadline) {
+                graph.eliminate_with_nbrs(v, &live_nbrs);
                 return ElimExit::DeadlineReached(Cutoff::Hard);
             }
+            graph.eliminate_prepared(v, &live_nbrs, &affected.fill_edges());
             // Applying one delta is a bucket move, so this loop reads the
             // deadline on the pacer's stride.
             let mut delta_pacer = DeadlinePacer::new();

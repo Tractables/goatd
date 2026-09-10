@@ -9,7 +9,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::time::Instant;
 
 use super::execution::{Cutoff, DeadlinePacer, ElimExit, ElimSink, ElimStop, exceeds_width_bound};
-use super::graph::EliminationGraph;
+use super::graph::{EliminationGraph, PreparedFill};
 use crate::rng::Xorshift64;
 
 /// Generates `Ord`/`PartialOrd` for a heap-entry struct that orders solely by
@@ -188,6 +188,12 @@ struct FillAffected {
     /// cleared, so a fill edge's common neighbours split into inside and
     /// outside with one mask each and no per-word test for v.
     outside: Vec<u64>,
+    /// Bitset mode only: the row of the neighbour whose fill edges are
+    /// being read, masked by `inside` and by `outside`, so each of its
+    /// fill edges reads one row and two masks rather than two rows and two
+    /// masks.
+    x_inside: Vec<u64>,
+    x_outside: Vec<u64>,
     marker: Vec<u16>,
     stamp: u16,
     /// Fill decrease of a vertex outside N(v). Counted per bit of the
@@ -205,6 +211,13 @@ struct FillAffected {
     gained: Vec<u32>,
     inside_fill: Vec<u64>,
     cross: Vec<u64>,
+    /// Row mode: what each neighbour gains, its share of `partners` given
+    /// by `starts`, and where v sits in its row, both by position in the
+    /// neighbour list. What [`fill_edges`](Self::fill_edges) hands the
+    /// elimination.
+    partners: Vec<u32>,
+    starts: Vec<u32>,
+    v_position: Vec<u32>,
 }
 
 impl FillAffected {
@@ -212,6 +225,8 @@ impl FillAffected {
         Self {
             inside: vec![0; n.div_ceil(64)],
             outside: vec![0; n.div_ceil(64)],
+            x_inside: vec![0; n.div_ceil(64)],
+            x_outside: vec![0; n.div_ceil(64)],
             marker: vec![0; n],
             stamp: 0,
             delta: vec![0; n],
@@ -220,6 +235,20 @@ impl FillAffected {
             gained: vec![0; n],
             inside_fill: vec![0; n],
             cross: vec![0; n],
+            partners: Vec::new(),
+            starts: Vec::new(),
+            v_position: Vec::new(),
+        }
+    }
+
+    /// The fill edges the last successful [`prepare`](Self::prepare) with
+    /// `fill` found, for `EliminationGraph::eliminate_prepared`.
+    fn fill_edges(&self) -> PreparedFill<'_> {
+        PreparedFill {
+            gained: &self.gained,
+            partners: &self.partners,
+            starts: &self.starts,
+            v_position: &self.v_position,
         }
     }
 
@@ -388,6 +417,8 @@ impl FillAffected {
         );
         let mut inside = std::mem::take(&mut self.inside);
         let mut outside = std::mem::take(&mut self.outside);
+        let mut x_inside = std::mem::take(&mut self.x_inside);
+        let mut x_outside = std::mem::take(&mut self.x_outside);
         for (out, &word) in outside[..w].iter_mut().zip(&inside[..w]) {
             *out = !word;
         }
@@ -408,6 +439,7 @@ impl FillAffected {
             inside[u / 64] &= !(1u64 << (u % 64));
             let u_row = &graph.bitset[ub..ub + w];
             let mut gained = 0u32;
+            let mut masked = false;
             for (j, (&inside_word, &u_word)) in inside[..w].iter().zip(u_row).enumerate() {
                 let mut mask = inside_word & !u_word;
                 while mask != 0 {
@@ -419,7 +451,21 @@ impl FillAffected {
                             done = false;
                             break 'neighbours;
                         }
-                        self.fill_edge_bs(graph, &inside[..w], &outside[..w], u, other);
+                        if !masked {
+                            // u's row split by v's, once for all the fill
+                            // edges read from u.
+                            masked = true;
+                            crate::meter::charge(2 * w as u64);
+                            let rows = u_row.iter().zip(&inside[..w]).zip(&outside[..w]);
+                            let splits = x_inside[..w].iter_mut().zip(x_outside[..w].iter_mut());
+                            for (((&x_word, &in_word), &out_word), (x_in, x_out)) in
+                                rows.zip(splits)
+                            {
+                                *x_in = x_word & in_word;
+                                *x_out = x_word & out_word;
+                            }
+                        }
+                        self.fill_edge_bs(graph, &x_inside[..w], &x_outside[..w], u, other);
                     }
                 }
             }
@@ -431,10 +477,13 @@ impl FillAffected {
         }
         self.inside = inside;
         self.outside = outside;
+        self.x_inside = x_inside;
+        self.x_outside = x_outside;
         done
     }
 
-    /// One fill edge of v between the slots `x` and `y`, both in N(v): its
+    /// One fill edge of v between the slots `x` and `y`, both in N(v), with
+    /// x's row already split into `x_inside` and `x_outside` by v's: its
     /// common neighbours inside N(v) each lose one missing pair from A ∩ B,
     /// those outside lose one from their own fill, and their number is what
     /// x and y each gain in e(A \ B, B \ A).
@@ -442,25 +491,22 @@ impl FillAffected {
     fn fill_edge_bs(
         &mut self,
         graph: &EliminationGraph,
-        inside: &[u64],
-        outside: &[u64],
+        x_inside: &[u64],
+        x_outside: &[u64],
         x: usize,
         y: usize,
     ) {
         let w = graph.bitset_words;
         crate::meter::charge(w as u64);
-        let xs = x * w;
         let ys = y * w;
         let mut out = 0u64;
-        debug_assert!(xs + w <= graph.bitset.len() && ys + w <= graph.bitset.len());
-        // SAFETY: x and y are slots read from the bitset's own rows, and the
+        debug_assert!(ys + w <= graph.bitset.len());
+        // SAFETY: y is a slot read from the bitset's own rows, and the
         // bitset holds `w` words for every slot.
-        let x_row = unsafe { graph.bitset.get_unchecked(xs..xs + w) };
         let y_row = unsafe { graph.bitset.get_unchecked(ys..ys + w) };
-        let words = x_row.iter().zip(y_row).zip(inside).zip(outside);
-        for (word, (((&x_word, &y_word), &inside_word), &outside_word)) in words.enumerate() {
-            let common = x_word & y_word;
-            let mut ins = common & inside_word;
+        let words = y_row.iter().zip(x_inside).zip(x_outside);
+        for (word, ((&y_word, &x_in), &x_out)) in words.enumerate() {
+            let mut ins = y_word & x_in;
             while ins != 0 {
                 let slot = word * 64 + ins.trailing_zeros() as usize;
                 // SAFETY: a set bit of a row is a slot the bitset was built
@@ -469,7 +515,7 @@ impl FillAffected {
                 unsafe { *self.inside_fill.get_unchecked_mut(slot) += 1 };
                 ins &= ins - 1;
             }
-            let mut outs = common & outside_word;
+            let mut outs = y_word & x_out;
             while outs != 0 {
                 let slot = word * 64 + outs.trailing_zeros() as usize;
                 self.increment(slot as u32);
@@ -495,27 +541,38 @@ impl FillAffected {
             return true;
         }
         let mut pacer = DeadlinePacer::new();
+        self.partners.clear();
+        self.starts.clear();
+        self.v_position.clear();
         for &u in nbrs {
             // Stamp u's row: it says which of v's other neighbours u lacks,
             // which are its fill edges, and stays valid while they are
-            // processed since nothing below stamps again.
+            // processed since nothing below stamps again. The same walk
+            // finds v, which the elimination takes out of the row.
             self.bump_stamp();
             let stamp = self.stamp;
             let row = &graph.adj[u as usize];
             crate::meter::charge((row.len() + k) as u64);
-            for &z in row {
+            let mut v_position = 0usize;
+            for (position, &z) in row.iter().enumerate() {
                 debug_assert!((z as usize) < self.marker.len());
                 // SAFETY: a row holds vertex ids of the graph this scratch was
                 // sized for, and `marker` has an entry per vertex.
                 unsafe { *self.marker.get_unchecked_mut(z as usize) = stamp };
+                if z == v {
+                    v_position = position;
+                }
             }
+            debug_assert_eq!(row[v_position], v, "{u} is not a neighbour of {v}");
+            self.v_position.push(v_position as u32);
+            let start = self.partners.len();
+            self.starts.push(start as u32);
             // The fill edges in the order the elimination would record them:
             // by neighbour, then by the neighbour list, each pair once from
             // its smaller vertex.
-            let mut gained = 0u32;
             for &y in nbrs {
                 if y != u && self.marker[y as usize] != stamp {
-                    gained += 1;
+                    self.partners.push(y);
                     if u < y {
                         if pacer.due() && crate::deadline::expired(deadline) {
                             return false;
@@ -526,9 +583,11 @@ impl FillAffected {
             }
             // As in the bitset pass: the fill edges at u are B \ A, and A \ B
             // is the rest of u's row less v.
-            self.gained[u as usize] = gained;
-            self.kept[u as usize] = (row.len() + gained as usize - k) as u32;
+            let gained = self.partners.len() - start;
+            self.gained[u as usize] = gained as u32;
+            self.kept[u as usize] = (row.len() + gained - k) as u32;
         }
+        self.starts.push(self.partners.len() as u32);
         true
     }
 

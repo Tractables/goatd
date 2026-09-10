@@ -74,6 +74,21 @@ fn residual_bitset_mode(num_active: usize, num_edges: usize) -> bool {
     (num_edges as u128) * 128 > (num_active as u128) * (num_active as u128)
 }
 
+/// What a fill collector learnt about `v`'s elimination from the graph before
+/// it, for [`EliminationGraph::eliminate_prepared`]: how many vertices each
+/// neighbour gains and, in sparse mode, which ones and where `v` sits in
+/// its row.
+pub(super) struct PreparedFill<'a> {
+    /// |N(v) \ N[u]| for a neighbour u, by vertex id.
+    pub(super) gained: &'a [u32],
+    /// Sparse mode only: the i-th neighbour gains
+    /// `partners[starts[i]..starts[i + 1]]`, in the order the unprepared
+    /// elimination pushes them, and `v` is at `v_position[i]` in its row.
+    pub(super) partners: &'a [u32],
+    pub(super) starts: &'a [u32],
+    pub(super) v_position: &'a [u32],
+}
+
 /// Two distinct rows of `w` words each, starting at `a` and `b`, borrowed
 /// together so a pass over both carries no bounds check per word.
 #[inline(always)]
@@ -881,12 +896,7 @@ impl EliminationGraph {
 
         self.bitset[vb..vb + w].fill(0);
         self.bitset_degree[vi] = 0;
-        if self.active[v as usize] {
-            self.active[v as usize] = false;
-            self.num_active -= 1;
-        }
-        self.num_edges -= neighbours.len();
-        self.num_edges += pushes / 2;
+        self.finish_elimination(v, neighbours.len(), pushes);
     }
 
     fn eliminate_with_nbrs_marker(&mut self, v: u32, neighbours: &[u32]) {
@@ -949,12 +959,120 @@ impl EliminationGraph {
             }
         }
         self.clear_row(v);
+        self.finish_elimination(v, neighbours.len(), pushes);
+    }
+
+    /// Deactivate `v` and settle the counts once its rows are done:
+    /// `pushes` is the number of row entries the fill edges added.
+    #[inline]
+    fn finish_elimination(&mut self, v: u32, degree: usize, pushes: usize) {
         if self.active[v as usize] {
             self.active[v as usize] = false;
             self.num_active -= 1;
         }
-        self.num_edges -= neighbours.len();
+        self.num_edges -= degree;
         self.num_edges += pushes / 2;
+    }
+
+    /// [`eliminate_with_nbrs`](Self::eliminate_with_nbrs) with the fill
+    /// edges already known. A neighbour that gains nothing only loses `v`,
+    /// and one that gains gets its edges without a pass to find them. The
+    /// graph ends up as the unprepared elimination leaves it, row for row.
+    pub(super) fn eliminate_prepared(
+        &mut self,
+        v: u32,
+        neighbours: &[u32],
+        fill: &PreparedFill<'_>,
+    ) {
+        let k = neighbours.len();
+        if self.bitset_words > 0 {
+            let w = self.bitset_words;
+            let vi = self.slot(v);
+            let vb = vi * w;
+            let v_word = vi / 64;
+            let v_bit = 1u64 << (vi % 64);
+            let mut filled = 0u64;
+            let mut pushes = 0usize;
+            for &u_raw in neighbours {
+                let u = self.slot(u_raw);
+                let ub = u * w;
+                let gained = fill.gained[u_raw as usize];
+                if gained > 0 {
+                    // As in the unprepared pass: u's bit leaves v's row while
+                    // u's row takes what it lacks of it.
+                    filled += 1;
+                    let u_word = u / 64;
+                    let u_bit = 1u64 << (u % 64);
+                    self.bitset[vb + u_word] &= !u_bit;
+                    let (v_row, u_row) = rows_mut(&mut self.bitset, vb, ub, w);
+                    debug_assert_eq!(
+                        v_row
+                            .iter()
+                            .zip(u_row.iter())
+                            .map(|(&a, &b)| (a & !b).count_ones())
+                            .sum::<u32>(),
+                        gained,
+                        "prepared fill count of {u_raw} disagrees with the rows"
+                    );
+                    for (&from_v, into_u) in v_row.iter().zip(u_row.iter_mut()) {
+                        *into_u |= from_v;
+                    }
+                    self.bitset[vb + u_word] |= u_bit;
+                    self.bitset_degree[u] += gained;
+                    pushes += gained as usize;
+                }
+                self.bitset[ub + v_word] &= !v_bit;
+                self.bitset_degree[u] -= 1;
+            }
+            self.bitset[vb..vb + w].fill(0);
+            self.bitset_degree[vi] = 0;
+            crate::meter::charge((k as u64).saturating_add(filled.saturating_mul(w as u64)));
+            self.finish_elimination(v, k, pushes);
+            return;
+        }
+        debug_assert_eq!(fill.starts.len(), k + 1);
+        debug_assert_eq!(fill.v_position.len(), k);
+        let mut pushes = 0usize;
+        for (i, &u_raw) in neighbours.iter().enumerate() {
+            let u = u_raw as usize;
+            let partners = &fill.partners[fill.starts[i] as usize..fill.starts[i + 1] as usize];
+            debug_assert_eq!(partners.len(), fill.gained[u] as usize);
+            let row = &mut self.adj[u];
+            let index = self.row_index[u].as_deref_mut();
+            let position = match &index {
+                // The map has to drop v either way, and says where it was.
+                Some(index) => {
+                    index.get(&v).copied().expect("v is in its neighbour's row") as usize
+                }
+                None => fill.v_position[i] as usize,
+            };
+            debug_assert_eq!(row[position], v);
+            let last = row.len() - 1;
+            let moved = row[last];
+            row.swap_remove(position);
+            match index {
+                Some(index) => {
+                    index.remove(&v);
+                    if position != last {
+                        index.insert(moved, position as u32);
+                    }
+                    for &y in partners {
+                        index.insert(y, row.len() as u32);
+                        row.push(y);
+                    }
+                }
+                None => {
+                    row.extend_from_slice(partners);
+                    if row.len() >= ROW_INDEX_THRESH {
+                        build_row_index(&self.adj[u], &mut self.row_index[u]);
+                    }
+                }
+            }
+            pushes += partners.len();
+        }
+        self.clear_row(v);
+        crate::meter::charge((k + pushes) as u64);
+        self.finish_elimination(v, k, pushes);
     }
 
     /// Remove `v`, given its live neighbours, without filling — safe only

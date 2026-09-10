@@ -195,7 +195,11 @@ impl ElimPolicy for MinFill<'_> {
         deadline: Option<Instant>,
     ) {
         self.prepared = self.affected.prepare(graph, v, nbrs, true, deadline);
-        graph.eliminate_with_nbrs(v, nbrs);
+        if self.prepared {
+            graph.eliminate_prepared(v, nbrs, &self.affected.fill_edges());
+        } else {
+            graph.eliminate_with_nbrs(v, nbrs);
+        }
     }
 
     fn eliminate_simplicial(&mut self, graph: &mut EliminationGraph, v: u32, nbrs: &[u32]) {

@@ -276,7 +276,15 @@ fn assert_updates_match_recounts(
             graph.remove_without_fill_nbrs(v, &nbrs);
         } else {
             assert!(affected.prepare(&graph, v, &nbrs, true, None));
-            graph.eliminate_with_nbrs(v, &nbrs);
+            // The prepared elimination has to leave the graph exactly as
+            // the one that finds the fill edges itself does.
+            let mut twin = graph.clone();
+            twin.eliminate_with_nbrs(v, &nbrs);
+            graph.eliminate_prepared(v, &nbrs, &affected.fill_edges());
+            assert!(
+                graph.same_state_as(&twin),
+                "prepared elimination of {v} left a different graph (bitset {bitset}, seed {seed})"
+            );
         }
         touched.clear();
         while let Some((u, delta)) = affected.pop_delta(&graph) {
