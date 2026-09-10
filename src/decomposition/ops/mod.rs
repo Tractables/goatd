@@ -311,13 +311,16 @@ fn bag_is_subset(left: &TdBag, right: &TdBag) -> bool {
     // Both sides are non-decreasing, so one walk over `right` serves every
     // vertex of `left`. The matched position is not stepped over: if `left`
     // repeats a vertex, the repeat matches there again, and otherwise the
-    // scan below moves past it on its own.
-    let mut right_index = 0;
+    // scan below moves past it on its own. `rest` is what the walk has not
+    // passed yet, so the scan runs over a slice instead of indexing the row
+    // through a bound it has already established.
+    let mut rest = right.vertices.as_slice();
     for vertex in &left.vertices {
-        while right_index < right.vertices.len() && right.vertices[right_index] < *vertex {
-            right_index += 1;
-        }
-        if right.vertices.get(right_index) != Some(vertex) {
+        let Some(at) = rest.iter().position(|candidate| candidate >= vertex) else {
+            return false;
+        };
+        rest = &rest[at..];
+        if rest[0] != *vertex {
             return false;
         }
     }
@@ -396,18 +399,20 @@ impl TreeDecomposition {
             let bag_size = self.bags[bag].vertices.len();
             for &neighbour in &self.adj[bag] {
                 let neighbour_size = self.bags[neighbour].vertices.len();
-                if bag_size > neighbour_size
-                    || (bag_size == neighbour_size && neighbour > bag)
-                    || !bag_is_subset(&self.bags[bag], &self.bags[neighbour])
-                {
+                if bag_size > neighbour_size || (bag_size == neighbour_size && neighbour > bag) {
                     continue;
                 }
+                // Whether this neighbour would win the choice is settled by
+                // the two sizes and the two indices, so it is settled before
+                // the bags are compared: a neighbour that loses to the one
+                // already chosen never needs the subset test at all, and that
+                // test is the dominant cost of the compaction.
                 let replace = chosen.is_none_or(|current| {
                     let current_size = self.bags[current].vertices.len();
                     neighbour_size > current_size
                         || (neighbour_size == current_size && neighbour < current)
                 });
-                if replace {
+                if replace && bag_is_subset(&self.bags[bag], &self.bags[neighbour]) {
                     *chosen = Some(neighbour);
                 }
             }

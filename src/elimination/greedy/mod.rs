@@ -65,8 +65,6 @@ pub(super) struct SampleScratch {
     buckets: BucketStorage,
     /// The live neighbours of the vertex being eliminated.
     live_nbrs: Vec<u32>,
-    /// The tie set a draw with a band collects.
-    tie_set: Vec<u32>,
     /// Each vertex's fill, for the scores that do not file it as the key.
     fills: Vec<u64>,
     /// Which degrees the min-degree sampler has still to re-file.
@@ -81,7 +79,6 @@ impl SampleScratch {
             affected: FillAffected::new(0),
             buckets: BucketStorage::new(),
             live_nbrs: Vec::new(),
-            tie_set: Vec::new(),
             fills: Vec::new(),
             degree_stale: Vec::new(),
         }
@@ -1132,39 +1129,80 @@ impl<'a> BucketMap<'a> {
         self.minimum_key
     }
 
-    /// The tie set a sampler draws from: every vertex whose key is within
-    /// `band` of the minimum, and their combined sampling mass.
+    /// The live buckets of a tie set: those whose key is within `band` of
+    /// `minimum`, ascending by key. Concatenating their vertices, each bucket
+    /// in storage order, gives the tie set the samplers draw from, so the tie
+    /// set is a function of the map's history alone.
+    fn band_buckets(&self, minimum: u64, band: u64) -> impl Iterator<Item = &Bucket> {
+        (minimum..=minimum.saturating_add(band)).filter_map(|key| self.bucket(key))
+    }
+
+    /// Pick one vertex from the tie set within `band` of the minimum, giving
+    /// smaller weights more mass. A tie set holding a single vertex draws
+    /// nothing at all, so the RNG stream depends only on the ties the
+    /// elimination actually had to break.
     ///
-    /// A `band` of 0 hands back the minimum bucket's own slice, so the draw
-    /// sees the same tie set in the same order it always has and `scratch` is
-    /// left alone. A wider band copies the buckets from the minimum upwards
-    /// into `scratch`, ascending by key and each bucket in storage order, so
-    /// the tie set is a function of the map's history and not of the copy.
-    fn min_band<'b>(
-        &'b mut self,
-        band: u64,
-        scratch: &'b mut Vec<u32>,
-    ) -> Option<(&'b [u32], u64)> {
+    /// The buckets are walked in place: the tie set is never materialised, and
+    /// on a wide band that is the difference between a copy of every tied
+    /// vertex per elimination and a walk that stops at the drawn one.
+    fn sample_min_band(&mut self, band: u64, rng: &mut Xorshift64) -> Option<u32> {
         let minimum = self.minimum()?;
-        if band == 0 {
-            let bucket = self.bucket(minimum).expect("minimum bucket missing");
-            return Some((bucket.vertices.as_slice(), self.bucket_mass(bucket)));
-        }
-        scratch.clear();
-        let mut mass = 0;
-        let top = minimum.saturating_add(band);
-        let mut key = minimum;
-        loop {
-            if let Some(bucket) = self.bucket(key) {
-                scratch.extend_from_slice(&bucket.vertices);
-                mass += self.bucket_mass(bucket);
+        let mut total_mass = 0;
+        let mut tied = 0;
+        let mut first = 0;
+        for bucket in self.band_buckets(minimum, band) {
+            if tied == 0
+                && let Some(&head) = bucket.vertices.first()
+            {
+                first = head;
             }
-            if key == top {
-                break;
-            }
-            key += 1;
+            tied += bucket.vertices.len();
+            total_mass += self.bucket_mass(bucket);
         }
-        Some((scratch.as_slice(), mass))
+        debug_assert!(tied > 0, "a live minimum has a nonempty bucket");
+        debug_assert!(total_mass > 0, "a tie set's vertices each carry mass");
+        if tied == 1 {
+            return Some(first);
+        }
+        // Compose two u32 draws into one u64 so the draw covers `total_mass` up
+        // to 2^64.
+        let hi = rng.next_u32() as u64;
+        let lo = rng.next_u32() as u64;
+        let r = ((hi << 32) | lo) % total_mass;
+        if let Some(mass) = self.uniform_mass {
+            let mut index = (r / mass) as usize;
+            crate::meter::charge(1);
+            for bucket in self.band_buckets(minimum, band) {
+                if let Some(&v) = bucket.vertices.get(index) {
+                    return Some(v);
+                }
+                index -= bucket.vertices.len();
+            }
+            unreachable!("a mass below the total names a tied vertex");
+        }
+        // The chosen vertex is tracked rather than returned from inside the
+        // walk, so that the scan can be charged on the way out. Falling out of
+        // the walk leaves the last tied vertex, the same fall-through the walk
+        // has always had: `r` is reduced modulo the total, so the final partial
+        // sum always covers it and the walk is expected to break.
+        let mut acc: u64 = 0;
+        let mut scanned = 0;
+        let mut pick = first;
+        'walk: for bucket in self.band_buckets(minimum, band) {
+            for &v in &bucket.vertices {
+                acc += sampling_mass(self.weights[v as usize]);
+                scanned += 1;
+                pick = v;
+                if r < acc {
+                    break 'walk;
+                }
+            }
+        }
+        // Bucket membership updates maintain the total mass. The remaining
+        // prefix walk is the dominant cost for nonuniform weights, so charge
+        // its touches at the same rate as graph touches.
+        crate::meter::charge(scanned);
+        Some(pick)
     }
 
     /// A bucket's sampling mass, which equal weights leave as a count.
@@ -1221,50 +1259,4 @@ fn uniform_sampling_mass(weights: &[u32]) -> Option<u64> {
     }
     crate::meter::charge(scanned);
     Some(sampling_mass(first))
-}
-
-/// Pick one vertex from `tie_set`, giving smaller weights more mass.
-/// A one-vertex tie set draws nothing at all, so the RNG stream depends only
-/// on the ties the elimination actually had to break.
-fn sample_tie_set(
-    tie_set: &[u32],
-    weights: &[u32],
-    rng: &mut Xorshift64,
-    uniform_mass: Option<u64>,
-    total_mass: u64,
-) -> u32 {
-    debug_assert!(!tie_set.is_empty());
-    debug_assert!(total_mass > 0, "a tie set's vertices each carry mass");
-    if tie_set.len() == 1 {
-        return tie_set[0];
-    }
-    // Compose two u32 draws into one u64 so the draw covers `total_mass` up to
-    // 2^64.
-    let hi = rng.next_u32() as u64;
-    let lo = rng.next_u32() as u64;
-    let r = ((hi << 32) | lo) % total_mass;
-    if let Some(mass) = uniform_mass {
-        let pick = (r / mass) as usize;
-        crate::meter::charge(1);
-        return tie_set[pick];
-    }
-    let mut acc: u64 = 0;
-    // The chosen index is tracked rather than returned from inside the loop, so
-    // that the scan below can be charged on the way out. The initial value is
-    // the last element, the same fall-through the walk had before: `r` is
-    // reduced modulo `total`, so the final partial sum always covers it and the
-    // loop is expected to break.
-    let mut pick = tie_set.len() - 1;
-    for (i, &v) in tie_set.iter().enumerate() {
-        acc += sampling_mass(weights[v as usize]);
-        if r < acc {
-            pick = i;
-            break;
-        }
-    }
-    // Bucket membership updates maintain the total mass. The remaining prefix
-    // walk is the dominant cost for nonuniform weights, so charge its touches
-    // at the same rate as graph touches.
-    crate::meter::charge(pick as u64 + 1);
-    tie_set[pick]
 }
