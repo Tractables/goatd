@@ -89,8 +89,8 @@ fn common_neighbourhood_is_clique(
     left: usize,
     right: usize,
     common: &mut [u64],
-    members: &mut Vec<u32>,
 ) -> bool {
+    let mut size = 0u64;
     for (word, (&in_left, &in_right)) in graph
         .row(left)
         .iter()
@@ -98,18 +98,34 @@ fn common_neighbourhood_is_clique(
         .enumerate()
     {
         common[word] = in_left & in_right;
+        size += u64::from((in_left & in_right).count_ones());
     }
-    RowSet::members(common, members);
-    crate::meter::charge((members.len().saturating_mul(graph.words)) as u64);
-    for &vertex in members.iter() {
-        let index = vertex as usize;
-        let row = graph.row(index);
-        for (word, &wanted) in common.iter().enumerate() {
-            let mut missing = wanted & !row[word];
-            if word == index / 64 {
-                missing &= !(1u64 << (index % 64));
+    crate::meter::charge(size.saturating_mul(graph.words as u64));
+    // Walk the words and bits of `common` rather than listing its vertices
+    // first: this test runs once per candidate edge, and the list was the
+    // largest single source of writes in the minimalizer.
+    for member_word in 0..graph.words {
+        let mut bits = common[member_word];
+        while bits != 0 {
+            let index = member_word * 64 + bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let row = graph.row(index);
+            // A vertex is in its own common-neighbourhood word but not in its
+            // own row, so that word is compared apart from the rest.
+            let own = common[member_word] & !(1u64 << (index % 64));
+            if own & !row[member_word] != 0 {
+                return false;
             }
-            if missing != 0 {
+            let missing = |(&wanted, &present): (&u64, &u64)| wanted & !present != 0;
+            if common[..member_word]
+                .iter()
+                .zip(&row[..member_word])
+                .any(missing)
+                || common[member_word + 1..]
+                    .iter()
+                    .zip(&row[member_word + 1..])
+                    .any(missing)
+            {
                 return false;
             }
         }
@@ -169,7 +185,6 @@ fn minimalize(
         }
     }
     let mut common = vec![0u64; completion.words];
-    let mut members: Vec<u32> = Vec::new();
     let mut row_members: Vec<u32> = Vec::new();
     let mut removed = 0;
     let mut pacer = DeadlinePacer::new();
@@ -192,13 +207,7 @@ fn minimalize(
                 if pacer.due() && expired(deadline) {
                     return removed + removed_this_pass;
                 }
-                if common_neighbourhood_is_clique(
-                    completion,
-                    vertex,
-                    other,
-                    &mut common,
-                    &mut members,
-                ) {
+                if common_neighbourhood_is_clique(completion, vertex, other, &mut common) {
                     completion.remove(vertex, other);
                     removed_this_pass += 1;
                 }
