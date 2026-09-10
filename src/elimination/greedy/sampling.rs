@@ -188,9 +188,8 @@ fn eliminate_sampled_fill_based(
     // is part of the tie-break stream this sampler has always drawn.
     let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
     let mut pacer = DeadlinePacer::new();
-    let mut tie_scratch = Vec::new();
 
-    while let Some((tie_set, total_mass)) = buckets.min_band(band, &mut tie_scratch) {
+    while buckets.minimum().is_some() {
         if pacer.due() {
             if expired(hard_deadline) {
                 return ElimExit::DeadlineReached(Cutoff::Hard);
@@ -200,7 +199,9 @@ fn eliminate_sampled_fill_based(
             }
         }
 
-        let v = sample_tie_set(tie_set, weights, &mut rng, uniform_mass, total_mass);
+        let v = buckets
+            .sample_min_band(band, &mut rng)
+            .expect("a live minimum has a tie set");
         // The drawn vertex's own fill, not the band's smallest: the simplicial
         // path below is only correct for a vertex that adds no fill edge, and a
         // band wider than 0 can draw one that does.
@@ -351,14 +352,15 @@ pub(crate) fn eliminate_sampled_min_degree(
     let mut clique_residual = false;
     // Lazy degree tracking — defer bucket update to sample time.
     let mut degree_stale: Vec<bool> = vec![false; n];
-    let mut tie_scratch = Vec::new();
 
-    while let Some((tie_set, total_mass)) = buckets.min_band(band, &mut tie_scratch) {
+    while buckets.minimum().is_some() {
         if pacer.due() && expired(hard_deadline) {
             return ElimExit::DeadlineReached(Cutoff::Hard);
         }
 
-        let v = sample_tie_set(tie_set, weights, &mut rng, uniform_mass, total_mass);
+        let v = buckets
+            .sample_min_band(band, &mut rng)
+            .expect("a live minimum has a tie set");
         let vi = v as usize;
 
         if degree_stale[vi] {

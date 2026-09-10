@@ -2,6 +2,20 @@
 
 mod min_fill;
 
+/// The tie set a draw within `band` of the minimum sees, materialised: the
+/// band's buckets concatenated ascending by key, and their combined mass.
+/// The sampler itself walks the same buckets without building this.
+fn tie_set(buckets: &mut super::BucketMap<'_>, band: u64) -> Option<(Vec<u32>, u64)> {
+    let minimum = buckets.minimum()?;
+    let mut vertices = Vec::new();
+    let mut mass = 0;
+    for bucket in buckets.band_buckets(minimum, band) {
+        vertices.extend_from_slice(&bucket.vertices);
+        mass += buckets.bucket_mass(bucket);
+    }
+    Some((vertices, mass))
+}
+
 #[test]
 fn sampling_mass_prefers_smaller_public_weights() {
     assert_eq!(super::sampling_mass(0), u64::from(u32::MAX) + 1);
@@ -12,22 +26,20 @@ fn sampling_mass_prefers_smaller_public_weights() {
 #[test]
 fn uniform_sampling_repeats_the_generic_weighted_choices() {
     let weights = vec![7; 64];
-    let vertices: Vec<u32> = (0..64).collect();
     let uniform_mass = super::uniform_sampling_mass(&weights).expect("equal weights");
     let mut fast = crate::rng::Xorshift64::from_state(17);
     let mut generic = fast;
 
-    for len in 2..=vertices.len() {
-        let total_mass = uniform_mass * len as u64;
+    for len in 2..=weights.len() {
+        let mut fast_buckets = super::BucketMap::with_weights(&weights, Some(uniform_mass));
+        let mut generic_buckets = super::BucketMap::with_weights(&weights, None);
+        for v in 0..len as u32 {
+            fast_buckets.insert(v, 3);
+            generic_buckets.insert(v, 3);
+        }
         assert_eq!(
-            super::sample_tie_set(
-                &vertices[..len],
-                &weights,
-                &mut fast,
-                Some(uniform_mass),
-                total_mass,
-            ),
-            super::sample_tie_set(&vertices[..len], &weights, &mut generic, None, total_mass,),
+            fast_buckets.sample_min_band(0, &mut fast),
+            generic_buckets.sample_min_band(0, &mut generic),
             "tie-set length {len}",
         );
     }
@@ -46,9 +58,8 @@ fn priority_buckets_track_their_weighted_sampling_mass() {
     buckets.insert(1, 3);
     buckets.insert(2, 3);
 
-    let mut scratch = Vec::new();
-    let (vertices, total_mass) = buckets.min_band(0, &mut scratch).unwrap();
-    assert_eq!(vertices, &[0, 1, 2]);
+    let (vertices, total_mass) = tie_set(&mut buckets, 0).unwrap();
+    assert_eq!(vertices, [0, 1, 2]);
     assert_eq!(
         total_mass,
         super::sampling_mass(weights[0])
@@ -59,8 +70,8 @@ fn priority_buckets_track_their_weighted_sampling_mass() {
     buckets.update(1, 7);
     buckets.remove_vertex(0);
     assert_eq!(buckets.minimum(), Some(3));
-    let (vertices, total_mass) = buckets.min_band(0, &mut scratch).unwrap();
-    assert_eq!(vertices, &[2]);
+    let (vertices, total_mass) = tie_set(&mut buckets, 0).unwrap();
+    assert_eq!(vertices, [2]);
     assert_eq!(total_mass, super::sampling_mass(weights[2]));
 }
 
@@ -73,10 +84,9 @@ fn uniform_priority_buckets_derive_mass_from_their_length() {
     buckets.insert(1, 3);
 
     assert_eq!(buckets.bucket(3).unwrap().sampling_mass, 0);
-    let mut scratch = Vec::new();
-    assert_eq!(buckets.min_band(0, &mut scratch).unwrap().1, 2 * mass);
+    assert_eq!(tie_set(&mut buckets, 0).unwrap().1, 2 * mass);
     buckets.remove_vertex(0);
-    assert_eq!(buckets.min_band(0, &mut scratch).unwrap().1, mass);
+    assert_eq!(tie_set(&mut buckets, 0).unwrap().1, mass);
 }
 
 #[test]
@@ -117,9 +127,8 @@ fn priority_buckets_keep_their_slots_when_a_key_overflows() {
 
     buckets.remove_vertex(0);
     assert_eq!(buckets.minimum(), Some(u64::MAX));
-    let mut scratch = Vec::new();
-    let (vertices, _) = buckets.min_band(0, &mut scratch).unwrap();
-    assert_eq!(vertices, &[1]);
+    let (vertices, _) = tie_set(&mut buckets, 0).unwrap();
+    assert_eq!(vertices, [1]);
 }
 
 #[test]
@@ -131,19 +140,17 @@ fn a_band_collects_the_buckets_above_the_minimum() {
     buckets.insert(1, 4);
     buckets.insert(2, 4);
     buckets.insert(3, 9);
-    let mut scratch = Vec::new();
-
-    assert_eq!(buckets.min_band(0, &mut scratch).unwrap(), (&[0][..], mass));
-    let (vertices, total_mass) = buckets.min_band(1, &mut scratch).unwrap();
+    assert_eq!(tie_set(&mut buckets, 0).unwrap(), (vec![0], mass));
+    let (vertices, total_mass) = tie_set(&mut buckets, 1).unwrap();
     assert_eq!(
         vertices,
-        &[0, 1, 2],
+        [0, 1, 2],
         "ascending by key, storage order inside"
     );
     assert_eq!(total_mass, 3 * mass);
     // Key 5 to 8 hold nothing, and the band stops before key 9.
-    assert_eq!(buckets.min_band(5, &mut scratch).unwrap().0, &[0, 1, 2]);
-    assert_eq!(buckets.min_band(6, &mut scratch).unwrap().0, &[0, 1, 2, 3]);
+    assert_eq!(tie_set(&mut buckets, 5).unwrap().0, [0, 1, 2]);
+    assert_eq!(tie_set(&mut buckets, 6).unwrap().0, [0, 1, 2, 3]);
 }
 
 #[test]
@@ -154,13 +161,11 @@ fn a_band_collects_overflowing_buckets_too() {
     buckets.insert(0, u64::MAX - 1);
     buckets.insert(1, u64::MAX);
     assert_eq!(buckets.buckets.overflow.len(), 2);
-    let mut scratch = Vec::new();
-
-    let (vertices, total_mass) = buckets.min_band(1, &mut scratch).unwrap();
-    assert_eq!(vertices, &[0, 1]);
+    let (vertices, total_mass) = tie_set(&mut buckets, 1).unwrap();
+    assert_eq!(vertices, [0, 1]);
     assert_eq!(total_mass, 2 * mass);
     // The top of the band saturates instead of wrapping past u64::MAX.
-    assert_eq!(buckets.min_band(4, &mut scratch).unwrap().0, &[0, 1]);
+    assert_eq!(tie_set(&mut buckets, 4).unwrap().0, [0, 1]);
 }
 
 #[test]
