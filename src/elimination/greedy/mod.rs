@@ -183,6 +183,10 @@ impl FillScratch {
 struct FillAffected {
     /// N(v): by slot in bitset mode, by vertex id otherwise.
     inside: Vec<u64>,
+    /// Bitset mode only: the complement of `inside` with v's own slot
+    /// cleared, so a fill edge's common neighbours split into inside and
+    /// outside with one mask each and no per-word test for v.
+    outside: Vec<u64>,
     marker: Vec<u16>,
     stamp: u16,
     /// Fill decrease of a vertex outside N(v). Counted per bit of the
@@ -206,6 +210,7 @@ impl FillAffected {
     fn new(n: usize) -> Self {
         Self {
             inside: vec![0; n.div_ceil(64)],
+            outside: vec![0; n.div_ceil(64)],
             marker: vec![0; n],
             stamp: 0,
             delta: vec![0; n],
@@ -253,9 +258,15 @@ impl FillAffected {
         }
     }
 
+    /// One more missing pair filled for the vertex at `index`, which is a
+    /// slot or a vertex id of the graph this scratch was sized for.
     #[inline]
     fn increment(&mut self, index: u32) {
-        let delta = &mut self.delta[index as usize];
+        debug_assert!((index as usize) < self.delta.len());
+        // SAFETY: the counters have one entry per vertex of the graph, which
+        // is at least one per slot, and every index passed in is one or the
+        // other, read from the graph's own rows.
+        let delta = unsafe { self.delta.get_unchecked_mut(index as usize) };
         let first = *delta == 0;
         *delta += 1;
         if first {
@@ -273,9 +284,14 @@ impl FillAffected {
         self.inside[vertex >> 6] &= !(1u64 << (vertex & 63));
     }
 
+    /// Row mode only: whether `vertex`, an id read from a row of the graph
+    /// this scratch was sized for, is in N(v).
+    #[inline]
     fn is_inside(&self, vertex: u32) -> bool {
         let vertex = vertex as usize;
-        self.inside[vertex >> 6] & (1u64 << (vertex & 63)) != 0
+        debug_assert!(vertex >> 6 < self.inside.len());
+        // SAFETY: `inside` has a word for every 64 vertex ids of the graph.
+        unsafe { *self.inside.get_unchecked(vertex >> 6) & (1u64 << (vertex & 63)) != 0 }
     }
 
     fn clear_inside(&mut self, nbrs: &[u32], bitset_words: usize) {
@@ -344,7 +360,6 @@ impl FillAffected {
         let w = graph.bitset_words;
         let k = nbrs.len();
         let vi = graph.bitset_slot_of(v);
-        let vb = vi * w;
         for &u in nbrs {
             // Both counts include v's own bit in u's row, which the fill
             // count never sees.
@@ -357,34 +372,53 @@ impl FillAffected {
         if !fill {
             return true;
         }
+        // `inside` is v's row, which never carries v's own bit since the
+        // graph holds no self-loop; `outside` is its complement without v.
+        // Both are taken out of the scratch for the pass so the loops below
+        // can hold them beside the counters.
+        debug_assert!(
+            self.inside[vi / 64] & (1u64 << (vi % 64)) == 0,
+            "vertex {v} is its own neighbour"
+        );
+        let mut inside = std::mem::take(&mut self.inside);
+        let mut outside = std::mem::take(&mut self.outside);
+        for (out, &word) in outside[..w].iter_mut().zip(&inside[..w]) {
+            *out = !word;
+        }
+        outside[vi / 64] &= !(1u64 << (vi % 64));
         // The fill edges in the order the elimination would record them: by
         // neighbour, then by slot, each pair once from its smaller vertex.
+        let mut done = true;
         let mut pacer = DeadlinePacer::new();
-        for &u_raw in nbrs {
+        'neighbours: for &u_raw in nbrs {
             let u = graph.bitset_slot_of(u_raw);
             let ub = u * w;
             crate::meter::charge(w as u64);
-            for j in 0..w {
-                let mut mask = graph.bitset[vb + j] & !graph.bitset[ub + j];
-                if j == vi / 64 {
-                    mask &= !(1u64 << (vi % 64));
-                }
-                if j == u / 64 {
-                    mask &= !(1u64 << (u % 64));
-                }
+            // u's fill edges are v's other neighbours that u's row lacks:
+            // u's own bit leaves v's row while they are read, and is put
+            // back after. u is never a common neighbour of its own fill
+            // edge, so the pass over each edge does not see the difference.
+            inside[u / 64] &= !(1u64 << (u % 64));
+            let u_row = &graph.bitset[ub..ub + w];
+            for (j, (&inside_word, &u_word)) in inside[..w].iter().zip(u_row).enumerate() {
+                let mut mask = inside_word & !u_word;
                 while mask != 0 {
                     let other = graph.bitset_vertex_at(j * 64 + mask.trailing_zeros() as usize);
                     mask &= mask - 1;
                     if u_raw < other {
                         if pacer.due() && crate::deadline::expired(deadline) {
-                            return false;
+                            done = false;
+                            break 'neighbours;
                         }
-                        self.fill_edge_bs(graph, vi, u_raw, other);
+                        self.fill_edge_bs(graph, &inside[..w], &outside[..w], u_raw, other);
                     }
                 }
             }
+            inside[u / 64] |= 1u64 << (u % 64);
         }
-        true
+        self.inside = inside;
+        self.outside = outside;
+        done
     }
 
     /// One fill edge (x, y) of v, both in N(v): its common neighbours
@@ -392,7 +426,14 @@ impl FillAffected {
     /// one from their own fill, and their number is what x and y each gain
     /// in e(A \ B, B \ A).
     #[inline]
-    fn fill_edge_bs(&mut self, graph: &EliminationGraph, vi: usize, x: u32, y: u32) {
+    fn fill_edge_bs(
+        &mut self,
+        graph: &EliminationGraph,
+        inside: &[u64],
+        outside: &[u64],
+        x: u32,
+        y: u32,
+    ) {
         let w = graph.bitset_words;
         crate::meter::charge(w as u64);
         let xs = graph.bitset_slot_of(x) * w;
@@ -400,9 +441,9 @@ impl FillAffected {
         let mut out = 0u64;
         let x_row = &graph.bitset[xs..xs + w];
         let y_row = &graph.bitset[ys..ys + w];
-        for (word, (&x_word, &y_word)) in x_row.iter().zip(y_row).enumerate() {
+        let words = x_row.iter().zip(y_row).zip(inside).zip(outside);
+        for (word, (((&x_word, &y_word), &inside_word), &outside_word)) in words.enumerate() {
             let common = x_word & y_word;
-            let inside_word = self.inside[word];
             let mut ins = common & inside_word;
             while ins != 0 {
                 let slot = word * 64 + ins.trailing_zeros() as usize;
@@ -412,10 +453,7 @@ impl FillAffected {
                 unsafe { *self.inside_fill.get_unchecked_mut(slot) += 1 };
                 ins &= ins - 1;
             }
-            let mut outs = common & !inside_word;
-            if word == vi / 64 {
-                outs &= !(1u64 << (vi % 64));
-            }
+            let mut outs = common & outside_word;
             while outs != 0 {
                 let slot = word * 64 + outs.trailing_zeros() as usize;
                 self.increment(slot as u32);
@@ -447,7 +485,10 @@ impl FillAffected {
             crate::meter::charge((row.len() + k) as u64);
             let mut kept = 0u32;
             for &z in row {
-                self.marker[z as usize] = stamp;
+                debug_assert!((z as usize) < self.marker.len());
+                // SAFETY: a row holds vertex ids of the graph this scratch was
+                // sized for, and `marker` has an entry per vertex.
+                unsafe { *self.marker.get_unchecked_mut(z as usize) = stamp };
                 if z != v && !self.is_inside(z) {
                     kept += 1;
                 }
@@ -484,7 +525,10 @@ impl FillAffected {
         let mut out = 0u64;
         for &entry in &row[..last] {
             let z = if entry == v { row[last] } else { entry };
-            if self.marker[z as usize] != stamp {
+            debug_assert!((z as usize) < self.marker.len());
+            // SAFETY: as in `prepare_marker`, a row entry is a vertex id and
+            // the scratch has an entry per vertex.
+            if unsafe { *self.marker.get_unchecked(z as usize) } != stamp {
                 continue;
             }
             if self.is_inside(z) {
