@@ -18,12 +18,22 @@ fn every_vertex_of_every_five_vertex_graph_can_be_rebuilt() {
         );
         let seed = decompose(&graph, Order::MinFill, 0, None).unwrap();
         for vertex in 0..5 {
-            if let Some(next) = rebuild(
-                &graph,
-                &seed,
-                vertex,
-                Instant::now() + Duration::from_secs(1),
-            ) {
+            let candidate = std::panic::catch_unwind(|| {
+                rebuild(
+                    &graph,
+                    &seed,
+                    vertex,
+                    Instant::now() + Duration::from_secs(1),
+                )
+            })
+            .unwrap_or_else(|_| {
+                panic!(
+                    "mask={mask} vertex={vertex} graph={:?} seed={}",
+                    graph.edges(),
+                    seed.to_td()
+                )
+            });
+            if let Some(next) = candidate {
                 next.validate(&graph).unwrap();
                 checked += 1;
             }
@@ -55,6 +65,17 @@ fn an_expired_budget_retains_the_compacted_seed() {
     let (next, stats) = improve(&graph, &tree, Instant::now()).unwrap();
     assert_eq!(next.to_td(), compact(tree).to_td());
     assert_eq!(stats.tried, 0);
+}
+
+#[test]
+fn an_articulation_vertex_joins_the_residual_forest_on_reinsertion() {
+    let graph = Graph::new(3, [(0, 1), (1, 2)]);
+    // Removing the middle vertex leaves a filled edge that minimalization
+    // deletes, producing two separate bag trees.
+    let tree = TreeDecomposition::new(&graph, [vec![0, 1, 2]], []).unwrap();
+    let rebuilt = rebuild(&graph, &tree, 1, Instant::now() + Duration::from_secs(1)).unwrap();
+    rebuilt.validate(&graph).unwrap();
+    assert_eq!(rebuilt.treewidth(), 1);
 }
 
 #[test]

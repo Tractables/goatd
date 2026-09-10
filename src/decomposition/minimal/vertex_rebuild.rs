@@ -154,7 +154,33 @@ fn rebuild(
             bag
         })
         .collect();
-    let candidate = TreeDecomposition::new_trusted(graph, bags, edges(&small)).ok()?;
+    // Deletion can disconnect the graph, and minimalization can return one
+    // bag tree per component. Join their selected supports through the
+    // reinserted vertex; components without a neighbour stay separate.
+    let mut tree_edges = edges(&small);
+    let mut seen = vec![false; kept.len()];
+    let mut first = None;
+    for root in 0..kept.len() {
+        if !kept[root] || seen[root] {
+            continue;
+        }
+        if let Some(first) = first {
+            tree_edges.push((first, root));
+        } else {
+            first = Some(root);
+        }
+        let mut stack = vec![root];
+        seen[root] = true;
+        while let Some(bag) = stack.pop() {
+            for &other in &small.adjacency()[bag] {
+                if kept[other] && !seen[other] {
+                    seen[other] = true;
+                    stack.push(other);
+                }
+            }
+        }
+    }
+    let candidate = TreeDecomposition::new_trusted(graph, bags, tree_edges).ok()?;
     let candidate = compact(candidate);
     let candidate =
         minimalization_candidate(&candidate, graph, Some(deadline)).unwrap_or(candidate);
