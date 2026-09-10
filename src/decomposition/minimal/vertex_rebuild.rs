@@ -102,6 +102,15 @@ fn rebuild(
     vertex: u32,
     deadline: Instant,
 ) -> Option<TreeDecomposition> {
+    rebuild_candidate::<false>(graph, tree, vertex, deadline)
+}
+
+fn rebuild_candidate<const DIRECT: bool>(
+    graph: &Graph,
+    tree: &TreeDecomposition,
+    vertex: u32,
+    deadline: Instant,
+) -> Option<TreeDecomposition> {
     if graph.num_vertices() <= 1 {
         return None;
     }
@@ -124,7 +133,7 @@ fn rebuild(
     let small = minimalization_candidate(&small, &small_graph, Some(deadline)).unwrap_or(small);
     let small = compact(small);
     let kept = support(&small, &required);
-    let bags: Vec<Vec<u32>> = small
+    let mut bags: Vec<Vec<u32>> = small
         .bags()
         .iter()
         .enumerate()
@@ -134,7 +143,7 @@ fn rebuild(
                 .iter()
                 .map(|&v| v + u32::from(v >= vertex))
                 .collect();
-            if kept[index] {
+            if kept[index] && !DIRECT {
                 bag.push(vertex);
             }
             bag
@@ -144,6 +153,55 @@ fn rebuild(
     // bag tree per component. Join their selected supports through the
     // reinserted vertex; components without a neighbour stay separate.
     let mut tree_edges = edges(&small);
+    let mut attachment: Vec<_> = if DIRECT {
+        (0..kept.len()).collect()
+    } else {
+        Vec::new()
+    };
+    if DIRECT {
+        let original = |v: u32| v + u32::from(v >= vertex);
+        for (index, &on_support) in kept.iter().enumerate() {
+            if on_support {
+                attachment[index] = bags.len();
+                let mut bag = vec![vertex];
+                bag.extend(
+                    small.bags()[index]
+                        .vertices()
+                        .iter()
+                        .copied()
+                        .filter(|&v| required[v as usize])
+                        .map(original),
+                );
+                bags.push(bag);
+            }
+        }
+        for edge in &mut tree_edges {
+            let (a, b) = *edge;
+            if kept[a] && kept[b] {
+                let separator: Vec<_> = small.bags()[a]
+                    .vertices()
+                    .iter()
+                    .copied()
+                    .filter(|v| small.bags()[b].vertices().binary_search(v).is_ok())
+                    .map(original)
+                    .collect();
+                bags[attachment[a]].extend_from_slice(&separator);
+                bags[attachment[b]].extend_from_slice(&separator);
+                *edge = (attachment[a], attachment[b]);
+            }
+        }
+        for (index, &on_support) in kept.iter().enumerate() {
+            if on_support {
+                tree_edges.push((index, attachment[index]));
+            }
+        }
+        // A separator can occur on several support edges.
+        for bag in &mut bags[kept.len()..] {
+            bag.sort_unstable();
+            bag.dedup();
+        }
+    }
+
     let mut seen = vec![false; kept.len()];
     let mut first = None;
     for root in 0..kept.len() {
@@ -151,7 +209,11 @@ fn rebuild(
             continue;
         }
         if let Some(first) = first {
-            tree_edges.push((first, root));
+            tree_edges.push(if DIRECT {
+                (attachment[first], attachment[root])
+            } else {
+                (first, root)
+            });
         } else {
             first = Some(root);
         }
@@ -168,9 +230,13 @@ fn rebuild(
     }
     let candidate = TreeDecomposition::new_trusted(graph, bags, tree_edges).ok()?;
     let candidate = compact(candidate);
-    let candidate =
-        minimalization_candidate(&candidate, graph, Some(deadline)).unwrap_or(candidate);
-    Some(compact(candidate))
+    if DIRECT {
+        Some(candidate)
+    } else {
+        let candidate =
+            minimalization_candidate(&candidate, graph, Some(deadline)).unwrap_or(candidate);
+        Some(compact(candidate))
+    }
 }
 
 /// Rebuild vertices and retain strict width-then-mass improvements.
@@ -192,6 +258,26 @@ pub fn improve(
 /// # Panics
 /// Debug builds assert input validity. Release callers must establish it.
 pub fn improve_trusted(
+    graph: &Graph,
+    start: &TreeDecomposition,
+    deadline: Instant,
+) -> (TreeDecomposition, Stats) {
+    search::<false>(graph, start, deadline)
+}
+
+/// Reinsert vertices using connecting bags built from their neighbours and separators.
+///
+/// # Panics
+/// Debug builds assert input validity. Release callers must establish it.
+pub fn improve_direct_trusted(
+    graph: &Graph,
+    start: &TreeDecomposition,
+    deadline: Instant,
+) -> (TreeDecomposition, Stats) {
+    search::<true>(graph, start, deadline)
+}
+
+fn search<const DIRECT: bool>(
     graph: &Graph,
     start: &TreeDecomposition,
     deadline: Instant,
@@ -219,7 +305,12 @@ pub fn improve_trusted(
             if crate::deadline::expired(Some(deadline)) {
                 break;
             }
-            let Some(candidate) = rebuild(graph, &best, vertex, deadline) else {
+            let candidate = if DIRECT {
+                rebuild_candidate::<true>(graph, &best, vertex, deadline)
+            } else {
+                rebuild(graph, &best, vertex, deadline)
+            };
+            let Some(candidate) = candidate else {
                 continue;
             };
             stats.tried += 1;

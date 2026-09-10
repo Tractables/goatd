@@ -674,3 +674,10 @@ The main algorithmic sources are the
 [PACE 2017 decomposition paper](https://arxiv.org/abs/1709.08949), and the
 multilevel partitioning work credited in
 [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).
+
+Direct vertex reinsertion keeps the residual graph's bags and creates a
+connected set of new bags containing the restored vertex, its required
+neighbours, and the separators along its support. Old support edges are
+replaced by edges between these bags, with each old bag attached to its
+counterpart. This construction avoids adding the restored vertex to unrelated
+vertices in a large bag and needs no final global minimalization.

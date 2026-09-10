@@ -100,3 +100,103 @@ fn the_checked_entry_rejects_a_tree_for_a_different_graph() {
     let tree = TreeDecomposition::new(&graph, [vec![0], vec![1]], [(0, 1)]).unwrap();
     assert!(improve(&Graph::new(2, [(0, 1)]), &tree, Instant::now()).is_err());
 }
+
+#[test]
+fn direct_reinsertion_matches_completed_edges_and_exact_quality_on_small_graphs() {
+    let pairs: Vec<_> = (0..5)
+        .flat_map(|u| (u + 1..5).map(move |v| (u, v)))
+        .collect();
+    let mut checked = 0;
+    for mask in 0..(1usize << pairs.len()) {
+        let graph = Graph::new(
+            5,
+            pairs
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| mask & (1 << i) != 0)
+                .map(|(_, &edge)| edge),
+        );
+        let seeds = [
+            decompose(&graph, Order::MinFill, 0, None).unwrap(),
+            TreeDecomposition::new(&graph, [vec![0, 1, 2, 3, 4]], []).unwrap(),
+        ];
+        for seed in seeds {
+            for vertex in 0..5 {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                let full = rebuild(&graph, &seed, vertex, deadline);
+                let direct = std::panic::catch_unwind(|| {
+                    rebuild_candidate::<true>(&graph, &seed, vertex, deadline)
+                })
+                .unwrap_or_else(|_| {
+                    panic!("mask={mask} vertex={vertex} seed={}", seed.to_td());
+                });
+                assert_eq!(full.is_some(), direct.is_some());
+                if let (Some(full), Some(direct)) = (full, direct) {
+                    direct.validate(&graph).unwrap();
+                    let a = super::super::completion(&full, 5, None).unwrap();
+                    let b = super::super::completion(&direct, 5, None).unwrap();
+                    assert_eq!(
+                        a.rows,
+                        b.rows,
+                        "mask={mask} vertex={vertex} seed={}",
+                        seed.to_td()
+                    );
+                    assert_eq!(
+                        quality(&full),
+                        quality(&direct),
+                        "mask={mask} vertex={vertex}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 9600);
+}
+
+#[test]
+fn connecting_bags_avoid_private_vertices_of_a_large_bag() {
+    let graph = Graph::new(
+        5,
+        (1..5)
+            .flat_map(|a| (a + 1..5).map(move |b| (a, b)))
+            .chain([(0, 1), (0, 2)]),
+    );
+    let seed = TreeDecomposition::new(&graph, [vec![0, 1, 2, 3, 4]], []).unwrap();
+    let direct =
+        rebuild_candidate::<true>(&graph, &seed, 0, Instant::now() + Duration::from_secs(1))
+            .unwrap();
+    direct.validate(&graph).unwrap();
+    assert_eq!(direct.treewidth(), 3);
+    assert_eq!(direct.bags().len(), 2);
+    let filled = super::super::completion(&direct, 5, None).unwrap();
+    assert!(!filled.contains(0, 3));
+    assert!(!filled.contains(0, 4));
+    assert_eq!(
+        quality(&direct),
+        quality(
+            &TreeDecomposition::new(&graph, [vec![1, 2, 3, 4], vec![0, 1, 2]], [(0, 1)]).unwrap()
+        )
+    );
+}
+
+#[test]
+fn connecting_bags_join_the_needed_components_of_a_residual_forest() {
+    let graph = Graph::new(4, [(0, 1), (1, 2)]);
+    let seed = TreeDecomposition::new(&graph, [vec![0, 1, 2], vec![3]], []).unwrap();
+    let direct =
+        rebuild_candidate::<true>(&graph, &seed, 1, Instant::now() + Duration::from_secs(1))
+            .unwrap();
+    direct.validate(&graph).unwrap();
+    assert_eq!(direct.treewidth(), 1);
+    assert_eq!(direct.bags().len(), 3);
+}
+
+#[test]
+fn expired_direct_search_retains_the_seed() {
+    let graph = Graph::new(4, [(0, 1), (1, 2), (2, 3), (3, 0)]);
+    let seed = decompose(&graph, Order::MinFill, 0, None).unwrap();
+    let (next, stats) = improve_direct_trusted(&graph, &seed, Instant::now());
+    assert_eq!(next.to_td(), compact(seed).to_td());
+    assert_eq!(stats.tried, 0);
+}
