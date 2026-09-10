@@ -44,6 +44,11 @@ impl VertexSet {
         self.words[vertex as usize / 64] |= 1 << (vertex as usize % 64);
     }
 
+    /// Drop `vertex`.
+    pub(crate) fn remove(&mut self, vertex: u32) {
+        self.words[vertex as usize / 64] &= !(1 << (vertex as usize % 64));
+    }
+
     /// Whether `vertex` is in the set.
     pub(crate) fn contains(&self, vertex: u32) -> bool {
         self.words[vertex as usize / 64] & (1 << (vertex as usize % 64)) != 0
@@ -64,11 +69,22 @@ impl VertexSet {
 
     /// The lowest vertex the set holds.
     pub(crate) fn first(&self) -> Option<u32> {
-        self.words
+        self.first_from(0).map(|(_, vertex)| vertex)
+    }
+
+    /// The lowest vertex the set holds from word `from` on, and the word it
+    /// sits in. A caller that only ever takes vertices out can hand that word
+    /// back on the next call rather than scanning the empty words again.
+    pub(crate) fn first_from(&self, from: usize) -> Option<(usize, u32)> {
+        let from = from.min(self.words.len());
+        self.words[from..]
             .iter()
             .enumerate()
             .find(|&(_, &word)| word != 0)
-            .map(|(index, &word)| (index * 64 + word.trailing_zeros() as usize) as u32)
+            .map(|(offset, &word)| {
+                let index = from + offset;
+                (index, (index * 64 + word.trailing_zeros() as usize) as u32)
+            })
     }
 
     /// Whether every vertex of the set is in `other`.
@@ -229,22 +245,28 @@ impl Adjacency {
         let mut borders = Vec::new();
         scratch.left.copy_from(&self.all);
         scratch.left.subtract(removed);
-        while let Some(start) = scratch.left.first() {
+        // The components come out in increasing order of their smallest
+        // vertex and `left` only ever loses vertices, so the search for the
+        // next start carries on from the word the last one came out of
+        // instead of scanning the words already emptied.
+        let mut from = 0;
+        while let Some((word, start)) = scratch.left.first_from(from) {
+            from = word;
             let mut component = self.empty_set();
             let mut reach = self.empty_set();
             scratch.frontier.clear();
             scratch.frontier.insert(start);
             component.insert(start);
-            scratch.left.subtract(&scratch.frontier);
-            while !scratch.frontier.is_empty() {
+            scratch.left.remove(start);
+            loop {
                 scratch.next.clear();
                 for vertex in scratch.frontier.iter() {
                     scratch.next.union_row(self.row(vertex));
                 }
                 reach.union_with(&scratch.next);
-                scratch.next.intersect_with(&scratch.left);
-                component.union_with(&scratch.next);
-                scratch.left.subtract(&scratch.next);
+                if !take_left(&mut scratch.next, &mut scratch.left, &mut component) {
+                    break;
+                }
                 std::mem::swap(&mut scratch.frontier, &mut scratch.next);
             }
             reach.intersect_with(removed);
@@ -256,6 +278,28 @@ impl Adjacency {
             borders,
         }
     }
+}
+
+/// Cut `reached` down to the vertices still in `left`, add those to
+/// `component` and take them out of `left`, and say whether any were found.
+///
+/// One pass over the words for what the traversal reads and writes on every
+/// level, since the level's next frontier is exactly what this keeps.
+fn take_left(reached: &mut VertexSet, left: &mut VertexSet, component: &mut VertexSet) -> bool {
+    let mut any = 0u64;
+    let words = reached
+        .words
+        .iter_mut()
+        .zip(left.words.iter_mut())
+        .zip(component.words.iter_mut());
+    for ((reached, left), component) in words {
+        let kept = *reached & *left;
+        *reached = kept;
+        *left &= !kept;
+        *component |= kept;
+        any |= kept;
+    }
+    any != 0
 }
 
 /// What the traversals and the tests reuse, so that a set is allocated once
