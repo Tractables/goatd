@@ -30,9 +30,15 @@ pub(crate) fn build_td_from_ranked_bags(
     // many rows per candidate.
     let mut parent: Vec<u32> = Vec::with_capacity(n_bags);
     let mut degree: Vec<u32> = vec![0; n_bags];
-    for (step, vertices) in ranked_bags.iter().enumerate() {
+    // The parent rule and the bag's own ordering both read the bag's
+    // vertices, so they read them together: on a decomposition with a few
+    // hundred thousand bags, visiting them a second time is a second pass
+    // over all of it, and the second pass misses every line the first
+    // brought in.
+    let mut bags: Vec<TdBag> = Vec::with_capacity(n_bags);
+    for (step, vertices) in ranked_bags.into_iter().enumerate() {
         let mut best = u32::MAX;
-        for &u in vertices {
+        for &u in &vertices {
             let r = rank[u as usize];
             if r > step as u32 && r < best {
                 best = r;
@@ -43,6 +49,7 @@ pub(crate) fn build_td_from_ranked_bags(
             degree[step] += 1;
             degree[best as usize] += 1;
         }
+        bags.push(TdBag::new(vertices));
     }
 
     let mut adj: Vec<Vec<usize>> = degree
@@ -55,7 +62,6 @@ pub(crate) fn build_td_from_ranked_bags(
             adj[best as usize].push(step);
         }
     }
-    let bags = ranked_bags.into_iter().map(TdBag::new).collect();
 
     TreeDecomposition::from_parts(rank.len() as u32, bags, adj)
 }
