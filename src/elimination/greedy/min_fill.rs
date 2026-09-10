@@ -215,8 +215,12 @@ impl ElimPolicy for MinFill<'_> {
             {
                 return self.deadline_outcome(graph);
             }
+            // Applying one delta is a bucket move, so this loop reads the
+            // deadline on the pacer's stride. The neighbour loop below keeps
+            // its own check: a fill recount there can take milliseconds.
+            let mut pacer = DeadlinePacer::new();
             while let Some((vertex, delta)) = self.affected.pop_delta() {
-                if expired(deadline) {
+                if pacer.due() && expired(deadline) {
                     self.affected.clear();
                     return self.deadline_outcome(graph);
                 }

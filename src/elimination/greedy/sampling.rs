@@ -265,8 +265,12 @@ fn eliminate_sampled_fill_based(
             if !affected.collect_deltas(graph, &live_nbrs, &fill_edges, hard_deadline) {
                 return ElimExit::DeadlineReached(Cutoff::Hard);
             }
+            // Applying one delta is a bucket move, so this loop reads the
+            // deadline on the pacer's stride. The neighbour loop below keeps
+            // its own check: a fill recount there can take milliseconds.
+            let mut delta_pacer = DeadlinePacer::new();
             while let Some((u, delta)) = affected.pop_delta() {
-                if expired(hard_deadline) {
+                if delta_pacer.due() && expired(hard_deadline) {
                     affected.clear();
                     return ElimExit::DeadlineReached(Cutoff::Hard);
                 }

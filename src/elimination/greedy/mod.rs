@@ -256,8 +256,12 @@ impl FillAffected {
     ) -> bool {
         debug_assert!(self.vertices.is_empty());
 
+        // One fill edge costs a row scan, so the deadline is read on the
+        // pacer's stride rather than once an edge: a graph with millions of
+        // fill edges otherwise spends whole percent of its run in the clock.
+        let mut pacer = DeadlinePacer::new();
         for &(left, right) in fill_edges {
-            if crate::deadline::expired(deadline) {
+            if pacer.due() && crate::deadline::expired(deadline) {
                 self.clear();
                 self.clear_inside(nbrs, graph.bitset_words);
                 return false;
