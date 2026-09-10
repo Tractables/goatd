@@ -193,13 +193,14 @@ fn affected_membership_uses_one_word_per_vertex_block() {
 
 #[test]
 fn affected_membership_excludes_the_eliminated_neighbourhood() {
+    // Eliminating 0 fills (1, 2). Their common neighbour 129 is outside N(0)
+    // and loses a missing pair; 65 is inside and is updated as a neighbour.
     let mut graph = crate::elimination::graph::EliminationGraph::from_edges(
         130,
         &[
             (0, 1),
             (0, 2),
             (0, 65),
-            (1, 2),
             (1, 65),
             (2, 65),
             (1, 129),
@@ -209,9 +210,115 @@ fn affected_membership_excludes_the_eliminated_neighbourhood() {
     graph.promote_bitset();
     let mut affected = super::FillAffected::new(130);
 
-    affected.prepare_inside(&graph, 0, &[1, 2, 65]);
-    graph.remove_without_fill_nbrs(0, &[1, 2, 65]);
-    assert!(affected.collect_deltas(&graph, &[1, 2, 65], &[(1, 2)], None));
+    assert!(affected.prepare(&graph, 0, &[1, 2, 65], true, None));
+    graph.eliminate_with_nbrs(0, &[1, 2, 65]);
     assert_eq!(affected.pop_delta(), Some((129, 1)));
     assert_eq!(affected.pop_delta(), None);
+    // 1 keeps 129 and gains 2, which are adjacent: of its pairs (0, 129) and
+    // (65, 129), the first goes with 0 and (2, 65) is an edge.
+    assert_eq!(affected.neighbour_fill(1, 2), 1);
+    assert_eq!(affected.neighbour_fill(2, 2), 1);
+    // 65's one missing pair was (1, 2), now filled.
+    assert_eq!(affected.neighbour_fill(65, 1), 0);
+}
+
+/// Every score `FillAffected` maintains, checked against a fresh count over a
+/// run of random eliminations, in both graph modes: the vertices an
+/// elimination touched after each step, every active vertex every
+/// `full_every` steps, and at most `steps` steps in all.
+fn assert_updates_match_recounts(
+    n: u32,
+    edges: &[(u32, u32)],
+    bitset: bool,
+    seed: u64,
+    steps: usize,
+    full_every: usize,
+) {
+    let mut graph = crate::elimination::graph::EliminationGraph::from_edges(n, edges);
+    if bitset && graph.bitset_words == 0 {
+        graph.promote_bitset();
+    }
+    assert_eq!(graph.bitset_words > 0, bitset, "graph mode");
+    let n = n as usize;
+    let mut scratch = super::FillScratch::new(n);
+    let mut affected = super::FillAffected::new(n);
+    let mut fill: Vec<u64> = (0..n)
+        .map(|v| scratch.fill_count_of(&graph, v as u32))
+        .collect();
+    let mut rng = crate::rng::Xorshift64::from_state(seed);
+    let mut nbrs = Vec::new();
+    let mut touched = Vec::new();
+    for step in 1..=steps {
+        if graph.num_active == 0 {
+            break;
+        }
+        let live: Vec<u32> = (0..n as u32)
+            .filter(|&v| graph.active[v as usize])
+            .collect();
+        let v = live[(rng.next_u64() % live.len() as u64) as usize];
+        nbrs.clear();
+        graph.collect_live_nbrs_into(v, &mut nbrs);
+        if fill[v as usize] == 0 {
+            assert!(affected.prepare(&graph, v, &nbrs, false, None));
+            graph.remove_without_fill_nbrs(v, &nbrs);
+        } else {
+            assert!(affected.prepare(&graph, v, &nbrs, true, None));
+            graph.eliminate_with_nbrs(v, &nbrs);
+        }
+        touched.clear();
+        while let Some((u, delta)) = affected.pop_delta() {
+            assert!(!nbrs.contains(&u), "delta for a neighbour {u} of {v}");
+            fill[u as usize] -= delta;
+            touched.push(u);
+        }
+        for &u in &nbrs {
+            fill[u as usize] = affected.neighbour_fill(u, fill[u as usize]);
+            touched.push(u);
+        }
+        if step % full_every == 0 {
+            touched.clear();
+            touched.extend(live.iter().copied().filter(|&u| u != v));
+        }
+        for &u in &touched {
+            assert_eq!(
+                fill[u as usize],
+                scratch.fill_count_of(&graph, u),
+                "fill of {u} after eliminating {v} (bitset {bitset}, seed {seed})"
+            );
+        }
+    }
+}
+
+fn random_edges(n: u32, m: usize, seed: u64) -> Vec<(u32, u32)> {
+    let mut rng = crate::rng::Xorshift64::from_state(seed);
+    let mut edges = Vec::with_capacity(m);
+    while edges.len() < m {
+        let u = rng.next_u32() % n;
+        let w = rng.next_u32() % n;
+        if u != w {
+            edges.push((u.min(w), u.max(w)));
+        }
+    }
+    edges
+}
+
+#[test]
+fn neighbour_fill_updates_match_recounts() {
+    for seed in 1..=6 {
+        // Sparse enough to stay on rows, and dense enough to start on bits.
+        let edges = random_edges(600, 1_500, seed);
+        assert_updates_match_recounts(600, &edges, false, seed, 400, 1);
+        let edges = random_edges(120, 600, seed);
+        assert_updates_match_recounts(120, &edges, true, seed, 120, 1);
+    }
+}
+
+/// A sparse graph with a hub whose row is long enough to be indexed, and the
+/// same graph on a bitset re-indexed over the residual.
+#[test]
+fn neighbour_fill_updates_match_recounts_on_a_large_graph() {
+    let mut edges = random_edges(17_000, 30_000, 9);
+    edges.extend((1..400).map(|leaf| (0, leaf * 40)));
+    assert_updates_match_recounts(17_000, &edges, false, 9, 300, 100);
+    assert_updates_match_recounts(17_000, &edges, true, 9, 300, 100);
 }

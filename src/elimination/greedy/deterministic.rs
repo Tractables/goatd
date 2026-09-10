@@ -140,10 +140,23 @@ pub(super) trait ElimPolicy {
     }
 
     /// Eliminate a vertex whose neighbourhood needs fill edges. A core that
-    /// maintains an incremental score can override this to retain those
-    /// edges for `after_eliminate`.
-    fn eliminate_with_fill(&mut self, graph: &mut EliminationGraph, v: u32, nbrs: &[u32]) {
+    /// maintains an incremental score overrides this to read, before the
+    /// clique is filled in, what `after_eliminate` will need, bounded by
+    /// `deadline`.
+    fn eliminate_with_fill(
+        &mut self,
+        graph: &mut EliminationGraph,
+        v: u32,
+        nbrs: &[u32],
+        _deadline: Option<Instant>,
+    ) {
         graph.eliminate_with_nbrs(v, nbrs);
+    }
+
+    /// Remove a vertex whose neighbourhood is already a clique. The same
+    /// override as for `eliminate_with_fill`, without fill edges to read.
+    fn eliminate_simplicial(&mut self, graph: &mut EliminationGraph, v: u32, nbrs: &[u32]) {
+        graph.remove_without_fill_nbrs(v, nbrs);
     }
 
     /// React to `v`'s elimination; `nbrs` were its live neighbours. The
@@ -278,12 +291,14 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
         }
 
         let simplicial = P::ZERO_SCORE_IS_SIMPLICIAL && !cheap_mode && snapshot == 0;
-        if clique_residual || simplicial {
+        if clique_residual {
             graph.remove_without_fill_nbrs(v, &nbrs_buf);
+        } else if simplicial {
+            policy.eliminate_simplicial(graph, v, &nbrs_buf);
         } else if cheap_mode {
             graph.eliminate_with_nbrs(v, &nbrs_buf);
         } else {
-            policy.eliminate_with_fill(graph, v, &nbrs_buf);
+            policy.eliminate_with_fill(graph, v, &nbrs_buf, soft_deadline);
         }
         sink.record(v, bag);
 

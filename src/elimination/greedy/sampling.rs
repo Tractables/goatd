@@ -56,12 +56,13 @@ impl FillPriority {
     }
 }
 
-/// Re-measure every still-active neighbour's fill and move it to the matching
-/// bucket. This is the eager half of `eliminate_sampled_min_fill`'s bucket
-/// maintenance — the sampler cannot tolerate a stale key, since a stale bucket
-/// biases which vertex gets sampled, not just which entry pops first.
-fn rescore_neighbours(
-    scratch: &mut FillScratch,
+/// Move every neighbour of the eliminated vertex to the bucket of its updated
+/// fill, in neighbour order. This is the eager half of
+/// `eliminate_sampled_min_fill`'s bucket maintenance — the sampler cannot
+/// tolerate a stale key, since a stale bucket biases which vertex gets
+/// sampled, not just which entry pops first.
+fn update_neighbours(
+    affected: &mut FillAffected,
     graph: &EliminationGraph,
     nbrs: &[u32],
     buckets: &mut BucketMap<'_>,
@@ -70,7 +71,13 @@ fn rescore_neighbours(
 ) {
     for &u in nbrs {
         if graph.active[u as usize] {
-            let new_fill = scratch.fill_count_of(graph, u);
+            let old_fill = match fills {
+                Some(fills) => fills[u as usize],
+                None => buckets
+                    .key_of(u)
+                    .expect("an active vertex has a fill bucket"),
+            };
+            let new_fill = affected.neighbour_fill(u, old_fill);
             if let Some(fills) = fills {
                 fills[u as usize] = new_fill;
             }
@@ -156,7 +163,6 @@ fn eliminate_sampled_fill_based(
 
     let mut scratch = FillScratch::new(n);
     let mut affected = FillAffected::new(n);
-    let mut fill_edges = Vec::new();
     let mut live_nbrs = Vec::new();
     // Plain min-fill already stores the current fill as the bucket key. Only
     // composite scores need a second array to recover the fill component.
@@ -249,9 +255,10 @@ fn eliminate_sampled_fill_based(
                     }
                 }
             } else {
+                affected.prepare(graph, v, &live_nbrs, false, None);
                 graph.remove_without_fill_nbrs(v, &live_nbrs);
-                rescore_neighbours(
-                    &mut scratch,
+                update_neighbours(
+                    &mut affected,
                     graph,
                     &live_nbrs,
                     &mut buckets,
@@ -260,9 +267,9 @@ fn eliminate_sampled_fill_based(
                 );
             }
         } else {
-            affected.prepare_inside(graph, v, &live_nbrs);
-            graph.eliminate_with_nbrs_record_fill(v, &live_nbrs, &mut fill_edges);
-            if !affected.collect_deltas(graph, &live_nbrs, &fill_edges, hard_deadline) {
+            let prepared = affected.prepare(graph, v, &live_nbrs, true, hard_deadline);
+            graph.eliminate_with_nbrs(v, &live_nbrs);
+            if !prepared {
                 return ElimExit::DeadlineReached(Cutoff::Hard);
             }
             while let Some((u, delta)) = affected.pop_delta() {
@@ -288,21 +295,14 @@ fn eliminate_sampled_fill_based(
                     priority.key(new_fill, graph.degree(u) as u64, graph.len() as u64),
                 );
             }
-            for &u in &live_nbrs {
-                if expired(hard_deadline) {
-                    return ElimExit::DeadlineReached(Cutoff::Hard);
-                }
-                if graph.active[u as usize] {
-                    let new_fill = scratch.fill_count_of(graph, u);
-                    if let Some(fills) = &mut fills {
-                        fills[u as usize] = new_fill;
-                    }
-                    buckets.update(
-                        u,
-                        priority.key(new_fill, graph.degree(u) as u64, graph.len() as u64),
-                    );
-                }
-            }
+            update_neighbours(
+                &mut affected,
+                graph,
+                &live_nbrs,
+                &mut buckets,
+                &mut fills,
+                priority,
+            );
         }
         if exceeds_width_bound(bag_len, width_bound) {
             return ElimExit::WidthLimitExceeded;

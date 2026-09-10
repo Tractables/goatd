@@ -153,18 +153,49 @@ impl FillScratch {
     }
 }
 
-/// Vertices whose fill key may change after eliminating one vertex.
+/// The fill scores an elimination disturbs, and what each of them needs.
 ///
-/// Immediate neighbours are re-scored separately because their neighbourhood
-/// loses the eliminated vertex. For each fill edge, this tracker finds active
-/// common neighbours outside the filled neighbourhood. Each such edge lowers
-/// their fill score by exactly one.
+/// Eliminating `v` changes two kinds of score. A vertex outside N(v) that is
+/// adjacent to both ends of a fill edge loses one missing pair per such
+/// edge; [`prepare`](Self::prepare) finds those and
+/// [`pop_delta`](Self::pop_delta) hands them out. A neighbour `u` of `v`
+/// changes in four terms, with A = N(u) \ {v} and B = N(v) \ {u}, all read
+/// from the graph before the clique is filled in:
+///
+/// ```text
+/// fill'(u) = fill(u) − nonadj(A ∩ B) + |A \ B|·|B \ A| − e(A \ B, B \ A) − |A \ B|
+/// ```
+///
+/// nonadj(A ∩ B) is the number of `v`'s fill edges with both ends in N(u);
+/// e(A \ B, B \ A) counts the edges between the neighbours `u` keeps and the
+/// ones it gains, which, summed over the fill edges (u, b), is their common
+/// neighbours outside N[v]. Both fall out of the one pass over the fill
+/// edges that finds the outside deltas, and the two set sizes are one
+/// masked popcount, or one row scan, per neighbour. Before this the
+/// neighbours were recounted from scratch after every elimination, at the
+/// degree times the row width each, and that recount was most of a min-fill
+/// run.
+///
+/// The order vertices are first touched in is the order they are re-filed
+/// in, which the sampled cores' draw depends on, so both passes visit the
+/// fill edges and their common neighbours in the order the elimination
+/// itself would have recorded them.
 struct FillAffected {
+    /// N(v): by slot in bitset mode, by vertex id otherwise.
     inside: Vec<u64>,
     marker: Vec<u16>,
     stamp: u16,
+    /// Fill decrease of a vertex outside N(v), by vertex id.
     delta: Vec<u64>,
+    /// The vertices with a non-zero `delta`, in first-touch order.
     vertices: Vec<u32>,
+    /// For a neighbour `u` of `v`, by vertex id: |A \ B|, |B \ A|,
+    /// nonadj(A ∩ B) and e(A \ B, B \ A). Read and reset by
+    /// [`neighbour_fill`](Self::neighbour_fill).
+    kept: Vec<u32>,
+    gained: Vec<u32>,
+    inside_fill: Vec<u64>,
+    cross: Vec<u64>,
 }
 
 impl FillAffected {
@@ -175,6 +206,10 @@ impl FillAffected {
             stamp: 0,
             delta: vec![0; n],
             vertices: Vec::new(),
+            kept: vec![0; n],
+            gained: vec![0; n],
+            inside_fill: vec![0; n],
+            cross: vec![0; n],
         }
     }
 
@@ -183,6 +218,16 @@ impl FillAffected {
             self.delta[vertex as usize] = 0;
         }
         self.vertices.clear();
+    }
+
+    fn clear_neighbours(&mut self, nbrs: &[u32]) {
+        for &u in nbrs {
+            let u = u as usize;
+            self.kept[u] = 0;
+            self.gained[u] = 0;
+            self.inside_fill[u] = 0;
+            self.cross[u] = 0;
+        }
     }
 
     #[inline]
@@ -194,6 +239,7 @@ impl FillAffected {
         }
     }
 
+    #[inline]
     fn increment(&mut self, vertex: u32) {
         let index = vertex as usize;
         let delta = &mut self.delta[index];
@@ -245,57 +291,192 @@ impl FillAffected {
         }
     }
 
-    /// Accumulate exact fill-score decreases caused by `fill_edges`. Returns
-    /// false after clearing its scratch if `deadline` passes during the scan.
-    fn collect_deltas(
+    /// Gather everything the scores around `v`'s elimination need, from the
+    /// graph as it stands before it: the outside deltas, and each
+    /// neighbour's four terms. `nbrs` are `v`'s live neighbours. With `fill`
+    /// false the neighbourhood is known to be a clique and only the set sizes
+    /// are read. Returns false, with every scratch cleared, if `deadline`
+    /// passes during the fill-edge pass; the caller still eliminates `v`.
+    fn prepare(
         &mut self,
         graph: &EliminationGraph,
+        v: u32,
         nbrs: &[u32],
-        fill_edges: &[(u32, u32)],
+        fill: bool,
         deadline: Option<Instant>,
     ) -> bool {
         debug_assert!(self.vertices.is_empty());
+        self.prepare_inside(graph, v, nbrs);
+        let done = if graph.bitset_words > 0 {
+            self.prepare_bs(graph, v, nbrs, fill, deadline)
+        } else {
+            self.prepare_marker(graph, v, nbrs, fill, deadline)
+        };
+        self.clear_inside(nbrs, graph.bitset_words);
+        if !done {
+            self.clear();
+            self.clear_neighbours(nbrs);
+        }
+        done
+    }
 
-        for &(left, right) in fill_edges {
-            if crate::deadline::expired(deadline) {
-                self.clear();
-                self.clear_inside(nbrs, graph.bitset_words);
-                return false;
-            }
-            if graph.bitset_words > 0 {
-                let words = graph.bitset_words;
-                crate::meter::charge(words as u64);
-                let left_start = graph.bitset_slot_of(left) * words;
-                let right_start = graph.bitset_slot_of(right) * words;
-                for word in 0..words {
-                    let mut common = graph.bitset[left_start + word]
-                        & graph.bitset[right_start + word]
-                        & !self.inside[word];
-                    while common != 0 {
-                        let bit = common.trailing_zeros() as usize;
-                        let vertex = graph.bitset_vertex_at(word * 64 + bit);
-                        self.increment(vertex);
-                        common &= common - 1;
-                    }
+    fn prepare_bs(
+        &mut self,
+        graph: &EliminationGraph,
+        v: u32,
+        nbrs: &[u32],
+        fill: bool,
+        deadline: Option<Instant>,
+    ) -> bool {
+        let w = graph.bitset_words;
+        let k = nbrs.len();
+        let vi = graph.bitset_slot_of(v);
+        let vb = vi * w;
+        for &u in nbrs {
+            // Both counts include v's own bit in u's row, which the fill
+            // count never sees.
+            crate::meter::charge(w as u64);
+            let kept = graph.bitset_difference_count(u, v) - 1;
+            self.kept[u as usize] = kept as u32;
+            // |B \ A| = |B| − |A ∩ B|, both counted without u and v.
+            self.gained[u as usize] = (k as u64 + kept - graph.degree(u) as u64) as u32;
+        }
+        if !fill {
+            return true;
+        }
+        // The fill edges in the order the elimination would record them: by
+        // neighbour, then by slot, each pair once from its smaller vertex.
+        let mut pacer = DeadlinePacer::new();
+        for &u_raw in nbrs {
+            let u = graph.bitset_slot_of(u_raw);
+            let ub = u * w;
+            crate::meter::charge(w as u64);
+            for j in 0..w {
+                let mut mask = graph.bitset[vb + j] & !graph.bitset[ub + j];
+                if j == vi / 64 {
+                    mask &= !(1u64 << (vi % 64));
                 }
-            } else {
-                self.bump_stamp();
-                let stamp = self.stamp;
-                let left_row = &graph.adj[left as usize];
-                let right_row = &graph.adj[right as usize];
-                crate::meter::charge((left_row.len() + right_row.len()) as u64);
-                for &vertex in left_row {
-                    self.marker[vertex as usize] = stamp;
+                if j == u / 64 {
+                    mask &= !(1u64 << (u % 64));
                 }
-                for &vertex in right_row {
-                    if self.marker[vertex as usize] == stamp && !self.is_inside(vertex) {
-                        self.increment(vertex);
+                while mask != 0 {
+                    let other = graph.bitset_vertex_at(j * 64 + mask.trailing_zeros() as usize);
+                    mask &= mask - 1;
+                    if u_raw < other {
+                        if pacer.due() && crate::deadline::expired(deadline) {
+                            return false;
+                        }
+                        self.fill_edge_bs(graph, vi, u_raw, other);
                     }
                 }
             }
         }
-        self.clear_inside(nbrs, graph.bitset_words);
         true
+    }
+
+    /// One fill edge (x, y) of v, both in N(v): its common neighbours
+    /// inside N(v) each lose one missing pair from A ∩ B, those outside lose
+    /// one from their own fill, and their number is what x and y each gain
+    /// in e(A \ B, B \ A).
+    #[inline]
+    fn fill_edge_bs(&mut self, graph: &EliminationGraph, vi: usize, x: u32, y: u32) {
+        let w = graph.bitset_words;
+        crate::meter::charge(w as u64);
+        let xs = graph.bitset_slot_of(x) * w;
+        let ys = graph.bitset_slot_of(y) * w;
+        let mut out = 0u64;
+        for word in 0..w {
+            let common = graph.bitset[xs + word] & graph.bitset[ys + word];
+            let mut ins = common & self.inside[word];
+            while ins != 0 {
+                let z = graph.bitset_vertex_at(word * 64 + ins.trailing_zeros() as usize);
+                self.inside_fill[z as usize] += 1;
+                ins &= ins - 1;
+            }
+            let mut outs = common & !self.inside[word];
+            if word == vi / 64 {
+                outs &= !(1u64 << (vi % 64));
+            }
+            while outs != 0 {
+                let z = graph.bitset_vertex_at(word * 64 + outs.trailing_zeros() as usize);
+                self.increment(z);
+                out += 1;
+                outs &= outs - 1;
+            }
+        }
+        self.cross[x as usize] += out;
+        self.cross[y as usize] += out;
+    }
+
+    fn prepare_marker(
+        &mut self,
+        graph: &EliminationGraph,
+        v: u32,
+        nbrs: &[u32],
+        fill: bool,
+        deadline: Option<Instant>,
+    ) -> bool {
+        let k = nbrs.len();
+        let mut pacer = DeadlinePacer::new();
+        for &u in nbrs {
+            // Stamp u's row: it says which of v's other neighbours u lacks,
+            // which are its fill edges, and stays valid while they are
+            // processed since nothing below stamps again.
+            self.bump_stamp();
+            let stamp = self.stamp;
+            let row = &graph.adj[u as usize];
+            crate::meter::charge((row.len() + k) as u64);
+            let mut kept = 0u32;
+            for &z in row {
+                self.marker[z as usize] = stamp;
+                if z != v && !self.is_inside(z) {
+                    kept += 1;
+                }
+            }
+            self.kept[u as usize] = kept;
+            self.gained[u as usize] = (k as u32 + kept) - row.len() as u32;
+            if !fill {
+                continue;
+            }
+            // The fill edges in the order the elimination would record them:
+            // by neighbour, then by the neighbour list, each pair once from
+            // its smaller vertex.
+            for &y in nbrs {
+                if y != u && u < y && self.marker[y as usize] != stamp {
+                    if pacer.due() && crate::deadline::expired(deadline) {
+                        return false;
+                    }
+                    self.fill_edge_marker(graph, v, u, y, stamp);
+                }
+            }
+        }
+        true
+    }
+
+    /// The sparse form of [`fill_edge_bs`](Self::fill_edge_bs), with x's row
+    /// stamped. y's row is walked as the elimination would leave it, with the
+    /// last entry moved into v's place, so the outside vertices are first
+    /// touched in the order they always were.
+    #[inline]
+    fn fill_edge_marker(&mut self, graph: &EliminationGraph, v: u32, x: u32, y: u32, stamp: u16) {
+        let row = &graph.adj[y as usize];
+        crate::meter::charge(row.len() as u64);
+        let last = row.len() - 1;
+        let mut out = 0u64;
+        for &entry in &row[..last] {
+            let z = if entry == v { row[last] } else { entry };
+            if self.marker[z as usize] != stamp {
+                continue;
+            }
+            if self.is_inside(z) {
+                self.inside_fill[z as usize] += 1;
+            } else {
+                self.increment(z);
+                out += 1;
+            }
+        }
+        self.cross[x as usize] += out;
+        self.cross[y as usize] += out;
     }
 
     fn pop_delta(&mut self) -> Option<(u32, u64)> {
@@ -303,6 +484,22 @@ impl FillAffected {
             let delta = std::mem::replace(&mut self.delta[vertex as usize], 0);
             (vertex, delta)
         })
+    }
+
+    /// The fill of `u`, a neighbour of the vertex [`prepare`](Self::prepare)
+    /// was given, after that elimination, from its fill `old` before it.
+    /// Consumes u's terms.
+    #[inline]
+    fn neighbour_fill(&mut self, u: u32, old: u64) -> u64 {
+        let u = u as usize;
+        let kept = u64::from(std::mem::take(&mut self.kept[u]));
+        let gained = u64::from(std::mem::take(&mut self.gained[u]));
+        let inside_fill = std::mem::take(&mut self.inside_fill[u]);
+        let cross = std::mem::take(&mut self.cross[u]);
+        let added = kept * gained;
+        let removed = inside_fill + cross + kept;
+        debug_assert!(old + added >= removed, "fill of {u} would go negative");
+        old + added - removed
     }
 }
 

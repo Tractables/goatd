@@ -695,26 +695,6 @@ impl EliminationGraph {
     /// the extra `live_neighbours` allocation when the caller already has
     /// them.
     pub(super) fn eliminate_with_nbrs(&mut self, v: u32, neighbours: &[u32]) {
-        self.eliminate_with_nbrs_impl(v, neighbours, None);
-    }
-
-    /// Eliminate `v` and record each fill edge once in canonical order.
-    pub(super) fn eliminate_with_nbrs_record_fill(
-        &mut self,
-        v: u32,
-        neighbours: &[u32],
-        fill_edges: &mut Vec<(u32, u32)>,
-    ) {
-        fill_edges.clear();
-        self.eliminate_with_nbrs_impl(v, neighbours, Some(fill_edges));
-    }
-
-    fn eliminate_with_nbrs_impl(
-        &mut self,
-        v: u32,
-        neighbours: &[u32],
-        fill_edges: Option<&mut Vec<(u32, u32)>>,
-    ) {
         // The construction meter's single largest charge: one elimination is
         // the unit of work every goatd configuration loops over, so what this
         // costs sets the scale everything else in construction is charged
@@ -739,35 +719,25 @@ impl EliminationGraph {
                 .saturating_add(k.saturating_mul(k))
         });
         if self.bitset_words > 0 {
-            self.eliminate_with_nbrs_bs(v, neighbours, fill_edges);
+            self.eliminate_with_nbrs_bs(v, neighbours);
         } else {
-            self.eliminate_with_nbrs_marker(v, neighbours, fill_edges);
+            self.eliminate_with_nbrs_marker(v, neighbours);
         }
     }
 
-    fn eliminate_with_nbrs_bs(
-        &mut self,
-        v: u32,
-        neighbours: &[u32],
-        fill_edges: Option<&mut Vec<(u32, u32)>>,
-    ) {
+    fn eliminate_with_nbrs_bs(&mut self, v: u32, neighbours: &[u32]) {
         #[cfg(target_arch = "x86_64")]
         if self.hardware_popcount {
             // SAFETY: the flag is set only after runtime feature detection.
-            return unsafe { self.eliminate_with_nbrs_bs_popcnt(v, neighbours, fill_edges) };
+            return unsafe { self.eliminate_with_nbrs_bs_popcnt(v, neighbours) };
         }
-        self.eliminate_with_nbrs_bs_by(v, neighbours, fill_edges, |word| word.count_ones());
+        self.eliminate_with_nbrs_bs_by(v, neighbours, |word| word.count_ones());
     }
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "popcnt")]
-    unsafe fn eliminate_with_nbrs_bs_popcnt(
-        &mut self,
-        v: u32,
-        neighbours: &[u32],
-        fill_edges: Option<&mut Vec<(u32, u32)>>,
-    ) {
-        self.eliminate_with_nbrs_bs_by(v, neighbours, fill_edges, |word| {
+    unsafe fn eliminate_with_nbrs_bs_popcnt(&mut self, v: u32, neighbours: &[u32]) {
+        self.eliminate_with_nbrs_bs_by(v, neighbours, |word| {
             std::arch::x86_64::_popcnt64(word as i64) as u32
         });
     }
@@ -777,7 +747,6 @@ impl EliminationGraph {
         &mut self,
         v: u32,
         neighbours: &[u32],
-        mut fill_edges: Option<&mut Vec<(u32, u32)>>,
         popcount: impl Fn(u64) -> u32 + Copy,
     ) {
         let vi = self.slot(v);
@@ -798,17 +767,6 @@ impl EliminationGraph {
                 }
                 if j == u / 64 {
                     fill_mask &= !(1u64 << (u % 64));
-                }
-                if let Some(edges) = fill_edges.as_deref_mut() {
-                    let mut canonical = fill_mask;
-                    while canonical != 0 {
-                        let bit = canonical.trailing_zeros() as usize;
-                        let other = self.vertex_at(j * 64 + bit);
-                        if u_raw < other {
-                            edges.push((u_raw, other));
-                        }
-                        canonical &= canonical - 1;
-                    }
                 }
                 self.bitset[ub + j] |= fill_mask;
                 let added = popcount(fill_mask);
@@ -831,12 +789,7 @@ impl EliminationGraph {
         self.num_edges += pushes / 2;
     }
 
-    fn eliminate_with_nbrs_marker(
-        &mut self,
-        v: u32,
-        neighbours: &[u32],
-        mut fill_edges: Option<&mut Vec<(u32, u32)>>,
-    ) {
+    fn eliminate_with_nbrs_marker(&mut self, v: u32, neighbours: &[u32]) {
         let marker = self.elim_marker.as_mut_slice();
         let mut pushes: usize = 0;
         for &u_raw in neighbours {
@@ -861,11 +814,6 @@ impl EliminationGraph {
                         index.insert(w, row.len() as u32);
                         row.push(w);
                         pushes += 1;
-                        if u_raw < w
-                            && let Some(edges) = fill_edges.as_deref_mut()
-                        {
-                            edges.push((u_raw, w));
-                        }
                     }
                 }
                 continue;
@@ -894,11 +842,6 @@ impl EliminationGraph {
                     marker[wi] = s;
                     row.push(w);
                     pushes += 1;
-                    if u_raw < w
-                        && let Some(edges) = fill_edges.as_deref_mut()
-                    {
-                        edges.push((u_raw, w));
-                    }
                 }
             }
             if self.adj[u].len() >= ROW_INDEX_THRESH {
