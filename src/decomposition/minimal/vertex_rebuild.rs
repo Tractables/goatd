@@ -275,6 +275,7 @@ pub fn improve_trusted(
             break;
         }
         stats.rounds += 1;
+        let best_quality = quality(&best);
         let mut moved = false;
         for vertex in 0..graph.num_vertices() {
             if crate::deadline::expired(Some(deadline)) {
@@ -285,7 +286,7 @@ pub fn improve_trusted(
                 continue;
             };
             stats.tried += 1;
-            if quality(&candidate) < quality(&best) {
+            if quality(&candidate) < best_quality {
                 best = candidate;
                 stats.improved += 1;
                 moved = true;

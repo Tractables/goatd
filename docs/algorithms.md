@@ -52,7 +52,6 @@ vertex-reinsertion pass rebuilds attachments through neighbour and separator
 bags. It uses the original hard deadline. The portfolio ranks its result by
 width and total bag size, as it ranks the other candidates.
 
-
 The residual left after preprocessing picks between three schedules. At or
 below 10,000 vertices all of the above runs. Above that line it runs where the
 budget is wide enough for it: the portfolio times its first candidate, prices
