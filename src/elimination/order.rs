@@ -83,6 +83,15 @@ impl<'a> Order<'a> {
         }
     }
 
+    /// Whether the order breaks ties with the per-vertex salt; a sampled
+    /// order draws its ties from its own stream instead.
+    pub(super) fn uses_salt(self) -> bool {
+        matches!(
+            self,
+            Order::MinFill | Order::MinDegree | Order::NestedDissection
+        )
+    }
+
     /// Whether repeated runs can reuse the residual's initial fill counts.
     pub(super) fn uses_initial_fill_cache(self) -> bool {
         matches!(

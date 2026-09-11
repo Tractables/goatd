@@ -186,27 +186,40 @@ impl Embedding {
     /// and would draw almost uniformly.
     pub fn rank_weights(&self, peripheral_first: bool) -> Vec<u32> {
         let count = self.num_vertices();
-        let distances: Vec<f32> = (0..count as u32).map(|v| self.eccentricity(v)).collect();
-        let mut order: Vec<u32> = (0..count as u32).collect();
-        order.sort_by(|&left, &right| {
-            let (a, b) = (distances[left as usize], distances[right as usize]);
-            let by_eccentricity = if peripheral_first {
-                b.total_cmp(&a)
-            } else {
-                a.total_cmp(&b)
-            };
-            by_eccentricity.then(left.cmp(&right))
-        });
+        // The eccentricity and the vertex id packed into one key, so that the
+        // sort compares keys in place instead of loading two eccentricities
+        // from wherever the ids point on every comparison. Keys are distinct,
+        // so the unstable sort orders them the way the comparison did.
+        let mut order: Vec<u64> = (0..count as u32)
+            .map(|v| {
+                let mut key = total_order_key(self.eccentricity(v));
+                if peripheral_first {
+                    key = !key;
+                }
+                (u64::from(key) << 32) | u64::from(v)
+            })
+            .collect();
+        order.sort_unstable();
         let mut weights = vec![0u32; count];
         if count < 2 {
             return weights;
         }
-        for (rank, &vertex) in order.iter().enumerate() {
-            weights[vertex as usize] =
+        for (rank, &key) in order.iter().enumerate() {
+            weights[key as u32 as usize] =
                 (rank as u64 * u64::from(u32::MAX) / (count as u64 - 1)) as u32;
         }
         weights
     }
+}
+
+/// A key that orders `u32` as [`f32::total_cmp`] orders the values: the bits
+/// of the value, with the magnitude bits of a negative flipped so that it
+/// sorts below every positive, and the sign flipped so that unsigned order
+/// runs from the most negative to the most positive.
+fn total_order_key(value: f32) -> u32 {
+    let bits = value.to_bits() as i32;
+    let signed = bits ^ (((bits >> 31) as u32) >> 1) as i32;
+    (signed as u32) ^ (1 << 31)
 }
 
 /// `count` tie weights drawn uniformly at random from `seed`.

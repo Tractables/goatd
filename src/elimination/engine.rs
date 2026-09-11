@@ -175,7 +175,12 @@ pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> 
     // be a graph-sized allocation per candidate that nothing writes to.
     if prebuilt.components.len() > 1 {
         let scratch = &mut prebuilt.scratch;
-        draw_salt(&mut scratch.salt, prebuilt.reduced.graph.len(), spec.seed);
+        draw_salt(
+            &mut scratch.salt,
+            prebuilt.reduced.graph.len(),
+            spec.order,
+            spec.seed,
+        );
         return run_order_per_component(
             &prebuilt.reduced.graph,
             &prebuilt.reduced.prefix,
@@ -208,14 +213,20 @@ pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> 
 }
 
 /// Draw the per-vertex tie-break salt one run works from into `salt`, which
-/// keeps its storage from the run before.
+/// keeps its storage from the run before, or leave it empty for an order that
+/// never reads one: a sampled order breaks its ties from its own stream, and
+/// drawing a salt the size of the graph for each of its restarts was a pass
+/// over the graph for nothing.
 ///
 /// `+ SEED_OFFSET` avoids xorshift64's zero fixed point. The update-order
 /// min-degree variant does not read the salt, but keeping it here avoids
 /// another representation in component remapping.
-fn draw_salt(salt: &mut Vec<u32>, n: usize, seed: u64) {
-    let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
+fn draw_salt(salt: &mut Vec<u32>, n: usize, order: Order<'_>, seed: u64) {
     salt.clear();
+    if !order.uses_salt() {
+        return;
+    }
+    let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
     salt.extend((0..n).map(|_| rng.next_u32()));
 }
 
@@ -423,7 +434,12 @@ fn run_order_per_component(
         let sub_initial_fill: Option<Vec<u64>> =
             initial_fill.map(|fill| comp.iter().map(|&vertex| fill[vertex as usize]).collect());
 
-        let sub_salt: Vec<u32> = comp.iter().map(|&v| salt[v as usize]).collect();
+        // An order that reads no salt has none to re-index.
+        let sub_salt: Vec<u32> = if salt.is_empty() {
+            Vec::new()
+        } else {
+            comp.iter().map(|&v| salt[v as usize]).collect()
+        };
         // This component is re-indexed from 0, so a sampling core's weight is
         // re-indexed with it; a deterministic core has none to re-index.
         let sub_weight: Option<Vec<u32>> = spec
@@ -524,7 +540,7 @@ pub(super) fn run_order_on_residual(
     scratch: &mut RunScratch,
 ) -> OrderRun {
     let n = graph.len();
-    draw_salt(&mut scratch.salt, n, spec.seed);
+    draw_salt(&mut scratch.salt, n, spec.order, spec.seed);
 
     // Solve each connected component independently. Components arise
     // naturally after preprocessing removes low-degree vertices.
