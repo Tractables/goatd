@@ -19,6 +19,8 @@
 
 use rustc_hash::FxHashMap;
 
+use crate::prefetch::{prefetch, prefetching};
+
 /// Maximum graph size for which bitset adjacency is indexed by vertex id.
 /// At n = 16384: 16384 * 256 words * 8 bytes = 32 MB per graph.
 const BITSET_THRESH: usize = 16384;
@@ -118,43 +120,8 @@ fn build_row_index(row: &[u32], slot: &mut Option<Box<FxHashMap<u32, u32>>>) {
     *slot = Some(Box::new(index));
 }
 
-/// Ask the cache for `slice[index]` ahead of a walk that will read it: the
-/// walks over a row touch the marker at a random slot per entry, and without
-/// this each touch waits for its own miss. `index` is not read here, so an
-/// index past the end is harmless. A no-op off x86-64.
-#[inline(always)]
-pub(super) fn prefetch<T>(slice: &[T], index: usize) {
-    #[cfg(target_arch = "x86_64")]
-    if index < slice.len() {
-        // SAFETY: prefetching never faults and the address is inside the
-        // slice; the intrinsic is available on every x86-64.
-        unsafe {
-            std::arch::x86_64::_mm_prefetch(
-                slice.as_ptr().add(index).cast::<i8>(),
-                std::arch::x86_64::_MM_HINT_T0,
-            );
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let _ = (slice, index);
-    }
-}
-
 /// How many row entries ahead of the walk the marker slot is prefetched.
 pub(super) const PREFETCH_DISTANCE: usize = 24;
-
-/// Vertices from which the row walks prefetch. Below this the marker, two
-/// bytes per vertex, fits a first-level data cache, so the walk waits on
-/// nothing and a prefetch only costs it an instruction per entry; on a
-/// graph this size and above the marker is the cache miss the walk waits on.
-pub(super) const PREFETCH_MIN_VERTICES: usize = 1 << 16;
-
-/// Whether the row walks over a marker of `len` entries prefetch.
-#[inline(always)]
-pub(super) fn prefetching(len: usize) -> bool {
-    len >= PREFETCH_MIN_VERTICES
-}
 
 fn hardware_popcount_available() -> bool {
     #[cfg(target_arch = "x86_64")]

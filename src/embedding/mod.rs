@@ -15,6 +15,7 @@
 use std::fmt;
 
 use crate::Graph;
+use crate::prefetch::{prefetch, prefetching};
 use crate::rng::{SEED_OFFSET, Xorshift64};
 
 #[cfg(test)]
@@ -46,6 +47,11 @@ const JACOBI_TOLERANCE: f64 = 1e-18;
 /// Standard deviation at or below which an axis counts as flat and is
 /// jittered instead of rescaled.
 const FLAT_AXIS_DEVIATION: f64 = 1e-6;
+
+/// How many edges ahead of the averaging walk a neighbour's row is
+/// prefetched. Far enough to cover a miss at the rate the walk consumes
+/// edges, short enough that the line is still there when the walk reaches it.
+const PREFETCH_DISTANCE: usize = 8;
 
 /// Odd constant [`random_weights`] adds to its seed, so its stream is not the
 /// one a placement at the same seed draws from. Changing it reshuffles every
@@ -291,6 +297,7 @@ fn run_rounds_dim<const D: usize>(
     // covariance and rotation of the whitening.
     let round_units = (targets.len() + vertex_count * D * D) as u64;
     let patience = budget.patience.max(1);
+    let ahead_of_walk = prefetching(vertex_count);
     let mut next = vec![0.0f32; vertex_count * D];
 
     let mut settled = 0usize;
@@ -303,7 +310,18 @@ fn run_rounds_dim<const D: usize>(
                 continue;
             }
             let mut sums = [0.0f32; D];
-            for &neighbour in &targets[start..end] {
+            for (position, &neighbour) in targets[start..end].iter().enumerate() {
+                // The rows arrive at scattered offsets, so ask for the one a
+                // fixed number of edges further along the adjacency. The
+                // lookahead runs past the end of this vertex's own row into
+                // the rows the next vertices read, which is where the walk
+                // goes next. It reads nothing, so the sums below are the ones
+                // an unprefetched walk makes.
+                if ahead_of_walk
+                    && let Some(&ahead) = targets.get(start + position + PREFETCH_DISTANCE)
+                {
+                    prefetch(coords.as_slice(), ahead as usize * D);
+                }
                 // The neighbour's row is taken whole: the inner loop is a few
                 // adds over an array the same length as `sums`, so neither the
                 // trip count nor a bounds check reaches the hottest line of the

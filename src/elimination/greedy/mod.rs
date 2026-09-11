@@ -9,7 +9,8 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::time::Instant;
 
 use super::execution::{Cutoff, DeadlinePacer, ElimExit, ElimSink, ElimStop, exceeds_width_bound};
-use super::graph::{EliminationGraph, PREFETCH_DISTANCE, PreparedFill, prefetch, prefetching};
+use super::graph::{EliminationGraph, PREFETCH_DISTANCE, PreparedFill};
+use crate::prefetch::{prefetch, prefetching};
 use crate::rng::Xorshift64;
 
 /// Generates `Ord`/`PartialOrd` for a heap-entry struct that orders solely by
