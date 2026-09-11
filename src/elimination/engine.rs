@@ -68,6 +68,12 @@ pub(super) struct RunScratch {
     salt: Vec<u32>,
     /// What a sampled core works in, for the candidates that run one.
     sample: greedy::SampleScratch,
+    /// The step each vertex was eliminated at, refilled by the run that builds
+    /// a decomposition from it.
+    rank: Vec<u32>,
+    /// Where each vertex of the component being solved stands in that
+    /// component's own numbering.
+    local_of: Vec<u32>,
 }
 
 impl RunScratch {
@@ -76,6 +82,8 @@ impl RunScratch {
         Self {
             salt: Vec::new(),
             sample: greedy::SampleScratch::new(),
+            rank: Vec::new(),
+            local_of: Vec::new(),
         }
     }
 }
@@ -191,10 +199,9 @@ pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> 
             &prebuilt.reduced.graph,
             &prebuilt.reduced.prefix,
             &prebuilt.components,
-            &scratch.salt,
             prebuilt.initial_fill.as_deref(),
             spec,
-            &mut scratch.sample,
+            scratch,
         );
     }
     // Refresh the working copy of the residual, or take the first one. Keeping
@@ -398,17 +405,26 @@ fn run_order_per_component(
     graph: &EliminationGraph,
     prefix: &ElimSteps,
     components: &[Vec<u32>],
-    salt: &[u32],
     initial_fill: Option<&[u64]>,
     spec: RunSpec<'_>,
-    scratch: &mut greedy::SampleScratch,
+    scratch: &mut RunScratch,
 ) -> OrderRun {
+    let RunScratch {
+        salt,
+        sample,
+        rank: global_rank,
+        local_of,
+    } = scratch;
     let n = graph.len();
     // The bags after the prefix's; the prefix is put in front of them once
     // there is a decomposition to build.
     let base = prefix.next_step();
     let mut all_bags: Vec<Vec<u32>> = Vec::new();
-    let mut global_rank: Vec<u32> = vec![u32::MAX; n];
+    // The decomposition is built by reading a rank for every vertex, including
+    // the ones no component covers, so this one is refilled rather than left as
+    // the run before it wrote it.
+    global_rank.clear();
+    global_rank.resize(n, u32::MAX);
 
     // Prefix ranks: (vertex, step) where step == bag index.
     for &(v, s) in &prefix.rank_pairs {
@@ -416,7 +432,12 @@ fn run_order_per_component(
     }
 
     let mut nbrs_buf: Vec<u32> = Vec::new();
-    let mut local_of = vec![u32::MAX; n];
+    // Written for every vertex of the component below before that component is
+    // solved, and read only at vertices of the same component, so whatever an
+    // earlier run left in it is never read.
+    if local_of.len() < n {
+        local_of.resize(n, u32::MAX);
+    }
     // Components after a soft-cutoff stop run against the hard deadline alone,
     // so this changes once and applies to every later component.
     let mut stop = spec.stop;
@@ -481,7 +502,7 @@ fn run_order_per_component(
             sub_initial_fill.as_deref(),
             None,
             sub_spec,
-            scratch,
+            sample,
         );
         match comp_exit {
             ElimExit::WidthLimitExceeded => return OrderRun::WidthAborted,
@@ -489,7 +510,7 @@ fn run_order_per_component(
                 return OrderRun::DeadlineAborted(cutoff);
             }
             ElimExit::Complete | ElimExit::DeadlineReached(_) => {
-                comp_steps.append_reindexed(comp, base, &mut all_bags, &mut global_rank);
+                comp_steps.append_reindexed(comp, base, &mut all_bags, global_rank);
             }
         }
 
@@ -500,7 +521,7 @@ fn run_order_per_component(
                     .map(|vertex| comp[vertex as usize]),
                 base,
                 &mut all_bags,
-                &mut global_rank,
+                global_rank,
             );
             // The soft cutoff is the construction budget, not the end of the
             // run: the components after this one still have the hard deadline
@@ -517,12 +538,7 @@ fn run_order_per_component(
             }
             // After the hard cutoff there is no time to start another order.
             for remaining in &components[(comp_idx + 1)..] {
-                append_residual_bag(
-                    remaining.iter().copied(),
-                    base,
-                    &mut all_bags,
-                    &mut global_rank,
-                );
+                append_residual_bag(remaining.iter().copied(), base, &mut all_bags, global_rank);
             }
             return finish_after(prefix, all_bags, global_rank, comp_exit, true);
         }
@@ -564,15 +580,7 @@ pub(super) fn run_order_on_residual(
     // Solve each connected component independently. Components arise
     // naturally after preprocessing removes low-degree vertices.
     if components.len() > 1 {
-        return run_order_per_component(
-            graph,
-            prefix,
-            components,
-            &scratch.salt,
-            initial_fill,
-            spec,
-            &mut scratch.sample,
-        );
+        return run_order_per_component(graph, prefix, components, initial_fill, spec, scratch);
     }
 
     // Only the whole-residual path checks this: the per-component path
@@ -595,7 +603,15 @@ pub(super) fn run_order_on_residual(
         spec,
         &mut scratch.sample,
     );
-    finalize(prefix, steps, n, exit, spec.complete_on_deadline, residual)
+    finalize(
+        prefix,
+        steps,
+        n,
+        exit,
+        spec.complete_on_deadline,
+        residual,
+        &mut scratch.rank,
+    )
 }
 
 /// Bag `vertices` as one more entry of `bags`, whose first entry stands at
@@ -635,16 +651,21 @@ fn finalize(
     exit: ElimExit,
     complete_on_deadline: bool,
     residual: Vec<u32>,
+    rank: &mut Vec<u32>,
 ) -> OrderRun {
     if let Some(run) = aborted(exit, complete_on_deadline) {
         return run;
     }
-    let mut rank = vec![u32::MAX; n];
+    // The decomposition is built by reading a rank for every vertex, including
+    // the ones no step covers, so this one is refilled rather than left as the
+    // run before it wrote it.
+    rank.clear();
+    rank.resize(n, u32::MAX);
     for &(v, r) in prefix.rank_pairs.iter().chain(&tail.rank_pairs) {
         rank[v as usize] = r as u32;
     }
     let base = prefix.next_step();
-    append_residual_bag(residual, base, &mut tail.bags, &mut rank);
+    append_residual_bag(residual, base, &mut tail.bags, rank);
     finish_after(prefix, tail.bags, rank, exit, complete_on_deadline)
 }
 
@@ -654,7 +675,7 @@ fn finalize(
 fn finish_after(
     prefix: &ElimSteps,
     tail: Vec<Vec<u32>>,
-    rank: Vec<u32>,
+    rank: &[u32],
     exit: ElimExit,
     complete_on_deadline: bool,
 ) -> OrderRun {
@@ -669,14 +690,14 @@ fn finish_after(
 
 fn finish(
     bags: Vec<Vec<u32>>,
-    rank: Vec<u32>,
+    rank: &[u32],
     exit: ElimExit,
     complete_on_deadline: bool,
 ) -> OrderRun {
     match exit {
-        ElimExit::Complete => OrderRun::Completed(build_td_from_ranked_bags(bags, &rank)),
+        ElimExit::Complete => OrderRun::Completed(build_td_from_ranked_bags(bags, rank)),
         ElimExit::DeadlineReached(cutoff) if complete_on_deadline => {
-            OrderRun::CompletedAtDeadline(cutoff, build_td_from_ranked_bags(bags, &rank))
+            OrderRun::CompletedAtDeadline(cutoff, build_td_from_ranked_bags(bags, rank))
         }
         ElimExit::DeadlineReached(cutoff) => OrderRun::DeadlineAborted(cutoff),
         ElimExit::WidthLimitExceeded => OrderRun::WidthAborted,
