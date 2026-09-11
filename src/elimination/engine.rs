@@ -178,7 +178,7 @@ pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> 
         draw_salt(&mut scratch.salt, prebuilt.reduced.graph.len(), spec.seed);
         return run_order_per_component(
             &prebuilt.reduced.graph,
-            prebuilt.reduced.prefix.clone(),
+            &prebuilt.reduced.prefix,
             &prebuilt.components,
             &scratch.salt,
             prebuilt.initial_fill.as_deref(),
@@ -276,9 +276,12 @@ fn run_elimination_raw(
     spec: RunSpec<'_>,
     scratch: &mut greedy::SampleScratch,
 ) -> (ElimSteps, ElimExit, Vec<u32>) {
-    // The run continues from what preprocessing already eliminated and appends
-    // to it, so it needs its own copy of those steps.
-    let mut steps = prefix.clone();
+    // The run continues from what preprocessing already eliminated; it records
+    // only its own steps, numbered after the prefix's, and the two are joined
+    // once it has something to build. Most restarts on a large graph abort,
+    // and copying a prefix of a million bags for each was most of what they
+    // allocated.
+    let mut steps = ElimSteps::after(prefix);
 
     let exit = match spec.order {
         Order::MinFill => eliminate_min_fill(graph, salt, steps.sink(), spec.stop),
@@ -367,7 +370,7 @@ fn run_elimination_raw(
 /// from it below.
 fn run_order_per_component(
     graph: &EliminationGraph,
-    prefix: ElimSteps,
+    prefix: &ElimSteps,
     components: &[Vec<u32>],
     salt: &[u32],
     initial_fill: Option<&[u64]>,
@@ -375,7 +378,10 @@ fn run_order_per_component(
     scratch: &mut greedy::SampleScratch,
 ) -> OrderRun {
     let n = graph.len();
-    let mut all_bags: Vec<Vec<u32>> = prefix.bags;
+    // The bags after the prefix's; the prefix is put in front of them once
+    // there is a decomposition to build.
+    let base = prefix.next_step();
+    let mut all_bags: Vec<Vec<u32>> = Vec::new();
     let mut global_rank: Vec<u32> = vec![u32::MAX; n];
 
     // Prefix ranks: (vertex, step) where step == bag index.
@@ -449,7 +455,7 @@ fn run_order_per_component(
                 return OrderRun::DeadlineAborted(cutoff);
             }
             ElimExit::Complete | ElimExit::DeadlineReached(_) => {
-                comp_steps.append_reindexed(comp, &mut all_bags, &mut global_rank);
+                comp_steps.append_reindexed(comp, base, &mut all_bags, &mut global_rank);
             }
         }
 
@@ -458,6 +464,7 @@ fn run_order_per_component(
                 comp_residual
                     .into_iter()
                     .map(|vertex| comp[vertex as usize]),
+                base,
                 &mut all_bags,
                 &mut global_rank,
             );
@@ -476,9 +483,14 @@ fn run_order_per_component(
             }
             // After the hard cutoff there is no time to start another order.
             for remaining in &components[(comp_idx + 1)..] {
-                append_residual_bag(remaining.iter().copied(), &mut all_bags, &mut global_rank);
+                append_residual_bag(
+                    remaining.iter().copied(),
+                    base,
+                    &mut all_bags,
+                    &mut global_rank,
+                );
             }
-            return finish(all_bags, global_rank, comp_exit, true);
+            return finish_after(prefix, all_bags, global_rank, comp_exit, true);
         }
     }
 
@@ -489,7 +501,13 @@ fn run_order_per_component(
     } else {
         ElimExit::Complete
     };
-    finish(all_bags, global_rank, exit, spec.complete_on_deadline)
+    finish_after(
+        prefix,
+        all_bags,
+        global_rank,
+        exit,
+        spec.complete_on_deadline,
+    )
 }
 
 /// Run one order over a preprocessed residual the caller owns.
@@ -513,7 +531,7 @@ pub(super) fn run_order_on_residual(
     if components.len() > 1 {
         return run_order_per_component(
             graph,
-            prefix.clone(),
+            prefix,
             components,
             &scratch.salt,
             initial_fill,
@@ -541,11 +559,14 @@ pub(super) fn run_order_on_residual(
         spec,
         &mut scratch.sample,
     );
-    finalize(steps, n, exit, spec.complete_on_deadline, residual)
+    finalize(prefix, steps, n, exit, spec.complete_on_deadline, residual)
 }
 
+/// Bag `vertices` as one more entry of `bags`, whose first entry stands at
+/// step `base`.
 fn append_residual_bag(
     vertices: impl IntoIterator<Item = u32>,
+    base: usize,
     bags: &mut Vec<Vec<u32>>,
     rank: &mut [u32],
 ) {
@@ -553,26 +574,61 @@ fn append_residual_bag(
     if vertices.is_empty() {
         return;
     }
-    let bag_index = bags.len() as u32;
+    let bag_index = (base + bags.len()) as u32;
     for &vertex in &vertices {
         rank[vertex as usize] = bag_index;
     }
     bags.push(vertices);
 }
 
+/// How a run that has nothing to build ended, or `None` for one that has.
+fn aborted(exit: ElimExit, complete_on_deadline: bool) -> Option<OrderRun> {
+    match exit {
+        ElimExit::WidthLimitExceeded => Some(OrderRun::WidthAborted),
+        ElimExit::DeadlineReached(cutoff) if !complete_on_deadline => {
+            Some(OrderRun::DeadlineAborted(cutoff))
+        }
+        ElimExit::Complete | ElimExit::DeadlineReached(_) => None,
+    }
+}
+
 fn finalize(
-    mut steps: ElimSteps,
+    prefix: &ElimSteps,
+    mut tail: ElimSteps,
     n: usize,
     exit: ElimExit,
     complete_on_deadline: bool,
     residual: Vec<u32>,
 ) -> OrderRun {
+    if let Some(run) = aborted(exit, complete_on_deadline) {
+        return run;
+    }
     let mut rank = vec![u32::MAX; n];
-    for (v, r) in steps.rank_pairs {
+    for &(v, r) in prefix.rank_pairs.iter().chain(&tail.rank_pairs) {
         rank[v as usize] = r as u32;
     }
-    append_residual_bag(residual, &mut steps.bags, &mut rank);
-    finish(steps.bags, rank, exit, complete_on_deadline)
+    let base = prefix.next_step();
+    append_residual_bag(residual, base, &mut tail.bags, &mut rank);
+    finish_after(prefix, tail.bags, rank, exit, complete_on_deadline)
+}
+
+/// Build the decomposition from the prefix's bags followed by `tail`, whose
+/// first entry stands at the step after the prefix's last. A run that
+/// aborted has nothing to build and returns before the prefix is copied.
+fn finish_after(
+    prefix: &ElimSteps,
+    tail: Vec<Vec<u32>>,
+    rank: Vec<u32>,
+    exit: ElimExit,
+    complete_on_deadline: bool,
+) -> OrderRun {
+    if let Some(run) = aborted(exit, complete_on_deadline) {
+        return run;
+    }
+    let mut bags = Vec::with_capacity(prefix.bags.len() + tail.len());
+    bags.extend(prefix.bags.iter().cloned());
+    bags.extend(tail);
+    finish(bags, rank, exit, complete_on_deadline)
 }
 
 fn finish(
