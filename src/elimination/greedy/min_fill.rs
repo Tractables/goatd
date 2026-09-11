@@ -110,8 +110,9 @@ struct MinFill<'a> {
     generation: Vec<u64>,
     score: Vec<u64>,
     affected: FillAffected,
-    /// Whether `affected` holds what the last elimination disturbed, or gave
-    /// up on the deadline part way through.
+    /// Whether `affected` holds what the last elimination disturbed. A
+    /// `prepare` that reaches the deadline part way through clears itself and
+    /// leaves this false.
     prepared: bool,
     salt: &'a [u32],
 }

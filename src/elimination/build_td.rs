@@ -23,18 +23,16 @@ pub(crate) fn build_td_from_ranked_bags(
     debug_assert!(rank.iter().all(|&step| step < n_bags as u32));
     let n_bags_u32 = n_bags as u32;
 
-    // Each bag has at most one parent, and as many further neighbours as it has
-    // children, so the row lengths are known before anything is pushed. Sizing
-    // the rows up front saves the regrowth a large decomposition pays on every
-    // one of them: a graph of a few hundred thousand vertices produces that
-    // many rows per candidate.
+    // Each bag has at most one parent, and as many further neighbours as it
+    // has children, so the row lengths are known before anything is pushed.
+    // The pass below records the parents and counts the entries; the rows are
+    // then allocated at the size they reach, rather than grown from nothing on
+    // a graph that produces a bag per vertex.
     let mut parent: Vec<u32> = Vec::with_capacity(n_bags);
     let mut degree: Vec<u32> = vec![0; n_bags];
-    // The parent rule and the bag's own ordering both read the bag's
-    // vertices, so they read them together: on a decomposition with a few
-    // hundred thousand bags, visiting them a second time is a second pass
-    // over all of it, and the second pass misses every line the first
-    // brought in.
+    // The parent rule and the bag's own sort both read the bag's vertices, so
+    // they read them together: a second visit to a few hundred thousand bags
+    // is a second pass that finds none of the lines the first brought in.
     let mut bags: Vec<TdBag> = Vec::with_capacity(n_bags);
     for (step, vertices) in ranked_bags.into_iter().enumerate() {
         let mut best = u32::MAX;

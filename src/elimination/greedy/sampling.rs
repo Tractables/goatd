@@ -1,17 +1,15 @@
 //! The two tie-set-sampling cores.
 //!
 //! These stay outside `greedy.rs`'s skeleton on purpose. They do not pop from
-//! a heap: they read the whole minimum-priority bucket out of a [`BucketMap`]
-//! — or, with a `band`, every bucket within `band` of the minimum — and draw a
-//! vertex from it at random, which means no lazy deletion, no stale
-//! entries to skip, and a priority structure that has to be kept exact rather
-//! than corrected on pop. `eliminate_sampled_min_fill` also has no
-//! clique-residual fast drain — at fill 0 every remaining vertex ties, and
-//! draining them in index order would change the sampled order — and updates
-//! its buckets *before* the vertex is
-//! removed on the bitset path, where the skeleton updates after. Folding them
-//! in would mean two more hooks that only they use, and the sampling loop
-//! would be harder to read for it, not easier.
+//! a heap: they draw a vertex at random from the minimum-priority bucket of a
+//! [`BucketMap`] — or, with a `band`, from every bucket within `band` of the
+//! minimum — which means no lazy deletion, no stale entries to skip, and a
+//! priority structure that has to be kept exact rather than corrected on pop.
+//! `eliminate_sampled_min_fill` also has no clique-residual fast drain — at
+//! fill 0 every remaining vertex ties, and draining them in index order would
+//! change the sampled order. Folding them into the skeleton would mean more
+//! hooks that only they use, and the sampling loop would be harder to read
+//! for it, not easier.
 
 use super::*;
 use crate::deadline::expired;
@@ -259,8 +257,9 @@ fn eliminate_sampled_fill_based(
                 priority,
             );
         } else {
-            // v leaves the graph either way, so the residual bag the deadline
-            // exit builds does not hold it beside its own bag.
+            // `v` is recorded above, so it leaves the graph even on the
+            // deadline exit below: the residual bag that exit builds holds
+            // what is still in the graph, and `v` must not appear twice.
             if !affected.prepare(graph, v, live_nbrs, true, hard_deadline) {
                 graph.eliminate_with_nbrs(v, live_nbrs);
                 return ElimExit::DeadlineReached(Cutoff::Hard);

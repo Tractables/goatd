@@ -17,12 +17,12 @@ use std::collections::BinaryHeap;
 /// everything else lands on side 1.
 ///
 /// The vertex added each round is the one with the largest gain, ties going to
-/// the lowest index. Gains only ever rise (an edge is added at `2 * w`), so a
-/// max-heap keyed by `(gain, Reverse(v))` picks the same vertex a scan of all
-/// of them would: an entry whose gain no longer matches the vertex's is stale
-/// and a larger one for the same vertex is still in the heap. It reads `stop`
-/// as it goes and leaves the rest of the vertices on side 1 when the cutoff
-/// passes, which the caller discards.
+/// the lowest index. A gain never falls, so a max-heap keyed by
+/// `(gain, Reverse(v))` picks the same vertex a scan of all of them would: an
+/// entry whose gain no longer matches the vertex's is stale, and a larger one
+/// for the same vertex is still in the heap. It reads `stop` as it goes and
+/// leaves the rest of the vertices on side 1 when the cutoff passes, which the
+/// caller discards.
 pub(super) fn greedy_graph_growing(
     graph: &CsrGraph,
     seed: usize,
@@ -97,6 +97,8 @@ pub(super) fn greedy_graph_growing(
                 // the two bisectors differ" in the shared partition bookkeeping.
                 gain[nb] += 2 * w as i64;
                 if w > 0 {
+                    // A zero-weight edge leaves the gain where it was, so the
+                    // entry already in the heap still matches it.
                     heap.push((gain[nb], Reverse(nb)));
                 }
             }

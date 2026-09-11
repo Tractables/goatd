@@ -36,7 +36,7 @@ pub(crate) enum OrderRun {
 
 /// Graph + preprocessing result, shared across every order in a portfolio.
 /// Graph construction and preprocessing are deterministic, so every order in
-/// a portfolio can clone this result rather than repeat that work.
+/// a portfolio can reuse this result rather than repeat that work.
 pub(crate) struct Prebuilt {
     reduced: Reduced,
     /// Connected components of the preprocessed residual, reused by every
@@ -62,10 +62,12 @@ pub(crate) struct Prebuilt {
 pub(super) struct RunScratch {
     /// The per-vertex tie-break salt, redrawn for each seed.
     salt: Vec<u32>,
+    /// What a sampled core works in, for the candidates that run one.
     sample: greedy::SampleScratch,
 }
 
 impl RunScratch {
+    /// Buffers for no graph at all: every run sizes them to its own.
     pub(super) fn new() -> Self {
         Self {
             salt: Vec::new(),
@@ -129,7 +131,8 @@ pub(crate) struct RunSpec<'a> {
 
 /// Run a single spec using a preprocessed graph. The first sampled min-fill
 /// run populates its reusable fill-count cache; a run that eliminates on the
-/// residual itself clones it first.
+/// whole residual works on the copy kept for that, refreshed from the
+/// residual first.
 pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> OrderRun {
     if spec.order.uses_initial_fill_cache() && prebuilt.initial_fill.is_none() {
         let graph = &prebuilt.reduced.graph;

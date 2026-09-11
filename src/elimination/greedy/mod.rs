@@ -60,8 +60,11 @@ pub(super) const CHEAP_MODE_MAX_ACTIVE: usize = 512;
 /// what it leaves, since a run that stops at its deadline stops in the middle
 /// of its own state.
 pub(super) struct SampleScratch {
+    /// The marker the seeding scan counts fill from.
     fill: FillScratch,
+    /// What each elimination reads for the scores it disturbs.
     affected: FillAffected,
+    /// The priority buckets the draw picks from.
     buckets: BucketStorage,
     /// The live neighbours of the vertex being eliminated.
     live_nbrs: Vec<u32>,
@@ -798,11 +801,9 @@ trait ElimEntry {
     fn snapshot(&self) -> u64;
 }
 
-/// Priority → vertex buckets with O(log n) insert/remove and O(1) indexed
-/// access into the min-key bucket. The min bucket *is* the tie set (no
-/// secondary key), so a caller can sample from it directly — mirrors htd's
-/// `PriorityQueue::topCollection`.
-#[derive(Clone)]
+/// One priority key's vertices, in the order they were filed, and their
+/// combined sampling mass. The mass stays 0 when every weight is the same,
+/// where it follows from the vertex count instead.
 struct Bucket {
     vertices: Vec<u32>,
     sampling_mass: u64,
@@ -851,7 +852,6 @@ const NO_BUCKET: u32 = u32::MAX;
 /// growing the slot array costs four bytes a key. A fill count can reach
 /// n²/2, well past any slot array worth allocating, so keys at or above
 /// `dense_keys` go to `overflow` instead.
-#[derive(Clone)]
 struct PriorityBuckets {
     slots: Vec<u32>,
     buckets: Vec<Bucket>,
@@ -1008,6 +1008,7 @@ pub(super) struct BucketStorage {
 }
 
 impl BucketStorage {
+    /// Storage for no graph at all: [`Self::reset`] sizes it to each run's.
     pub(super) fn new() -> Self {
         Self {
             buckets: PriorityBuckets::new(0),
@@ -1091,8 +1092,9 @@ impl<'a> BucketMap<'a> {
         }
     }
 
-    /// Inlined with `remove_at` into `update`, the score repair's one call
-    /// per changed vertex, so a move between buckets is one function.
+    /// File `v` under `key`. Inlined, as `remove_at` is, into `update`: the
+    /// score repair calls that once per changed vertex, and a move between
+    /// buckets is then one function rather than three.
     #[inline(always)]
     fn insert(&mut self, v: u32, key: u64) {
         let (bucket, created) = self.buckets.get_or_insert(key, self.spare_vertices);

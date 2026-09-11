@@ -248,6 +248,9 @@ pub(super) struct EliminationGraph {
 /// working copy already has. The portfolio takes a copy of the preprocessed
 /// residual for every candidate it runs, and on a graph with a few hundred
 /// thousand vertices a fresh copy means an allocation per adjacency row.
+///
+/// Both halves destructure the whole struct, so a field added later does not
+/// compile until it is handled in each.
 impl Clone for EliminationGraph {
     fn clone(&self) -> Self {
         let Self {

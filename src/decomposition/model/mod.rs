@@ -11,9 +11,8 @@ pub struct TdBag {
     pub(crate) vertices: Vec<u32>,
     /// Whether `vertices` is known to be in non-decreasing order. Recorded
     /// where the bag is built so that a subset test over hundreds of thousands
-    /// of bags does not have to rediscover it. Conservative: `false` only
-    /// means the order was not established, so a reader may fall back to a
-    /// test that does not need order.
+    /// of bags does not have to rediscover it. `false` means the order was
+    /// never established, not that the bag is out of order.
     sorted: bool,
 }
 

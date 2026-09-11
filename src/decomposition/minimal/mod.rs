@@ -215,7 +215,7 @@ fn minimalize(
                 if word == first {
                     // `vertex` itself and everything below it: those pairs are
                     // tested from their smaller endpoint instead.
-                    bits &= !1u64 << (vertex % 64);
+                    bits &= (!1u64) << (vertex % 64);
                 }
                 // A removal below clears bits of this row, but only the bit of
                 // the member being tested, which this walk has already taken
@@ -226,6 +226,9 @@ fn minimalize(
                     if original.contains(vertex, other) {
                         continue;
                     }
+                    // An endpoint touched in pass p is retested in pass p and
+                    // in pass p + 1: an edge tested earlier in pass p saw the
+                    // neighbourhood as it was before that removal.
                     if touched[vertex] + 2 <= pass && touched[other] + 2 <= pass {
                         continue;
                     }
