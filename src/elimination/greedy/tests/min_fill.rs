@@ -88,6 +88,7 @@ fn sampled_min_fill_rechecks_vertices_two_hops_from_an_elimination() {
         sink,
         ElimStop::default(),
         None,
+        None,
         &mut crate::elimination::greedy::SampleScratch::new(),
     );
 
@@ -135,6 +136,7 @@ fn assert_sampled_fill_degree_minimizes_score(degree_coefficient: i8) {
         },
         sink,
         ElimStop::default(),
+        None,
         None,
         degree_coefficient,
         &mut crate::elimination::greedy::SampleScratch::new(),
@@ -242,6 +244,7 @@ fn band_run(band: u64, seed: u64) -> Vec<u32> {
         },
         sink,
         ElimStop::default(),
+        None,
         None,
         &mut crate::elimination::greedy::SampleScratch::new(),
     );

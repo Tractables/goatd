@@ -15,6 +15,7 @@
 use std::fmt;
 
 use crate::Graph;
+use crate::prefetch::{prefetch, prefetching};
 use crate::rng::{SEED_OFFSET, Xorshift64};
 
 #[cfg(test)]
@@ -46,6 +47,11 @@ const JACOBI_TOLERANCE: f64 = 1e-18;
 /// Standard deviation at or below which an axis counts as flat and is
 /// jittered instead of rescaled.
 const FLAT_AXIS_DEVIATION: f64 = 1e-6;
+
+/// How many edges ahead of the averaging walk a neighbour's row is
+/// prefetched. Far enough to cover a miss at the rate the walk consumes
+/// edges, short enough that the line is still there when the walk reaches it.
+const PREFETCH_DISTANCE: usize = 8;
 
 /// Odd constant [`random_weights`] adds to its seed, so its stream is not the
 /// one a placement at the same seed draws from. Changing it reshuffles every
@@ -124,16 +130,42 @@ impl Embedding {
         tolerance: f32,
         stop: &mut dyn FnMut() -> bool,
     ) -> Self {
+        Self::compute_on(
+            &Adjacency::of(graph),
+            dim,
+            seed,
+            max_rounds,
+            patience,
+            tolerance,
+            stop,
+        )
+    }
+
+    /// [`Embedding::compute`] on an adjacency the caller holds.
+    ///
+    /// A caller that places several embeddings of one graph builds the
+    /// adjacency once and passes it to each of them. Every embedding charges
+    /// the meter for building it either way, so the work a budget stated in
+    /// charged work pays for does not depend on the sharing.
+    pub(crate) fn compute_on(
+        adjacency: &Adjacency,
+        dim: usize,
+        seed: u64,
+        max_rounds: usize,
+        patience: usize,
+        tolerance: f32,
+        stop: &mut dyn FnMut() -> bool,
+    ) -> Self {
         let dim = dim.clamp(1, MAX_DIM);
         let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
-        let mut coords = vec![0.0f32; graph.num_vertices() as usize * dim];
+        let mut coords = vec![0.0f32; adjacency.vertex_count() * dim];
         for slot in &mut coords {
             *slot = unit_interval(&mut rng);
         }
         run_rounds(
             &mut coords,
             dim,
-            graph,
+            adjacency,
             &mut rng,
             Budget {
                 max_rounds,
@@ -186,27 +218,40 @@ impl Embedding {
     /// and would draw almost uniformly.
     pub fn rank_weights(&self, peripheral_first: bool) -> Vec<u32> {
         let count = self.num_vertices();
-        let distances: Vec<f32> = (0..count as u32).map(|v| self.eccentricity(v)).collect();
-        let mut order: Vec<u32> = (0..count as u32).collect();
-        order.sort_by(|&left, &right| {
-            let (a, b) = (distances[left as usize], distances[right as usize]);
-            let by_eccentricity = if peripheral_first {
-                b.total_cmp(&a)
-            } else {
-                a.total_cmp(&b)
-            };
-            by_eccentricity.then(left.cmp(&right))
-        });
+        // The eccentricity and the vertex id packed into one key, so that the
+        // sort compares keys in place instead of loading two eccentricities
+        // from wherever the ids point on every comparison. Keys are distinct,
+        // so the unstable sort orders them the way the comparison did.
+        let mut order: Vec<u64> = (0..count as u32)
+            .map(|v| {
+                let mut key = total_order_key(self.eccentricity(v));
+                if peripheral_first {
+                    key = !key;
+                }
+                (u64::from(key) << 32) | u64::from(v)
+            })
+            .collect();
+        order.sort_unstable();
         let mut weights = vec![0u32; count];
         if count < 2 {
             return weights;
         }
-        for (rank, &vertex) in order.iter().enumerate() {
-            weights[vertex as usize] =
+        for (rank, &key) in order.iter().enumerate() {
+            weights[key as u32 as usize] =
                 (rank as u64 * u64::from(u32::MAX) / (count as u64 - 1)) as u32;
         }
         weights
     }
+}
+
+/// A key that orders `u32` as [`f32::total_cmp`] orders the values: the bits
+/// of the value, with the magnitude bits of a negative flipped so that it
+/// sorts below every positive, and the sign flipped so that unsigned order
+/// runs from the most negative to the most positive.
+fn total_order_key(value: f32) -> u32 {
+    let bits = value.to_bits() as i32;
+    let signed = bits ^ (((bits >> 31) as u32) >> 1) as i32;
+    (signed as u32) ^ (1 << 31)
 }
 
 /// `count` tie weights drawn uniformly at random from `seed`.
@@ -224,16 +269,49 @@ pub(crate) fn random_weights(count: usize, seed: u64) -> Vec<u32> {
 
 /// Move every vertex halfway toward the mean of its neighbours and whiten the
 /// cloud, until the budget or `stop` ends it.
+///
+/// The dimension becomes a constant here, once per `compute`, so that every
+/// inner loop of a round is a fixed number of lanes wide.
 fn run_rounds(
     coords: &mut Vec<f32>,
     dim: usize,
-    graph: &Graph,
+    adjacency: &Adjacency,
     rng: &mut Xorshift64,
     budget: Budget,
     stop: &mut dyn FnMut() -> bool,
 ) {
-    let vertex_count = graph.num_vertices() as usize;
-    let (starts, targets) = adjacency(graph);
+    const {
+        assert!(
+            MAX_DIM == 8,
+            "the dispatch below needs one arm per dimension"
+        )
+    };
+    match dim {
+        1 => run_rounds_dim::<1>(coords, adjacency, rng, budget, stop),
+        2 => run_rounds_dim::<2>(coords, adjacency, rng, budget, stop),
+        3 => run_rounds_dim::<3>(coords, adjacency, rng, budget, stop),
+        4 => run_rounds_dim::<4>(coords, adjacency, rng, budget, stop),
+        5 => run_rounds_dim::<5>(coords, adjacency, rng, budget, stop),
+        6 => run_rounds_dim::<6>(coords, adjacency, rng, budget, stop),
+        7 => run_rounds_dim::<7>(coords, adjacency, rng, budget, stop),
+        8 => run_rounds_dim::<8>(coords, adjacency, rng, budget, stop),
+        _ => unreachable!("the dimension is clamped to 1..=MAX_DIM"),
+    }
+}
+
+/// [`run_rounds`] at a known dimension.
+fn run_rounds_dim<const D: usize>(
+    coords: &mut Vec<f32>,
+    adjacency: &Adjacency,
+    rng: &mut Xorshift64,
+    budget: Budget,
+    stop: &mut dyn FnMut() -> bool,
+) {
+    let Adjacency { starts, targets } = adjacency;
+    let vertex_count = adjacency.vertex_count();
+    // Building the adjacency, charged here whether this run built it or was
+    // handed one, so that an embedding costs the meter the same either way.
+    crate::meter::charge((vertex_count + targets.len()) as u64);
     // The whitening statistics ignore vertices with no neighbour: they never
     // move, so they would only add an isotropic cloud of starting positions to
     // the covariance.
@@ -246,48 +324,60 @@ fn run_rounds(
 
     // One unit per adjacency visit in the update, plus the per-vertex
     // covariance and rotation of the whitening.
-    let round_units = (targets.len() + vertex_count * dim * dim) as u64;
+    let round_units = (targets.len() + vertex_count * D * D) as u64;
     let patience = budget.patience.max(1);
-    let mut next = vec![0.0f32; vertex_count * dim];
-    let mut settled = 0usize;
-    let mut sums = [0.0f32; MAX_DIM];
+    let ahead_of_walk = prefetching(vertex_count);
+    let mut next = vec![0.0f32; vertex_count * D];
 
+    let mut settled = 0usize;
     for _ in 0..budget.max_rounds {
         for vertex in 0..vertex_count {
             let (start, end) = (starts[vertex], starts[vertex + 1]);
-            let base = vertex * dim;
+            let base = vertex * D;
             if start == end {
-                next[base..base + dim].copy_from_slice(&coords[base..base + dim]);
+                next[base..base + D].copy_from_slice(&coords[base..base + D]);
                 continue;
             }
-            let sums = &mut sums[..dim];
-            sums.fill(0.0);
-            for &neighbour in &targets[start..end] {
+            let mut sums = [0.0f32; D];
+            for (position, &neighbour) in targets[start..end].iter().enumerate() {
+                // The rows arrive at scattered offsets, so ask for the one a
+                // fixed number of edges further along the adjacency. The
+                // lookahead runs past the end of this vertex's own row into
+                // the rows the next vertices read, which is where the walk
+                // goes next. It reads nothing, so the sums below are the ones
+                // an unprefetched walk makes.
+                if ahead_of_walk
+                    && let Some(&ahead) = targets.get(start + position + PREFETCH_DISTANCE)
+                {
+                    prefetch(coords.as_slice(), ahead as usize * D);
+                }
                 // The neighbour's row is taken whole: the inner loop is a few
-                // adds over a slice the same length as `sums`, and indexing
-                // the cloud per coordinate instead puts a bounds check on the
-                // hottest line of the round.
-                let row = neighbour as usize * dim;
-                for (sum, value) in sums.iter_mut().zip(&coords[row..row + dim]) {
+                // adds over an array the same length as `sums`, so neither the
+                // trip count nor a bounds check reaches the hottest line of the
+                // round.
+                for (sum, value) in sums
+                    .iter_mut()
+                    .zip(row_at::<D>(coords, neighbour as usize * D))
+                {
                     *sum += value;
                 }
             }
             let degree = (end - start) as f32;
-            let here = &coords[base..base + dim];
-            for ((slot, value), sum) in next[base..base + dim].iter_mut().zip(here).zip(sums.iter())
-            {
+            let here = row_at::<D>(coords, base);
+            for ((slot, value), sum) in next[base..base + D].iter_mut().zip(here).zip(sums.iter()) {
                 *slot = 0.5 * (value + *sum / degree);
             }
         }
         // After the swap `next` holds the previous round's whitened cloud,
         // which is what the change below is measured against.
         std::mem::swap(coords, &mut next);
-        whiten(coords, dim, &moving, rng);
+        whiten_dim::<D>(coords, &moving, rng);
         crate::meter::charge(round_units);
 
         // The leading axis settles long before the whole cloud does, so a
         // consumer that reads only one axis can stop much earlier than this.
-        if is_settled(coords, &next, dim, &starts, &targets, budget.tolerance) {
+        // `D` is a constant here, so the dispatch inside folds away.
+        if is_settled(coords, &next, D, starts, targets, budget.tolerance) {
             settled += 1;
             if settled >= patience {
                 break;
@@ -301,28 +391,74 @@ fn run_rounds(
     }
 }
 
+/// The row of `D` coordinates that starts at `base`.
+#[inline(always)]
+fn row_at<const D: usize>(coords: &[f32], base: usize) -> &[f32; D] {
+    let row: &[f32] = &coords[base..base + D];
+    row.try_into().expect("a row is D coordinates wide")
+}
+
+/// Run `body` on the row of every vertex the statistics are taken over.
+///
+/// When every vertex moves, `moving` is `0..vertex_count` in order, which is
+/// the order the rows are stored in, so the rows are walked directly and the
+/// gather through `moving` is skipped. Either way `body` sees the same rows in
+/// the same order.
+#[inline(always)]
+fn for_moving_rows<const D: usize>(
+    coords: &[f32],
+    moving: &[u32],
+    mut body: impl FnMut(&[f32; D]),
+) {
+    if moving.len() * D == coords.len() {
+        for row in coords.as_chunks::<D>().0 {
+            body(row);
+        }
+    } else {
+        for &vertex in moving {
+            body(row_at::<D>(coords, vertex as usize * D));
+        }
+    }
+}
+
 /// Compressed adjacency: `targets[starts[v]..starts[v + 1]]` are `v`'s
 /// neighbours.
-fn adjacency(graph: &Graph) -> (Vec<usize>, Vec<u32>) {
-    let vertex_count = graph.num_vertices() as usize;
-    let mut starts = vec![0usize; vertex_count + 1];
-    for &(left, right) in graph.edges() {
-        starts[left as usize + 1] += 1;
-        starts[right as usize + 1] += 1;
+///
+/// Building it is a pass over the edges and about as much memory as the
+/// coordinates take, so a caller placing several embeddings of one graph
+/// builds it once and hands it to each of them.
+pub(crate) struct Adjacency {
+    starts: Vec<usize>,
+    targets: Vec<u32>,
+}
+
+impl Adjacency {
+    /// The adjacency of `graph`.
+    pub(crate) fn of(graph: &Graph) -> Self {
+        let vertex_count = graph.num_vertices() as usize;
+        let mut starts = vec![0usize; vertex_count + 1];
+        for &(left, right) in graph.edges() {
+            starts[left as usize + 1] += 1;
+            starts[right as usize + 1] += 1;
+        }
+        for vertex in 0..vertex_count {
+            starts[vertex + 1] += starts[vertex];
+        }
+        let mut cursor = starts[..vertex_count].to_vec();
+        let mut targets = vec![0u32; graph.edges().len() * 2];
+        for &(left, right) in graph.edges() {
+            targets[cursor[left as usize]] = right;
+            cursor[left as usize] += 1;
+            targets[cursor[right as usize]] = left;
+            cursor[right as usize] += 1;
+        }
+        Adjacency { starts, targets }
     }
-    for vertex in 0..vertex_count {
-        starts[vertex + 1] += starts[vertex];
+
+    /// How many vertices the graph has.
+    fn vertex_count(&self) -> usize {
+        self.starts.len() - 1
     }
-    let mut cursor = starts[..vertex_count].to_vec();
-    let mut targets = vec![0u32; graph.edges().len() * 2];
-    for &(left, right) in graph.edges() {
-        targets[cursor[left as usize]] = right;
-        cursor[left as usize] += 1;
-        targets[cursor[right as usize]] = left;
-        cursor[right as usize] += 1;
-    }
-    crate::meter::charge((vertex_count + targets.len()) as u64);
-    (starts, targets)
 }
 
 /// Whether two whitened clouds agree to `tolerance` in the quantities read
@@ -344,7 +480,33 @@ fn is_settled(
     targets: &[u32],
     tolerance: f32,
 ) -> bool {
-    for (row, was) in coords.chunks_exact(dim).zip(previous.chunks_exact(dim)) {
+    match dim {
+        1 => is_settled_dim::<1>(coords, previous, starts, targets, tolerance),
+        2 => is_settled_dim::<2>(coords, previous, starts, targets, tolerance),
+        3 => is_settled_dim::<3>(coords, previous, starts, targets, tolerance),
+        4 => is_settled_dim::<4>(coords, previous, starts, targets, tolerance),
+        5 => is_settled_dim::<5>(coords, previous, starts, targets, tolerance),
+        6 => is_settled_dim::<6>(coords, previous, starts, targets, tolerance),
+        7 => is_settled_dim::<7>(coords, previous, starts, targets, tolerance),
+        8 => is_settled_dim::<8>(coords, previous, starts, targets, tolerance),
+        _ => unreachable!("the dimension is clamped to 1..=MAX_DIM"),
+    }
+}
+
+/// [`is_settled`] at a known dimension.
+fn is_settled_dim<const D: usize>(
+    coords: &[f32],
+    previous: &[f32],
+    starts: &[usize],
+    targets: &[u32],
+    tolerance: f32,
+) -> bool {
+    for (row, was) in coords
+        .as_chunks::<D>()
+        .0
+        .iter()
+        .zip(previous.as_chunks::<D>().0)
+    {
         let mut now = 0.0f32;
         let mut before = 0.0f32;
         for (value, earlier) in row.iter().zip(was) {
@@ -356,17 +518,17 @@ fn is_settled(
         }
     }
     for vertex in 0..starts.len().saturating_sub(1) {
-        let base = vertex * dim;
-        let row = &coords[base..base + dim];
-        let was = &previous[base..base + dim];
+        let base = vertex * D;
+        let row = row_at::<D>(coords, base);
+        let was = row_at::<D>(previous, base);
         for &neighbour in &targets[starts[vertex]..starts[vertex + 1]] {
             // Every edge is stored from both ends; measure it once.
             if neighbour as usize <= vertex {
                 continue;
             }
-            let other = neighbour as usize * dim;
-            let other_row = &coords[other..other + dim];
-            let other_was = &previous[other..other + dim];
+            let other = neighbour as usize * D;
+            let other_row = row_at::<D>(coords, other);
+            let other_was = row_at::<D>(previous, other);
             let mut now = 0.0f32;
             let mut before = 0.0f32;
             for (((value, other_value), earlier), other_earlier) in
@@ -397,67 +559,90 @@ fn is_settled(
 /// `moving` carries the vertices the statistics are taken over. An axis with
 /// no spread left is jittered from `rng` so that the rescaling has something
 /// to divide by and repeated rounds cannot collapse the cloud.
-fn whiten(coords: &mut [f32], dim: usize, moving: &[u32], rng: &mut Xorshift64) {
+fn whiten_dim<const D: usize>(coords: &mut [f32], moving: &[u32], rng: &mut Xorshift64) {
     let count = moving.len() as f64;
 
-    let mut centre = [0.0f64; MAX_DIM];
-    for &vertex in moving {
-        let row = vertex as usize * dim;
-        for (axis, value) in centre[..dim].iter_mut().enumerate() {
-            *value += f64::from(coords[row + axis]);
+    let mut centre = [0.0f64; D];
+    for_moving_rows::<D>(coords, moving, |row| {
+        for (value, coordinate) in centre.iter_mut().zip(row) {
+            *value += f64::from(*coordinate);
         }
-    }
-    for value in &mut centre[..dim] {
+    });
+    for value in &mut centre {
         *value /= count;
     }
-    for row in coords.chunks_exact_mut(dim) {
-        for (axis, value) in row.iter_mut().enumerate() {
-            *value -= centre[axis] as f32;
-        }
+    // The same shift is taken off every row, so it is rounded to `f32` once
+    // instead of once per row.
+    let mut shift = [0.0f32; D];
+    for (slot, value) in shift.iter_mut().zip(&centre) {
+        *slot = *value as f32;
     }
-
-    let mut covariance = [0.0f64; MAX_DIM * MAX_DIM];
-    for &vertex in moving {
-        let row = vertex as usize * dim;
-        for i in 0..dim {
-            let value = f64::from(coords[row + i]);
-            for j in i..dim {
-                covariance[i * dim + j] += value * f64::from(coords[row + j]);
+    let mut covariance = [[0.0f64; D]; D];
+    if moving.len() * D == coords.len() {
+        // Every vertex takes part in the statistics, so the shift comes off
+        // the same rows, in the same order, that the covariance sums over.
+        // The row's new coordinate is stored first and read back from the
+        // cloud, so the covariance still sums the `f32` values the cloud
+        // holds.
+        for row in coords.as_chunks_mut::<D>().0 {
+            for (value, taken) in row.iter_mut().zip(&shift) {
+                *value -= *taken;
+            }
+            accumulate_covariance(&mut covariance, row);
+        }
+    } else {
+        for row in coords.as_chunks_mut::<D>().0 {
+            for (value, taken) in row.iter_mut().zip(&shift) {
+                *value -= *taken;
             }
         }
+        for_moving_rows::<D>(coords, moving, |row| {
+            accumulate_covariance(&mut covariance, row);
+        });
     }
-    for i in 0..dim {
-        for j in i..dim {
-            let entry = covariance[i * dim + j] / count;
-            covariance[i * dim + j] = entry;
-            covariance[j * dim + i] = entry;
+    for i in 0..D {
+        let (upper, lower) = covariance.split_at_mut(i + 1);
+        let cells = &mut upper[i];
+        for cell in &mut cells[i..] {
+            *cell /= count;
+        }
+        for (below, &entry) in lower.iter_mut().zip(&cells[i + 1..]) {
+            below[i] = entry;
         }
     }
 
-    let mut vectors = [0.0f64; MAX_DIM * MAX_DIM];
-    jacobi(&mut covariance, &mut vectors, dim);
-    let mut order = [0usize; MAX_DIM];
-    for (axis, slot) in order[..dim].iter_mut().enumerate() {
+    let mut vectors = [[0.0f64; D]; D];
+    jacobi(covariance.as_flattened_mut(), vectors.as_flattened_mut(), D);
+    let mut order = [0usize; D];
+    for (axis, slot) in order.iter_mut().enumerate() {
         *slot = axis;
     }
-    order[..dim].sort_by(|&left, &right| {
-        covariance[right * dim + right]
-            .total_cmp(&covariance[left * dim + left])
+    order.sort_by(|&left, &right| {
+        covariance[right][right]
+            .total_cmp(&covariance[left][left])
             .then(left.cmp(&right))
     });
 
-    let mut rotated = [0.0f64; MAX_DIM];
-    for row in coords.chunks_exact_mut(dim) {
-        for (axis, value) in rotated[..dim].iter_mut().enumerate() {
-            let column = order[axis];
-            let mut projection = 0.0f64;
-            for (i, coordinate) in row.iter().enumerate() {
-                projection += f64::from(*coordinate) * vectors[i * dim + column];
-            }
-            *value = projection;
+    // The rotation reads the eigenvector matrix by column, once per row of the
+    // cloud. Permuting it into the axis order here lets the row loop run `i`
+    // outside and the axis inside: every axis still sums over `i` ascending,
+    // and a coordinate is widened to `f64` once instead of once per axis.
+    let mut permuted = [[0.0f64; D]; D];
+    for (i, weights) in permuted.iter_mut().enumerate() {
+        for (weight, &column) in weights.iter_mut().zip(&order) {
+            *weight = vectors[i][column];
         }
-        for (axis, value) in row.iter_mut().enumerate() {
-            *value = rotated[axis] as f32;
+    }
+    for row in coords.as_chunks_mut::<D>().0 {
+        let mut rotated = [0.0f64; D];
+        for (i, weights) in permuted.iter().enumerate() {
+            let coordinate = f64::from(row[i]);
+            for (projection, weight) in rotated.iter_mut().zip(weights) {
+                *projection += coordinate * weight;
+            }
+        }
+        for (value, projection) in row.iter_mut().zip(&rotated) {
+            *value = *projection as f32;
         }
     }
 
@@ -466,25 +651,44 @@ fn whiten(coords: &mut [f32], dim: usize, moving: &[u32], rng: &mut Xorshift64) 
     // together and rescaled together instead of a strided pass over the whole
     // cloud per axis. A jittered axis is remeasured where it is jittered, so
     // the generator is still drawn from in axis order.
-    let (mut means, mut deviations) = axis_spreads(coords, dim, moving);
-    let mut scales = [1.0f64; MAX_DIM];
-    for axis in 0..dim {
+    let (mut means, mut deviations) = axis_spreads_dim::<D>(coords, moving);
+    let mut scales = [1.0f64; D];
+    for axis in 0..D {
         if deviations[axis] <= FLAT_AXIS_DEVIATION {
             // A flat axis carries no direction to rescale. Spread it from the
             // generator so the cloud keeps its dimension in the next round.
-            for row in coords.chunks_exact_mut(dim) {
+            for row in coords.as_chunks_mut::<D>().0 {
                 row[axis] += unit_interval(rng) - 0.5;
             }
-            let (jittered, spread) = axis_spreads(coords, dim, moving);
+            let (jittered, spread) = axis_spreads_dim::<D>(coords, moving);
             (means[axis], deviations[axis]) = (jittered[axis], spread[axis]);
         }
         if deviations[axis] > FLAT_AXIS_DEVIATION {
             scales[axis] = 1.0 / deviations[axis];
         }
     }
-    for row in coords.chunks_exact_mut(dim) {
-        for ((value, mean), scale) in row.iter_mut().zip(&means[..dim]).zip(&scales[..dim]) {
+    for row in coords.as_chunks_mut::<D>().0 {
+        for ((value, mean), scale) in row.iter_mut().zip(&means).zip(&scales) {
             *value = ((f64::from(*value) - mean) * scale) as f32;
+        }
+    }
+}
+
+/// Add one recentred row's outer product to the upper triangle of
+/// `covariance`.
+///
+/// The row is widened once and every product is taken from the widened
+/// values, so a coordinate is converted once however many cells it reaches.
+#[inline(always)]
+fn accumulate_covariance<const D: usize>(covariance: &mut [[f64; D]; D], row: &[f32; D]) {
+    let mut wide = [0.0f64; D];
+    for (slot, value) in wide.iter_mut().zip(row) {
+        *slot = f64::from(*value);
+    }
+    for (i, cells) in covariance.iter_mut().enumerate() {
+        let value = wide[i];
+        for (cell, other) in cells[i..].iter_mut().zip(&wide[i..]) {
+            *cell += value * *other;
         }
     }
 }
@@ -495,27 +699,25 @@ fn whiten(coords: &mut [f32], dim: usize, moving: &[u32], rng: &mut Xorshift64) 
 /// all of its axes. An axis's sum runs over `moving` in the order it is
 /// stored in, so the two passes give an axis the value a pass over that
 /// column alone gives it.
-fn axis_spreads(coords: &[f32], dim: usize, moving: &[u32]) -> ([f64; MAX_DIM], [f64; MAX_DIM]) {
+fn axis_spreads_dim<const D: usize>(coords: &[f32], moving: &[u32]) -> ([f64; D], [f64; D]) {
     let count = moving.len() as f64;
-    let mut means = [0.0f64; MAX_DIM];
-    for &vertex in moving {
-        let row = &coords[vertex as usize * dim..][..dim];
-        for (mean, value) in means[..dim].iter_mut().zip(row) {
+    let mut means = [0.0f64; D];
+    for_moving_rows::<D>(coords, moving, |row| {
+        for (mean, value) in means.iter_mut().zip(row) {
             *mean += f64::from(*value);
         }
-    }
-    for mean in &mut means[..dim] {
+    });
+    for mean in &mut means {
         *mean /= count;
     }
-    let mut deviations = [0.0f64; MAX_DIM];
-    for &vertex in moving {
-        let row = &coords[vertex as usize * dim..][..dim];
-        for ((variance, mean), value) in deviations[..dim].iter_mut().zip(&means[..dim]).zip(row) {
+    let mut deviations = [0.0f64; D];
+    for_moving_rows::<D>(coords, moving, |row| {
+        for ((variance, mean), value) in deviations.iter_mut().zip(&means).zip(row) {
             let offset = f64::from(*value) - *mean;
             *variance += offset * offset;
         }
-    }
-    for variance in &mut deviations[..dim] {
+    });
+    for variance in &mut deviations {
         *variance = (*variance / count).sqrt();
     }
     (means, deviations)

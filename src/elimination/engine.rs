@@ -42,6 +42,10 @@ pub(crate) struct Prebuilt {
     /// Connected components of the preprocessed residual, reused by every
     /// portfolio candidate.
     components: Vec<Vec<u32>>,
+    /// The active vertices of the preprocessed residual in index order, so that
+    /// a candidate seeds its priority structure from the residual's vertices
+    /// rather than scanning every index of the input graph.
+    active: Vec<u32>,
     /// Initial fill count of each residual vertex. Computed on the first
     /// sampled min-fill run, then reused by later seeds.
     initial_fill: Option<Vec<u64>>,
@@ -64,6 +68,28 @@ pub(super) struct RunScratch {
     salt: Vec<u32>,
     /// What a sampled core works in, for the candidates that run one.
     sample: greedy::SampleScratch,
+    /// The step each vertex was eliminated at, refilled by the run that builds
+    /// a decomposition from it.
+    rank: Vec<u32>,
+    /// Where each vertex of a component stands in that component's own
+    /// numbering, while that component's subgraph is being built.
+    local_of: Vec<u32>,
+    /// Each component's subgraph in the component's own numbering, with the
+    /// meter units its construction charged, built the first time a candidate
+    /// reaches that component and read by every later one. The components and
+    /// the residual they are cut from are both fixed for the graph, so the
+    /// subgraphs are too.
+    component_graphs: Vec<Option<(EliminationGraph, u64)>>,
+    /// The copy the component currently being solved is eliminated on,
+    /// refreshed from that component's subgraph. Components are solved one
+    /// after another, so one copy serves them all, and keeping it means a
+    /// refresh refills buffers it already has.
+    component_work: Option<EliminationGraph>,
+    /// The residual's initial fill counts in each component's own numbering,
+    /// derived from the counts the first fill-based candidate computed. The
+    /// counts and the components are both fixed for the graph, so every later
+    /// candidate reads the same vectors rather than building its own.
+    component_fill: Option<Vec<Vec<u64>>>,
 }
 
 impl RunScratch {
@@ -72,6 +98,11 @@ impl RunScratch {
         Self {
             salt: Vec::new(),
             sample: greedy::SampleScratch::new(),
+            rank: Vec::new(),
+            local_of: Vec::new(),
+            component_graphs: Vec::new(),
+            component_work: None,
+            component_fill: None,
         }
     }
 }
@@ -82,9 +113,11 @@ pub(crate) fn prebuild(input: &crate::Graph, soft_deadline: Option<Instant>) -> 
     let graph = EliminationGraph::from_edges(input.num_vertices, &input.edges);
     let reduced = preprocess(graph, soft_deadline);
     let components = find_connected_components(&reduced.graph);
+    let active = execution::active_vertices(&reduced.graph);
     Prebuilt {
         reduced,
         components,
+        active,
         initial_fill: None,
         work: None,
         scratch: RunScratch::new(),
@@ -175,15 +208,19 @@ pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> 
     // be a graph-sized allocation per candidate that nothing writes to.
     if prebuilt.components.len() > 1 {
         let scratch = &mut prebuilt.scratch;
-        draw_salt(&mut scratch.salt, prebuilt.reduced.graph.len(), spec.seed);
+        draw_salt(
+            &mut scratch.salt,
+            prebuilt.reduced.graph.len(),
+            spec.order,
+            spec.seed,
+        );
         return run_order_per_component(
             &prebuilt.reduced.graph,
-            prebuilt.reduced.prefix.clone(),
+            &prebuilt.reduced.prefix,
             &prebuilt.components,
-            &scratch.salt,
             prebuilt.initial_fill.as_deref(),
             spec,
-            &mut scratch.sample,
+            scratch,
         );
     }
     // Refresh the working copy of the residual, or take the first one. Keeping
@@ -202,20 +239,27 @@ pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> 
         &prebuilt.reduced.prefix,
         &prebuilt.components,
         prebuilt.initial_fill.as_deref(),
+        Some(&prebuilt.active),
         spec,
         &mut prebuilt.scratch,
     )
 }
 
 /// Draw the per-vertex tie-break salt one run works from into `salt`, which
-/// keeps its storage from the run before.
+/// keeps its storage from the run before, or leave it empty for an order that
+/// never reads one: a sampled order breaks its ties from its own stream, and
+/// drawing a salt the size of the graph for each of its restarts was a pass
+/// over the graph for nothing.
 ///
 /// `+ SEED_OFFSET` avoids xorshift64's zero fixed point. The update-order
 /// min-degree variant does not read the salt, but keeping it here avoids
 /// another representation in component remapping.
-fn draw_salt(salt: &mut Vec<u32>, n: usize, seed: u64) {
-    let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
+fn draw_salt(salt: &mut Vec<u32>, n: usize, order: Order<'_>, seed: u64) {
     salt.clear();
+    if !order.uses_salt() {
+        return;
+    }
+    let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
     salt.extend((0..n).map(|_| rng.next_u32()));
 }
 
@@ -268,17 +312,25 @@ pub(super) fn find_connected_components(graph: &EliminationGraph) -> Vec<Vec<u32
 /// `initial_fill` is the caller's cached per-vertex fill count for this exact
 /// graph; the min-fill sampling cores are the only ones that read it. A
 /// component run remaps the counts into its local numbering.
+///
+/// `active` is the caller's list of `graph`'s active vertices in index order,
+/// which the sampling cores seed their buckets from; without one they scan
+/// every index instead.
 fn run_elimination_raw(
     graph: &mut EliminationGraph,
     prefix: &ElimSteps,
     salt: &[u32],
     initial_fill: Option<&[u64]>,
+    active: Option<&[u32]>,
     spec: RunSpec<'_>,
     scratch: &mut greedy::SampleScratch,
 ) -> (ElimSteps, ElimExit, Vec<u32>) {
-    // The run continues from what preprocessing already eliminated and appends
-    // to it, so it needs its own copy of those steps.
-    let mut steps = prefix.clone();
+    // The run continues from what preprocessing already eliminated; it records
+    // only its own steps, numbered after the prefix's, and the two are joined
+    // once it has something to build. Most restarts on a large graph abort,
+    // and copying a prefix of a million bags for each was most of what they
+    // allocated.
+    let mut steps = ElimSteps::after(prefix);
 
     let exit = match spec.order {
         Order::MinFill => eliminate_min_fill::<false>(graph, salt, steps.sink(), spec.stop),
@@ -299,6 +351,7 @@ fn run_elimination_raw(
                 ..spec.stop
             },
             initial_fill,
+            active,
             scratch,
         ),
         Order::MinDegreeSampled { weights } => eliminate_sampled_min_degree(
@@ -313,6 +366,7 @@ fn run_elimination_raw(
                 soft_deadline: None,
                 ..spec.stop
             },
+            active,
             scratch,
         ),
         Order::FillDegreeSampled {
@@ -331,6 +385,7 @@ fn run_elimination_raw(
                 ..spec.stop
             },
             initial_fill,
+            active,
             degree_coefficient,
             scratch,
         ),
@@ -364,20 +419,47 @@ fn run_elimination_raw(
 /// appending to `all_bags`.
 ///
 /// `graph` is the preprocessed residual, read for its neighbour lists and
-/// never eliminated on: each component is eliminated on the subgraph built
-/// from it below.
+/// never eliminated on: each component is eliminated on a copy of the subgraph
+/// built from it below, which the scratch keeps from one candidate to the next.
 fn run_order_per_component(
     graph: &EliminationGraph,
-    prefix: ElimSteps,
+    prefix: &ElimSteps,
     components: &[Vec<u32>],
-    salt: &[u32],
     initial_fill: Option<&[u64]>,
     spec: RunSpec<'_>,
-    scratch: &mut greedy::SampleScratch,
+    scratch: &mut RunScratch,
 ) -> OrderRun {
+    let RunScratch {
+        salt,
+        sample,
+        rank: global_rank,
+        local_of,
+        component_graphs,
+        component_work,
+        component_fill,
+    } = scratch;
+    // Each component's slice of the residual's fill counts, built on the first
+    // candidate that has counts to slice and read by every later one.
+    let component_fill: Option<&[Vec<u64>]> = initial_fill.map(|fill| {
+        component_fill
+            .get_or_insert_with(|| {
+                components
+                    .iter()
+                    .map(|comp| comp.iter().map(|&vertex| fill[vertex as usize]).collect())
+                    .collect()
+            })
+            .as_slice()
+    });
     let n = graph.len();
-    let mut all_bags: Vec<Vec<u32>> = prefix.bags;
-    let mut global_rank: Vec<u32> = vec![u32::MAX; n];
+    // The bags after the prefix's; the prefix is put in front of them once
+    // there is a decomposition to build.
+    let base = prefix.next_step();
+    let mut all_bags: Vec<Vec<u32>> = Vec::new();
+    // The decomposition is built by reading a rank for every vertex, including
+    // the ones no component covers, so this one is refilled rather than left as
+    // the run before it wrote it.
+    global_rank.clear();
+    global_rank.resize(n, u32::MAX);
 
     // Prefix ranks: (vertex, step) where step == bag index.
     for &(v, s) in &prefix.rank_pairs {
@@ -385,40 +467,77 @@ fn run_order_per_component(
     }
 
     let mut nbrs_buf: Vec<u32> = Vec::new();
-    let mut local_of = vec![u32::MAX; n];
+    // Written for every vertex of a component before that component's subgraph
+    // is built, and read only at vertices of the same component, so whatever an
+    // earlier run left in it is never read.
+    if local_of.len() < n {
+        local_of.resize(n, u32::MAX);
+    }
+    if component_graphs.len() != components.len() {
+        component_graphs.clear();
+        component_graphs.resize_with(components.len(), || None);
+    }
+    let empty_prefix = ElimSteps::default();
     // Components after a soft-cutoff stop run against the hard deadline alone,
     // so this changes once and applies to every later component.
     let mut stop = spec.stop;
     let mut soft_cutoff_passed = false;
     for (comp_idx, comp) in components.iter().enumerate() {
-        let comp_n = comp.len() as u32;
-        for (i, &v) in comp.iter().enumerate() {
-            local_of[v as usize] = i as u32;
-        }
-        // Extract component edges in local indexing (bitset-aware: adj may
-        // be stale after preprocess).
-        let mut comp_edges: Vec<(u32, u32)> = Vec::new();
-        for &v in comp {
-            nbrs_buf.clear();
-            graph.collect_live_nbrs_into(v, &mut nbrs_buf);
-            for &u in &nbrs_buf {
-                if u > v {
-                    comp_edges.push((local_of[v as usize], local_of[u as usize]));
-                }
+        // The residual and the components are the same on every candidate, so
+        // each component's subgraph is built once and the candidates after it
+        // copy that one. Building it charged the meter per vertex of the
+        // component; charging the same total here, where the construction
+        // stood, leaves a candidate that copies the subgraph having spent what
+        // a candidate that built it spent, at every point that reads a pacer
+        // or the deadline.
+        let pristine: &EliminationGraph = match &mut component_graphs[comp_idx] {
+            Some((pristine, units)) => {
+                crate::meter::charge(*units);
+                pristine
             }
-        }
-
+            slot => {
+                let spent_before = crate::meter::units_spent();
+                for (i, &v) in comp.iter().enumerate() {
+                    local_of[v as usize] = i as u32;
+                }
+                // Extract component edges in local indexing (bitset-aware: adj
+                // may be stale after preprocess).
+                let mut comp_edges: Vec<(u32, u32)> = Vec::new();
+                for &v in comp {
+                    nbrs_buf.clear();
+                    graph.collect_live_nbrs_into(v, &mut nbrs_buf);
+                    for &u in &nbrs_buf {
+                        if u > v {
+                            comp_edges.push((local_of[v as usize], local_of[u as usize]));
+                        }
+                    }
+                }
+                let built = EliminationGraph::from_edges(comp.len() as u32, &comp_edges);
+                let units = crate::meter::units_spent().saturating_sub(spent_before);
+                &slot.insert((built, units)).0
+            }
+        };
         // Global preprocessing already reached a fixed point. Restricting the
         // residual to one connected component changes no neighborhood, so a
         // second preprocessing pass could not fire another rule.
-        let mut sub_reduced = Reduced {
-            graph: EliminationGraph::from_edges(comp_n, &comp_edges),
-            prefix: ElimSteps::default(),
+        //
+        // The subgraph is eliminated on and comes back spent, so the run works
+        // on the copy kept for it, refreshed from the subgraph first.
+        let sub_graph = match &mut *component_work {
+            Some(work) => {
+                work.clone_from(pristine);
+                work
+            }
+            slot => slot.insert(pristine.clone()),
         };
-        let sub_initial_fill: Option<Vec<u64>> =
-            initial_fill.map(|fill| comp.iter().map(|&vertex| fill[vertex as usize]).collect());
+        let sub_initial_fill = component_fill.map(|fill| fill[comp_idx].as_slice());
 
-        let sub_salt: Vec<u32> = comp.iter().map(|&v| salt[v as usize]).collect();
+        // An order that reads no salt has none to re-index.
+        let sub_salt: Vec<u32> = if salt.is_empty() {
+            Vec::new()
+        } else {
+            comp.iter().map(|&v| salt[v as usize]).collect()
+        };
         // This component is re-indexed from 0, so a sampling core's weight is
         // re-indexed with it; a deterministic core has none to re-index.
         let sub_weight: Option<Vec<u32>> = spec
@@ -436,13 +555,16 @@ fn run_order_per_component(
             ..spec
         };
 
+        // Every vertex of a component subgraph is active, so its seeding scan
+        // has nothing to skip and needs no list of its own.
         let (comp_steps, comp_exit, comp_residual) = run_elimination_raw(
-            &mut sub_reduced.graph,
-            &sub_reduced.prefix,
+            sub_graph,
+            &empty_prefix,
             &sub_salt,
-            sub_initial_fill.as_deref(),
+            sub_initial_fill,
+            None,
             sub_spec,
-            scratch,
+            sample,
         );
         match comp_exit {
             ElimExit::WidthLimitExceeded => return OrderRun::WidthAborted,
@@ -450,7 +572,7 @@ fn run_order_per_component(
                 return OrderRun::DeadlineAborted(cutoff);
             }
             ElimExit::Complete | ElimExit::DeadlineReached(_) => {
-                comp_steps.append_reindexed(comp, &mut all_bags, &mut global_rank);
+                comp_steps.append_reindexed(comp, base, &mut all_bags, global_rank);
             }
         }
 
@@ -459,8 +581,9 @@ fn run_order_per_component(
                 comp_residual
                     .into_iter()
                     .map(|vertex| comp[vertex as usize]),
+                base,
                 &mut all_bags,
-                &mut global_rank,
+                global_rank,
             );
             // The soft cutoff is the construction budget, not the end of the
             // run: the components after this one still have the hard deadline
@@ -477,9 +600,9 @@ fn run_order_per_component(
             }
             // After the hard cutoff there is no time to start another order.
             for remaining in &components[(comp_idx + 1)..] {
-                append_residual_bag(remaining.iter().copied(), &mut all_bags, &mut global_rank);
+                append_residual_bag(remaining.iter().copied(), base, &mut all_bags, global_rank);
             }
-            return finish(all_bags, global_rank, comp_exit, true);
+            return finish_after(prefix, all_bags, global_rank, comp_exit, true);
         }
     }
 
@@ -490,7 +613,13 @@ fn run_order_per_component(
     } else {
         ElimExit::Complete
     };
-    finish(all_bags, global_rank, exit, spec.complete_on_deadline)
+    finish_after(
+        prefix,
+        all_bags,
+        global_rank,
+        exit,
+        spec.complete_on_deadline,
+    )
 }
 
 /// Run one order over a preprocessed residual the caller owns.
@@ -503,24 +632,17 @@ pub(super) fn run_order_on_residual(
     prefix: &ElimSteps,
     components: &[Vec<u32>],
     initial_fill: Option<&[u64]>,
+    active: Option<&[u32]>,
     spec: RunSpec<'_>,
     scratch: &mut RunScratch,
 ) -> OrderRun {
     let n = graph.len();
-    draw_salt(&mut scratch.salt, n, spec.seed);
+    draw_salt(&mut scratch.salt, n, spec.order, spec.seed);
 
     // Solve each connected component independently. Components arise
     // naturally after preprocessing removes low-degree vertices.
     if components.len() > 1 {
-        return run_order_per_component(
-            graph,
-            prefix.clone(),
-            components,
-            &scratch.salt,
-            initial_fill,
-            spec,
-            &mut scratch.sample,
-        );
+        return run_order_per_component(graph, prefix, components, initial_fill, spec, scratch);
     }
 
     // Only the whole-residual path checks this: the per-component path
@@ -539,14 +661,26 @@ pub(super) fn run_order_on_residual(
         prefix,
         &scratch.salt,
         initial_fill,
+        active,
         spec,
         &mut scratch.sample,
     );
-    finalize(steps, n, exit, spec.complete_on_deadline, residual)
+    finalize(
+        prefix,
+        steps,
+        n,
+        exit,
+        spec.complete_on_deadline,
+        residual,
+        &mut scratch.rank,
+    )
 }
 
+/// Bag `vertices` as one more entry of `bags`, whose first entry stands at
+/// step `base`.
 fn append_residual_bag(
     vertices: impl IntoIterator<Item = u32>,
+    base: usize,
     bags: &mut Vec<Vec<u32>>,
     rank: &mut [u32],
 ) {
@@ -554,38 +688,78 @@ fn append_residual_bag(
     if vertices.is_empty() {
         return;
     }
-    let bag_index = bags.len() as u32;
+    let bag_index = (base + bags.len()) as u32;
     for &vertex in &vertices {
         rank[vertex as usize] = bag_index;
     }
     bags.push(vertices);
 }
 
+/// How a run that has nothing to build ended, or `None` for one that has.
+fn aborted(exit: ElimExit, complete_on_deadline: bool) -> Option<OrderRun> {
+    match exit {
+        ElimExit::WidthLimitExceeded => Some(OrderRun::WidthAborted),
+        ElimExit::DeadlineReached(cutoff) if !complete_on_deadline => {
+            Some(OrderRun::DeadlineAborted(cutoff))
+        }
+        ElimExit::Complete | ElimExit::DeadlineReached(_) => None,
+    }
+}
+
 fn finalize(
-    mut steps: ElimSteps,
+    prefix: &ElimSteps,
+    mut tail: ElimSteps,
     n: usize,
     exit: ElimExit,
     complete_on_deadline: bool,
     residual: Vec<u32>,
+    rank: &mut Vec<u32>,
 ) -> OrderRun {
-    let mut rank = vec![u32::MAX; n];
-    for (v, r) in steps.rank_pairs {
+    if let Some(run) = aborted(exit, complete_on_deadline) {
+        return run;
+    }
+    // The decomposition is built by reading a rank for every vertex, including
+    // the ones no step covers, so this one is refilled rather than left as the
+    // run before it wrote it.
+    rank.clear();
+    rank.resize(n, u32::MAX);
+    for &(v, r) in prefix.rank_pairs.iter().chain(&tail.rank_pairs) {
         rank[v as usize] = r as u32;
     }
-    append_residual_bag(residual, &mut steps.bags, &mut rank);
-    finish(steps.bags, rank, exit, complete_on_deadline)
+    let base = prefix.next_step();
+    append_residual_bag(residual, base, &mut tail.bags, rank);
+    finish_after(prefix, tail.bags, rank, exit, complete_on_deadline)
+}
+
+/// Build the decomposition from the prefix's bags followed by `tail`, whose
+/// first entry stands at the step after the prefix's last. A run that
+/// aborted has nothing to build and returns before the prefix is copied.
+fn finish_after(
+    prefix: &ElimSteps,
+    tail: Vec<Vec<u32>>,
+    rank: &[u32],
+    exit: ElimExit,
+    complete_on_deadline: bool,
+) -> OrderRun {
+    if let Some(run) = aborted(exit, complete_on_deadline) {
+        return run;
+    }
+    let mut bags = Vec::with_capacity(prefix.bags.len() + tail.len());
+    bags.extend(prefix.bags.iter().cloned());
+    bags.extend(tail);
+    finish(bags, rank, exit, complete_on_deadline)
 }
 
 fn finish(
     bags: Vec<Vec<u32>>,
-    rank: Vec<u32>,
+    rank: &[u32],
     exit: ElimExit,
     complete_on_deadline: bool,
 ) -> OrderRun {
     match exit {
-        ElimExit::Complete => OrderRun::Completed(build_td_from_ranked_bags(bags, &rank)),
+        ElimExit::Complete => OrderRun::Completed(build_td_from_ranked_bags(bags, rank)),
         ElimExit::DeadlineReached(cutoff) if complete_on_deadline => {
-            OrderRun::CompletedAtDeadline(cutoff, build_td_from_ranked_bags(bags, &rank))
+            OrderRun::CompletedAtDeadline(cutoff, build_td_from_ranked_bags(bags, rank))
         }
         ElimExit::DeadlineReached(cutoff) => OrderRun::DeadlineAborted(cutoff),
         ElimExit::WidthLimitExceeded => OrderRun::WidthAborted,

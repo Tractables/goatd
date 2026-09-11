@@ -45,6 +45,7 @@ pub mod meter;
 mod pace;
 pub mod partition;
 pub mod portfolio;
+mod prefetch;
 mod rng;
 mod stop;
 
