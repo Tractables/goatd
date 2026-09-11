@@ -814,8 +814,16 @@ trait ElimEntry {
 /// where it follows from the vertex count instead.
 struct Bucket {
     vertices: Vec<u32>,
+    /// The sampling mass of each entry of `vertices`, kept in step with it
+    /// when the weights are not uniform and left empty when they are: the
+    /// band sampler's prefix walk reads it in place of one random weight
+    /// lookup per tied vertex.
+    masses: Vec<u64>,
     sampling_mass: u64,
 }
+
+/// The vectors an empty bucket hands back for the next bucket to reuse.
+type SpareBucket = (Vec<u32>, Vec<u64>);
 
 /// Hashes internal `u64` priority keys without the cost of general-purpose
 /// keyed hashing.
@@ -920,7 +928,7 @@ impl PriorityBuckets {
     /// tracked minimum. A created bucket takes its vertex storage from
     /// `spare` when one is waiting there.
     #[inline]
-    fn get_or_insert(&mut self, key: u64, spare: &mut Vec<Vec<u32>>) -> (&mut Bucket, bool) {
+    fn get_or_insert(&mut self, key: u64, spare: &mut Vec<SpareBucket>) -> (&mut Bucket, bool) {
         let Some(index) = self.dense_index(key) else {
             return match self.overflow.entry(key) {
                 Entry::Occupied(entry) => (entry.into_mut(), false),
@@ -944,9 +952,11 @@ impl PriorityBuckets {
         (&mut self.buckets[self.slots[index] as usize], created)
     }
 
-    fn empty_bucket(spare: &mut Vec<Vec<u32>>) -> Bucket {
+    fn empty_bucket(spare: &mut Vec<SpareBucket>) -> Bucket {
+        let (vertices, masses) = spare.pop().unwrap_or_default();
         Bucket {
-            vertices: spare.pop().unwrap_or_default(),
+            vertices,
+            masses,
             sampling_mass: 0,
         }
     }
@@ -955,7 +965,7 @@ impl PriorityBuckets {
     /// back on the free list with its vertex allocation; an overflow bucket
     /// hands that allocation to `spare`.
     #[inline]
-    fn remove_empty(&mut self, key: u64, spare: &mut Vec<Vec<u32>>) {
+    fn remove_empty(&mut self, key: u64, spare: &mut Vec<SpareBucket>) {
         match self.dense_index(key) {
             Some(index) => {
                 let slot = std::mem::replace(&mut self.slots[index], NO_BUCKET);
@@ -966,7 +976,7 @@ impl PriorityBuckets {
             }
             None => {
                 let bucket = self.overflow.remove(&key).expect("bucket missing");
-                spare.push(bucket.vertices);
+                spare.push((bucket.vertices, bucket.masses));
             }
         }
     }
@@ -1011,7 +1021,7 @@ impl BucketPosition {
 /// per key on every run.
 pub(super) struct BucketStorage {
     buckets: PriorityBuckets,
-    spare_vertices: Vec<Vec<u32>>,
+    spare_vertices: Vec<SpareBucket>,
     position: Vec<BucketPosition>,
 }
 
@@ -1038,6 +1048,7 @@ impl BucketStorage {
             self.buckets.slots.fill(NO_BUCKET);
             for bucket in &mut self.buckets.buckets {
                 bucket.vertices.clear();
+                bucket.masses.clear();
                 bucket.sampling_mass = 0;
             }
             self.buckets.free.clear();
@@ -1047,11 +1058,14 @@ impl BucketStorage {
                 // A bucket only reaches the spare pool empty: what comes out
                 // of it becomes another key's bucket as it stands.
                 bucket.vertices.clear();
-                self.spare_vertices.push(bucket.vertices);
+                bucket.masses.clear();
+                self.spare_vertices.push((bucket.vertices, bucket.masses));
             }
         }
         debug_assert!(
-            self.spare_vertices.iter().all(|spare| spare.is_empty()),
+            self.spare_vertices
+                .iter()
+                .all(|(vertices, masses)| vertices.is_empty() && masses.is_empty()),
             "spare bucket storage holds no vertices"
         );
         self.buckets.dense_keys = PriorityBuckets::dense_keys_for(vertex_count);
@@ -1069,7 +1083,7 @@ pub(super) struct BucketMap<'a> {
     /// marks it dirty; the next read scans the live priority keys once.
     minimum_key: Option<u64>,
     minimum_dirty: bool,
-    spare_vertices: &'a mut Vec<Vec<u32>>,
+    spare_vertices: &'a mut Vec<SpareBucket>,
     position: &'a mut Vec<BucketPosition>,
     weights: &'a [u32],
     uniform_mass: Option<u64>,
@@ -1109,7 +1123,9 @@ impl<'a> BucketMap<'a> {
         let idx = bucket.vertices.len();
         bucket.vertices.push(v);
         if self.uniform_mass.is_none() {
-            bucket.sampling_mass += sampling_mass(self.weights[v as usize]);
+            let mass = sampling_mass(self.weights[v as usize]);
+            bucket.sampling_mass += mass;
+            bucket.masses.push(mass);
         }
         if created {
             self.minimum_key = Some(self.minimum_key.map_or(key, |minimum| minimum.min(key)));
@@ -1150,10 +1166,15 @@ impl<'a> BucketMap<'a> {
         v: u32,
         position: BucketPosition,
     ) -> bool {
-        if uniform_mass.is_none() {
-            bucket.sampling_mass -= sampling_mass(weights[v as usize]);
-        }
         let last_idx = bucket.vertices.len() - 1;
+        if uniform_mass.is_none() {
+            debug_assert_eq!(
+                bucket.masses[position.index],
+                sampling_mass(weights[v as usize])
+            );
+            bucket.sampling_mass -= bucket.masses[position.index];
+            bucket.masses.swap_remove(position.index);
+        }
         if position.index != last_idx {
             let moved = bucket.vertices[last_idx];
             bucket.vertices[position.index] = moved;
@@ -1251,8 +1272,8 @@ impl<'a> BucketMap<'a> {
         let mut scanned = 0;
         let mut pick = first;
         'walk: for bucket in self.band_buckets(minimum, band) {
-            for &v in &bucket.vertices {
-                acc += sampling_mass(self.weights[v as usize]);
+            for (&v, &mass) in bucket.vertices.iter().zip(&bucket.masses) {
+                acc += mass;
                 scanned += 1;
                 pick = v;
                 if r < acc {
