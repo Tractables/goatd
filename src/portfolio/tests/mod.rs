@@ -1882,3 +1882,105 @@ fn relative_fill_admission_uses_the_remaining_budget() {
     assert!(!super::relative_fill_fits(cost, Some(now)));
     assert!(!super::relative_fill_fits(cost, None));
 }
+
+#[test]
+fn final_reinsertion_skips_unbounded_and_expired_runs() {
+    let graph = Graph::new(3, [(0, 1), (1, 2)]);
+    let tree = TreeDecomposition::new(&graph, [vec![0, 1], vec![1, 2]], [(0, 1)]).unwrap();
+    let epoch = Instant::now();
+    let _clock = crate::meter::arm(epoch);
+    for deadline in [None, Some(epoch)] {
+        let mut candidates = CandidateSet::best_only().with_deadline(deadline);
+        candidates.push(
+            tree.clone(),
+            CandidateOrigin {
+                stage: Stage::MinFill,
+                seed: 0,
+                pass: Pass::Only,
+            },
+        );
+        super::reinsert_at_end(&graph, 0, epoch, &mut candidates, &mut |_| {
+            panic!("expired or unbounded finisher ran")
+        });
+        assert_eq!(candidates.best().unwrap().to_td(), tree.to_td());
+    }
+}
+
+#[test]
+fn final_reinsertion_narrows_a_minimal_triangulation_and_reports_the_winner() {
+    let graph = Graph::new(5, (0..2).flat_map(|u| (2..5).map(move |v| (u, v))));
+    let tree =
+        TreeDecomposition::new(&graph, [vec![0, 2, 3, 4], vec![1, 2, 3, 4]], [(0, 1)]).unwrap();
+    let epoch = Instant::now();
+    let _clock = crate::meter::arm(epoch);
+    let mut candidates = CandidateSet::best_only()
+        .reporting_shape(true)
+        .with_deadline(Some(epoch + Duration::from_secs(1)));
+    candidates.push(
+        tree,
+        CandidateOrigin {
+            stage: Stage::MinFill,
+            seed: 0,
+            pass: Pass::Only,
+        },
+    );
+    let mut trace = Vec::new();
+    super::reinsert_at_end(&graph, 0, epoch, &mut candidates, &mut |event| {
+        trace.push(event)
+    });
+    candidates.best().unwrap().validate(&graph).unwrap();
+    assert_eq!(candidates.best().unwrap().treewidth(), 2);
+    assert_eq!(trace.len(), 1);
+    assert_eq!(trace[0].stage, Stage::Reinserted);
+    assert!(matches!(
+        trace[0].outcome,
+        CandidateOutcome::Produced {
+            width: 2,
+            best: true,
+            shape: Some(_),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn final_reinsertion_reports_an_unchanged_tree_without_claiming_a_deadline() {
+    let graph = Graph::new(3, [(0, 1), (1, 2), (0, 2)]);
+    let tree = TreeDecomposition::new(&graph, [vec![0, 1, 2]], []).unwrap();
+    let epoch = Instant::now();
+    let _clock = crate::meter::arm(epoch);
+    for candidates in [CandidateSet::all(1), CandidateSet::best_only()] {
+        let mut candidates = candidates
+            .reporting_shape(true)
+            .with_deadline(Some(epoch + Duration::from_secs(1)));
+        candidates.push(
+            tree.clone(),
+            CandidateOrigin {
+                stage: Stage::MinFill,
+                seed: 0,
+                pass: Pass::Only,
+            },
+        );
+        let mut trace = Vec::new();
+        super::reinsert_at_end(&graph, 0, epoch, &mut candidates, &mut |event| {
+            trace.push(event)
+        });
+        assert_eq!(trace.len(), 1);
+        assert!(
+            matches!(
+                trace[0].outcome,
+                CandidateOutcome::Produced {
+                    width: 2,
+                    total_bag_size: 3,
+                    shape: Some(_),
+                    best: false,
+                }
+            ),
+            "an unchanged completed tree is not a deadline: {:?}",
+            trace[0]
+        );
+        let retained = candidates.into_candidates();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].decomposition.to_td(), tree.to_td());
+    }
+}
