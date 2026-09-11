@@ -14,7 +14,6 @@
 //! left gives a minimal triangulation, and its clique tree is a decomposition
 //! no wider than the one it started from.
 
-pub mod exchange;
 pub mod vertex_rebuild;
 
 use std::time::{Duration, Instant};

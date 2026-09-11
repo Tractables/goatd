@@ -2534,8 +2534,7 @@ fn reinsert_at_end(
         return;
     };
     let best = candidates.best().expect("the portfolio produced a tree");
-    let (found, stats) =
-        decomposition::vertex_rebuild::improve_direct_trusted(graph, best, deadline);
+    let (found, stats) = decomposition::vertex_rebuild::improve_trusted(graph, best, deadline);
     let outcome = if stats.improved > 0 {
         candidates.push(
             found,

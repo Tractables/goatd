@@ -13,8 +13,8 @@ mod ops;
 mod pmc;
 mod refine;
 
-pub use minimal::{exchange, minimalize_triangulation, vertex_rebuild};
 pub(crate) use minimal::{minimalize_at, minimalize_fits};
+pub use minimal::{minimalize_triangulation, vertex_rebuild};
 pub use model::{TdBag, TreeDecomposition};
 pub(crate) use ops::SubsumedBagCompaction;
 pub use ops::{Projection, RootedForest};

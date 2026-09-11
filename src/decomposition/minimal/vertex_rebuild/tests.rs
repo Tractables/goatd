@@ -16,30 +16,34 @@ fn every_vertex_of_every_five_vertex_graph_can_be_rebuilt() {
                 .filter(|(i, _)| mask & (1 << i) != 0)
                 .map(|(_, &edge)| edge),
         );
-        let seed = decompose(&graph, Order::MinFill, 0, None).unwrap();
-        for vertex in 0..5 {
-            let candidate = std::panic::catch_unwind(|| {
-                rebuild(
-                    &graph,
-                    &seed,
-                    vertex,
-                    Instant::now() + Duration::from_secs(1),
-                )
-            })
-            .unwrap_or_else(|_| {
-                panic!(
-                    "mask={mask} vertex={vertex} graph={:?} seed={}",
-                    graph.edges(),
-                    seed.to_td()
-                )
-            });
-            if let Some(next) = candidate {
-                next.validate(&graph).unwrap();
-                checked += 1;
+        for seed in [
+            decompose(&graph, Order::MinFill, 0, None).unwrap(),
+            TreeDecomposition::new(&graph, [vec![0, 1, 2, 3, 4]], []).unwrap(),
+        ] {
+            for vertex in 0..5 {
+                let candidate = std::panic::catch_unwind(|| {
+                    rebuild(
+                        &graph,
+                        &seed,
+                        vertex,
+                        Instant::now() + Duration::from_secs(1),
+                    )
+                })
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "mask={mask} vertex={vertex} graph={:?} seed={}",
+                        graph.edges(),
+                        seed.to_td()
+                    )
+                });
+                if let Some(next) = candidate {
+                    next.validate(&graph).unwrap();
+                    checked += 1;
+                }
             }
         }
     }
-    assert!(checked > 4000);
+    assert_eq!(checked, 9600);
 }
 
 #[test]
@@ -95,66 +99,6 @@ fn vertex_reconstruction_escapes_a_minimal_triangulation() {
 }
 
 #[test]
-fn the_checked_entry_rejects_a_tree_for_a_different_graph() {
-    let graph = Graph::new(2, []);
-    let tree = TreeDecomposition::new(&graph, [vec![0], vec![1]], [(0, 1)]).unwrap();
-    assert!(improve(&Graph::new(2, [(0, 1)]), &tree, Instant::now()).is_err());
-}
-
-#[test]
-fn direct_reinsertion_matches_completed_edges_and_exact_quality_on_small_graphs() {
-    let pairs: Vec<_> = (0..5)
-        .flat_map(|u| (u + 1..5).map(move |v| (u, v)))
-        .collect();
-    let mut checked = 0;
-    for mask in 0..(1usize << pairs.len()) {
-        let graph = Graph::new(
-            5,
-            pairs
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| mask & (1 << i) != 0)
-                .map(|(_, &edge)| edge),
-        );
-        let seeds = [
-            decompose(&graph, Order::MinFill, 0, None).unwrap(),
-            TreeDecomposition::new(&graph, [vec![0, 1, 2, 3, 4]], []).unwrap(),
-        ];
-        for seed in seeds {
-            for vertex in 0..5 {
-                let deadline = Instant::now() + Duration::from_secs(2);
-                let full = rebuild(&graph, &seed, vertex, deadline);
-                let direct = std::panic::catch_unwind(|| {
-                    rebuild_candidate::<true>(&graph, &seed, vertex, deadline)
-                })
-                .unwrap_or_else(|_| {
-                    panic!("mask={mask} vertex={vertex} seed={}", seed.to_td());
-                });
-                assert_eq!(full.is_some(), direct.is_some());
-                if let (Some(full), Some(direct)) = (full, direct) {
-                    direct.validate(&graph).unwrap();
-                    let a = super::super::completion(&full, 5, None).unwrap();
-                    let b = super::super::completion(&direct, 5, None).unwrap();
-                    assert_eq!(
-                        a.rows,
-                        b.rows,
-                        "mask={mask} vertex={vertex} seed={}",
-                        seed.to_td()
-                    );
-                    assert_eq!(
-                        quality(&full),
-                        quality(&direct),
-                        "mask={mask} vertex={vertex}"
-                    );
-                    checked += 1;
-                }
-            }
-        }
-    }
-    assert_eq!(checked, 9600);
-}
-
-#[test]
 fn connecting_bags_avoid_private_vertices_of_a_large_bag() {
     let graph = Graph::new(
         5,
@@ -163,9 +107,7 @@ fn connecting_bags_avoid_private_vertices_of_a_large_bag() {
             .chain([(0, 1), (0, 2)]),
     );
     let seed = TreeDecomposition::new(&graph, [vec![0, 1, 2, 3, 4]], []).unwrap();
-    let direct =
-        rebuild_candidate::<true>(&graph, &seed, 0, Instant::now() + Duration::from_secs(1))
-            .unwrap();
+    let direct = rebuild(&graph, &seed, 0, Instant::now() + Duration::from_secs(1)).unwrap();
     direct.validate(&graph).unwrap();
     assert_eq!(direct.treewidth(), 3);
     assert_eq!(direct.bags().len(), 2);
@@ -184,9 +126,7 @@ fn connecting_bags_avoid_private_vertices_of_a_large_bag() {
 fn connecting_bags_join_the_needed_components_of_a_residual_forest() {
     let graph = Graph::new(4, [(0, 1), (1, 2)]);
     let seed = TreeDecomposition::new(&graph, [vec![0, 1, 2], vec![3]], []).unwrap();
-    let direct =
-        rebuild_candidate::<true>(&graph, &seed, 1, Instant::now() + Duration::from_secs(1))
-            .unwrap();
+    let direct = rebuild(&graph, &seed, 1, Instant::now() + Duration::from_secs(1)).unwrap();
     direct.validate(&graph).unwrap();
     assert_eq!(direct.treewidth(), 1);
     assert_eq!(direct.bags().len(), 3);
@@ -196,7 +136,67 @@ fn connecting_bags_join_the_needed_components_of_a_residual_forest() {
 fn expired_direct_search_retains_the_seed() {
     let graph = Graph::new(4, [(0, 1), (1, 2), (2, 3), (3, 0)]);
     let seed = decompose(&graph, Order::MinFill, 0, None).unwrap();
-    let (next, stats) = improve_direct_trusted(&graph, &seed, Instant::now());
+    let (next, stats) = improve_trusted(&graph, &seed, Instant::now());
     assert_eq!(next.to_td(), compact(seed).to_td());
     assert_eq!(stats.tried, 0);
+}
+
+#[test]
+fn mass_comparison_is_exact_across_limbs_and_bag_orders() {
+    let graph = Graph::new(130, []);
+    let mut bags = vec![(0..130).collect::<Vec<u32>>()];
+    bags.extend((0..64).map(|_| (0..64).collect::<Vec<u32>>()));
+    let edges: Vec<_> = (1..bags.len()).map(|i| (0, i)).collect();
+    let tree = TreeDecomposition::new_trusted(&graph, bags.clone(), edges.clone()).unwrap();
+    bags[1].push(64);
+    let larger = TreeDecomposition::new_trusted(&graph, bags, edges).unwrap();
+    assert!(quality(&tree) < quality(&larger));
+    assert_eq!(quality(&tree).2, vec![4, 64, 0]);
+}
+
+#[test]
+fn redundant_elimination_bags_do_not_distort_the_search_objective() {
+    let graph = Graph::new(
+        11,
+        [
+            (0, 2),
+            (0, 6),
+            (0, 7),
+            (0, 8),
+            (0, 9),
+            (0, 10),
+            (1, 4),
+            (1, 7),
+            (2, 3),
+            (2, 6),
+            (2, 7),
+            (3, 7),
+            (3, 9),
+            (3, 10),
+            (6, 9),
+            (7, 9),
+            (7, 10),
+            (8, 9),
+        ],
+    );
+    let tree = decompose(&graph, Order::MinFill, 0, None).unwrap();
+    let compact = tree.subsumed_bag_compaction().apply(tree.clone());
+    assert_eq!(quality(&compact), (4, 1, vec![82]));
+    let (next, _) = improve(&graph, &tree, Instant::now() + Duration::from_secs(1)).unwrap();
+    next.validate(&graph).unwrap();
+    assert!(quality(&next) <= quality(&compact));
+    assert_eq!(
+        next.total_bag_size(),
+        next.subsumed_bag_compaction().total_bag_size()
+    );
+}
+
+#[test]
+fn mass_uses_one_bag_for_a_chain_of_equal_bags() {
+    let graph = Graph::new(2, [(0, 1)]);
+    let seed = TreeDecomposition::new(&graph, vec![vec![0, 1]; 3], [(0, 2), (2, 1)]).unwrap();
+    let (next, _) = improve(&graph, &seed, Instant::now()).unwrap();
+    next.validate(&graph).unwrap();
+    assert_eq!(next.bags().len(), 1);
+    assert_eq!(quality(&next), (1, 1, vec![4]));
 }
