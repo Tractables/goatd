@@ -225,7 +225,7 @@ fn base_min_fill_order(
     let mut local_graph = EliminationGraph::from_edges(n as u32, &local_edges);
     let local_salt: Vec<u32> = active.iter().map(|&v| salt[v as usize]).collect();
     let mut steps = ElimSteps::default();
-    let exit = eliminate_min_fill(
+    let exit = eliminate_min_fill::<false>(
         &mut local_graph,
         &local_salt,
         steps.sink(),

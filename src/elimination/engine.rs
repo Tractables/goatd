@@ -229,7 +229,8 @@ fn run_elimination_raw(
     let mut g = reduced.graph;
 
     let exit = match spec.order {
-        Order::MinFill => eliminate_min_fill(&mut g, salt, steps.sink(), spec.stop),
+        Order::MinFill => eliminate_min_fill::<false>(&mut g, salt, steps.sink(), spec.stop),
+        Order::RelativeFill => eliminate_min_fill::<true>(&mut g, salt, steps.sink(), spec.stop),
         Order::MinDegree => eliminate_min_degree(
             &mut g,
             salt,

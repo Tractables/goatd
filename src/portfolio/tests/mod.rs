@@ -1866,3 +1866,19 @@ fn an_estimate_grows_with_the_rate_the_run_is_actually_going_at() {
         "with nothing charged there is no rate to read",
     );
 }
+
+#[test]
+fn relative_fill_admission_uses_the_remaining_budget() {
+    let now = crate::meter::now();
+    let cost = Duration::from_secs(4);
+    assert!(!super::relative_fill_fits(
+        cost,
+        Some(now + Duration::from_secs(30))
+    ));
+    assert!(super::relative_fill_fits(
+        cost,
+        Some(now + Duration::from_secs(300))
+    ));
+    assert!(!super::relative_fill_fits(cost, Some(now)));
+    assert!(!super::relative_fill_fits(cost, None));
+}

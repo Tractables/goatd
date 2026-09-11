@@ -12,7 +12,7 @@ fn path_graph_eliminates_from_endpoints() {
     let mut bags = Vec::new();
     let mut rank = Vec::new();
     let sink = ElimSink::new(&mut bags, &mut rank, 0);
-    eliminate_min_fill(&mut g, &salt, sink, ElimStop::default());
+    eliminate_min_fill::<false>(&mut g, &salt, sink, ElimStop::default());
     assert_eq!(bags.len(), 4);
     let first = bags[0][0];
     assert!(first == 0 || first == 3);
@@ -26,7 +26,7 @@ fn triangle_eliminates_in_three_steps() {
     let mut bags = Vec::new();
     let mut rank = Vec::new();
     let sink = ElimSink::new(&mut bags, &mut rank, 0);
-    eliminate_min_fill(&mut g, &salt, sink, ElimStop::default());
+    eliminate_min_fill::<false>(&mut g, &salt, sink, ElimStop::default());
     assert_eq!(bags.len(), 3);
     assert_eq!(bags[0].len(), 3);
 }
@@ -50,7 +50,7 @@ fn min_fill_rechecks_vertices_two_hops_from_an_elimination() {
     let mut rank = Vec::new();
     let sink = ElimSink::new(&mut bags, &mut rank, 0);
 
-    eliminate_min_fill(&mut graph, &salt, sink, ElimStop::default());
+    eliminate_min_fill::<false>(&mut graph, &salt, sink, ElimStop::default());
 
     assert_eq!(bags[0][0], 0);
     assert_eq!(
@@ -196,7 +196,7 @@ fn the_seeding_scan_stops_within_a_millisecond_of_the_hard_deadline() {
     let epoch = std::time::Instant::now();
     let _meter = crate::meter::arm(epoch);
     let deadline = epoch + std::time::Duration::from_millis(1);
-    let exit = eliminate_min_fill(
+    let exit = eliminate_min_fill::<false>(
         &mut graph,
         &salt,
         sink,

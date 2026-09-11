@@ -17,6 +17,8 @@
 pub enum Order<'a> {
     /// Preprocess, then repeatedly eliminate a minimum-fill vertex.
     MinFill,
+    /// Preprocess, then minimize added fill edges per removed incident edge.
+    RelativeFill,
     /// Preprocess, then repeatedly eliminate a minimum-degree vertex.
     MinDegree,
     /// Preprocess, then recursively bisect the graph and eliminate each
@@ -57,6 +59,7 @@ impl<'a> Order<'a> {
             | Order::MinDegreeSampled { weights }
             | Order::FillDegreeSampled { weights, .. } => Some(weights),
             Order::MinFill
+            | Order::RelativeFill
             | Order::MinDegree
             | Order::NestedDissection
             | Order::MinimalTriangulation
@@ -68,6 +71,7 @@ impl<'a> Order<'a> {
     pub(super) fn with_tie_weights<'b>(self, weights: &'b [u32]) -> Order<'b> {
         match self {
             Order::MinFill => Order::MinFill,
+            Order::RelativeFill => Order::RelativeFill,
             Order::MinDegree => Order::MinDegree,
             Order::NestedDissection => Order::NestedDissection,
             Order::MinimalTriangulation => Order::MinimalTriangulation,

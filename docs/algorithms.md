@@ -674,3 +674,18 @@ The main algorithmic sources are the
 [PACE 2017 decomposition paper](https://arxiv.org/abs/1709.08949), and the
 multilevel partitioning work credited in
 [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).
+
+## Relative fill
+
+`Order::RelativeFill` minimizes the number of added fill edges divided by the
+current degree, then breaks ties by degree, seeded salt and vertex ID.
+Isolates have score zero. Integer cross-products compare ratios exactly.
+The construction shares min-fill's score updates and elimination engine.
+
+The portfolio tries it once after its existing stages when a completed
+min-fill pass cost no more than one eighth of the remaining time. It uses the
+current width bound and original hard deadline, and discards incomplete runs.
+
+Merge partners and the additional draws for local pieces use the same
+fill-per-degree ranking with seeded ties, followed by the existing
+minimalization pass. The deterministic first local triangulation is retained.

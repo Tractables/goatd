@@ -1,6 +1,7 @@
 //! Beside the module: these drive the private elimination sink directly.
 
 mod min_fill;
+mod relative_fill;
 
 #[test]
 fn sampling_mass_prefers_smaller_public_weights() {

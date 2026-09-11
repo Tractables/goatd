@@ -699,6 +699,7 @@ fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
         ) => Stage::Diverse { degree_coefficient },
         (Order::MinimalTriangulation, _) => Stage::MinimalTriangulation,
         (Order::MaximumCardinality, _) => Stage::MaximumCardinality,
+        (Order::RelativeFill, _) => Stage::RelativeFill,
     }
 }
 
@@ -1600,6 +1601,7 @@ fn run_portfolio(
     let mut hard_deadline_tripped = false;
     // Set by an initial min-fill order that produced a decomposition.
     let mut min_fill_finished = false;
+    let mut fill_pass_cost = None;
     // What the trailing FlowCutter slot is configured with, which is what says
     // whether the second stage is the schedule's or the tail's.
     let tail_budget = config.flowcutter_budget;
@@ -1753,6 +1755,7 @@ fn run_portfolio(
         // sampled min-fill has a prospect of finishing too.
         if is_min_fill_variant(order) && matches!(outcome, CandidateOutcome::Produced { .. }) {
             min_fill_finished = true;
+            fill_pass_cost.get_or_insert(cost);
         }
         trace(CandidateTrace {
             stage: stage_of(order, phase),
@@ -2300,7 +2303,44 @@ fn run_portfolio(
             elapsed: crate::meter::now().saturating_duration_since(started),
         });
     }
+    if active > 0 && fill_pass_cost.is_some_and(|cost| relative_fill_fits(cost, window_end)) {
+        let run = engine::run_order_prebuilt(
+            &mut prebuilt,
+            engine::RunSpec {
+                order: Order::RelativeFill,
+                seed,
+                sample_band: 0,
+                update_order_ties: false,
+                stop: ElimStop {
+                    soft_deadline: None,
+                    hard_deadline: window_end,
+                    width_bound: candidates.best_width(),
+                },
+                complete_on_deadline: false,
+                setup_deadline: window_end,
+            },
+        );
+        let origin = CandidateOrigin {
+            stage: Stage::RelativeFill,
+            seed,
+            pass: Pass::Only,
+        };
+        let (outcome, _) = candidates.record_elimination(run, origin);
+        trace(CandidateTrace {
+            stage: origin.stage,
+            seed,
+            pass: Pass::Only,
+            outcome,
+            elapsed: crate::meter::now().saturating_duration_since(started),
+        });
+    }
     Ok(candidates)
+}
+
+fn relative_fill_fits(cost: Duration, deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|end| {
+        !expired(Some(end)) && cost <= end.saturating_duration_since(crate::meter::now()) / 8
+    })
 }
 
 /// `end` less `reserve`, where that still leaves the soft deadline behind it.

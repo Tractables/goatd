@@ -17,12 +17,10 @@
 //!
 //! Three procedures, following the paper:
 //!
-//! - **an initial answer.** Several randomised min-fill draws, each minimalised
+//! - **an initial answer.** Several fill-per-degree draws with seeded ties, each minimalised
 //!   so its bags are the cliques of a minimal triangulation; keep the narrowest.
-//!   The paper uses a randomised minimum-average-fill triangulation made
-//!   minimal by the method of Berry, Heggernes and Simonet; the sampled
-//!   min-fill this library already has, minimalised the same way, is the same
-//!   thing built out of what is here.
+//!   The ranking minimizes fill divided by degree. The triangulations then use
+//!   the shared minimalization pass before their bags enter the list.
 //! - **merge `Π` with `Ω`.** Pick a bag `X ∈ Π` at random and let `C` be the
 //!   largest component of `G − X`. For every `Y ∈ Ω` inside `N[C]` and no wider
 //!   than `w(Π)`, let `D` be the component of `G − Y` that holds `X` in its
@@ -93,8 +91,6 @@ pub(super) struct Loop<'a> {
     adjacency: &'a Adjacency,
     limits: Limits,
     rng: Xorshift64,
-    /// Uniform sampling weights for the randomised draws, one per vertex.
-    weights: Vec<u32>,
 }
 
 /// Improve `start` by merging independent answers into it until `deadline`.
@@ -180,7 +176,6 @@ impl<'a> Loop<'a> {
             adjacency,
             limits,
             rng: Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET)),
-            weights: vec![0; graph.num_vertices() as usize],
         }
     }
 }
@@ -192,7 +187,7 @@ impl Loop<'_> {
         Some(Answer { bags, tree })
     }
 
-    /// An answer built from scratch: several randomised min-fill draws, each
+    /// An answer built from scratch: several fill-per-degree draws with seeded ties, each
     /// minimalised, the narrowest kept.
     ///
     /// The draws share a share of the time left, so a graph where one draw is
@@ -206,9 +201,7 @@ impl Loop<'_> {
                 break;
             }
             let seed = self.rng.next_u64();
-            let order = crate::elimination::Order::MinFillSampled {
-                weights: &self.weights,
-            };
+            let order = crate::elimination::Order::RelativeFill;
             let Ok(drawn) = crate::elimination::decompose(self.graph, order, seed, each) else {
                 break;
             };
@@ -425,7 +418,6 @@ impl Loop<'_> {
         let Some(rows) = Adjacency::of(&local) else {
             return Vec::new();
         };
-        let weights = vec![0u32; local.num_vertices() as usize];
         let mut pooled: Vec<VertexSet> = Vec::new();
         let mut seen: FxHashSet<VertexSet> = FxHashSet::default();
         let mut best: Option<TreeDecomposition> = None;
@@ -440,10 +432,7 @@ impl Loop<'_> {
             let (choice, seed) = if draw == 0 {
                 (crate::elimination::Order::MinimalTriangulation, 0)
             } else {
-                (
-                    crate::elimination::Order::MinFillSampled { weights: &weights },
-                    self.rng.next_u64(),
-                )
+                (crate::elimination::Order::RelativeFill, self.rng.next_u64())
             };
             let Ok(drawn) = crate::elimination::decompose(&local, choice, seed, budget) else {
                 continue;
