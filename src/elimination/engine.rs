@@ -74,6 +74,11 @@ pub(super) struct RunScratch {
     /// Where each vertex of the component being solved stands in that
     /// component's own numbering.
     local_of: Vec<u32>,
+    /// The residual's initial fill counts in each component's own numbering,
+    /// derived from the counts the first fill-based candidate computed. The
+    /// counts and the components are both fixed for the graph, so every later
+    /// candidate reads the same vectors rather than building its own.
+    component_fill: Option<Vec<Vec<u64>>>,
 }
 
 impl RunScratch {
@@ -84,6 +89,7 @@ impl RunScratch {
             sample: greedy::SampleScratch::new(),
             rank: Vec::new(),
             local_of: Vec::new(),
+            component_fill: None,
         }
     }
 }
@@ -414,7 +420,20 @@ fn run_order_per_component(
         sample,
         rank: global_rank,
         local_of,
+        component_fill,
     } = scratch;
+    // Each component's slice of the residual's fill counts, built on the first
+    // candidate that has counts to slice and read by every later one.
+    let component_fill: Option<&[Vec<u64>]> = initial_fill.map(|fill| {
+        component_fill
+            .get_or_insert_with(|| {
+                components
+                    .iter()
+                    .map(|comp| comp.iter().map(|&vertex| fill[vertex as usize]).collect())
+                    .collect()
+            })
+            .as_slice()
+    });
     let n = graph.len();
     // The bags after the prefix's; the prefix is put in front of them once
     // there is a decomposition to build.
@@ -467,8 +486,7 @@ fn run_order_per_component(
             graph: EliminationGraph::from_edges(comp_n, &comp_edges),
             prefix: ElimSteps::default(),
         };
-        let sub_initial_fill: Option<Vec<u64>> =
-            initial_fill.map(|fill| comp.iter().map(|&vertex| fill[vertex as usize]).collect());
+        let sub_initial_fill = component_fill.map(|fill| fill[comp_idx].as_slice());
 
         // An order that reads no salt has none to re-index.
         let sub_salt: Vec<u32> = if salt.is_empty() {
@@ -499,7 +517,7 @@ fn run_order_per_component(
             &mut sub_reduced.graph,
             &sub_reduced.prefix,
             &sub_salt,
-            sub_initial_fill.as_deref(),
+            sub_initial_fill,
             None,
             sub_spec,
             sample,
