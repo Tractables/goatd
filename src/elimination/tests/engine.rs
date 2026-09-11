@@ -113,6 +113,7 @@ pub(super) fn run_order(
         &reduced.prefix,
         &components,
         None,
+        None,
         RunSpec {
             order,
             seed,

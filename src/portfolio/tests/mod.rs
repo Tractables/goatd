@@ -11,6 +11,7 @@ use super::{FLOWCUTTER_RESERVE, restart_admitted, restart_deadline};
 use super::{Sample, SampleBand, SamplingPatience};
 use super::{Stage, elimination_stop, extra_sample, hedge_random_seed, sample_seed};
 use crate::elimination::Order;
+use crate::embedding::Adjacency;
 use crate::{Graph, TreeDecomposition};
 
 /// An unhedged schedule: the caller's weights on every candidate, one diverse
@@ -34,12 +35,14 @@ fn schedule(base_seed: u64, min_degree_restarts: bool, weights: &[u32]) -> Sched
 fn placed<'a>(
     graph: &'a Graph,
     cell: &'a OnceCell<Vec<u32>>,
+    adjacency: &'a OnceCell<Adjacency>,
     ranking: &[u32],
 ) -> ModifiedWeights<'a> {
     cell.set(ranking.to_vec()).expect("the cell is empty");
     ModifiedWeights::Ranked {
         cell,
         graph,
+        adjacency,
         dim: 3,
         rounds: 1_000,
         seed: 0,
@@ -458,7 +461,8 @@ fn the_hedge_leaves_every_restart_on_the_unmodified_sequence() {
         .collect();
     assert_eq!(fixed.len(), 3, "nested dissection reads no weights");
     let cell = OnceCell::new();
-    let modified = [placed(&graph, &cell, &ranked)];
+    let adjacency = OnceCell::new();
+    let modified = [placed(&graph, &cell, &adjacency, &ranked)];
     let plan = hedged(base_seed, &modified, &given, fixed.len() as u64);
     let unmodified = schedule(base_seed, false, &given);
 
@@ -562,10 +566,12 @@ fn the_ranking_is_placed_by_the_first_modified_candidate() {
     let graph = Graph::new(4, [(0, 1), (1, 2), (2, 3)]);
     let given = [1; 4];
     let cell = OnceCell::new();
+    let adjacency = OnceCell::new();
     let base_seed = 17;
     let modified = [ModifiedWeights::Ranked {
         cell: &cell,
         graph: &graph,
+        adjacency: &adjacency,
         dim: 1,
         rounds: 8,
         seed: base_seed,
@@ -604,9 +610,10 @@ fn a_series_hedge_runs_one_weighted_stage_per_weighting() {
     let second = [4, 7, 1];
     let base_seed = 17;
     let (first_cell, second_cell) = (OnceCell::new(), OnceCell::new());
+    let adjacency = OnceCell::new();
     let modified = [
-        placed(&graph, &first_cell, &first),
-        placed(&graph, &second_cell, &second),
+        placed(&graph, &first_cell, &adjacency, &first),
+        placed(&graph, &second_cell, &adjacency, &second),
     ];
     let plan = hedged(base_seed, &modified, &given, 3);
     let unmodified = schedule(base_seed, false, &given);

@@ -102,23 +102,49 @@ pub(super) fn exceeds_width_bound(bag_len: usize, bound: Option<u32>) -> bool {
 ///
 /// Appending through [`ElimSteps::sink`] keeps the two records synchronized
 /// and continues step numbering across preprocessing and order construction.
+/// A record that continues another holds only the steps after it and numbers
+/// them from `base`, so a run does not copy the preprocessing prefix it
+/// continues from; the two are joined once the run has something to build.
 #[derive(Clone, Default)]
 pub(super) struct ElimSteps {
     /// Each entry is the eliminated vertex followed by its live neighbours.
     pub(super) bags: Vec<Vec<u32>>,
     /// `(vertex, step)` for every eliminated vertex.
     pub(super) rank_pairs: Vec<(u32, usize)>,
+    /// The step the first entry of `bags` stands at.
+    base: usize,
 }
 
 impl ElimSteps {
+    /// An empty record whose steps follow `prefix`'s.
+    pub(super) fn after(prefix: &ElimSteps) -> Self {
+        Self {
+            bags: Vec::new(),
+            rank_pairs: Vec::new(),
+            base: prefix.next_step(),
+        }
+    }
+
+    /// The step the next recorded bag takes.
+    pub(super) fn next_step(&self) -> usize {
+        self.base + self.bags.len()
+    }
+
     pub(super) fn sink(&mut self) -> ElimSink<'_> {
-        let start_step = self.bags.len();
+        let start_step = self.next_step();
         ElimSink::new(&mut self.bags, &mut self.rank_pairs, start_step)
     }
 
-    /// Append component-local steps after translating vertices through `comp`.
-    pub(super) fn append_reindexed(self, comp: &[u32], bags: &mut Vec<Vec<u32>>, rank: &mut [u32]) {
-        let base = bags.len();
+    /// Append component-local steps after translating vertices through `comp`
+    /// to `bags`, whose first entry stands at step `base`.
+    pub(super) fn append_reindexed(
+        self,
+        comp: &[u32],
+        base: usize,
+        bags: &mut Vec<Vec<u32>>,
+        rank: &mut [u32],
+    ) {
+        let base = base + bags.len();
         for mut bag in self.bags {
             for v in &mut bag {
                 *v = comp[*v as usize];
