@@ -2545,7 +2545,7 @@ fn reinsert_at_end(
             },
         )
     } else {
-        CandidateOutcome::DeadlineReached
+        candidates.report_unchanged(&found)
     };
     trace(CandidateTrace {
         stage: Stage::Reinserted,

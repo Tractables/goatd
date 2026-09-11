@@ -1926,3 +1926,45 @@ fn final_reinsertion_narrows_a_minimal_triangulation_and_reports_the_winner() {
         }
     ));
 }
+
+#[test]
+fn final_reinsertion_reports_an_unchanged_tree_without_claiming_a_deadline() {
+    let graph = Graph::new(3, [(0, 1), (1, 2), (0, 2)]);
+    let tree = TreeDecomposition::new(&graph, [vec![0, 1, 2]], []).unwrap();
+    let epoch = Instant::now();
+    let _clock = crate::meter::arm(epoch);
+    for candidates in [CandidateSet::all(1), CandidateSet::best_only()] {
+        let mut candidates = candidates
+            .reporting_shape(true)
+            .with_deadline(Some(epoch + Duration::from_secs(1)));
+        candidates.push(
+            tree.clone(),
+            CandidateOrigin {
+                stage: Stage::MinFill,
+                seed: 0,
+                pass: Pass::Only,
+            },
+        );
+        let mut trace = Vec::new();
+        super::reinsert_at_end(&graph, 0, epoch, &mut candidates, &mut |event| {
+            trace.push(event)
+        });
+        assert_eq!(trace.len(), 1);
+        assert!(
+            matches!(
+                trace[0].outcome,
+                CandidateOutcome::Produced {
+                    width: 2,
+                    total_bag_size: 3,
+                    shape: Some(_),
+                    best: false,
+                }
+            ),
+            "an unchanged completed tree is not a deadline: {:?}",
+            trace[0]
+        );
+        let retained = candidates.into_candidates();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].decomposition.to_td(), tree.to_td());
+    }
+}

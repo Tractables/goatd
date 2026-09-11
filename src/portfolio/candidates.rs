@@ -251,10 +251,16 @@ impl CandidateSet {
                 },
             );
         }
+        self.report_unchanged(&decomposition)
+    }
+
+    /// Report a completed refinement without retaining another candidate.
+    pub(super) fn report_unchanged(&self, decomposition: &TreeDecomposition) -> CandidateOutcome {
+        let (width, total_bag_size) = decomposition.quality_key();
         CandidateOutcome::Produced {
             width,
             total_bag_size,
-            shape: shape_of(self.report_shape, &decomposition),
+            shape: shape_of(self.report_shape, decomposition),
             best: false,
         }
     }
