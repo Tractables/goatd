@@ -31,6 +31,11 @@ const NO_SLOT: u32 = u32::MAX;
 /// lines, while the map costs a hash and a random probe per lookup.
 pub(super) const ROW_INDEX_THRESH: usize = 256;
 
+/// A row at most this many times longer than the bag being eliminated is
+/// stamped and read through the marker rather than probed through its map;
+/// see `eliminate_with_nbrs_marker`.
+const WALK_ROW_FACTOR: usize = 8;
+
 /// Whether an edge list is already sorted, deduplicated and oriented `u < v`,
 /// which is what [`crate::Graph::edges`] holds and what lets `from_edges` skip
 /// the per-edge membership test.
@@ -903,16 +908,30 @@ impl EliminationGraph {
     }
 
     fn eliminate_with_nbrs_marker(&mut self, v: u32, neighbours: &[u32]) {
-        let marker = self.elim_marker.as_mut_slice();
+        // Every neighbour u gets the same question: which of v's other
+        // neighbours are missing from u's row. Asked through u's membership
+        // map, the k probes land in a different map for every u, and once k
+        // is in the thousands those maps do not fit in cache together, so
+        // nearly every probe misses and the loop waits on each one. Asked
+        // through the marker, u's row is stamped with blind stores, which the
+        // store buffer takes without stalling, and the k reads that follow
+        // land on the bag's own slots, which stay in cache from one
+        // neighbour to the next. So an indexed row is stamped too unless it
+        // is far longer than the bag, where stamping it would pay its length
+        // rather than the bag's and the map probe wins.
+        //
+        // The pushes are the missing neighbours in bag order and v leaves
+        // each row by the same swap-remove, so a row ends up identical
+        // whichever way its question was answered, and a map stays in step
+        // with its row.
+        let walk_limit = neighbours.len().saturating_mul(WALK_ROW_FACTOR);
         let mut pushes: usize = 0;
         for &u_raw in neighbours {
             let u = u_raw as usize;
-            if let Some(index) = self.row_index[u].as_deref_mut() {
-                // An indexed row needs no stamping pass: the map already says
-                // which of the k candidates are present, and where `v` is. The
-                // mutations below are the same ones the marker path makes, in
-                // the same order, so the row ends up identical either way.
-                let row = &mut self.adj[u];
+            let row = &mut self.adj[u];
+            if row.len() > walk_limit
+                && let Some(index) = self.row_index[u].as_deref_mut()
+            {
                 if let Some(position) = index.remove(&v) {
                     let position = position as usize;
                     let last = row.len() - 1;
@@ -933,11 +952,11 @@ impl EliminationGraph {
             }
             self.elim_stamp = self.elim_stamp.wrapping_add(1);
             if self.elim_stamp == 0 {
-                marker.fill(0);
+                self.elim_marker.fill(0);
                 self.elim_stamp = 1;
             }
             let s = self.elim_stamp;
-            let row = &mut self.adj[u];
+            let marker = self.elim_marker.as_mut_slice();
             let mut v_pos = None;
             for (idx, &w) in row.iter().enumerate() {
                 if w == v {
@@ -945,20 +964,44 @@ impl EliminationGraph {
                 }
                 marker[w as usize] = s;
             }
-            if let Some(v_pos) = v_pos {
-                row.swap_remove(v_pos);
-            }
             marker[u] = s;
-            for &w in neighbours {
-                let wi = w as usize;
-                if marker[wi] != s {
-                    marker[wi] = s;
-                    row.push(w);
-                    pushes += 1;
+            let mut index = self.row_index[u].as_deref_mut();
+            if let Some(v_pos) = v_pos {
+                let last = row.len() - 1;
+                let moved = row[last];
+                row.swap_remove(v_pos);
+                if let Some(index) = index.as_deref_mut() {
+                    index.remove(&v);
+                    if v_pos != last {
+                        index.insert(moved, v_pos as u32);
+                    }
                 }
             }
-            if self.adj[u].len() >= ROW_INDEX_THRESH {
-                build_row_index(&self.adj[u], &mut self.row_index[u]);
+            match index {
+                Some(index) => {
+                    for &w in neighbours {
+                        let wi = w as usize;
+                        if marker[wi] != s {
+                            marker[wi] = s;
+                            index.insert(w, row.len() as u32);
+                            row.push(w);
+                            pushes += 1;
+                        }
+                    }
+                }
+                None => {
+                    for &w in neighbours {
+                        let wi = w as usize;
+                        if marker[wi] != s {
+                            marker[wi] = s;
+                            row.push(w);
+                            pushes += 1;
+                        }
+                    }
+                    if row.len() >= ROW_INDEX_THRESH {
+                        build_row_index(&self.adj[u], &mut self.row_index[u]);
+                    }
+                }
             }
         }
         self.clear_row(v);
