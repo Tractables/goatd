@@ -9,7 +9,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::time::Instant;
 
 use super::execution::{Cutoff, DeadlinePacer, ElimExit, ElimSink, ElimStop, exceeds_width_bound};
-use super::graph::{EliminationGraph, PreparedFill};
+use super::graph::{EliminationGraph, PREFETCH_DISTANCE, PreparedFill, prefetch, prefetching};
 use crate::rng::Xorshift64;
 
 /// Generates `Ord`/`PartialOrd` for a heap-entry struct that orders solely by
@@ -673,6 +673,7 @@ impl FillAffected {
         self.partners.clear();
         self.starts.clear();
         self.v_position.clear();
+        let ahead_of_walk = prefetching(self.marker.len());
         for &u in nbrs {
             // Stamp u's row: it says which of v's other neighbours u lacks,
             // which are its fill edges, and stays valid while they are
@@ -684,6 +685,9 @@ impl FillAffected {
             crate::meter::charge((row.len() + k) as u64);
             let mut v_position = 0usize;
             for (position, &z) in row.iter().enumerate() {
+                if ahead_of_walk && let Some(&ahead) = row.get(position + PREFETCH_DISTANCE) {
+                    prefetch(&self.marker, ahead as usize);
+                }
                 debug_assert!((z as usize) < self.marker.len());
                 // SAFETY: a row holds vertex ids of the graph this scratch was
                 // sized for, and `marker` has an entry per vertex.
@@ -730,7 +734,11 @@ impl FillAffected {
         crate::meter::charge(row.len() as u64);
         let last = row.len() - 1;
         let mut out = 0u64;
-        for &entry in &row[..last] {
+        let ahead_of_walk = prefetching(self.marker.len());
+        for (position, &entry) in row[..last].iter().enumerate() {
+            if ahead_of_walk && let Some(&ahead) = row.get(position + PREFETCH_DISTANCE) {
+                prefetch(&self.marker, ahead as usize);
+            }
             let z = if entry == v { row[last] } else { entry };
             debug_assert!((z as usize) < self.marker.len());
             // SAFETY: as in `prepare_marker`, a row entry is a vertex id and
