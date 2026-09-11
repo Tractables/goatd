@@ -130,16 +130,42 @@ impl Embedding {
         tolerance: f32,
         stop: &mut dyn FnMut() -> bool,
     ) -> Self {
+        Self::compute_on(
+            &Adjacency::of(graph),
+            dim,
+            seed,
+            max_rounds,
+            patience,
+            tolerance,
+            stop,
+        )
+    }
+
+    /// [`Embedding::compute`] on an adjacency the caller holds.
+    ///
+    /// A caller that places several embeddings of one graph builds the
+    /// adjacency once and passes it to each of them. Every embedding charges
+    /// the meter for building it either way, so the work a budget stated in
+    /// charged work pays for does not depend on the sharing.
+    pub(crate) fn compute_on(
+        adjacency: &Adjacency,
+        dim: usize,
+        seed: u64,
+        max_rounds: usize,
+        patience: usize,
+        tolerance: f32,
+        stop: &mut dyn FnMut() -> bool,
+    ) -> Self {
         let dim = dim.clamp(1, MAX_DIM);
         let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
-        let mut coords = vec![0.0f32; graph.num_vertices() as usize * dim];
+        let mut coords = vec![0.0f32; adjacency.vertex_count() * dim];
         for slot in &mut coords {
             *slot = unit_interval(&mut rng);
         }
         run_rounds(
             &mut coords,
             dim,
-            graph,
+            adjacency,
             &mut rng,
             Budget {
                 max_rounds,
@@ -249,7 +275,7 @@ pub(crate) fn random_weights(count: usize, seed: u64) -> Vec<u32> {
 fn run_rounds(
     coords: &mut Vec<f32>,
     dim: usize,
-    graph: &Graph,
+    adjacency: &Adjacency,
     rng: &mut Xorshift64,
     budget: Budget,
     stop: &mut dyn FnMut() -> bool,
@@ -261,14 +287,14 @@ fn run_rounds(
         )
     };
     match dim {
-        1 => run_rounds_dim::<1>(coords, graph, rng, budget, stop),
-        2 => run_rounds_dim::<2>(coords, graph, rng, budget, stop),
-        3 => run_rounds_dim::<3>(coords, graph, rng, budget, stop),
-        4 => run_rounds_dim::<4>(coords, graph, rng, budget, stop),
-        5 => run_rounds_dim::<5>(coords, graph, rng, budget, stop),
-        6 => run_rounds_dim::<6>(coords, graph, rng, budget, stop),
-        7 => run_rounds_dim::<7>(coords, graph, rng, budget, stop),
-        8 => run_rounds_dim::<8>(coords, graph, rng, budget, stop),
+        1 => run_rounds_dim::<1>(coords, adjacency, rng, budget, stop),
+        2 => run_rounds_dim::<2>(coords, adjacency, rng, budget, stop),
+        3 => run_rounds_dim::<3>(coords, adjacency, rng, budget, stop),
+        4 => run_rounds_dim::<4>(coords, adjacency, rng, budget, stop),
+        5 => run_rounds_dim::<5>(coords, adjacency, rng, budget, stop),
+        6 => run_rounds_dim::<6>(coords, adjacency, rng, budget, stop),
+        7 => run_rounds_dim::<7>(coords, adjacency, rng, budget, stop),
+        8 => run_rounds_dim::<8>(coords, adjacency, rng, budget, stop),
         _ => unreachable!("the dimension is clamped to 1..=MAX_DIM"),
     }
 }
@@ -276,13 +302,16 @@ fn run_rounds(
 /// [`run_rounds`] at a known dimension.
 fn run_rounds_dim<const D: usize>(
     coords: &mut Vec<f32>,
-    graph: &Graph,
+    adjacency: &Adjacency,
     rng: &mut Xorshift64,
     budget: Budget,
     stop: &mut dyn FnMut() -> bool,
 ) {
-    let vertex_count = graph.num_vertices() as usize;
-    let (starts, targets) = adjacency(graph);
+    let Adjacency { starts, targets } = adjacency;
+    let vertex_count = adjacency.vertex_count();
+    // Building the adjacency, charged here whether this run built it or was
+    // handed one, so that an embedding costs the meter the same either way.
+    crate::meter::charge((vertex_count + targets.len()) as u64);
     // The whitening statistics ignore vertices with no neighbour: they never
     // move, so they would only add an isotropic cloud of starting positions to
     // the covariance.
@@ -348,7 +377,7 @@ fn run_rounds_dim<const D: usize>(
         // The leading axis settles long before the whole cloud does, so a
         // consumer that reads only one axis can stop much earlier than this.
         // `D` is a constant here, so the dispatch inside folds away.
-        if is_settled(coords, &next, D, &starts, &targets, budget.tolerance) {
+        if is_settled(coords, &next, D, starts, targets, budget.tolerance) {
             settled += 1;
             if settled >= patience {
                 break;
@@ -394,26 +423,42 @@ fn for_moving_rows<const D: usize>(
 
 /// Compressed adjacency: `targets[starts[v]..starts[v + 1]]` are `v`'s
 /// neighbours.
-fn adjacency(graph: &Graph) -> (Vec<usize>, Vec<u32>) {
-    let vertex_count = graph.num_vertices() as usize;
-    let mut starts = vec![0usize; vertex_count + 1];
-    for &(left, right) in graph.edges() {
-        starts[left as usize + 1] += 1;
-        starts[right as usize + 1] += 1;
+///
+/// Building it is a pass over the edges and about as much memory as the
+/// coordinates take, so a caller placing several embeddings of one graph
+/// builds it once and hands it to each of them.
+pub(crate) struct Adjacency {
+    starts: Vec<usize>,
+    targets: Vec<u32>,
+}
+
+impl Adjacency {
+    /// The adjacency of `graph`.
+    pub(crate) fn of(graph: &Graph) -> Self {
+        let vertex_count = graph.num_vertices() as usize;
+        let mut starts = vec![0usize; vertex_count + 1];
+        for &(left, right) in graph.edges() {
+            starts[left as usize + 1] += 1;
+            starts[right as usize + 1] += 1;
+        }
+        for vertex in 0..vertex_count {
+            starts[vertex + 1] += starts[vertex];
+        }
+        let mut cursor = starts[..vertex_count].to_vec();
+        let mut targets = vec![0u32; graph.edges().len() * 2];
+        for &(left, right) in graph.edges() {
+            targets[cursor[left as usize]] = right;
+            cursor[left as usize] += 1;
+            targets[cursor[right as usize]] = left;
+            cursor[right as usize] += 1;
+        }
+        Adjacency { starts, targets }
     }
-    for vertex in 0..vertex_count {
-        starts[vertex + 1] += starts[vertex];
+
+    /// How many vertices the graph has.
+    fn vertex_count(&self) -> usize {
+        self.starts.len() - 1
     }
-    let mut cursor = starts[..vertex_count].to_vec();
-    let mut targets = vec![0u32; graph.edges().len() * 2];
-    for &(left, right) in graph.edges() {
-        targets[cursor[left as usize]] = right;
-        cursor[left as usize] += 1;
-        targets[cursor[right as usize]] = left;
-        cursor[right as usize] += 1;
-    }
-    crate::meter::charge((vertex_count + targets.len()) as u64);
-    (starts, targets)
 }
 
 /// Whether two whitened clouds agree to `tolerance` in the quantities read

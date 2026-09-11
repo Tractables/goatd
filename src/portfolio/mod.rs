@@ -300,6 +300,9 @@ enum ModifiedWeights<'a> {
     Ranked {
         cell: &'a OnceCell<Vec<u32>>,
         graph: &'a Graph,
+        /// The graph's adjacency, built by whichever stage places first and
+        /// read by the rest: every stage builds the same one.
+        adjacency: &'a OnceCell<embedding::Adjacency>,
         dim: usize,
         rounds: usize,
         seed: u64,
@@ -319,13 +322,14 @@ impl<'a> ModifiedWeights<'a> {
             ModifiedWeights::Ranked {
                 cell,
                 graph,
+                adjacency,
                 dim,
                 rounds,
                 seed,
                 deadline,
             } => cell.get_or_init(|| {
-                Embedding::compute(
-                    graph,
+                Embedding::compute_on(
+                    adjacency.get_or_init(|| embedding::Adjacency::of(graph)),
                     dim,
                     seed,
                     rounds,
@@ -1567,6 +1571,9 @@ fn run_portfolio(
         && flowcutter_declines_second_stage(graph, config, soft_deadline, hard_deadline))
     .then(|| writeout_reserve(graph, active));
     let cells: [OnceCell<Vec<u32>>; MAX_HEDGE_PASSES] = std::array::from_fn(|_| OnceCell::new());
+    // The adjacency every eccentricity stage places its cloud on. The stages
+    // differ in dimension, not in the graph, so they share one.
+    let placement_adjacency: OnceCell<embedding::Adjacency> = OnceCell::new();
     // The builder is needed again for the fixed orders the hedge repeats.
     let order_builder = initial_orders;
     let initial_orders = initial_orders(seed, weights);
@@ -1809,6 +1816,7 @@ fn run_portfolio(
                 HedgeWeights::Eccentricity { dim, rounds } => ModifiedWeights::Ranked {
                     cell,
                     graph,
+                    adjacency: &placement_adjacency,
                     dim,
                     rounds,
                     seed,
