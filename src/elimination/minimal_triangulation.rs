@@ -23,6 +23,25 @@ use super::execution::{
 use super::graph::EliminationGraph;
 use crate::deadline::expired;
 
+/// A vertex the search has already numbered. It takes no further part.
+const NUMBERED: u8 = 1;
+/// A vertex the current step's reach has already visited.
+const REACHED: u8 = 2;
+
+/// One vertex's search state: the count the step order reads, beside the marks
+/// that say whether the vertex is still in play.
+///
+/// The two live together because the inner walk of the lower-paths reach loads
+/// both for every row entry it visits, and a walk over a large graph spends
+/// most of its time waiting for those loads.
+#[derive(Clone, Copy)]
+struct Cell {
+    /// Numbered neighbours, or numbered vertices reachable along a lower path.
+    count: u32,
+    /// [`NUMBERED`], [`REACHED`], or both.
+    state: u8,
+}
+
 /// How far a step looks for the vertices whose count it raises.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Reach {
@@ -54,12 +73,14 @@ pub(crate) fn cardinality_search(
     hard_deadline: Option<Instant>,
 ) -> Option<Vec<u32>> {
     let n = adjacency.len();
-    let mut numbered = vec![false; n];
-    let mut count = vec![0u32; n];
+    // Counts and marks together, one entry per vertex. The reach marks are
+    // cleared after every step, so between steps a cell's state is either
+    // empty or [`NUMBERED`].
+    let mut cells = vec![Cell { count: 0, state: 0 }; n];
     let mut selected: Vec<u32> = Vec::with_capacity(n);
-    // Reached-vertex marks and the buckets the path search walks, both kept
-    // across steps and cleared after each one so the search allocates once.
-    let mut reached = vec![false; n];
+    // The vertices the current step marked, and the buckets the path search
+    // walks, both kept across steps and cleared after each one so the search
+    // allocates once.
     let mut touched: Vec<u32> = Vec::new();
     let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); n + 1];
     let mut raised: Vec<u32> = Vec::new();
@@ -73,19 +94,22 @@ pub(crate) fn cardinality_search(
             return None;
         }
         let mut chosen = usize::MAX;
-        for vertex in 0..n {
-            if !numbered[vertex] && (chosen == usize::MAX || count[vertex] > count[chosen]) {
+        let mut best = 0u32;
+        for (vertex, cell) in cells.iter().enumerate() {
+            debug_assert!(cell.state & REACHED == 0, "a step cleared its own marks");
+            if cell.state == 0 && (chosen == usize::MAX || cell.count > best) {
                 chosen = vertex;
+                best = cell.count;
             }
         }
         debug_assert!(chosen < n, "every step has an unnumbered vertex to take");
-        numbered[chosen] = true;
+        cells[chosen].state = NUMBERED;
         selected.push(chosen as u32);
 
         raised.clear();
         crate::meter::charge(adjacency[chosen].len() as u64);
         for &neighbour in &adjacency[chosen] {
-            if !numbered[neighbour as usize] {
+            if cells[neighbour as usize].state == 0 {
                 raised.push(neighbour);
             }
         }
@@ -96,12 +120,14 @@ pub(crate) fn cardinality_search(
             // that all count at most `j`, so draining the buckets in increasing
             // `j` reaches every vertex by its cheapest path first.
             touched.clear();
-            reached[chosen] = true;
+            cells[chosen].state |= REACHED;
             touched.push(chosen as u32);
             for &neighbour in &raised {
-                reached[neighbour as usize] = true;
+                let cell = &mut cells[neighbour as usize];
+                cell.state |= REACHED;
+                let count = cell.count as usize;
                 touched.push(neighbour);
-                buckets[count[neighbour as usize] as usize].push(neighbour);
+                buckets[count].push(neighbour);
             }
             for level in 0..=n {
                 while let Some(interior) = buckets[level].pop() {
@@ -110,15 +136,18 @@ pub(crate) fn cardinality_search(
                         return None;
                     }
                     for &next in &adjacency[interior as usize] {
-                        let index = next as usize;
-                        if numbered[index] || reached[index] {
+                        // Numbered and reached are both disqualifying, so the
+                        // step reads one byte and tests it once.
+                        let cell = &mut cells[next as usize];
+                        if cell.state != 0 {
                             continue;
                         }
-                        reached[index] = true;
+                        cell.state = REACHED;
+                        let count = cell.count as usize;
                         touched.push(next);
-                        if count[index] as usize > level {
+                        if count > level {
                             raised.push(next);
-                            buckets[count[index] as usize].push(next);
+                            buckets[count].push(next);
                         } else {
                             buckets[level].push(next);
                         }
@@ -126,11 +155,11 @@ pub(crate) fn cardinality_search(
                 }
             }
             for &vertex in &touched {
-                reached[vertex as usize] = false;
+                cells[vertex as usize].state &= !REACHED;
             }
         }
         for &vertex in &raised {
-            count[vertex as usize] += 1;
+            cells[vertex as usize].count += 1;
         }
     }
     Some(selected)

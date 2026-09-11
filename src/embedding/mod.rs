@@ -260,16 +260,23 @@ fn run_rounds(
                 next[base..base + dim].copy_from_slice(&coords[base..base + dim]);
                 continue;
             }
-            sums[..dim].fill(0.0);
+            let sums = &mut sums[..dim];
+            sums.fill(0.0);
             for &neighbour in &targets[start..end] {
+                // The neighbour's row is taken whole: the inner loop is a few
+                // adds over a slice the same length as `sums`, and indexing
+                // the cloud per coordinate instead puts a bounds check on the
+                // hottest line of the round.
                 let row = neighbour as usize * dim;
-                for (axis, sum) in sums[..dim].iter_mut().enumerate() {
-                    *sum += coords[row + axis];
+                for (sum, value) in sums.iter_mut().zip(&coords[row..row + dim]) {
+                    *sum += value;
                 }
             }
             let degree = (end - start) as f32;
-            for axis in 0..dim {
-                next[base + axis] = 0.5 * (coords[base + axis] + sums[axis] / degree);
+            let here = &coords[base..base + dim];
+            for ((slot, value), sum) in next[base..base + dim].iter_mut().zip(here).zip(sums.iter())
+            {
+                *slot = 0.5 * (value + *sum / degree);
             }
         }
         // After the swap `next` holds the previous round's whitened cloud,
@@ -350,18 +357,24 @@ fn is_settled(
     }
     for vertex in 0..starts.len().saturating_sub(1) {
         let base = vertex * dim;
+        let row = &coords[base..base + dim];
+        let was = &previous[base..base + dim];
         for &neighbour in &targets[starts[vertex]..starts[vertex + 1]] {
             // Every edge is stored from both ends; measure it once.
             if neighbour as usize <= vertex {
                 continue;
             }
             let other = neighbour as usize * dim;
+            let other_row = &coords[other..other + dim];
+            let other_was = &previous[other..other + dim];
             let mut now = 0.0f32;
             let mut before = 0.0f32;
-            for axis in 0..dim {
-                let offset = coords[base + axis] - coords[other + axis];
+            for (((value, other_value), earlier), other_earlier) in
+                row.iter().zip(other_row).zip(was).zip(other_was)
+            {
+                let offset = value - other_value;
                 now += offset * offset;
-                let earlier = previous[base + axis] - previous[other + axis];
+                let earlier = earlier - other_earlier;
                 before += earlier * earlier;
             }
             if (now - before).abs() > tolerance {
@@ -448,45 +461,64 @@ fn whiten(coords: &mut [f32], dim: usize, moving: &[u32], rng: &mut Xorshift64) 
         }
     }
 
-    // One axis at a time: every step here reads and writes a single column, so
-    // an axis is jittered and rescaled before the next is measured without
-    // changing what any of them sees, and the generator is drawn from in the
-    // same axis order.
+    // Every axis is measured from its own column and rescaled in it, and
+    // nothing an axis does reaches another one, so the columns are measured
+    // together and rescaled together instead of a strided pass over the whole
+    // cloud per axis. A jittered axis is remeasured where it is jittered, so
+    // the generator is still drawn from in axis order.
+    let (mut means, mut deviations) = axis_spreads(coords, dim, moving);
+    let mut scales = [1.0f64; MAX_DIM];
     for axis in 0..dim {
-        let (mut mean, mut deviation) = axis_spread(coords, dim, moving, axis);
-        if deviation <= FLAT_AXIS_DEVIATION {
+        if deviations[axis] <= FLAT_AXIS_DEVIATION {
             // A flat axis carries no direction to rescale. Spread it from the
             // generator so the cloud keeps its dimension in the next round.
             for row in coords.chunks_exact_mut(dim) {
                 row[axis] += unit_interval(rng) - 0.5;
             }
-            (mean, deviation) = axis_spread(coords, dim, moving, axis);
+            let (jittered, spread) = axis_spreads(coords, dim, moving);
+            (means[axis], deviations[axis]) = (jittered[axis], spread[axis]);
         }
-        let scale = if deviation > FLAT_AXIS_DEVIATION {
-            1.0 / deviation
-        } else {
-            1.0
-        };
-        for row in coords.chunks_exact_mut(dim) {
-            row[axis] = ((f64::from(row[axis]) - mean) * scale) as f32;
+        if deviations[axis] > FLAT_AXIS_DEVIATION {
+            scales[axis] = 1.0 / deviations[axis];
+        }
+    }
+    for row in coords.chunks_exact_mut(dim) {
+        for ((value, mean), scale) in row.iter_mut().zip(&means[..dim]).zip(&scales[..dim]) {
+            *value = ((f64::from(*value) - mean) * scale) as f32;
         }
     }
 }
 
-/// The mean and standard deviation of one axis over `moving`.
-fn axis_spread(coords: &[f32], dim: usize, moving: &[u32], axis: usize) -> (f64, f64) {
+/// The mean and standard deviation of every axis over `moving`.
+///
+/// One pass for the means and one for the deviations, each row read across
+/// all of its axes. An axis's sum runs over `moving` in the order it is
+/// stored in, so the two passes give an axis the value a pass over that
+/// column alone gives it.
+fn axis_spreads(coords: &[f32], dim: usize, moving: &[u32]) -> ([f64; MAX_DIM], [f64; MAX_DIM]) {
     let count = moving.len() as f64;
-    let mut mean = 0.0f64;
+    let mut means = [0.0f64; MAX_DIM];
     for &vertex in moving {
-        mean += f64::from(coords[vertex as usize * dim + axis]);
+        let row = &coords[vertex as usize * dim..][..dim];
+        for (mean, value) in means[..dim].iter_mut().zip(row) {
+            *mean += f64::from(*value);
+        }
     }
-    mean /= count;
-    let mut variance = 0.0f64;
+    for mean in &mut means[..dim] {
+        *mean /= count;
+    }
+    let mut deviations = [0.0f64; MAX_DIM];
     for &vertex in moving {
-        let offset = f64::from(coords[vertex as usize * dim + axis]) - mean;
-        variance += offset * offset;
+        let row = &coords[vertex as usize * dim..][..dim];
+        for ((variance, mean), value) in deviations[..dim].iter_mut().zip(&means[..dim]).zip(row) {
+            let offset = f64::from(*value) - *mean;
+            *variance += offset * offset;
+        }
     }
-    (mean, (variance / count).sqrt())
+    for variance in &mut deviations[..dim] {
+        *variance = (*variance / count).sqrt();
+    }
+    (means, deviations)
 }
 
 /// Cyclic Jacobi diagonalisation of the symmetric `dim`×`dim` `matrix`.

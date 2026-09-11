@@ -5,23 +5,50 @@ use rustc_hash::FxHashSet;
 use crate::{Error, Graph};
 
 /// One bag of a tree decomposition.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct TdBag {
     /// The bag's vertices, 0-indexed (PACE `.td` vertex ids minus one).
     pub(crate) vertices: Vec<u32>,
+    /// Whether `vertices` is known to be in non-decreasing order. Recorded
+    /// where the bag is built so that a subset test over hundreds of thousands
+    /// of bags does not have to rediscover it. `false` means the order was
+    /// never established, not that the bag is out of order.
+    sorted: bool,
 }
 
 impl TdBag {
     pub(crate) fn new(mut vertices: Vec<u32>) -> Self {
         vertices.sort_unstable();
-        Self { vertices }
+        Self {
+            vertices,
+            sorted: true,
+        }
     }
 
     /// A bag emitted by an algorithm whose stable vertex order is part of its
     /// traversal result. Public constructors still enter through [`Self::new`]
     /// and canonicalize arbitrary caller input.
     pub(crate) fn from_algorithm_order(vertices: Vec<u32>) -> Self {
-        Self { vertices }
+        let sorted = vertices.windows(2).all(|pair| pair[0] <= pair[1]);
+        Self { vertices, sorted }
+    }
+
+    /// Whether the vertices are in non-decreasing order.
+    pub(crate) fn is_sorted(&self) -> bool {
+        self.sorted
+    }
+
+    /// Add a vertex without regard for order.
+    pub(crate) fn push_unordered(&mut self, vertex: u32) {
+        self.vertices.push(vertex);
+        self.sorted = false;
+    }
+
+    /// Put the vertices in ascending order and drop repeats.
+    pub(crate) fn sort_dedup(&mut self) {
+        self.vertices.sort_unstable();
+        self.vertices.dedup();
+        self.sorted = true;
     }
 
     /// Vertices in this bag. Publicly constructed decompositions expose them in
@@ -31,6 +58,17 @@ impl TdBag {
         &self.vertices
     }
 }
+
+/// Two bags are the same bag when they hold the same vertices in the same
+/// order. The order flag is a note about how the bag was built, not part of
+/// what it holds, and it may be `false` on a bag that happens to be sorted.
+impl PartialEq for TdBag {
+    fn eq(&self, other: &Self) -> bool {
+        self.vertices == other.vertices
+    }
+}
+
+impl Eq for TdBag {}
 
 /// A tree decomposition: bags of vertices, and an acyclic adjacency over them.
 ///
@@ -216,8 +254,19 @@ impl TreeDecomposition {
 
     /// The ordering used when goatd compares two decompositions: narrower
     /// first, then fewer total vertices across all bags.
+    ///
+    /// The same numbers as [`Self::treewidth`] and [`Self::total_bag_size`],
+    /// read in one pass over the bags because the portfolio asks for both of
+    /// them on every candidate it produces.
     pub(crate) fn quality_key(&self) -> (u32, usize) {
-        (self.treewidth(), self.total_bag_size())
+        let mut largest = 0usize;
+        let mut total = 0usize;
+        for bag in &self.bags {
+            let size = bag.vertices.len();
+            largest = largest.max(size);
+            total += size;
+        }
+        ((largest as u32).saturating_sub(1), total)
     }
 
     /// Check that this is a tree decomposition of `graph`.
