@@ -47,7 +47,10 @@ candidate, described under *Recombining the candidates' bags*; then one that
 builds a decomposition independently of everything above and merges it in,
 described under *Merging independent decompositions*; and last one that
 re-triangulates between the trees the run pooled, described under
-*Re-triangulating between two pooled trees*.
+*Re-triangulating between two pooled trees*. With time still left, a final
+vertex-reinsertion pass rebuilds attachments through neighbour and separator
+bags. It uses the original hard deadline. The portfolio ranks its result by
+width and total bag size, as it ranks the other candidates.
 
 The residual left after preprocessing picks between three schedules. At or
 below 10,000 vertices all of the above runs. Above that line it runs where the

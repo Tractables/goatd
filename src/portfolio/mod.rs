@@ -1574,7 +1574,8 @@ fn run_portfolio(
         CandidateRetention::All => CandidateSet::all(initial_orders.len() + 1),
         CandidateRetention::BestOnly => CandidateSet::best_only(),
     }
-    .reporting_shape(collection.traced);
+    .reporting_shape(collection.traced)
+    .with_deadline(window_end);
     if recombine || local_merge {
         candidates = candidates.collecting_bags(decomposition::BagPoolLimits::standard());
     }
@@ -2508,7 +2509,8 @@ fn standard_candidate_set(
     trace: &mut dyn FnMut(CandidateTrace),
 ) -> Result<CandidateSet, crate::Error> {
     validate_weights(graph, weights)?;
-    run_portfolio(
+    let started = crate::meter::now();
+    let mut candidates = run_portfolio(
         graph,
         weights,
         seed,
@@ -2516,7 +2518,43 @@ fn standard_candidate_set(
         config,
         collection,
         trace,
-    )
+    )?;
+    reinsert_at_end(graph, seed, started, &mut candidates, trace);
+    Ok(candidates)
+}
+
+fn reinsert_at_end(
+    graph: &Graph,
+    seed: u64,
+    started: Instant,
+    candidates: &mut CandidateSet,
+    trace: &mut dyn FnMut(CandidateTrace),
+) {
+    let Some(deadline) = candidates.deadline().filter(|end| !expired(Some(*end))) else {
+        return;
+    };
+    let best = candidates.best().expect("the portfolio produced a tree");
+    let (found, stats) =
+        decomposition::vertex_rebuild::improve_direct_trusted(graph, best, deadline);
+    let outcome = if stats.improved > 0 {
+        candidates.push(
+            found,
+            CandidateOrigin {
+                stage: Stage::Reinserted,
+                seed,
+                pass: Pass::Only,
+            },
+        )
+    } else {
+        CandidateOutcome::DeadlineReached
+    };
+    trace(CandidateTrace {
+        stage: Stage::Reinserted,
+        seed,
+        pass: Pass::Only,
+        outcome,
+        elapsed: crate::meter::now().saturating_duration_since(started),
+    });
 }
 
 /// Run the standard portfolio and return every distinct decomposition it
