@@ -514,25 +514,29 @@ fn whiten_dim<const D: usize>(coords: &mut [f32], moving: &[u32], rng: &mut Xors
     for (slot, value) in shift.iter_mut().zip(&centre) {
         *slot = *value as f32;
     }
-    for row in coords.as_chunks_mut::<D>().0 {
-        for (value, taken) in row.iter_mut().zip(&shift) {
-            *value -= *taken;
-        }
-    }
-
     let mut covariance = [[0.0f64; D]; D];
-    for_moving_rows::<D>(coords, moving, |row| {
-        let mut wide = [0.0f64; D];
-        for (slot, value) in wide.iter_mut().zip(row) {
-            *slot = f64::from(*value);
+    if moving.len() * D == coords.len() {
+        // Every vertex takes part in the statistics, so the shift comes off
+        // the same rows, in the same order, that the covariance sums over.
+        // The row's new coordinate is stored first and read back from the
+        // cloud, so the covariance still sums the `f32` values the cloud
+        // holds.
+        for row in coords.as_chunks_mut::<D>().0 {
+            for (value, taken) in row.iter_mut().zip(&shift) {
+                *value -= *taken;
+            }
+            accumulate_covariance(&mut covariance, row);
         }
-        for (i, cells) in covariance.iter_mut().enumerate() {
-            let value = wide[i];
-            for (cell, other) in cells[i..].iter_mut().zip(&wide[i..]) {
-                *cell += value * *other;
+    } else {
+        for row in coords.as_chunks_mut::<D>().0 {
+            for (value, taken) in row.iter_mut().zip(&shift) {
+                *value -= *taken;
             }
         }
-    });
+        for_moving_rows::<D>(coords, moving, |row| {
+            accumulate_covariance(&mut covariance, row);
+        });
+    }
     for i in 0..D {
         let (upper, lower) = covariance.split_at_mut(i + 1);
         let cells = &mut upper[i];
@@ -603,6 +607,25 @@ fn whiten_dim<const D: usize>(coords: &mut [f32], moving: &[u32], rng: &mut Xors
     for row in coords.as_chunks_mut::<D>().0 {
         for ((value, mean), scale) in row.iter_mut().zip(&means).zip(&scales) {
             *value = ((f64::from(*value) - mean) * scale) as f32;
+        }
+    }
+}
+
+/// Add one recentred row's outer product to the upper triangle of
+/// `covariance`.
+///
+/// The row is widened once and every product is taken from the widened
+/// values, so a coordinate is converted once however many cells it reaches.
+#[inline(always)]
+fn accumulate_covariance<const D: usize>(covariance: &mut [[f64; D]; D], row: &[f32; D]) {
+    let mut wide = [0.0f64; D];
+    for (slot, value) in wide.iter_mut().zip(row) {
+        *slot = f64::from(*value);
+    }
+    for (i, cells) in covariance.iter_mut().enumerate() {
+        let value = wide[i];
+        for (cell, other) in cells[i..].iter_mut().zip(&wide[i..]) {
+            *cell += value * *other;
         }
     }
 }
