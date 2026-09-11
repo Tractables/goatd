@@ -145,6 +145,7 @@ pub(crate) fn eliminate_sampled_min_fill(
 
 /// Fill-plus-coefficient-times-degree elimination with weighted sampling from
 /// the complete minimum-score tie set, or from a `band` above it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn eliminate_sampled_fill_degree(
     graph: &mut EliminationGraph,
     draw: SampleDraw<'_>,
@@ -167,6 +168,7 @@ pub(crate) fn eliminate_sampled_fill_degree(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn eliminate_sampled_fill_based(
     graph: &mut EliminationGraph,
     draw: SampleDraw<'_>,
