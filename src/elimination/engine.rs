@@ -42,6 +42,10 @@ pub(crate) struct Prebuilt {
     /// Connected components of the preprocessed residual, reused by every
     /// portfolio candidate.
     components: Vec<Vec<u32>>,
+    /// The active vertices of the preprocessed residual in index order, so that
+    /// a candidate seeds its priority structure from the residual's vertices
+    /// rather than scanning every index of the input graph.
+    active: Vec<u32>,
     /// Initial fill count of each residual vertex. Computed on the first
     /// sampled min-fill run, then reused by later seeds.
     initial_fill: Option<Vec<u64>>,
@@ -82,9 +86,11 @@ pub(crate) fn prebuild(input: &crate::Graph, soft_deadline: Option<Instant>) -> 
     let graph = EliminationGraph::from_edges(input.num_vertices, &input.edges);
     let reduced = preprocess(graph, soft_deadline);
     let components = find_connected_components(&reduced.graph);
+    let active = execution::active_vertices(&reduced.graph);
     Prebuilt {
         reduced,
         components,
+        active,
         initial_fill: None,
         work: None,
         scratch: RunScratch::new(),
@@ -207,6 +213,7 @@ pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> 
         &prebuilt.reduced.prefix,
         &prebuilt.components,
         prebuilt.initial_fill.as_deref(),
+        Some(&prebuilt.active),
         spec,
         &mut prebuilt.scratch,
     )
@@ -279,11 +286,16 @@ pub(super) fn find_connected_components(graph: &EliminationGraph) -> Vec<Vec<u32
 /// `initial_fill` is the caller's cached per-vertex fill count for this exact
 /// graph; the min-fill sampling cores are the only ones that read it. A
 /// component run remaps the counts into its local numbering.
+///
+/// `active` is the caller's list of `graph`'s active vertices in index order,
+/// which the sampling cores seed their buckets from; without one they scan
+/// every index instead.
 fn run_elimination_raw(
     graph: &mut EliminationGraph,
     prefix: &ElimSteps,
     salt: &[u32],
     initial_fill: Option<&[u64]>,
+    active: Option<&[u32]>,
     spec: RunSpec<'_>,
     scratch: &mut greedy::SampleScratch,
 ) -> (ElimSteps, ElimExit, Vec<u32>) {
@@ -312,6 +324,7 @@ fn run_elimination_raw(
                 ..spec.stop
             },
             initial_fill,
+            active,
             scratch,
         ),
         Order::MinDegreeSampled { weights } => eliminate_sampled_min_degree(
@@ -326,6 +339,7 @@ fn run_elimination_raw(
                 soft_deadline: None,
                 ..spec.stop
             },
+            active,
             scratch,
         ),
         Order::FillDegreeSampled {
@@ -344,6 +358,7 @@ fn run_elimination_raw(
                 ..spec.stop
             },
             initial_fill,
+            active,
             degree_coefficient,
             scratch,
         ),
@@ -457,11 +472,14 @@ fn run_order_per_component(
             ..spec
         };
 
+        // Every vertex of a component subgraph is active, so its seeding scan
+        // has nothing to skip and needs no list of its own.
         let (comp_steps, comp_exit, comp_residual) = run_elimination_raw(
             &mut sub_reduced.graph,
             &sub_reduced.prefix,
             &sub_salt,
             sub_initial_fill.as_deref(),
+            None,
             sub_spec,
             scratch,
         );
@@ -536,6 +554,7 @@ pub(super) fn run_order_on_residual(
     prefix: &ElimSteps,
     components: &[Vec<u32>],
     initial_fill: Option<&[u64]>,
+    active: Option<&[u32]>,
     spec: RunSpec<'_>,
     scratch: &mut RunScratch,
 ) -> OrderRun {
@@ -572,6 +591,7 @@ pub(super) fn run_order_on_residual(
         prefix,
         &scratch.salt,
         initial_fill,
+        active,
         spec,
         &mut scratch.sample,
     );

@@ -90,6 +90,32 @@ fn update_neighbours(
     }
 }
 
+/// File one vertex in its starting bucket, and record its fill where the score
+/// keeps it separately. Shared by the two ways the seeding loop below reaches a
+/// vertex, so both file it identically.
+#[inline]
+fn seed_bucket(
+    graph: &EliminationGraph,
+    v: u32,
+    initial_fill: Option<&[u64]>,
+    fill_scratch: &mut FillScratch,
+    fills: &mut Option<&mut [u64]>,
+    buckets: &mut BucketMap<'_>,
+    priority: FillPriority,
+) {
+    let f = match initial_fill {
+        Some(f) => f[v as usize],
+        None => fill_scratch.fill_count_of(graph, v),
+    };
+    if let Some(fills) = fills.as_deref_mut() {
+        fills[v as usize] = f;
+    }
+    buckets.insert(
+        v,
+        priority.key(f, graph.degree(v) as u64, graph.len() as u64),
+    );
+}
+
 /// htd-style min-fill elimination: priority = fill only (no secondary degree
 /// or salt key), ties broken by random sampling from the full min-fill tie
 /// set. A smaller `weights[v]` makes `v` more likely to be drawn.
@@ -102,6 +128,7 @@ pub(crate) fn eliminate_sampled_min_fill(
     sink: ElimSink<'_>,
     stop: ElimStop,
     initial_fill: Option<&[u64]>,
+    active: Option<&[u32]>,
     scratch: &mut SampleScratch,
 ) -> ElimExit {
     eliminate_sampled_fill_based(
@@ -110,6 +137,7 @@ pub(crate) fn eliminate_sampled_min_fill(
         sink,
         stop,
         initial_fill,
+        active,
         FillPriority::Fill,
         scratch,
     )
@@ -123,6 +151,7 @@ pub(crate) fn eliminate_sampled_fill_degree(
     sink: ElimSink<'_>,
     stop: ElimStop,
     initial_fill: Option<&[u64]>,
+    active: Option<&[u32]>,
     degree_coefficient: i8,
     scratch: &mut SampleScratch,
 ) -> ElimExit {
@@ -132,6 +161,7 @@ pub(crate) fn eliminate_sampled_fill_degree(
         sink,
         stop,
         initial_fill,
+        active,
         FillPriority::FillDegree(degree_coefficient),
         scratch,
     )
@@ -143,6 +173,7 @@ fn eliminate_sampled_fill_based(
     mut sink: ElimSink<'_>,
     stop: ElimStop,
     initial_fill: Option<&[u64]>,
+    active: Option<&[u32]>,
     priority: FillPriority,
     scratch: &mut SampleScratch,
 ) -> ElimExit {
@@ -178,27 +209,50 @@ fn eliminate_sampled_fill_based(
     affected.size_for(n);
     // Plain min-fill already stores the current fill as the bucket key. Only
     // composite scores need a second array to recover the fill component.
+    //
+    // The entries are written for every active vertex by the seeding loop below
+    // and read only at active vertices, so the store is grown to the graph and
+    // left holding whatever the run before it wrote.
     let mut fills: Option<&mut [u64]> = if priority.tracks_fill_separately() {
-        fill_store.clear();
-        fill_store.resize(n, 0);
-        Some(fill_store.as_mut_slice())
+        if fill_store.len() < n {
+            fill_store.resize(n, 0);
+        }
+        Some(&mut fill_store[..n])
     } else {
         None
     };
     let mut buckets = BucketMap::with_weights(bucket_storage, weights, uniform_mass);
-    for v in 0..n {
-        if graph.active[v] {
-            let f = match initial_fill {
-                Some(f) => f[v],
-                None => fill_scratch.fill_count_of(graph, v as u32),
-            };
-            if let Some(fills) = fills.as_deref_mut() {
-                fills[v] = f;
+    match active {
+        // The caller's list of active vertices in index order, which is the
+        // order the scan below reaches them in.
+        Some(active) => {
+            for &v in active {
+                debug_assert!(graph.active[v as usize]);
+                seed_bucket(
+                    graph,
+                    v,
+                    initial_fill,
+                    fill_scratch,
+                    &mut fills,
+                    &mut buckets,
+                    priority,
+                );
             }
-            buckets.insert(
-                v as u32,
-                priority.key(f, graph.degree(v as u32) as u64, n as u64),
-            );
+        }
+        None => {
+            for v in 0..n as u32 {
+                if graph.active[v as usize] {
+                    seed_bucket(
+                        graph,
+                        v,
+                        initial_fill,
+                        fill_scratch,
+                        &mut fills,
+                        &mut buckets,
+                        priority,
+                    );
+                }
+            }
         }
     }
 
@@ -320,6 +374,7 @@ pub(crate) fn eliminate_sampled_min_degree(
     draw: SampleDraw<'_>,
     mut sink: ElimSink<'_>,
     stop: ElimStop,
+    active: Option<&[u32]>,
     scratch: &mut SampleScratch,
 ) -> ElimExit {
     let SampleDraw {
@@ -344,9 +399,21 @@ pub(crate) fn eliminate_sampled_min_degree(
         ..
     } = scratch;
     let mut buckets = BucketMap::with_weights(bucket_storage, weights, uniform_mass);
-    for v in 0..n {
-        if graph.active[v] {
-            buckets.insert(v as u32, graph.degree(v as u32) as u64);
+    match active {
+        // The caller's list of active vertices in index order, which is the
+        // order the scan below reaches them in.
+        Some(active) => {
+            for &v in active {
+                debug_assert!(graph.active[v as usize]);
+                buckets.insert(v, graph.degree(v) as u64);
+            }
+        }
+        None => {
+            for v in 0..n as u32 {
+                if graph.active[v as usize] {
+                    buckets.insert(v, graph.degree(v) as u64);
+                }
+            }
         }
     }
 
@@ -355,9 +422,15 @@ pub(crate) fn eliminate_sampled_min_degree(
     let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
     let mut pacer = DeadlinePacer::new();
     let mut clique_residual = false;
-    // Lazy degree tracking — defer bucket update to sample time.
-    degree_stale.clear();
-    degree_stale.resize(n, false);
+    // Lazy degree tracking — defer bucket update to sample time. The flags are
+    // grown to the graph and left as the run before them wrote them: the
+    // seeding above files every degree exactly, and the elimination marks every
+    // vertex whose degree it changes, so a flag left set costs one comparison
+    // that finds the filed degree already right and changes nothing.
+    if degree_stale.len() < n {
+        degree_stale.resize(n, false);
+    }
+    let degree_stale = &mut degree_stale[..n];
 
     while buckets.minimum().is_some() {
         if pacer.due() && expired(hard_deadline) {
