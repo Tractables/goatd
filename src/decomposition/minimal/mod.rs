@@ -89,8 +89,8 @@ fn common_neighbourhood_is_clique(
     left: usize,
     right: usize,
     common: &mut [u64],
-    members: &mut Vec<u32>,
 ) -> bool {
+    let mut size = 0u64;
     for (word, (&in_left, &in_right)) in graph
         .row(left)
         .iter()
@@ -98,18 +98,34 @@ fn common_neighbourhood_is_clique(
         .enumerate()
     {
         common[word] = in_left & in_right;
+        size += u64::from((in_left & in_right).count_ones());
     }
-    RowSet::members(common, members);
-    crate::meter::charge((members.len().saturating_mul(graph.words)) as u64);
-    for &vertex in members.iter() {
-        let index = vertex as usize;
-        let row = graph.row(index);
-        for (word, &wanted) in common.iter().enumerate() {
-            let mut missing = wanted & !row[word];
-            if word == index / 64 {
-                missing &= !(1u64 << (index % 64));
+    crate::meter::charge(size.saturating_mul(graph.words as u64));
+    // Walk the words and bits of `common` rather than listing its vertices
+    // first: this test runs once per candidate edge, and the list was the
+    // largest single source of writes in the minimalizer.
+    for member_word in 0..graph.words {
+        let mut bits = common[member_word];
+        while bits != 0 {
+            let index = member_word * 64 + bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let row = graph.row(index);
+            // A vertex is in its own common-neighbourhood word but not in its
+            // own row, so that word is compared apart from the rest.
+            let own = common[member_word] & !(1u64 << (index % 64));
+            if own & !row[member_word] != 0 {
+                return false;
             }
-            if missing != 0 {
+            let missing = |(&wanted, &present): (&u64, &u64)| wanted & !present != 0;
+            if common[..member_word]
+                .iter()
+                .zip(&row[..member_word])
+                .any(missing)
+                || common[member_word + 1..]
+                    .iter()
+                    .zip(&row[member_word + 1..])
+                    .any(missing)
+            {
                 return false;
             }
         }
@@ -155,6 +171,14 @@ fn completion(
 /// already dropped out: taking a removable edge out of a chordal graph leaves
 /// it chordal, so a partly minimalized completion is a triangulation like any
 /// other, only with fewer edges gone than a finished run would have.
+///
+/// A sweep after the first tests only the edges that could have changed
+/// answer. Dropping an edge `uv` adds nothing to any common neighbourhood: the
+/// only neighbourhoods it changes at all are those of pairs `u` or `v` belongs
+/// to, which it shrinks. So an edge whose endpoints have both gone untouched
+/// since its last test would fail that test again, and the sweep passes over
+/// it. The last sweep, which by construction removes nothing, is the one that
+/// gains most from this.
 fn minimalize(
     completion: &mut RowSet,
     graph: &Graph,
@@ -169,38 +193,54 @@ fn minimalize(
         }
     }
     let mut common = vec![0u64; completion.words];
-    let mut members: Vec<u32> = Vec::new();
-    let mut row_members: Vec<u32> = Vec::new();
+    // The sweep in which a removal last took an edge off each vertex, 0 for a
+    // vertex no removal has touched.
+    let mut touched: Vec<u32> = vec![0; vertices];
     let mut removed = 0;
     let mut pacer = DeadlinePacer::new();
+    let mut pass = 0u32;
     loop {
+        pass += 1;
         let mut removed_this_pass = 0;
         for vertex in 0..vertices {
             crate::meter::charge(completion.words as u64);
             if pacer.due() && expired(deadline) {
                 return removed + removed_this_pass;
             }
-            RowSet::members(completion.row(vertex), &mut row_members);
-            for &member in &row_members {
-                let other = member as usize;
-                if other <= vertex
-                    || original.contains(vertex, other)
-                    || !completion.contains(vertex, other)
-                {
-                    continue;
+            let words = completion.words;
+            let base = vertex * words;
+            let first = vertex / 64;
+            for word in first..words {
+                let mut bits = completion.rows[base + word];
+                if word == first {
+                    // `vertex` itself and everything below it: those pairs are
+                    // tested from their smaller endpoint instead.
+                    bits &= (!1u64) << (vertex % 64);
                 }
-                if pacer.due() && expired(deadline) {
-                    return removed + removed_this_pass;
-                }
-                if common_neighbourhood_is_clique(
-                    completion,
-                    vertex,
-                    other,
-                    &mut common,
-                    &mut members,
-                ) {
-                    completion.remove(vertex, other);
-                    removed_this_pass += 1;
+                // A removal below clears bits of this row, but only the bit of
+                // the member being tested, which this walk has already taken
+                // out of `bits`.
+                while bits != 0 {
+                    let other = word * 64 + bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    if original.contains(vertex, other) {
+                        continue;
+                    }
+                    // An endpoint touched in pass p is retested in pass p and
+                    // in pass p + 1: an edge tested earlier in pass p saw the
+                    // neighbourhood as it was before that removal.
+                    if touched[vertex] + 2 <= pass && touched[other] + 2 <= pass {
+                        continue;
+                    }
+                    if pacer.due() && expired(deadline) {
+                        return removed + removed_this_pass;
+                    }
+                    if common_neighbourhood_is_clique(completion, vertex, other, &mut common) {
+                        completion.remove(vertex, other);
+                        touched[vertex] = pass;
+                        touched[other] = pass;
+                        removed_this_pass += 1;
+                    }
                 }
             }
         }

@@ -74,6 +74,35 @@ fn residual_bitset_mode(num_active: usize, num_edges: usize) -> bool {
     (num_edges as u128) * 128 > (num_active as u128) * (num_active as u128)
 }
 
+/// What a fill collector learnt about `v`'s elimination from the graph before
+/// it, for [`EliminationGraph::eliminate_prepared`]: how many vertices each
+/// neighbour gains and, in sparse mode, which ones and where `v` sits in
+/// its row.
+pub(super) struct PreparedFill<'a> {
+    /// |N(v) \ N[u]| for a neighbour u, by vertex id.
+    pub(super) gained: &'a [u32],
+    /// Sparse mode only: the i-th neighbour gains
+    /// `partners[starts[i]..starts[i + 1]]`, in the order the unprepared
+    /// elimination pushes them, and `v` is at `v_position[i]` in its row.
+    pub(super) partners: &'a [u32],
+    pub(super) starts: &'a [u32],
+    pub(super) v_position: &'a [u32],
+}
+
+/// Two distinct rows of `w` words each, starting at `a` and `b`, borrowed
+/// together so a pass over both carries no bounds check per word.
+#[inline(always)]
+fn rows_mut(bitset: &mut [u64], a: usize, b: usize, w: usize) -> (&mut [u64], &mut [u64]) {
+    debug_assert!(a != b);
+    if a < b {
+        let (low, high) = bitset.split_at_mut(b);
+        (&mut low[a..a + w], &mut high[..w])
+    } else {
+        let (low, high) = bitset.split_at_mut(a);
+        (&mut high[..w], &mut low[b..b + w])
+    }
+}
+
 /// Build the membership map of one adjacency row.
 fn build_row_index(row: &[u32], slot: &mut Option<Box<FxHashMap<u32, u32>>>) {
     let mut index: FxHashMap<u32, u32> = FxHashMap::default();
@@ -173,7 +202,6 @@ fn difference_popcount_by(
 
 /// Mutable graph used by goatd during preprocessing, min-fill, and nested
 /// dissection. Supports active/inactive vertices for constant-time elimination.
-#[derive(Clone)]
 pub(super) struct EliminationGraph {
     pub(super) adj: Vec<Vec<u32>>,
     /// Position of each neighbour within `adj[v]`, for the rows long enough to
@@ -214,6 +242,83 @@ pub(super) struct EliminationGraph {
     /// is what the graphs small enough to index by vertex id always did.
     bitset_compact: bool,
     hardware_popcount: bool,
+}
+
+/// Written out rather than derived so that `clone_from` refills the buffers a
+/// working copy already has. The portfolio takes a copy of the preprocessed
+/// residual for every candidate it runs, and on a graph with a few hundred
+/// thousand vertices a fresh copy means an allocation per adjacency row.
+///
+/// Both halves destructure the whole struct, so a field added later does not
+/// compile until it is handled in each.
+impl Clone for EliminationGraph {
+    fn clone(&self) -> Self {
+        let Self {
+            adj,
+            row_index,
+            active,
+            num_active,
+            num_edges,
+            bitset_degree,
+            elim_marker,
+            elim_stamp,
+            bitset,
+            bitset_words,
+            bitset_slot,
+            slot_vertex,
+            bitset_compact,
+            hardware_popcount,
+        } = self;
+        Self {
+            adj: adj.clone(),
+            row_index: row_index.clone(),
+            active: active.clone(),
+            num_active: *num_active,
+            num_edges: *num_edges,
+            bitset_degree: bitset_degree.clone(),
+            elim_marker: elim_marker.clone(),
+            elim_stamp: *elim_stamp,
+            bitset: bitset.clone(),
+            bitset_words: *bitset_words,
+            bitset_slot: bitset_slot.clone(),
+            slot_vertex: slot_vertex.clone(),
+            bitset_compact: *bitset_compact,
+            hardware_popcount: *hardware_popcount,
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        let Self {
+            adj,
+            row_index,
+            active,
+            num_active,
+            num_edges,
+            bitset_degree,
+            elim_marker,
+            elim_stamp,
+            bitset,
+            bitset_words,
+            bitset_slot,
+            slot_vertex,
+            bitset_compact,
+            hardware_popcount,
+        } = source;
+        self.adj.clone_from(adj);
+        self.row_index.clone_from(row_index);
+        self.active.clone_from(active);
+        self.num_active = *num_active;
+        self.num_edges = *num_edges;
+        self.bitset_degree.clone_from(bitset_degree);
+        self.elim_marker.clone_from(elim_marker);
+        self.elim_stamp = *elim_stamp;
+        self.bitset.clone_from(bitset);
+        self.bitset_words = *bitset_words;
+        self.bitset_slot.clone_from(bitset_slot);
+        self.slot_vertex.clone_from(slot_vertex);
+        self.bitset_compact = *bitset_compact;
+        self.hardware_popcount = *hardware_popcount;
+    }
 }
 
 impl EliminationGraph {
@@ -695,26 +800,6 @@ impl EliminationGraph {
     /// the extra `live_neighbours` allocation when the caller already has
     /// them.
     pub(super) fn eliminate_with_nbrs(&mut self, v: u32, neighbours: &[u32]) {
-        self.eliminate_with_nbrs_impl(v, neighbours, None);
-    }
-
-    /// Eliminate `v` and record each fill edge once in canonical order.
-    pub(super) fn eliminate_with_nbrs_record_fill(
-        &mut self,
-        v: u32,
-        neighbours: &[u32],
-        fill_edges: &mut Vec<(u32, u32)>,
-    ) {
-        fill_edges.clear();
-        self.eliminate_with_nbrs_impl(v, neighbours, Some(fill_edges));
-    }
-
-    fn eliminate_with_nbrs_impl(
-        &mut self,
-        v: u32,
-        neighbours: &[u32],
-        fill_edges: Option<&mut Vec<(u32, u32)>>,
-    ) {
         // The construction meter's single largest charge: one elimination is
         // the unit of work every goatd configuration loops over, so what this
         // costs sets the scale everything else in construction is charged
@@ -739,35 +824,25 @@ impl EliminationGraph {
                 .saturating_add(k.saturating_mul(k))
         });
         if self.bitset_words > 0 {
-            self.eliminate_with_nbrs_bs(v, neighbours, fill_edges);
+            self.eliminate_with_nbrs_bs(v, neighbours);
         } else {
-            self.eliminate_with_nbrs_marker(v, neighbours, fill_edges);
+            self.eliminate_with_nbrs_marker(v, neighbours);
         }
     }
 
-    fn eliminate_with_nbrs_bs(
-        &mut self,
-        v: u32,
-        neighbours: &[u32],
-        fill_edges: Option<&mut Vec<(u32, u32)>>,
-    ) {
+    fn eliminate_with_nbrs_bs(&mut self, v: u32, neighbours: &[u32]) {
         #[cfg(target_arch = "x86_64")]
         if self.hardware_popcount {
             // SAFETY: the flag is set only after runtime feature detection.
-            return unsafe { self.eliminate_with_nbrs_bs_popcnt(v, neighbours, fill_edges) };
+            return unsafe { self.eliminate_with_nbrs_bs_popcnt(v, neighbours) };
         }
-        self.eliminate_with_nbrs_bs_by(v, neighbours, fill_edges, |word| word.count_ones());
+        self.eliminate_with_nbrs_bs_by(v, neighbours, |word| word.count_ones());
     }
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "popcnt")]
-    unsafe fn eliminate_with_nbrs_bs_popcnt(
-        &mut self,
-        v: u32,
-        neighbours: &[u32],
-        fill_edges: Option<&mut Vec<(u32, u32)>>,
-    ) {
-        self.eliminate_with_nbrs_bs_by(v, neighbours, fill_edges, |word| {
+    unsafe fn eliminate_with_nbrs_bs_popcnt(&mut self, v: u32, neighbours: &[u32]) {
+        self.eliminate_with_nbrs_bs_by(v, neighbours, |word| {
             std::arch::x86_64::_popcnt64(word as i64) as u32
         });
     }
@@ -777,7 +852,6 @@ impl EliminationGraph {
         &mut self,
         v: u32,
         neighbours: &[u32],
-        mut fill_edges: Option<&mut Vec<(u32, u32)>>,
         popcount: impl Fn(u64) -> u32 + Copy,
     ) {
         let vi = self.slot(v);
@@ -785,58 +859,50 @@ impl EliminationGraph {
         let vb = vi * w;
         let mut pushes: usize = 0;
 
+        let v_word = vi / 64;
+        let v_bit = 1u64 << (vi % 64);
+        debug_assert!(
+            self.bitset[vb + v_word] & v_bit == 0,
+            "vertex {v} is its own neighbour"
+        );
+
         for &u_raw in neighbours {
             let u = self.slot(u_raw);
             let ub = u * w;
+            let u_word = u / 64;
+            let u_bit = 1u64 << (u % 64);
+            debug_assert!(
+                self.bitset[vb + u_word] & u_bit != 0,
+                "eliminating {v} with a vertex that is not its neighbour"
+            );
+            // Take u out of v's row for the scan below, rather than masking
+            // its bit off once per word, and put it back before the next
+            // neighbour reads the row. v's own bit needs no such care: the
+            // graph holds no self-loop, so v's row never carries it.
+            self.bitset[vb + u_word] &= !u_bit;
             // The symmetric fill edge (bitset[wj] gaining bit u) is set when
             // wj's own outer-loop iteration runs, not here — bitset[wj] still
             // lacks bit u at that point, so u still shows up in wj's mask.
-            for j in 0..w {
-                let mut fill_mask = self.bitset[vb + j] & !self.bitset[ub + j];
-                if j == vi / 64 {
-                    fill_mask &= !(1u64 << (vi % 64));
-                }
-                if j == u / 64 {
-                    fill_mask &= !(1u64 << (u % 64));
-                }
-                if let Some(edges) = fill_edges.as_deref_mut() {
-                    let mut canonical = fill_mask;
-                    while canonical != 0 {
-                        let bit = canonical.trailing_zeros() as usize;
-                        let other = self.vertex_at(j * 64 + bit);
-                        if u_raw < other {
-                            edges.push((u_raw, other));
-                        }
-                        canonical &= canonical - 1;
-                    }
-                }
-                self.bitset[ub + j] |= fill_mask;
-                let added = popcount(fill_mask);
-                self.bitset_degree[u] += added;
-                pushes += added as usize;
+            let (v_row, u_row) = rows_mut(&mut self.bitset, vb, ub, w);
+            let mut added = 0u32;
+            for (&v_word, u_word) in v_row.iter().zip(u_row.iter_mut()) {
+                let fill_mask = v_word & !*u_word;
+                *u_word |= fill_mask;
+                added += popcount(fill_mask);
             }
-            self.bitset[ub + vi / 64] &= !(1u64 << (vi % 64));
+            self.bitset_degree[u] += added;
+            pushes += added as usize;
+            self.bitset[vb + u_word] |= u_bit;
+            self.bitset[ub + v_word] &= !v_bit;
             self.bitset_degree[u] -= 1;
         }
 
-        for j in 0..w {
-            self.bitset[vb + j] = 0;
-        }
+        self.bitset[vb..vb + w].fill(0);
         self.bitset_degree[vi] = 0;
-        if self.active[v as usize] {
-            self.active[v as usize] = false;
-            self.num_active -= 1;
-        }
-        self.num_edges -= neighbours.len();
-        self.num_edges += pushes / 2;
+        self.finish_elimination(v, neighbours.len(), pushes);
     }
 
-    fn eliminate_with_nbrs_marker(
-        &mut self,
-        v: u32,
-        neighbours: &[u32],
-        mut fill_edges: Option<&mut Vec<(u32, u32)>>,
-    ) {
+    fn eliminate_with_nbrs_marker(&mut self, v: u32, neighbours: &[u32]) {
         let marker = self.elim_marker.as_mut_slice();
         let mut pushes: usize = 0;
         for &u_raw in neighbours {
@@ -861,11 +927,6 @@ impl EliminationGraph {
                         index.insert(w, row.len() as u32);
                         row.push(w);
                         pushes += 1;
-                        if u_raw < w
-                            && let Some(edges) = fill_edges.as_deref_mut()
-                        {
-                            edges.push((u_raw, w));
-                        }
                     }
                 }
                 continue;
@@ -894,11 +955,6 @@ impl EliminationGraph {
                     marker[wi] = s;
                     row.push(w);
                     pushes += 1;
-                    if u_raw < w
-                        && let Some(edges) = fill_edges.as_deref_mut()
-                    {
-                        edges.push((u_raw, w));
-                    }
                 }
             }
             if self.adj[u].len() >= ROW_INDEX_THRESH {
@@ -906,12 +962,120 @@ impl EliminationGraph {
             }
         }
         self.clear_row(v);
+        self.finish_elimination(v, neighbours.len(), pushes);
+    }
+
+    /// Deactivate `v` and settle the counts once its rows are done:
+    /// `pushes` is the number of row entries the fill edges added.
+    #[inline]
+    fn finish_elimination(&mut self, v: u32, degree: usize, pushes: usize) {
         if self.active[v as usize] {
             self.active[v as usize] = false;
             self.num_active -= 1;
         }
-        self.num_edges -= neighbours.len();
+        self.num_edges -= degree;
         self.num_edges += pushes / 2;
+    }
+
+    /// [`eliminate_with_nbrs`](Self::eliminate_with_nbrs) with the fill
+    /// edges already known. A neighbour that gains nothing only loses `v`,
+    /// and one that gains gets its edges without a pass to find them. The
+    /// graph ends up as the unprepared elimination leaves it, row for row.
+    pub(super) fn eliminate_prepared(
+        &mut self,
+        v: u32,
+        neighbours: &[u32],
+        fill: &PreparedFill<'_>,
+    ) {
+        let k = neighbours.len();
+        if self.bitset_words > 0 {
+            let w = self.bitset_words;
+            let vi = self.slot(v);
+            let vb = vi * w;
+            let v_word = vi / 64;
+            let v_bit = 1u64 << (vi % 64);
+            let mut filled = 0u64;
+            let mut pushes = 0usize;
+            for &u_raw in neighbours {
+                let u = self.slot(u_raw);
+                let ub = u * w;
+                let gained = fill.gained[u_raw as usize];
+                if gained > 0 {
+                    // As in the unprepared pass: u's bit leaves v's row while
+                    // u's row takes what it lacks of it.
+                    filled += 1;
+                    let u_word = u / 64;
+                    let u_bit = 1u64 << (u % 64);
+                    self.bitset[vb + u_word] &= !u_bit;
+                    let (v_row, u_row) = rows_mut(&mut self.bitset, vb, ub, w);
+                    debug_assert_eq!(
+                        v_row
+                            .iter()
+                            .zip(u_row.iter())
+                            .map(|(&a, &b)| (a & !b).count_ones())
+                            .sum::<u32>(),
+                        gained,
+                        "prepared fill count of {u_raw} disagrees with the rows"
+                    );
+                    for (&from_v, into_u) in v_row.iter().zip(u_row.iter_mut()) {
+                        *into_u |= from_v;
+                    }
+                    self.bitset[vb + u_word] |= u_bit;
+                    self.bitset_degree[u] += gained;
+                    pushes += gained as usize;
+                }
+                self.bitset[ub + v_word] &= !v_bit;
+                self.bitset_degree[u] -= 1;
+            }
+            self.bitset[vb..vb + w].fill(0);
+            self.bitset_degree[vi] = 0;
+            crate::meter::charge((k as u64).saturating_add(filled.saturating_mul(w as u64)));
+            self.finish_elimination(v, k, pushes);
+            return;
+        }
+        debug_assert_eq!(fill.starts.len(), k + 1);
+        debug_assert_eq!(fill.v_position.len(), k);
+        let mut pushes = 0usize;
+        for (i, &u_raw) in neighbours.iter().enumerate() {
+            let u = u_raw as usize;
+            let partners = &fill.partners[fill.starts[i] as usize..fill.starts[i + 1] as usize];
+            debug_assert_eq!(partners.len(), fill.gained[u] as usize);
+            let row = &mut self.adj[u];
+            let index = self.row_index[u].as_deref_mut();
+            let position = match &index {
+                // The map has to drop v either way, and says where it was.
+                Some(index) => {
+                    index.get(&v).copied().expect("v is in its neighbour's row") as usize
+                }
+                None => fill.v_position[i] as usize,
+            };
+            debug_assert_eq!(row[position], v);
+            let last = row.len() - 1;
+            let moved = row[last];
+            row.swap_remove(position);
+            match index {
+                Some(index) => {
+                    index.remove(&v);
+                    if position != last {
+                        index.insert(moved, position as u32);
+                    }
+                    for &y in partners {
+                        index.insert(y, row.len() as u32);
+                        row.push(y);
+                    }
+                }
+                None => {
+                    row.extend_from_slice(partners);
+                    if row.len() >= ROW_INDEX_THRESH {
+                        build_row_index(&self.adj[u], &mut self.row_index[u]);
+                    }
+                }
+            }
+            pushes += partners.len();
+        }
+        self.clear_row(v);
+        crate::meter::charge((k + pushes) as u64);
+        self.finish_elimination(v, k, pushes);
     }
 
     /// Remove `v`, given its live neighbours, without filling — safe only

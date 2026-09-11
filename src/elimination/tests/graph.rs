@@ -20,16 +20,17 @@ fn eliminate_fills_clique_and_deactivates() {
 }
 
 #[test]
-fn eliminating_records_each_new_fill_edge_once() {
+fn eliminating_adds_each_fill_edge_once() {
     for n in [4, 200] {
         let mut graph = EliminationGraph::from_edges(n, &[(0, 1), (0, 2), (0, 3), (1, 2)]);
         let neighbours = graph.live_neighbours(0);
-        let mut fill_edges = Vec::new();
+        let edges_before = graph.num_edges;
 
-        graph.eliminate_with_nbrs_record_fill(0, &neighbours, &mut fill_edges);
-        fill_edges.sort_unstable();
+        graph.eliminate_with_nbrs(0, &neighbours);
 
-        assert_eq!(fill_edges, [(1, 3), (2, 3)]);
+        assert!(graph.contains_edge(1, 3));
+        assert!(graph.contains_edge(2, 3));
+        assert_eq!(graph.num_edges, edges_before - 3 + 2);
     }
 }
 

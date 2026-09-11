@@ -83,11 +83,12 @@ fn sampled_min_fill_rechecks_vertices_two_hops_from_an_elimination() {
         SampleDraw {
             weights: &weights,
             band: 0,
+            seed: 0,
         },
-        0,
         sink,
         ElimStop::default(),
         None,
+        &mut crate::elimination::greedy::SampleScratch::new(),
     );
 
     let mut reference = EliminationGraph::from_edges(6, &edges);
@@ -130,12 +131,13 @@ fn assert_sampled_fill_degree_minimizes_score(degree_coefficient: i8) {
         SampleDraw {
             weights: &weights,
             band: 0,
+            seed: 0,
         },
-        0,
         sink,
         ElimStop::default(),
         None,
         degree_coefficient,
+        &mut crate::elimination::greedy::SampleScratch::new(),
     );
 
     let mut reference = EliminationGraph::from_edges(7, &edges);
@@ -236,11 +238,12 @@ fn band_run(band: u64, seed: u64) -> Vec<u32> {
         SampleDraw {
             weights: &weights,
             band,
+            seed,
         },
-        seed,
         sink,
         ElimStop::default(),
         None,
+        &mut crate::elimination::greedy::SampleScratch::new(),
     );
 
     let mut reference = EliminationGraph::from_edges(5, &BAND_EDGES);
