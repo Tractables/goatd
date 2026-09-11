@@ -21,22 +21,45 @@ pub(crate) fn build_td_from_ranked_bags(
     let n_bags = ranked_bags.len();
     debug_assert!(n_bags <= rank.len());
     debug_assert!(rank.iter().all(|&step| step < n_bags as u32));
-    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n_bags];
     let n_bags_u32 = n_bags as u32;
-    for (step, vertices) in ranked_bags.iter().enumerate() {
+
+    // Each bag has at most one parent, and as many further neighbours as it
+    // has children, so the row lengths are known before anything is pushed.
+    // The pass below records the parents and counts the entries; the rows are
+    // then allocated at the size they reach, rather than grown from nothing on
+    // a graph that produces a bag per vertex.
+    let mut parent: Vec<u32> = Vec::with_capacity(n_bags);
+    let mut degree: Vec<u32> = vec![0; n_bags];
+    // The parent rule and the bag's own sort both read the bag's vertices, so
+    // they read them together: a second visit to a few hundred thousand bags
+    // is a second pass that finds none of the lines the first brought in.
+    let mut bags: Vec<TdBag> = Vec::with_capacity(n_bags);
+    for (step, vertices) in ranked_bags.into_iter().enumerate() {
         let mut best = u32::MAX;
-        for &u in vertices {
+        for &u in &vertices {
             let r = rank[u as usize];
             if r > step as u32 && r < best {
                 best = r;
             }
         }
+        parent.push(best);
+        if best < n_bags_u32 {
+            degree[step] += 1;
+            degree[best as usize] += 1;
+        }
+        bags.push(TdBag::new(vertices));
+    }
+
+    let mut adj: Vec<Vec<usize>> = degree
+        .iter()
+        .map(|&d| Vec::with_capacity(d as usize))
+        .collect();
+    for (step, &best) in parent.iter().enumerate() {
         if best < n_bags_u32 {
             adj[step].push(best as usize);
             adj[best as usize].push(step);
         }
     }
-    let bags = ranked_bags.into_iter().map(TdBag::new).collect();
 
     TreeDecomposition::from_parts(rank.len() as u32, bags, adj)
 }

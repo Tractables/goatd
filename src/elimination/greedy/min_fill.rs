@@ -4,8 +4,9 @@
 //! One instantiation of the greedy skeleton in `greedy`, and the portfolio's
 //! main order. Fill is costly enough to be maintained rather than recomputed
 //! per pop: a seeding scan measures every active vertex, then each elimination
-//! re-scores every vertex whose neighbourhood or neighbour-pair edges changed.
-//! Heap generations discard the older entries those updates replace.
+//! updates every vertex whose neighbourhood or neighbour-pair edges changed,
+//! from what `FillAffected` read before the elimination. Heap generations
+//! discard the older entries those updates replace.
 //!
 //! Past the soft deadline the run continues in cheap mode — neighbours are
 //! re-pushed with fill 0, so the rest of the elimination pops in degree order.
@@ -109,7 +110,10 @@ struct MinFill<'a> {
     generation: Vec<u64>,
     score: Vec<u64>,
     affected: FillAffected,
-    fill_edges: Vec<(u32, u32)>,
+    /// Whether `affected` holds what the last elimination disturbed. A
+    /// `prepare` that reaches the deadline part way through clears itself and
+    /// leaves this false.
+    prepared: bool,
     salt: &'a [u32],
 }
 
@@ -184,9 +188,24 @@ impl ElimPolicy for MinFill<'_> {
         None
     }
 
-    fn eliminate_with_fill(&mut self, graph: &mut EliminationGraph, v: u32, nbrs: &[u32]) {
-        self.affected.prepare_inside(graph, v, nbrs);
-        graph.eliminate_with_nbrs_record_fill(v, nbrs, &mut self.fill_edges);
+    fn eliminate_with_fill(
+        &mut self,
+        graph: &mut EliminationGraph,
+        v: u32,
+        nbrs: &[u32],
+        deadline: Option<Instant>,
+    ) {
+        self.prepared = self.affected.prepare(graph, v, nbrs, true, deadline);
+        if self.prepared {
+            graph.eliminate_prepared(v, nbrs, &self.affected.fill_edges());
+        } else {
+            graph.eliminate_with_nbrs(v, nbrs);
+        }
+    }
+
+    fn eliminate_simplicial(&mut self, graph: &mut EliminationGraph, v: u32, nbrs: &[u32]) {
+        self.prepared = self.affected.prepare(graph, v, nbrs, false, None);
+        graph.remove_without_fill_nbrs(v, nbrs);
     }
 
     fn after_eliminate(
@@ -208,15 +227,15 @@ impl ElimPolicy for MinFill<'_> {
             return AfterElim::Continue;
         }
 
+        if !self.prepared {
+            return self.deadline_outcome(graph);
+        }
         if filled_neighbourhood {
-            if !self
-                .affected
-                .collect_deltas(graph, nbrs, &self.fill_edges, deadline)
-            {
-                return self.deadline_outcome(graph);
-            }
-            while let Some((vertex, delta)) = self.affected.pop_delta() {
-                if expired(deadline) {
+            // Applying one delta is a bucket move, so this loop reads the
+            // deadline on the pacer's stride.
+            let mut pacer = DeadlinePacer::new();
+            while let Some((vertex, delta)) = self.affected.pop_delta(graph) {
+                if pacer.due() && expired(deadline) {
                     self.affected.clear();
                     return self.deadline_outcome(graph);
                 }
@@ -226,14 +245,11 @@ impl ElimPolicy for MinFill<'_> {
             }
         }
 
-        // Checked inside this loop: a fill recount is superlinear in the
-        // neighbourhood, so one update can otherwise overrun the deadline.
         for &vertex in nbrs {
-            if expired(deadline) {
-                return self.deadline_outcome(graph);
-            }
             if graph.active[vertex as usize] {
-                let live = self.scratch.fill_count_of(graph, vertex);
+                let live = self
+                    .affected
+                    .neighbour_fill(graph, vertex, self.score[vertex as usize]);
                 self.push(graph, vertex, live);
             }
         }
@@ -261,7 +277,7 @@ pub(crate) fn eliminate_min_fill(
         generation: vec![0; n],
         score: vec![0; n],
         affected: FillAffected::new(n),
-        fill_edges: Vec::new(),
+        prepared: false,
         salt,
     };
     eliminate_greedy(&mut policy, graph, sink, stop)

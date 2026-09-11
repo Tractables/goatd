@@ -285,11 +285,14 @@ fn project(td: &TreeDecomposition, keep: &[u32]) -> Result<Projection, Error> {
     })
 }
 
-fn bag_is_subset(left: &TdBag, right: &TdBag, left_sorted: bool, right_sorted: bool) -> bool {
+/// Whether every vertex of `left` is also in `right`, reading each bag's
+/// recorded order to pick how to look them up.
+fn bag_is_subset(left: &TdBag, right: &TdBag) -> bool {
     if left.vertices.len() > right.vertices.len() {
         return false;
     }
-    if !left_sorted {
+    let right_sorted = right.is_sorted();
+    if !left.is_sorted() {
         return left.vertices.iter().all(|vertex| {
             if right_sorted {
                 right.vertices.binary_search(vertex).is_ok()
@@ -305,15 +308,21 @@ fn bag_is_subset(left: &TdBag, right: &TdBag, left_sorted: bool, right_sorted: b
             .all(|vertex| right.vertices.contains(vertex));
     }
 
-    let mut right_index = 0;
+    // Both sides are non-decreasing, so one walk over `right` serves every
+    // vertex of `left`. The matched position is not stepped over: if `left`
+    // repeats a vertex, the repeat matches there again, and otherwise the
+    // scan below moves past it on its own. `rest` is what the walk has not
+    // passed yet, so the scan runs over a slice instead of indexing the row
+    // through a bound it has already established.
+    let mut rest = right.vertices.as_slice();
     for vertex in &left.vertices {
-        while right_index < right.vertices.len() && right.vertices[right_index] < *vertex {
-            right_index += 1;
-        }
-        if right.vertices.get(right_index) != Some(vertex) {
+        let Some(at) = rest.iter().position(|candidate| candidate >= vertex) else {
+            return false;
+        };
+        rest = &rest[at..];
+        if rest[0] != *vertex {
             return false;
         }
-        right_index += 1;
     }
     true
 }
@@ -386,38 +395,31 @@ impl TreeDecomposition {
         // points toward a larger bag; equal bags point toward the lower index,
         // so these links cannot cycle.
         let mut target: Vec<Option<usize>> = vec![None; bag_count];
-        let bag_is_sorted: Vec<bool> = self
-            .bags
-            .iter()
-            .map(|bag| bag.vertices.windows(2).all(|pair| pair[0] < pair[1]))
-            .collect();
-        for bag in 0..bag_count {
+        for (bag, chosen) in target.iter_mut().enumerate() {
+            let bag_size = self.bags[bag].vertices.len();
             for &neighbour in &self.adj[bag] {
-                let bag_size = self.bags[bag].vertices.len();
                 let neighbour_size = self.bags[neighbour].vertices.len();
-                if bag_size > neighbour_size
-                    || (bag_size == neighbour_size && neighbour > bag)
-                    || !bag_is_subset(
-                        &self.bags[bag],
-                        &self.bags[neighbour],
-                        bag_is_sorted[bag],
-                        bag_is_sorted[neighbour],
-                    )
-                {
+                if bag_size > neighbour_size || (bag_size == neighbour_size && neighbour > bag) {
                     continue;
                 }
-                let replace = target[bag].is_none_or(|current| {
+                // Whether this neighbour would win the choice is settled by
+                // the two sizes and the two indices, so it is settled before
+                // the bags are compared: a neighbour that loses to the one
+                // already chosen never needs the subset test at all, and that
+                // test is the dominant cost of the compaction.
+                let replace = chosen.is_none_or(|current| {
                     let current_size = self.bags[current].vertices.len();
                     neighbour_size > current_size
                         || (neighbour_size == current_size && neighbour < current)
                 });
-                if replace {
-                    target[bag] = Some(neighbour);
+                if replace && bag_is_subset(&self.bags[bag], &self.bags[neighbour]) {
+                    *chosen = Some(neighbour);
                 }
             }
         }
 
         let mut representative = vec![usize::MAX; bag_count];
+        let mut total_bag_size = 0usize;
         for start in 0..bag_count {
             let mut root = start;
             while let Some(next) = target[root] {
@@ -435,14 +437,13 @@ impl TreeDecomposition {
                 };
                 bag = next;
             }
+            // `start`'s representative is settled by now, either here or by an
+            // earlier walk that passed through it, so a bag that stands for
+            // itself can be counted without a second pass over the bags.
+            if representative[start] == start {
+                total_bag_size += self.bags[start].vertices.len();
+            }
         }
-        let total_bag_size = self
-            .bags
-            .iter()
-            .enumerate()
-            .filter(|(bag, _)| representative[*bag] == *bag)
-            .map(|(_, bag)| bag.vertices.len())
-            .sum();
 
         SubsumedBagCompaction {
             representative,
@@ -543,7 +544,7 @@ fn augment_for_separator(td: &mut TreeDecomposition, sep: &[u32]) -> Option<usiz
                 Some(path) => {
                     for &b in &path {
                         if !td.bags[b].vertices.contains(&v) {
-                            td.bags[b].vertices.push(v);
+                            td.bags[b].push_unordered(v);
                         }
                     }
                 }
@@ -556,15 +557,14 @@ fn augment_for_separator(td: &mut TreeDecomposition, sep: &[u32]) -> Option<usiz
                     // travels it the way it would any other edge.
                     td.adj[src].push(anchor);
                     td.adj[anchor].push(src);
-                    td.bags[anchor].vertices.push(v);
+                    td.bags[anchor].push_unordered(v);
                 }
             }
         }
     }
 
     for bag in td.bags.iter_mut() {
-        bag.vertices.sort_unstable();
-        bag.vertices.dedup();
+        bag.sort_dedup();
     }
 
     Some(anchor)
