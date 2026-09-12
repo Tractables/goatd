@@ -29,6 +29,7 @@ use crate::{Error, Graph};
 mod tests;
 
 /// A graph as one bitset row per vertex.
+#[derive(Default)]
 struct RowSet {
     rows: Vec<u64>,
     words: usize,
@@ -41,6 +42,13 @@ impl RowSet {
             rows: vec![0; vertices * words],
             words,
         }
+    }
+
+    /// Give the set room for `vertices` vertices, for a caller that goes on to
+    /// write every word. What the rows held before is left where it is.
+    fn resize_rows(&mut self, vertices: usize) {
+        self.words = vertices.div_ceil(64);
+        self.rows.resize(vertices * self.words, 0);
     }
 
     fn row(&self, vertex: usize) -> &[u64] {
@@ -71,23 +79,30 @@ impl RowSet {
             / 2
     }
 
-    /// This set restricted to the vertices other than `vertex`, the ids above
-    /// it lowered by one, over `vertices - 1` vertices: what completing the
-    /// bags of a decomposition projected off `vertex` gives, since a pair
-    /// shares a bag of the projection exactly when it shared one before.
-    fn without_vertex(&self, vertex: usize) -> RowSet {
+    /// Write into `into` this set restricted to the vertices other than
+    /// `vertex`, the ids above it lowered by one, over `vertices - 1`
+    /// vertices: what completing the bags of a decomposition projected off
+    /// `vertex` gives, since a pair shares a bag of the projection exactly
+    /// when it shared one before.
+    ///
+    /// Every word of `into` is written, so a caller that rebuilds one vertex
+    /// after another hands the same buffer back each time.
+    fn write_without_vertex(&self, vertex: usize, into: &mut RowSet) {
         let vertices = self.rows.len() / self.words.max(1);
-        let mut out = RowSet::new(vertices.saturating_sub(1));
+        into.resize_rows(vertices.saturating_sub(1));
         for (row, target) in (0..vertices)
             .filter(|&row| row != vertex)
-            .zip(out.rows.chunks_mut(out.words.max(1)))
+            .zip(into.rows.chunks_mut(into.words.max(1)))
         {
             let row = self.row(row);
-            for (index, word) in target.iter_mut().enumerate() {
+            // The words below the dropped vertex's own word hold no bit that
+            // moves, so they are copied rather than shifted one at a time.
+            let unchanged = (vertex / 64).min(target.len());
+            target[..unchanged].copy_from_slice(&row[..unchanged]);
+            for (index, word) in target.iter_mut().enumerate().skip(unchanged) {
                 *word = word_without(row, index, vertex);
             }
         }
-        out
     }
 
     /// The vertices of `row`, in ascending order.
@@ -362,6 +377,32 @@ impl Witnesses for RebuildWitnesses<'_> {
     }
 }
 
+/// Where a minimalization keeps its completion and the buffers the pass works
+/// in. The vertex reinsertion pass hands the same workspace to every rebuild,
+/// so a rebuild allocates none of this again: the completion alone is a word
+/// per 64 vertices per vertex, and each rebuild overwrites all of it.
+#[derive(Default)]
+struct Workspace {
+    /// The completion the sweeps take edges out of.
+    completion: RowSet,
+    scratch: Scratch,
+}
+
+/// The buffers of a minimalization other than the completion itself, kept
+/// apart from it so that a sweep can borrow both at once.
+#[derive(Default)]
+struct Scratch {
+    /// The common neighbourhood a clique test fills in.
+    common: Vec<u64>,
+    /// The sweep in which a removal last took an edge off each vertex, 0 for a
+    /// vertex no removal has touched.
+    touched: Vec<u32>,
+    /// The minimalized completion as one neighbour list per vertex.
+    adjacency: Vec<Vec<u32>>,
+    /// Each vertex's position in the search's numbering.
+    rank: Vec<u32>,
+}
+
 /// The chordal completion of `decomposition`: every bag made a clique.
 ///
 /// Returns `None` when `deadline` passes before every bag is in. A half-built
@@ -418,13 +459,16 @@ fn minimalize(
     edge_count: usize,
     original_word: impl Fn(usize, usize) -> u64,
     witnesses: &mut impl Witnesses,
+    scratch: &mut Scratch,
     deadline: Option<Instant>,
 ) -> usize {
     crate::meter::charge(edge_count as u64);
-    let mut common = vec![0u64; completion.words];
-    // The sweep in which a removal last took an edge off each vertex, 0 for a
-    // vertex no removal has touched.
-    let mut touched: Vec<u32> = vec![0; vertices];
+    let common = &mut scratch.common;
+    common.clear();
+    common.resize(completion.words, 0);
+    let touched = &mut scratch.touched;
+    touched.clear();
+    touched.resize(vertices, 0);
     let mut removed = 0;
     let mut pacer = DeadlinePacer::new();
     let mut pass = 0u32;
@@ -476,7 +520,7 @@ fn minimalize(
                         completion,
                         vertex,
                         other,
-                        &mut common,
+                        &mut common[..],
                         hint,
                     ) {
                         (_, None) => {
@@ -506,41 +550,51 @@ fn minimalize(
 fn decompose_completion(
     completion: &RowSet,
     vertices: usize,
+    scratch: &mut Scratch,
     deadline: Option<Instant>,
 ) -> Option<TreeDecomposition> {
-    let mut adjacency: Vec<Vec<u32>> = Vec::with_capacity(vertices);
-    let mut members: Vec<u32> = Vec::new();
+    let adjacency = &mut scratch.adjacency;
+    // The rows are read into whatever each already holds, so a pass that
+    // rebuilds one vertex after another allocates a row once.
+    adjacency.resize(vertices, Vec::new());
     let mut pacer = DeadlinePacer::new();
-    for vertex in 0..vertices {
+    for (vertex, row) in adjacency.iter_mut().enumerate() {
         crate::meter::charge(completion.words as u64);
         if pacer.due() && expired(deadline) {
             return None;
         }
-        RowSet::members(completion.row(vertex), &mut members);
-        adjacency.push(members.clone());
+        RowSet::members(completion.row(vertex), row);
     }
-    let selected = cardinality_search(&adjacency, Reach::Neighbours, deadline)?;
-    let mut rank = vec![0u32; vertices];
+    let selected = cardinality_search(&adjacency[..], Reach::Neighbours, deadline)?;
+    let rank = &mut scratch.rank;
+    rank.clear();
+    rank.resize(vertices, 0);
     for (step, &vertex) in selected.iter().rev().enumerate() {
         rank[vertex as usize] = step as u32;
     }
+    let rank: &[u32] = &rank[..];
     let mut bags: Vec<Vec<u32>> = Vec::with_capacity(vertices);
     for &vertex in selected.iter().rev() {
-        crate::meter::charge(adjacency[vertex as usize].len() as u64);
+        let row = &adjacency[vertex as usize];
+        crate::meter::charge(row.len() as u64);
         if pacer.due() && expired(deadline) {
             return None;
         }
         let step = rank[vertex as usize];
-        let mut bag = vec![vertex];
-        bag.extend(
-            adjacency[vertex as usize]
-                .iter()
-                .copied()
-                .filter(|&neighbour| rank[neighbour as usize] > step),
-        );
+        let later = |&neighbour: &u32| rank[neighbour as usize] > step;
+        // The bag is the vertex and its later neighbours, and a row is
+        // ascending, so writing the neighbours below the vertex, then the
+        // vertex, then the rest puts the bag in order as it is built. Its
+        // length is counted first, so the bag is allocated once at the size
+        // it reaches.
+        let split = row.partition_point(|&neighbour| neighbour < vertex);
+        let mut bag = Vec::with_capacity(1 + row.iter().filter(|&n| later(n)).count());
+        bag.extend(row[..split].iter().copied().filter(later));
+        bag.push(vertex);
+        bag.extend(row[split..].iter().copied().filter(later));
         bags.push(bag);
     }
-    Some(build_td_from_ranked_bags(bags, &rank))
+    Some(build_td_from_ranked_bags(bags, rank))
 }
 
 /// Rebuild `decomposition` on a minimal triangulation of `graph`.
@@ -651,10 +705,13 @@ fn minimalization_candidate(
     if vertices == 0 || !fits(decomposition, vertices, deadline) {
         return None;
     }
-    let completion = completion(decomposition, vertices, deadline)?;
+    let mut work = Workspace {
+        completion: completion(decomposition, vertices, deadline)?,
+        scratch: Scratch::default(),
+    };
     let original = original_edges(graph);
     refine_completion(
-        completion,
+        &mut work,
         vertices,
         graph.edges().len(),
         |row, word| original.row(row)[word],
@@ -682,6 +739,8 @@ pub(super) struct SharedCompletion {
     original: RowSet,
     completion: RowSet,
     witnesses: FillWitnesses,
+    /// Where each rebuild minimalizes, kept from one rebuild to the next.
+    work: Workspace,
 }
 
 impl SharedCompletion {
@@ -691,6 +750,7 @@ impl SharedCompletion {
             original: original_edges(graph),
             completion: RowSet::new(vertices),
             witnesses: FillWitnesses::default(),
+            work: Workspace::default(),
         }
     }
 
@@ -730,12 +790,20 @@ pub(super) fn rebuild_candidate(
         return None;
     }
     charge_completion(decomposition, deadline)?;
-    let completion = shared.completion.without_vertex(vertex as usize);
+    // The fields are taken apart so that the rebuild can read the round's
+    // completion while it writes its own into the workspace beside it.
+    let SharedCompletion {
+        original,
+        completion,
+        witnesses,
+        work,
+    } = shared;
+    completion.write_without_vertex(vertex as usize, &mut work.completion);
     let raise = |v: usize| v + usize::from(v >= vertex as usize);
-    let original = &shared.original;
+    let original: &RowSet = original;
     let mut witnesses = RebuildWitnesses {
-        store: &mut shared.witnesses,
-        dropped: shared.completion.row(vertex as usize),
+        store: witnesses,
+        dropped: completion.row(vertex as usize),
         vertex: vertex as usize,
         left: 0,
         cursor: 0,
@@ -743,7 +811,7 @@ pub(super) fn rebuild_candidate(
         slot: None,
     };
     refine_completion(
-        completion,
+        work,
         vertices,
         edge_count,
         |row, word| word_without(original.row(raise(row)), word, vertex as usize),
@@ -767,13 +835,17 @@ fn charge_completion(decomposition: &TreeDecomposition, deadline: Option<Instant
 
 /// Drop the removable fill edges of `completion` and rebuild the bags.
 fn refine_completion(
-    mut completion: RowSet,
+    work: &mut Workspace,
     vertices: usize,
     edge_count: usize,
     original_word: impl Fn(usize, usize) -> u64,
     witnesses: &mut impl Witnesses,
     deadline: Option<Instant>,
 ) -> Option<TreeDecomposition> {
+    let Workspace {
+        completion,
+        scratch,
+    } = work;
     // The sweeps stop early enough to leave the rebuild its own time. Without
     // that they would run to the deadline itself and the rebuild would put the
     // whole pass past it, which is the one outcome a caller cannot use: it has
@@ -787,17 +859,18 @@ fn refine_completion(
     );
     let sweep_deadline = deadline.map(|deadline| deadline.checked_sub(rebuild).unwrap_or(deadline));
     if minimalize(
-        &mut completion,
+        completion,
         vertices,
         edge_count,
         original_word,
         witnesses,
+        scratch,
         sweep_deadline,
     ) == 0
     {
         return None;
     }
-    decompose_completion(&completion, vertices, deadline)
+    decompose_completion(completion, vertices, scratch, deadline)
 }
 
 /// What rebuilding the bags from a completion of `vertices` vertices and

@@ -54,17 +54,13 @@ fn compact(mut tree: TreeDecomposition) -> TreeDecomposition {
 }
 
 fn edges(tree: &TreeDecomposition) -> Vec<(usize, usize)> {
-    tree.adjacency()
-        .iter()
-        .enumerate()
-        .flat_map(|(a, adjacent)| {
-            adjacent
-                .iter()
-                .copied()
-                .filter(move |&b| b > a)
-                .map(move |b| (a, b))
-        })
-        .collect()
+    // A forest over the bags has fewer edges than it has bags, so the list is
+    // allocated once at that size rather than grown as the rows come in.
+    let mut edges = Vec::with_capacity(tree.bags().len());
+    for (a, adjacent) in tree.adjacency().iter().enumerate() {
+        edges.extend(adjacent.iter().copied().filter(|&b| b > a).map(|b| (a, b)));
+    }
+    edges
 }
 
 /// A connected support in each needed component, meeting every required vertex.

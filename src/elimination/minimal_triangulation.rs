@@ -79,7 +79,12 @@ pub(crate) fn cardinality_search(
     // walks, both kept across steps and cleared after each one so the search
     // allocates once.
     let mut touched: Vec<u32> = Vec::new();
-    let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); n + 1];
+    // Only the path search walks buckets, and the plain search runs once per
+    // rebuilt vertex on a graph that may have hundreds of thousands of them.
+    let mut buckets: Vec<Vec<u32>> = match reach {
+        Reach::LowerPaths => vec![Vec::new(); n + 1],
+        Reach::Neighbours => Vec::new(),
+    };
     let mut raised: Vec<u32> = Vec::new();
     let mut pacer = DeadlinePacer::new();
 
