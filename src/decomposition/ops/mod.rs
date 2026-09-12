@@ -165,22 +165,44 @@ pub(super) fn project_td_keeping_global_ids(
     td: &TreeDecomposition,
     keep: &[u32],
 ) -> Option<TreeDecomposition> {
+    let keep: FxHashSet<u32> = keep.iter().copied().collect();
+    project_bags_where(td, |v| keep.contains(&v))
+}
+
+/// [`project_td_keeping_global_ids`] for the vertex set less `vertex`, with
+/// the ids above it lowered by one so the result is over `0..n - 1`. This is
+/// what [`TreeDecomposition::project`] returns for that set, without the
+/// hashed membership and relabelling a general subset needs: the vertex
+/// reinsertion pass projects once per vertex of the graph.
+pub(crate) fn project_dropping_vertex(
+    td: &TreeDecomposition,
+    vertex: u32,
+) -> Option<TreeDecomposition> {
+    let mut projected = project_bags_where(td, |v| v != vertex)?;
+    // Lowering is order-preserving, so bags sorted by global id stay sorted.
+    for bag in &mut projected.bags {
+        for v in &mut bag.vertices {
+            *v -= u32::from(*v > vertex);
+        }
+    }
+    projected.num_vertices = td.num_vertices.saturating_sub(1);
+    Some(projected)
+}
+
+/// The projection onto the vertices `keep` accepts, ids unchanged.
+fn project_bags_where(
+    td: &TreeDecomposition,
+    keep: impl Fn(u32) -> bool,
+) -> Option<TreeDecomposition> {
     let n = td.bags.len();
     if n == 0 {
         return None;
     }
 
-    let keep: FxHashSet<u32> = keep.iter().copied().collect();
     let projected: Vec<Vec<u32>> = td
         .bags
         .iter()
-        .map(|bag| {
-            bag.vertices
-                .iter()
-                .copied()
-                .filter(|v| keep.contains(v))
-                .collect()
-        })
+        .map(|bag| bag.vertices.iter().copied().filter(|&v| keep(v)).collect())
         .collect();
 
     let non_empty: Vec<usize> = (0..n).filter(|&i| !projected[i].is_empty()).collect();
