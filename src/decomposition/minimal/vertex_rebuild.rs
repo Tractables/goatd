@@ -243,6 +243,21 @@ fn rebuild(
     Some(compact(candidate))
 }
 
+/// Every vertex of the tree's graph, those in the widest bags first, ties in
+/// vertex order.
+fn widest_first(tree: &TreeDecomposition, order: &mut Vec<u32>) {
+    let mut widest = vec![0u32; tree.num_vertices() as usize];
+    for bag in tree.bags() {
+        let size = bag.vertices().len() as u32;
+        for &v in bag.vertices() {
+            widest[v as usize] = widest[v as usize].max(size);
+        }
+    }
+    order.clear();
+    order.extend(0..tree.num_vertices());
+    order.sort_by_key(|&v| std::cmp::Reverse(widest[v as usize]));
+}
+
 /// Rebuild vertices and retain strict width-then-mass improvements.
 /// The deadline bounds the search; initial compaction also runs when expired.
 ///
@@ -260,10 +275,11 @@ pub fn improve(
 /// Reinsert vertices using connecting bags of neighbours and separators.
 /// The caller establishes that the input tree is valid for the graph.
 ///
-/// The vertices are tried in a cycle. An improvement is kept at once and the
-/// cycle goes on from the next vertex, so the vertices that failed just before
-/// it come around last; the search ends when every vertex has failed since the
-/// last improvement, or at the deadline.
+/// The vertices are tried in a cycle, the vertices of the widest bags first.
+/// An improvement is kept at once, the order is drawn again for the new tree
+/// and the cycle goes on from the same position, so the vertices that failed
+/// just before it come around last; the search ends when every vertex has
+/// failed since the last improvement, or at the deadline.
 ///
 /// # Panics
 /// Debug builds assert input validity. Release callers must establish it.
@@ -283,10 +299,11 @@ pub fn improve_trusted(
     // round that runs, not before: the gate below turns most large graphs
     // away, and the completion is a quadratic allocation.
     let mut shared: Option<(Vec<Vec<u32>>, SharedCompletion)> = None;
-    // The next vertex to try, and how many have failed since the last
-    // improvement.
+    // The position of the next vertex to try in the order, and how many have
+    // failed since the last improvement.
     let mut cursor = 0;
     let mut failed = 0;
+    let mut order = Vec::new();
     'rounds: while !crate::deadline::expired(Some(deadline)) {
         let squares = best.bags().iter().fold(0u64, |sum, bag| {
             let size = bag.vertices().len() as u64;
@@ -305,11 +322,12 @@ pub fn improve_trusted(
         let (adjacency, shared) =
             shared.get_or_insert_with(|| (adjacency(graph), SharedCompletion::new(graph)));
         shared.complete(&best);
+        widest_first(&best, &mut order);
         loop {
             if failed >= n || crate::deadline::expired(Some(deadline)) {
                 break 'rounds;
             }
-            let vertex = cursor;
+            let vertex = order[cursor as usize];
             cursor = (cursor + 1) % n;
             let candidate = rebuild(
                 graph,
