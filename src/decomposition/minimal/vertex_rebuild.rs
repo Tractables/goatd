@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use super::minimalization_candidate;
+use super::{SharedCompletion, rebuild_candidate};
 use crate::{Graph, TreeDecomposition};
 
 #[cfg(test)]
@@ -128,32 +128,42 @@ fn support(tree: &TreeDecomposition, required: &[bool]) -> Vec<bool> {
     kept
 }
 
+/// The neighbours of every vertex, each row ascending.
+fn adjacency(graph: &Graph) -> Vec<Vec<u32>> {
+    let mut adjacency = vec![Vec::new(); graph.num_vertices() as usize];
+    for &(a, b) in graph.edges() {
+        adjacency[a as usize].push(b);
+        adjacency[b as usize].push(a);
+    }
+    adjacency
+}
+
+/// Remove `vertex` from `tree`, whose bags `shared` has completed, and put
+/// it back through connecting bags.
 fn rebuild(
     graph: &Graph,
+    neighbours: &[u32],
+    shared: &mut SharedCompletion,
     tree: &TreeDecomposition,
     vertex: u32,
     deadline: Instant,
 ) -> Option<TreeDecomposition> {
-    if graph.num_vertices() <= 1 {
+    if graph.num_vertices() <= 1 || neighbours.is_empty() {
         return None;
     }
     let lower = |v: u32| v - u32::from(v > vertex);
     let mut required = vec![false; graph.num_vertices() as usize - 1];
-    for &(a, b) in graph.edges() {
-        if a == vertex {
-            required[lower(b) as usize] = true;
-        } else if b == vertex {
-            required[lower(a) as usize] = true;
-        }
+    for &u in neighbours {
+        required[lower(u) as usize] = true;
     }
-    if !required.iter().any(|&yes| yes) {
-        return None;
-    }
-    let keep: Vec<_> = (0..graph.num_vertices()).filter(|&v| v != vertex).collect();
-    let small_graph = graph.induced_subgraph(&keep).ok()?;
-    let (small, _) = tree.project(&keep).ok()?.into_parts();
+    // Restricting the graph to the other vertices used to read its whole edge
+    // list; the rebuild no longer needs that copy but is charged the same.
+    crate::meter::charge(graph.edges().len() as u64);
+    let small = crate::decomposition::ops::project_dropping_vertex(tree, vertex)?;
     let small = compact(small);
-    let small = minimalization_candidate(&small, &small_graph, Some(deadline)).unwrap_or(small);
+    let remaining_edges = graph.edges().len() - neighbours.len();
+    let small =
+        rebuild_candidate(&small, shared, vertex, remaining_edges, Some(deadline)).unwrap_or(small);
     let small = compact(small);
     let kept = support(&small, &required);
     let original = |v: u32| v + u32::from(v >= vertex);
@@ -260,6 +270,10 @@ pub fn improve_trusted(
     debug_assert!(start.validate(graph).is_ok());
     let mut best = compact(start.clone());
     let mut stats = Stats::default();
+    // The neighbour lists and the shared completion are built for the first
+    // round that runs, not before: the gate below turns most large graphs
+    // away, and the completion is a quadratic allocation.
+    let mut shared: Option<(Vec<Vec<u32>>, SharedCompletion)> = None;
     while !crate::deadline::expired(Some(deadline)) {
         let n = graph.num_vertices() as u64;
         let squares = best.bags().iter().fold(0u64, |sum, bag| {
@@ -276,12 +290,22 @@ pub fn improve_trusted(
         }
         stats.rounds += 1;
         let best_quality = quality(&best);
+        let (adjacency, shared) =
+            shared.get_or_insert_with(|| (adjacency(graph), SharedCompletion::new(graph)));
+        shared.complete(&best);
         let mut moved = false;
         for vertex in 0..graph.num_vertices() {
             if crate::deadline::expired(Some(deadline)) {
                 break;
             }
-            let candidate = rebuild(graph, &best, vertex, deadline);
+            let candidate = rebuild(
+                graph,
+                &adjacency[vertex as usize],
+                shared,
+                &best,
+                vertex,
+                deadline,
+            );
             let Some(candidate) = candidate else {
                 continue;
             };

@@ -28,20 +28,6 @@ const NUMBERED: u8 = 1;
 /// A vertex the current step's reach has already visited.
 const REACHED: u8 = 2;
 
-/// One vertex's search state: the count the step order reads, beside the marks
-/// that say whether the vertex is still in play.
-///
-/// The two live together because the inner walk of the lower-paths reach loads
-/// both for every row entry it visits, and a walk over a large graph spends
-/// most of its time waiting for those loads.
-#[derive(Clone, Copy)]
-struct Cell {
-    /// Numbered neighbours, or numbered vertices reachable along a lower path.
-    count: u32,
-    /// [`NUMBERED`], [`REACHED`], or both.
-    state: u8,
-}
-
 /// How far a step looks for the vertices whose count it raises.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Reach {
@@ -73,10 +59,21 @@ pub(crate) fn cardinality_search(
     hard_deadline: Option<Instant>,
 ) -> Option<Vec<u32>> {
     let n = adjacency.len();
-    // Counts and marks together, one entry per vertex. The reach marks are
-    // cleared after every step, so between steps a cell's state is either
-    // empty or [`NUMBERED`].
-    let mut cells = vec![Cell { count: 0, state: 0 }; n];
+    // Counts and marks apart, one entry per vertex each: the step order reads
+    // the counts alone, as one flat scan that a numbered vertex does not
+    // interrupt, since numbering a vertex zeroes its count. The reach marks
+    // are cleared after every step, so between steps a mark is either empty
+    // or [`NUMBERED`].
+    let mut counts = vec![0u32; n];
+    let mut states = vec![0u8; n];
+    // The highest count in each run of 64 vertices, so a step scans the runs
+    // and then one run rather than every vertex. A count only rises, except
+    // to zero when its vertex is numbered, and that is the one time a run's
+    // maximum is counted again.
+    let mut run_max = vec![0u32; n.div_ceil(64)];
+    // The lowest unnumbered vertex, which is what a step takes when no
+    // unnumbered vertex counts anything yet.
+    let mut lowest = 0usize;
     let mut selected: Vec<u32> = Vec::with_capacity(n);
     // The vertices the current step marked, and the buckets the path search
     // walks, both kept across steps and cleared after each one so the search
@@ -93,23 +90,48 @@ pub(crate) fn cardinality_search(
         if pacer.due() && expired(hard_deadline) {
             return None;
         }
-        let mut chosen = usize::MAX;
-        let mut best = 0u32;
-        for (vertex, cell) in cells.iter().enumerate() {
-            debug_assert!(cell.state & REACHED == 0, "a step cleared its own marks");
-            if cell.state == 0 && (chosen == usize::MAX || cell.count > best) {
-                chosen = vertex;
-                best = cell.count;
-            }
+        debug_assert!(
+            states.iter().all(|&state| state & REACHED == 0),
+            "a step cleared its own marks"
+        );
+        while states[lowest] != 0 {
+            lowest += 1;
         }
+        // The highest count, then the first vertex holding it: a numbered
+        // vertex counts zero, so it is never that vertex unless nothing
+        // unnumbered counts either, and then the lowest unnumbered one is
+        // taken instead. Ties go to the smallest index either way.
+        let best = run_max.iter().copied().max().unwrap_or(0);
+        let chosen = if best == 0 {
+            lowest
+        } else {
+            let run = run_max.iter().position(|&max| max == best).unwrap_or(0);
+            run * 64
+                + counts[run * 64..]
+                    .iter()
+                    .take(64)
+                    .position(|&count| count == best)
+                    .unwrap_or(0)
+        };
         debug_assert!(chosen < n, "every step has an unnumbered vertex to take");
-        cells[chosen].state = NUMBERED;
+        debug_assert!(states[chosen] == 0 && counts[chosen] == best);
+        states[chosen] = NUMBERED;
+        counts[chosen] = 0;
+        if best != 0 {
+            let run = chosen / 64;
+            run_max[run] = counts[run * 64..]
+                .iter()
+                .take(64)
+                .copied()
+                .max()
+                .unwrap_or(0);
+        }
         selected.push(chosen as u32);
 
         raised.clear();
         crate::meter::charge(adjacency[chosen].len() as u64);
         for &neighbour in &adjacency[chosen] {
-            if cells[neighbour as usize].state == 0 {
+            if states[neighbour as usize] == 0 {
                 raised.push(neighbour);
             }
         }
@@ -120,12 +142,11 @@ pub(crate) fn cardinality_search(
             // that all count at most `j`, so draining the buckets in increasing
             // `j` reaches every vertex by its cheapest path first.
             touched.clear();
-            cells[chosen].state |= REACHED;
+            states[chosen] |= REACHED;
             touched.push(chosen as u32);
             for &neighbour in &raised {
-                let cell = &mut cells[neighbour as usize];
-                cell.state |= REACHED;
-                let count = cell.count as usize;
+                states[neighbour as usize] |= REACHED;
+                let count = counts[neighbour as usize] as usize;
                 touched.push(neighbour);
                 buckets[count].push(neighbour);
             }
@@ -138,12 +159,12 @@ pub(crate) fn cardinality_search(
                     for &next in &adjacency[interior as usize] {
                         // Numbered and reached are both disqualifying, so the
                         // step reads one byte and tests it once.
-                        let cell = &mut cells[next as usize];
-                        if cell.state != 0 {
+                        let state = &mut states[next as usize];
+                        if *state != 0 {
                             continue;
                         }
-                        cell.state = REACHED;
-                        let count = cell.count as usize;
+                        *state = REACHED;
+                        let count = counts[next as usize] as usize;
                         touched.push(next);
                         if count > level {
                             raised.push(next);
@@ -155,11 +176,14 @@ pub(crate) fn cardinality_search(
                 }
             }
             for &vertex in &touched {
-                cells[vertex as usize].state &= !REACHED;
+                states[vertex as usize] &= !REACHED;
             }
         }
         for &vertex in &raised {
-            cells[vertex as usize].count += 1;
+            let count = counts[vertex as usize] + 1;
+            counts[vertex as usize] = count;
+            let run = &mut run_max[vertex as usize / 64];
+            *run = (*run).max(count);
         }
     }
     Some(selected)

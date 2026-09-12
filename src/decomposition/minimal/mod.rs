@@ -71,6 +71,25 @@ impl RowSet {
             / 2
     }
 
+    /// This set restricted to the vertices other than `vertex`, the ids above
+    /// it lowered by one, over `vertices - 1` vertices: what completing the
+    /// bags of a decomposition projected off `vertex` gives, since a pair
+    /// shares a bag of the projection exactly when it shared one before.
+    fn without_vertex(&self, vertex: usize) -> RowSet {
+        let vertices = self.rows.len() / self.words.max(1);
+        let mut out = RowSet::new(vertices.saturating_sub(1));
+        for (row, target) in (0..vertices)
+            .filter(|&row| row != vertex)
+            .zip(out.rows.chunks_mut(out.words.max(1)))
+        {
+            let row = self.row(row);
+            for (index, word) in target.iter_mut().enumerate() {
+                *word = word_without(row, index, vertex);
+            }
+        }
+        out
+    }
+
     /// The vertices of `row`, in ascending order.
     fn members(row: &[u64], into: &mut Vec<u32>) {
         into.clear();
@@ -84,14 +103,42 @@ impl RowSet {
     }
 }
 
+/// Word `index` of `row` as it reads with `vertex` taken out and the ids
+/// above it lowered by one: bits above `vertex` move down one place, and the
+/// bit that enters at the top comes from the next word.
+fn word_without(row: &[u64], index: usize, vertex: usize) -> u64 {
+    let source = |index: usize| row.get(index).copied().unwrap_or(0);
+    let word_v = vertex / 64;
+    if index < word_v {
+        return source(index);
+    }
+    let here = source(index);
+    let shifted = (here >> 1) | (source(index + 1) << 63);
+    if index == word_v {
+        let below = (1u64 << (vertex % 64)) - 1;
+        (here & below) | (shifted & !below)
+    } else {
+        shifted
+    }
+}
+
 /// Whether the common neighbourhood of `left` and `right` is a clique, which is
-/// what makes the edge between them removable without breaking chordality.
+/// what makes the edge between them removable without breaking chordality:
+/// the size of that neighbourhood, and two of its members that are not
+/// adjacent when it is not a clique.
+///
+/// `hint` is such a pair from an earlier test of the same edge: when both
+/// are still in the neighbourhood and still not adjacent the answer is known
+/// without walking the members. The test reads the same rows either way and
+/// charges the same; only the order it looks in changes, and every order
+/// gives the same answer.
 fn common_neighbourhood_is_clique(
     graph: &RowSet,
     left: usize,
     right: usize,
     common: &mut [u64],
-) -> bool {
+    hint: Option<(usize, usize)>,
+) -> (u64, Option<(usize, usize)>) {
     let mut size = 0u64;
     for (word, (&in_left, &in_right)) in graph
         .row(left)
@@ -103,6 +150,13 @@ fn common_neighbourhood_is_clique(
         size += u64::from((in_left & in_right).count_ones());
     }
     crate::meter::charge(size.saturating_mul(graph.words as u64));
+    if let Some((a, b)) = hint
+        && common[a / 64] & (1u64 << (a % 64)) != 0
+        && common[b / 64] & (1u64 << (b % 64)) != 0
+        && !graph.contains(a, b)
+    {
+        return (size, Some((a, b)));
+    }
     // Walk the words and bits of `common` rather than listing its vertices
     // first: this test runs once per candidate edge, and the list was the
     // largest single source of writes in the minimalizer.
@@ -115,24 +169,197 @@ fn common_neighbourhood_is_clique(
             // A vertex is in its own common-neighbourhood word but not in its
             // own row, so that word is compared apart from the rest.
             let own = common[member_word] & !(1u64 << (index % 64));
-            if own & !row[member_word] != 0 {
-                return false;
+            let absent = own & !row[member_word];
+            if absent != 0 {
+                return (
+                    size,
+                    Some((index, member_word * 64 + absent.trailing_zeros() as usize)),
+                );
             }
-            let missing = |(&wanted, &present): (&u64, &u64)| wanted & !present != 0;
-            if common[..member_word]
+            let missing = |(word, (&wanted, &present)): (usize, (&u64, &u64))| {
+                let absent = wanted & !present;
+                (absent != 0).then(|| word * 64 + absent.trailing_zeros() as usize)
+            };
+            if let Some(other) = common[..member_word]
                 .iter()
                 .zip(&row[..member_word])
-                .any(missing)
-                || common[member_word + 1..]
-                    .iter()
-                    .zip(&row[member_word + 1..])
-                    .any(missing)
+                .enumerate()
+                .find_map(missing)
+                .or_else(|| {
+                    common[member_word + 1..]
+                        .iter()
+                        .zip(&row[member_word + 1..])
+                        .enumerate()
+                        .find_map(|(word, pair)| missing((member_word + 1 + word, pair)))
+                })
             {
-                return false;
+                return (size, Some((index, other)));
             }
         }
     }
-    true
+    (size, None)
+}
+
+/// What a sweep knows about an edge before testing it.
+enum Known {
+    Nothing,
+    /// A pair that failed an earlier test of the edge, worth looking at first.
+    Hint((usize, usize)),
+    /// The test fails, and its common neighbourhood has this many members:
+    /// nothing that could have changed the answer has changed.
+    Fails(u64),
+}
+
+/// Where a sweep keeps what its failed clique tests found, so that later
+/// tests of the same edge can start from it.
+trait Witnesses {
+    /// The sweep is about to test the edges out of `vertex`, in ascending
+    /// order of the other endpoint.
+    fn start_row(&mut self, vertex: usize);
+    /// What is known about the edge `vertex`–`other`. `untouched` says that
+    /// no removal of this sweep has touched either endpoint, so its
+    /// neighbourhoods are as they were when the sweep began.
+    fn lookup(&mut self, vertex: usize, other: usize, untouched: bool) -> Known;
+    /// The edge last looked up failed on `pair`, with `size` common
+    /// neighbours; neither endpoint nor either of the pair has been touched
+    /// by a removal of this sweep.
+    fn record(&mut self, size: u64, pair: (usize, usize));
+}
+
+/// The plain pass keeps nothing: it tests each edge once per sweep.
+struct NoWitnesses;
+
+impl Witnesses for NoWitnesses {
+    fn start_row(&mut self, _vertex: usize) {}
+    fn lookup(&mut self, _vertex: usize, _other: usize, _untouched: bool) -> Known {
+        Known::Nothing
+    }
+    fn record(&mut self, _size: u64, _pair: (usize, usize)) {}
+}
+
+const NO_PAIR: (u32, u32) = (u32::MAX, u32::MAX);
+
+/// One failed clique test per fill edge of a round's completion, in the
+/// graph's own ids, shared by the rebuilds of the round.
+///
+/// Each rebuild sweeps that completion less one vertex. While a sweep has
+/// removed nothing at either endpoint of a fill edge, the edge's common
+/// neighbourhood is the round's less the dropped vertex, and a pair of its
+/// members that the round's completion does not join is still not joined:
+/// the test fails, on that pair, with one member fewer when the dropped
+/// vertex was one. So one full test of the edge, in whichever rebuild comes
+/// first, answers it for every later rebuild of the round that drops
+/// neither vertex of the pair, and the sweep is charged as if it had read
+/// the rows.
+#[derive(Default)]
+struct FillWitnesses {
+    /// Row starts into the three lists, one per vertex and a sentinel.
+    starts: Vec<usize>,
+    /// The higher endpoint of each fill edge, by lower endpoint, ascending.
+    others: Vec<u32>,
+    /// Members of the edge's common neighbourhood in the round's completion,
+    /// `u32::MAX` until a test has counted them.
+    sizes: Vec<u32>,
+    pairs: Vec<(u32, u32)>,
+}
+
+impl FillWitnesses {
+    /// Start over for the fill edges of `completion` over `original`.
+    fn rebuild(&mut self, completion: &RowSet, original: &RowSet) {
+        let vertices = completion.rows.len() / completion.words.max(1);
+        self.starts.clear();
+        self.others.clear();
+        for vertex in 0..vertices {
+            self.starts.push(self.others.len());
+            let first = vertex / 64;
+            let fill = completion.row(vertex).iter().zip(original.row(vertex));
+            for (word, (&filled, &given)) in fill.enumerate().skip(first) {
+                let mut bits = filled & !given;
+                if word == first {
+                    bits &= (!1u64) << (vertex % 64);
+                }
+                while bits != 0 {
+                    self.others
+                        .push((word * 64 + bits.trailing_zeros() as usize) as u32);
+                    bits &= bits - 1;
+                }
+            }
+        }
+        self.starts.push(self.others.len());
+        self.sizes.clear();
+        self.sizes.resize(self.others.len(), u32::MAX);
+        self.pairs.clear();
+        self.pairs.resize(self.others.len(), NO_PAIR);
+    }
+}
+
+/// [`FillWitnesses`] read from a sweep over `completion` less `vertex`,
+/// whose ids above it sit one lower.
+struct RebuildWitnesses<'a> {
+    store: &'a mut FillWitnesses,
+    /// The dropped vertex's row of the round's completion.
+    dropped: &'a [u64],
+    vertex: usize,
+    /// The row being swept, in the graph's ids, and the cursor over its
+    /// entries.
+    left: usize,
+    cursor: usize,
+    end: usize,
+    /// The store entry of the edge last looked up, when it has one.
+    slot: Option<usize>,
+}
+
+impl RebuildWitnesses<'_> {
+    fn raise(&self, v: usize) -> usize {
+        v + usize::from(v >= self.vertex)
+    }
+
+    /// Whether the dropped vertex is a common neighbour of `left` and
+    /// `right` in the round's completion, in the graph's ids.
+    fn drops_member(&self, left: usize, right: usize) -> u64 {
+        (self.dropped[left / 64] >> (left % 64)) & (self.dropped[right / 64] >> (right % 64)) & 1
+    }
+}
+
+impl Witnesses for RebuildWitnesses<'_> {
+    fn start_row(&mut self, vertex: usize) {
+        self.left = self.raise(vertex);
+        self.cursor = self.store.starts[self.left];
+        self.end = self.store.starts[self.left + 1];
+        self.slot = None;
+    }
+
+    fn lookup(&mut self, vertex: usize, other: usize, untouched: bool) -> Known {
+        let (left, right) = (self.raise(vertex), self.raise(other));
+        while self.cursor < self.end && (self.store.others[self.cursor] as usize) < right {
+            self.cursor += 1;
+        }
+        self.slot = None;
+        if self.cursor >= self.end || self.store.others[self.cursor] as usize != right {
+            return Known::Nothing;
+        }
+        self.slot = Some(self.cursor);
+        let (a, b) = self.store.pairs[self.cursor];
+        let (a, b) = (a as usize, b as usize);
+        if (a as u32, b as u32) == NO_PAIR || a == self.vertex || b == self.vertex {
+            return Known::Nothing;
+        }
+        let size = self.store.sizes[self.cursor];
+        if untouched && size != u32::MAX {
+            return Known::Fails(u64::from(size) - self.drops_member(left, right));
+        }
+        let lower = |v: usize| v - usize::from(v > self.vertex);
+        Known::Hint((lower(a), lower(b)))
+    }
+
+    fn record(&mut self, size: u64, (a, b): (usize, usize)) {
+        if let Some(slot) = self.slot {
+            let right = self.store.others[slot] as usize;
+            let size = size + self.drops_member(self.left, right);
+            self.store.sizes[slot] = u32::try_from(size).unwrap_or(u32::MAX);
+            self.store.pairs[slot] = (self.raise(a) as u32, self.raise(b) as u32);
+        }
+    }
 }
 
 /// The chordal completion of `decomposition`: every bag made a clique.
@@ -181,19 +408,19 @@ fn completion(
 /// since its last test would fail that test again, and the sweep passes over
 /// it. The last sweep, which by construction removes nothing, is the one that
 /// gains most from this.
+///
+/// `original_word` gives a word of a row of the graph's own edges, which the
+/// sweep never drops; `edge_count` is how many such edges there are, the
+/// work reading them is charged as.
 fn minimalize(
     completion: &mut RowSet,
-    graph: &Graph,
     vertices: usize,
+    edge_count: usize,
+    original_word: impl Fn(usize, usize) -> u64,
+    witnesses: &mut impl Witnesses,
     deadline: Option<Instant>,
 ) -> usize {
-    let mut original = RowSet::new(vertices);
-    crate::meter::charge(graph.edges().len() as u64);
-    for &(left, right) in graph.edges() {
-        if left != right {
-            original.insert(left as usize, right as usize);
-        }
-    }
+    crate::meter::charge(edge_count as u64);
     let mut common = vec![0u64; completion.words];
     // The sweep in which a removal last took an edge off each vertex, 0 for a
     // vertex no removal has touched.
@@ -212,8 +439,9 @@ fn minimalize(
             let words = completion.words;
             let base = vertex * words;
             let first = vertex / 64;
+            witnesses.start_row(vertex);
             for word in first..words {
-                let mut bits = completion.rows[base + word];
+                let mut bits = completion.rows[base + word] & !original_word(vertex, word);
                 if word == first {
                     // `vertex` itself and everything below it: those pairs are
                     // tested from their smaller endpoint instead.
@@ -225,9 +453,6 @@ fn minimalize(
                 while bits != 0 {
                     let other = word * 64 + bits.trailing_zeros() as usize;
                     bits &= bits - 1;
-                    if original.contains(vertex, other) {
-                        continue;
-                    }
                     // An endpoint touched in pass p is retested in pass p and
                     // in pass p + 1: an edge tested earlier in pass p saw the
                     // neighbourhood as it was before that removal.
@@ -237,11 +462,34 @@ fn minimalize(
                     if pacer.due() && expired(deadline) {
                         return removed + removed_this_pass;
                     }
-                    if common_neighbourhood_is_clique(completion, vertex, other, &mut common) {
-                        completion.remove(vertex, other);
-                        touched[vertex] = pass;
-                        touched[other] = pass;
-                        removed_this_pass += 1;
+                    let untouched = touched[vertex] == 0 && touched[other] == 0;
+                    let hint = match witnesses.lookup(vertex, other, untouched) {
+                        Known::Fails(size) => {
+                            // What the test would have charged for its rows.
+                            crate::meter::charge(size.saturating_mul(words as u64));
+                            continue;
+                        }
+                        Known::Hint(pair) => Some(pair),
+                        Known::Nothing => None,
+                    };
+                    match common_neighbourhood_is_clique(
+                        completion,
+                        vertex,
+                        other,
+                        &mut common,
+                        hint,
+                    ) {
+                        (_, None) => {
+                            completion.remove(vertex, other);
+                            touched[vertex] = pass;
+                            touched[other] = pass;
+                            removed_this_pass += 1;
+                        }
+                        (size, Some((a, b))) => {
+                            if untouched && touched[a] == 0 && touched[b] == 0 {
+                                witnesses.record(size, (a, b));
+                            }
+                        }
                     }
                 }
             }
@@ -367,10 +615,13 @@ pub(crate) fn minimalize_fits(
     graph: &Graph,
     deadline: Option<Instant>,
 ) -> bool {
+    fits(decomposition, graph.num_vertices() as usize, deadline)
+}
+
+fn fits(decomposition: &TreeDecomposition, vertices: usize, deadline: Option<Instant>) -> bool {
     let Some(deadline) = deadline else {
         return true;
     };
-    let vertices = graph.num_vertices() as usize;
     let projected = projected_units(decomposition, vertices);
     Duration::from_millis(crate::meter::milliseconds_for_units(projected)) < remaining(deadline)
 }
@@ -397,10 +648,128 @@ fn minimalization_candidate(
     deadline: Option<Instant>,
 ) -> Option<TreeDecomposition> {
     let vertices = graph.num_vertices() as usize;
-    if vertices == 0 || !minimalize_fits(decomposition, graph, deadline) {
+    if vertices == 0 || !fits(decomposition, vertices, deadline) {
         return None;
     }
-    let mut completion = completion(decomposition, vertices, deadline)?;
+    let completion = completion(decomposition, vertices, deadline)?;
+    let original = original_edges(graph);
+    refine_completion(
+        completion,
+        vertices,
+        graph.edges().len(),
+        |row, word| original.row(row)[word],
+        &mut NoWitnesses,
+        deadline,
+    )
+}
+
+/// The graph's own edges as a row set.
+fn original_edges(graph: &Graph) -> RowSet {
+    let mut original = RowSet::new(graph.num_vertices() as usize);
+    for &(left, right) in graph.edges() {
+        if left != right {
+            original.insert(left as usize, right as usize);
+        }
+    }
+    original
+}
+
+/// What the vertex reinsertion pass shares across its rebuilds: the edges of
+/// the graph, and the completion of the tree the rebuilds start from, both
+/// in the graph's own ids. Each rebuild derives its completion from the
+/// second by dropping one vertex instead of completing its bags again.
+pub(super) struct SharedCompletion {
+    original: RowSet,
+    completion: RowSet,
+    witnesses: FillWitnesses,
+}
+
+impl SharedCompletion {
+    pub(super) fn new(graph: &Graph) -> Self {
+        let vertices = graph.num_vertices() as usize;
+        Self {
+            original: original_edges(graph),
+            completion: RowSet::new(vertices),
+            witnesses: FillWitnesses::default(),
+        }
+    }
+
+    /// Complete the bags of `decomposition`, the tree the next rebuilds start
+    /// from, in place of whatever was completed before.
+    pub(super) fn complete(&mut self, decomposition: &TreeDecomposition) {
+        self.completion.rows.fill(0);
+        for bag in decomposition.bags() {
+            let bag = bag.vertices();
+            for (position, &left) in bag.iter().enumerate() {
+                for &right in &bag[position + 1..] {
+                    self.completion.insert(left as usize, right as usize);
+                }
+            }
+        }
+        self.witnesses.rebuild(&self.completion, &self.original);
+    }
+}
+
+/// [`minimalization_candidate`] for `decomposition`, the tree the shared
+/// completion was built from projected off `vertex` and compacted, over the
+/// graph less `vertex` with `edge_count` edges. The work is charged as the
+/// general pass charges it, so the two agree on every deadline they read.
+pub(super) fn rebuild_candidate(
+    decomposition: &TreeDecomposition,
+    shared: &mut SharedCompletion,
+    vertex: u32,
+    edge_count: usize,
+    deadline: Option<Instant>,
+) -> Option<TreeDecomposition> {
+    let vertices = decomposition.num_vertices() as usize;
+    if vertices == 0 || !fits(decomposition, vertices, deadline) {
+        return None;
+    }
+    charge_completion(decomposition, deadline)?;
+    let completion = shared.completion.without_vertex(vertex as usize);
+    let raise = |v: usize| v + usize::from(v >= vertex as usize);
+    let original = &shared.original;
+    let mut witnesses = RebuildWitnesses {
+        store: &mut shared.witnesses,
+        dropped: shared.completion.row(vertex as usize),
+        vertex: vertex as usize,
+        left: 0,
+        cursor: 0,
+        end: 0,
+        slot: None,
+    };
+    refine_completion(
+        completion,
+        vertices,
+        edge_count,
+        |row, word| word_without(original.row(raise(row)), word, vertex as usize),
+        &mut witnesses,
+        deadline,
+    )
+}
+
+/// The charges and deadline reads of [`completion`], without the inserts.
+fn charge_completion(decomposition: &TreeDecomposition, deadline: Option<Instant>) -> Option<()> {
+    let mut pacer = DeadlinePacer::new();
+    for bag in decomposition.bags() {
+        let bag = bag.vertices();
+        crate::meter::charge((bag.len().saturating_mul(bag.len())) as u64);
+        if pacer.due() && expired(deadline) {
+            return None;
+        }
+    }
+    Some(())
+}
+
+/// Drop the removable fill edges of `completion` and rebuild the bags.
+fn refine_completion(
+    mut completion: RowSet,
+    vertices: usize,
+    edge_count: usize,
+    original_word: impl Fn(usize, usize) -> u64,
+    witnesses: &mut impl Witnesses,
+    deadline: Option<Instant>,
+) -> Option<TreeDecomposition> {
     // The sweeps stop early enough to leave the rebuild its own time. Without
     // that they would run to the deadline itself and the rebuild would put the
     // whole pass past it, which is the one outcome a caller cannot use: it has
@@ -413,7 +782,15 @@ fn minimalization_candidate(
             .saturating_add(1),
     );
     let sweep_deadline = deadline.map(|deadline| deadline.checked_sub(rebuild).unwrap_or(deadline));
-    if minimalize(&mut completion, graph, vertices, sweep_deadline) == 0 {
+    if minimalize(
+        &mut completion,
+        vertices,
+        edge_count,
+        original_word,
+        witnesses,
+        sweep_deadline,
+    ) == 0
+    {
         return None;
     }
     decompose_completion(&completion, vertices, deadline)

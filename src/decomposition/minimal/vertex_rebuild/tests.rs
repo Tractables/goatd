@@ -1,6 +1,12 @@
 use super::*;
 use crate::elimination::{Order, decompose};
 
+fn completed(graph: &Graph, tree: &TreeDecomposition) -> SharedCompletion {
+    let mut shared = SharedCompletion::new(graph);
+    shared.complete(tree);
+    shared
+}
+
 #[test]
 fn every_vertex_of_every_five_vertex_graph_can_be_rebuilt() {
     let pairs: Vec<_> = (0..5)
@@ -24,6 +30,8 @@ fn every_vertex_of_every_five_vertex_graph_can_be_rebuilt() {
                 let candidate = std::panic::catch_unwind(|| {
                     rebuild(
                         &graph,
+                        &adjacency(&graph)[vertex as usize],
+                        &mut completed(&graph, &seed),
                         &seed,
                         vertex,
                         Instant::now() + Duration::from_secs(1),
@@ -77,7 +85,15 @@ fn an_articulation_vertex_joins_the_residual_forest_on_reinsertion() {
     // Removing the middle vertex leaves a filled edge that minimalization
     // deletes, producing two separate bag trees.
     let tree = TreeDecomposition::new(&graph, [vec![0, 1, 2]], []).unwrap();
-    let rebuilt = rebuild(&graph, &tree, 1, Instant::now() + Duration::from_secs(1)).unwrap();
+    let rebuilt = rebuild(
+        &graph,
+        &adjacency(&graph)[1],
+        &mut completed(&graph, &tree),
+        &tree,
+        1,
+        Instant::now() + Duration::from_secs(1),
+    )
+    .unwrap();
     rebuilt.validate(&graph).unwrap();
     assert_eq!(rebuilt.treewidth(), 1);
 }
@@ -90,7 +106,18 @@ fn vertex_reconstruction_escapes_a_minimal_triangulation() {
     // Completing the three-vertex side is minimal: removing any of its
     // fill edges leaves a chordless cycle through vertices 0 and 1.
     let mut filled = super::super::completion(&tree, 5, None).unwrap();
-    assert_eq!(super::super::minimalize(&mut filled, &graph, 5, None), 0);
+    let original = super::super::original_edges(&graph);
+    assert_eq!(
+        super::super::minimalize(
+            &mut filled,
+            5,
+            graph.edges().len(),
+            |row, word| original.row(row)[word],
+            &mut super::super::NoWitnesses,
+            None
+        ),
+        0
+    );
     assert_eq!(tree.treewidth(), 3);
     let (next, stats) = improve_trusted(&graph, &tree, Instant::now() + Duration::from_secs(1));
     next.validate(&graph).unwrap();
@@ -107,7 +134,15 @@ fn connecting_bags_avoid_private_vertices_of_a_large_bag() {
             .chain([(0, 1), (0, 2)]),
     );
     let seed = TreeDecomposition::new(&graph, [vec![0, 1, 2, 3, 4]], []).unwrap();
-    let direct = rebuild(&graph, &seed, 0, Instant::now() + Duration::from_secs(1)).unwrap();
+    let direct = rebuild(
+        &graph,
+        &adjacency(&graph)[0],
+        &mut completed(&graph, &seed),
+        &seed,
+        0,
+        Instant::now() + Duration::from_secs(1),
+    )
+    .unwrap();
     direct.validate(&graph).unwrap();
     assert_eq!(direct.treewidth(), 3);
     assert_eq!(direct.bags().len(), 2);
@@ -126,7 +161,15 @@ fn connecting_bags_avoid_private_vertices_of_a_large_bag() {
 fn connecting_bags_join_the_needed_components_of_a_residual_forest() {
     let graph = Graph::new(4, [(0, 1), (1, 2)]);
     let seed = TreeDecomposition::new(&graph, [vec![0, 1, 2], vec![3]], []).unwrap();
-    let direct = rebuild(&graph, &seed, 1, Instant::now() + Duration::from_secs(1)).unwrap();
+    let direct = rebuild(
+        &graph,
+        &adjacency(&graph)[1],
+        &mut completed(&graph, &seed),
+        &seed,
+        1,
+        Instant::now() + Duration::from_secs(1),
+    )
+    .unwrap();
     direct.validate(&graph).unwrap();
     assert_eq!(direct.treewidth(), 1);
     assert_eq!(direct.bags().len(), 3);
