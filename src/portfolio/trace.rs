@@ -14,6 +14,8 @@ use std::time::Duration;
 pub enum Stage {
     /// Min-fill, deterministic or sampled.
     MinFill,
+    /// The final fill-per-degree construction.
+    RelativeFill,
     /// Min-degree, deterministic or sampled.
     MinDegree,
     /// Nested dissection.
@@ -40,6 +42,8 @@ pub enum Stage {
     /// The stage that re-triangulates between the best decomposition and
     /// another one the run pooled.
     LocallyMerged,
+    /// The final pass that rebuilds vertex attachments.
+    Reinserted,
     /// The trailing FlowCutter candidate.
     FlowCutter,
     /// The lift of a decomposition of one side's projection, on a bipartite
@@ -61,6 +65,7 @@ impl Stage {
     pub(crate) fn slot(self) -> u32 {
         match self {
             Stage::MinFill => 0,
+            Stage::RelativeFill => 15,
             Stage::MinDegree => 1,
             Stage::NestedDissection => 2,
             Stage::Sample => 3,
@@ -70,6 +75,7 @@ impl Stage {
             Stage::Recombined => 7,
             Stage::Merged => 12,
             Stage::LocallyMerged => 13,
+            Stage::Reinserted => 14,
             Stage::FlowCutter => 8,
             Stage::WeightedStage => 9,
             Stage::SampledRestarts => 10,
@@ -85,6 +91,7 @@ impl fmt::Display for Stage {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Stage::MinFill => formatter.write_str("min-fill"),
+            Stage::RelativeFill => formatter.write_str("relative-fill"),
             Stage::MinDegree => formatter.write_str("min-degree"),
             Stage::NestedDissection => formatter.write_str("nested-dissection"),
             Stage::Diverse { degree_coefficient } => {
@@ -98,6 +105,7 @@ impl fmt::Display for Stage {
             Stage::Recombined => formatter.write_str("recombined"),
             Stage::Merged => formatter.write_str("merged"),
             Stage::LocallyMerged => formatter.write_str("locally-merged"),
+            Stage::Reinserted => formatter.write_str("reinserted"),
             Stage::FlowCutter => formatter.write_str("flowcutter"),
             Stage::WeightedStage => formatter.write_str("weighted-stage"),
             Stage::SampledRestarts => formatter.write_str("sampled-restarts"),

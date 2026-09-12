@@ -47,7 +47,10 @@ candidate, described under *Recombining the candidates' bags*; then one that
 builds a decomposition independently of everything above and merges it in,
 described under *Merging independent decompositions*; and last one that
 re-triangulates between the trees the run pooled, described under
-*Re-triangulating between two pooled trees*.
+*Re-triangulating between two pooled trees*. With time still left, a final
+vertex-reinsertion pass rebuilds attachments through neighbour and separator
+bags. It uses the original hard deadline. The portfolio ranks its result by
+width and total bag size, as it ranks the other candidates.
 
 The residual left after preprocessing picks between three schedules. At or
 below 10,000 vertices all of the above runs. Above that line it runs where the
@@ -417,6 +420,20 @@ out of a chordal graph leaves it chordal whether or not the sweep finishes. A
 graph that runs out of time therefore loses the improvement and keeps its
 decomposition.
 
+### Rebuilding vertex attachments
+
+Direct vertex reinsertion keeps the residual graph's bags and creates a
+connected set of new bags containing the restored vertex, its required
+neighbours, and the separators along its support. Old support edges are
+replaced by edges between these bags, with each old bag attached to its
+counterpart. This construction avoids adding the restored vertex to unrelated
+vertices in a large bag and needs no final global minimalization.
+
+`decomposition::vertex_rebuild::improve` checks the supplied decomposition;
+`improve_trusted` accepts an already validated one. Both retain strict
+width-then-mass improvements until the deadline. The standard portfolio uses
+the trusted entry only when time remains.
+
 ## Nested dissection and multilevel bisection
 
 Nested dissection is not a separate partitioning primitive. It repeatedly calls
@@ -674,3 +691,18 @@ The main algorithmic sources are the
 [PACE 2017 decomposition paper](https://arxiv.org/abs/1709.08949), and the
 multilevel partitioning work credited in
 [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).
+
+## Relative fill
+
+`Order::RelativeFill` minimizes the number of added fill edges divided by the
+current degree, then breaks ties by degree, seeded salt and vertex ID.
+Isolates have score zero. Integer cross-products compare ratios exactly.
+The construction shares min-fill's score updates and elimination engine.
+
+The portfolio tries it once after its existing stages when a completed
+min-fill pass cost no more than one eighth of the remaining time. It uses the
+current width bound and original hard deadline, and discards incomplete runs.
+
+Merge partners and the additional draws for local pieces use the same
+fill-per-degree ranking with seeded ties, followed by the existing
+minimalization pass. The deterministic first local triangulation is retained.

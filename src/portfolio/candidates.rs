@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::time::Instant;
 
 use crate::TreeDecomposition;
 use crate::decomposition::{BagPool, BagPoolLimits, SubsumedBagCompaction};
@@ -51,6 +52,7 @@ pub(super) struct CandidateSet {
     /// no stage is going to read them, which is the ordinary case; keeping
     /// them costs a sorted copy of each bag.
     pool: Option<BagPool>,
+    deadline: Option<Instant>,
 }
 
 impl CandidateSet {
@@ -62,6 +64,7 @@ impl CandidateSet {
             retain_only_best: false,
             report_shape: false,
             pool: None,
+            deadline: None,
         }
     }
 
@@ -73,7 +76,17 @@ impl CandidateSet {
             retain_only_best: true,
             report_shape: false,
             pool: None,
+            deadline: None,
         }
+    }
+
+    pub(super) fn with_deadline(mut self, deadline: Option<Instant>) -> Self {
+        self.deadline = deadline;
+        self
+    }
+
+    pub(super) fn deadline(&self) -> Option<Instant> {
+        self.deadline
     }
 
     /// Report each produced candidate's shape numbers, or not. A run whose
@@ -238,10 +251,16 @@ impl CandidateSet {
                 },
             );
         }
+        self.report_unchanged(&decomposition)
+    }
+
+    /// Report a completed refinement without retaining another candidate.
+    pub(super) fn report_unchanged(&self, decomposition: &TreeDecomposition) -> CandidateOutcome {
+        let (width, total_bag_size) = decomposition.quality_key();
         CandidateOutcome::Produced {
             width,
             total_bag_size,
-            shape: shape_of(self.report_shape, &decomposition),
+            shape: shape_of(self.report_shape, decomposition),
             best: false,
         }
     }

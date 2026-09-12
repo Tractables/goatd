@@ -19,11 +19,11 @@ use super::deterministic::{AfterElim, ElimPolicy, Seeded, eliminate_greedy};
 use super::*;
 use crate::deadline::expired;
 
-/// Heap entry ordered ascending by (fill, degree, salt). The `fill` field is
+/// Heap entry ordered by fill or fill/degree, then degree and salt. The `fill` field is
 /// duplicated out of the key so the stale-snapshot check can compare it
 /// against a live recomputed fill without destructuring the `Reverse` tuple.
 #[derive(Eq, PartialEq)]
-pub(super) struct HeapEntry {
+pub(super) struct HeapEntry<const RELATIVE: bool> {
     pub key: (
         Reverse<u64>,
         Reverse<usize>,
@@ -36,7 +36,7 @@ pub(super) struct HeapEntry {
     pub generation: u64,
 }
 
-impl HeapEntry {
+impl<const RELATIVE: bool> HeapEntry<RELATIVE> {
     pub(super) fn new(fill: u64, degree: usize, salt: u32, v: u32, generation: u64) -> Self {
         HeapEntry {
             key: (
@@ -53,9 +53,32 @@ impl HeapEntry {
     }
 }
 
-ord_by_key!(HeapEntry);
+impl<const RELATIVE: bool> Ord for HeapEntry<RELATIVE> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if RELATIVE {
+            let left = u128::from(self.fill) * other.key.1.0.max(1) as u128;
+            let right = u128::from(other.fill) * self.key.1.0.max(1) as u128;
+            right.cmp(&left).then_with(|| {
+                (self.key.1, self.key.2, self.key.3, self.key.4).cmp(&(
+                    other.key.1,
+                    other.key.2,
+                    other.key.3,
+                    other.key.4,
+                ))
+            })
+        } else {
+            self.key.cmp(&other.key)
+        }
+    }
+}
 
-impl ElimEntry for HeapEntry {
+impl<const RELATIVE: bool> PartialOrd for HeapEntry<RELATIVE> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<const RELATIVE: bool> ElimEntry for HeapEntry<RELATIVE> {
     fn vertex(&self) -> u32 {
         self.vertex
     }
@@ -104,8 +127,8 @@ fn scan_fill(
 
 /// Greedy min-fill: rank by the number of fill edges eliminating a vertex
 /// would add, breaking ties by degree and then by salt.
-struct MinFill<'a> {
-    heap: BinaryHeap<HeapEntry>,
+struct MinFill<'a, const RELATIVE: bool> {
+    heap: BinaryHeap<HeapEntry<RELATIVE>>,
     scratch: FillScratch,
     generation: Vec<u64>,
     score: Vec<u64>,
@@ -117,7 +140,7 @@ struct MinFill<'a> {
     salt: &'a [u32],
 }
 
-impl MinFill<'_> {
+impl<const RELATIVE: bool> MinFill<'_, RELATIVE> {
     fn deadline_outcome(&mut self, graph: &EliminationGraph) -> AfterElim {
         if graph.num_active > CHEAP_MODE_MAX_ACTIVE {
             AfterElim::Bail
@@ -127,14 +150,14 @@ impl MinFill<'_> {
     }
 }
 
-impl ElimPolicy for MinFill<'_> {
-    type Entry = HeapEntry;
+impl<const RELATIVE: bool> ElimPolicy for MinFill<'_, RELATIVE> {
+    type Entry = HeapEntry<RELATIVE>;
 
     const CHEAP_MODE: bool = true;
     const MAINTAIN_BITSET: bool = true;
     const ZERO_SCORE_IS_SIMPLICIAL: bool = true;
 
-    fn pop(&mut self) -> Option<HeapEntry> {
+    fn pop(&mut self) -> Option<HeapEntry<RELATIVE>> {
         self.heap.pop()
     }
 
@@ -151,7 +174,7 @@ impl ElimPolicy for MinFill<'_> {
         ));
     }
 
-    fn entry_is_current(&self, entry: &HeapEntry) -> bool {
+    fn entry_is_current(&self, entry: &HeapEntry<RELATIVE>) -> bool {
         self.generation[entry.vertex as usize] == entry.generation
     }
 
@@ -263,7 +286,7 @@ impl ElimPolicy for MinFill<'_> {
 ///
 /// `salt[v]` breaks (fill, degree) ties; `0` salt gives deterministic
 /// vertex-id order, random values give diversification across seeds.
-pub(crate) fn eliminate_min_fill(
+pub(crate) fn eliminate_min_fill<const RELATIVE: bool>(
     graph: &mut EliminationGraph,
     salt: &[u32],
     sink: ElimSink<'_>,
@@ -271,7 +294,7 @@ pub(crate) fn eliminate_min_fill(
 ) -> ElimExit {
     let n = graph.len();
     assert_eq!(salt.len(), n);
-    let mut policy = MinFill {
+    let mut policy = MinFill::<RELATIVE> {
         heap: BinaryHeap::with_capacity(n),
         scratch: FillScratch::new(n),
         generation: vec![0; n],

@@ -333,7 +333,8 @@ fn run_elimination_raw(
     let mut steps = ElimSteps::after(prefix);
 
     let exit = match spec.order {
-        Order::MinFill => eliminate_min_fill(graph, salt, steps.sink(), spec.stop),
+        Order::MinFill => eliminate_min_fill::<false>(graph, salt, steps.sink(), spec.stop),
+        Order::RelativeFill => eliminate_min_fill::<true>(graph, salt, steps.sink(), spec.stop),
         Order::MinDegree => {
             eliminate_min_degree(graph, salt, spec.update_order_ties, steps.sink(), spec.stop)
         }

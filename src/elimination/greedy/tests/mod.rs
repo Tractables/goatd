@@ -1,6 +1,7 @@
 //! Beside the module: these drive the private elimination sink directly.
 
 mod min_fill;
+mod relative_fill;
 
 /// The tie set a draw within `band` of the minimum sees, materialised: the
 /// band's buckets concatenated ascending by key, and their combined mass.

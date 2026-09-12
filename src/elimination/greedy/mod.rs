@@ -16,6 +16,7 @@ use crate::rng::Xorshift64;
 /// Generates `Ord`/`PartialOrd` for a heap-entry struct that orders solely by
 /// its `key` field (each slot `Reverse`-wrapped so minimums pop first on
 /// Rust's max-heap).
+#[cfg(test)]
 macro_rules! ord_by_key {
     ($t:ty) => {
         impl Ord for $t {
