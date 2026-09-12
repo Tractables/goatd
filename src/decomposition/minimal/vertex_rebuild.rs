@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use super::{SharedCompletion, rebuild_candidate};
-use crate::{Graph, TreeDecomposition};
+use crate::{Graph, TdBag, TreeDecomposition};
 
 #[cfg(test)]
 mod tests;
@@ -171,42 +171,44 @@ fn rebuild(
     };
     let kept = support(&small, &required);
     let original = |v: u32| v + u32::from(v >= vertex);
-    let mut bags: Vec<Vec<u32>> = small
-        .bags()
-        .iter()
-        .map(|bag| bag.vertices().iter().copied().map(original).collect())
-        .collect();
     // Deletion can disconnect the graph. Each selected support gets a new
     // attachment bag, and those bags connect through the restored vertex.
+    // They are the only new bags: the others go into the candidate as they
+    // are, at the end.
     let mut tree_edges = edges(&small);
     let mut attachment: Vec<_> = (0..kept.len()).collect();
+    let mut connecting: Vec<Vec<u32>> = Vec::new();
     for (index, &on_support) in kept.iter().enumerate() {
         if on_support {
-            attachment[index] = bags.len();
-            let mut bag = vec![vertex];
+            attachment[index] = kept.len() + connecting.len();
+            let members = small.bags()[index].vertices();
+            let mut bag = Vec::with_capacity(1 + members.len());
+            bag.push(vertex);
             bag.extend(
-                small.bags()[index]
-                    .vertices()
+                members
                     .iter()
                     .copied()
                     .filter(|&v| required[v as usize])
                     .map(original),
             );
-            bags.push(bag);
+            connecting.push(bag);
         }
     }
+    let mut separator: Vec<u32> = Vec::new();
     for edge in &mut tree_edges {
         let (a, b) = *edge;
         if kept[a] && kept[b] {
-            let separator: Vec<_> = small.bags()[a]
-                .vertices()
-                .iter()
-                .copied()
-                .filter(|v| small.bags()[b].vertices().binary_search(v).is_ok())
-                .map(original)
-                .collect();
-            bags[attachment[a]].extend_from_slice(&separator);
-            bags[attachment[b]].extend_from_slice(&separator);
+            separator.clear();
+            separator.extend(
+                small.bags()[a]
+                    .vertices()
+                    .iter()
+                    .copied()
+                    .filter(|v| small.bags()[b].vertices().binary_search(v).is_ok())
+                    .map(original),
+            );
+            connecting[attachment[a] - kept.len()].extend_from_slice(&separator);
+            connecting[attachment[b] - kept.len()].extend_from_slice(&separator);
             *edge = (attachment[a], attachment[b]);
         }
     }
@@ -216,7 +218,7 @@ fn rebuild(
         }
     }
     // A separator can occur on several support edges.
-    for bag in &mut bags[kept.len()..] {
+    for bag in &mut connecting {
         bag.sort_unstable();
         bag.dedup();
     }
@@ -243,7 +245,14 @@ fn rebuild(
             }
         }
     }
-    let candidate = TreeDecomposition::new_trusted(graph, bags, tree_edges).ok()?;
+    // The bags the rebuild did not change move into the candidate as they
+    // stand; raising their ids over the restored vertex preserves their order.
+    let mut bags = small.into_bags();
+    for bag in &mut bags {
+        bag.relabel_ascending(original);
+    }
+    bags.extend(connecting.into_iter().map(TdBag::already_sorted));
+    let candidate = TreeDecomposition::from_trusted_bags(graph, bags, tree_edges).ok()?;
     Some(compact(candidate))
 }
 

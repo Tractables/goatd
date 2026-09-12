@@ -181,9 +181,7 @@ pub(crate) fn project_dropping_vertex(
     let mut projected = project_bags_where(td, |v| v != vertex)?;
     // Lowering is order-preserving, so bags sorted by global id stay sorted.
     for bag in &mut projected.bags {
-        for v in &mut bag.vertices {
-            *v -= u32::from(*v > vertex);
-        }
+        bag.relabel_ascending(|v| v - u32::from(v > vertex));
     }
     projected.num_vertices = td.num_vertices.saturating_sub(1);
     Some(projected)
@@ -199,10 +197,18 @@ fn project_bags_where(
         return None;
     }
 
-    let projected: Vec<Vec<u32>> = td
+    // Each projected bag is gathered in one buffer and then copied out at the
+    // length it reached, so a bag is one allocation of its own size rather
+    // than a series of them as the filtered vertices come in.
+    let mut gathered: Vec<u32> = Vec::new();
+    let mut projected: Vec<Vec<u32>> = td
         .bags
         .iter()
-        .map(|bag| bag.vertices.iter().copied().filter(|&v| keep(v)).collect())
+        .map(|bag| {
+            gathered.clear();
+            gathered.extend(bag.vertices.iter().copied().filter(|&v| keep(v)));
+            gathered.as_slice().to_vec()
+        })
         .collect();
 
     let non_empty: Vec<usize> = (0..n).filter(|&i| !projected[i].is_empty()).collect();
@@ -233,9 +239,18 @@ fn project_bags_where(
         }
     }
 
+    // Dropping vertices from a bag leaves the rest in the order they were in,
+    // so a bag that was in order needs neither a copy nor a sort here.
     let new_bags: Vec<TdBag> = non_empty
         .iter()
-        .map(|&old_id| TdBag::new(projected[old_id].clone()))
+        .map(|&old_id| {
+            let vertices = std::mem::take(&mut projected[old_id]);
+            if td.bags[old_id].is_sorted() {
+                TdBag::already_sorted(vertices)
+            } else {
+                TdBag::new(vertices)
+            }
+        })
         .collect();
 
     Some(TreeDecomposition::from_parts(
@@ -295,9 +310,7 @@ fn project(td: &TreeDecomposition, keep: &[u32]) -> Result<Projection, Error> {
     // Relabelling is order-preserving (a local id is the rank of its global id
     // in `sorted`), so bags that came back sorted by global id stay sorted.
     for bag in &mut projected.bags {
-        for v in &mut bag.vertices {
-            *v = global_to_local[&*v];
-        }
+        bag.relabel_ascending(|v| global_to_local[&v]);
     }
     projected.num_vertices = sorted.len() as u32;
 
