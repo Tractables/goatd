@@ -114,6 +114,7 @@ fn vertex_reconstruction_escapes_a_minimal_triangulation() {
             graph.edges().len(),
             |row, word| original.row(row)[word],
             &mut super::super::NoWitnesses,
+            &mut super::super::Scratch::default(),
             None
         ),
         0

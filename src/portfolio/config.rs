@@ -88,6 +88,13 @@ const DEFAULT_LOCAL_MERGE_VERTICES: u32 = DEFAULT_RECOMBINATION_VERTICES;
 /// theirs.
 pub(super) const LOCAL_MERGE_WINDOW_SHARE: u32 = RECOMBINATION_WINDOW_SHARE;
 
+/// The share of the hard window the final vertex reinsertion is given, taken
+/// off the end before the stages ahead of it take theirs. The pass has no cost
+/// estimate of its own: it runs to its deadline or until no vertex improves,
+/// so it is given the share outright, where the graph is small enough for the
+/// share to hold a few dozen rebuilds (`reinsertion_reserve`).
+pub(super) const REINSERTION_WINDOW_SHARE: u32 = RECOMBINATION_WINDOW_SHARE;
+
 /// The most of the hard window the recombination stage is given, taken off the
 /// end so the rest of the schedule finishes that much earlier. It is given the
 /// estimated cost of its own search where that is less.

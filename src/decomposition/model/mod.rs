@@ -16,9 +16,30 @@ pub struct TdBag {
     sorted: bool,
 }
 
+/// Whether `vertices` is in non-decreasing order.
+fn is_ascending(vertices: &[u32]) -> bool {
+    vertices.windows(2).all(|pair| pair[0] <= pair[1])
+}
+
 impl TdBag {
     pub(crate) fn new(mut vertices: Vec<u32>) -> Self {
-        vertices.sort_unstable();
+        // Most bags arrive in order already — a projection of a sorted bag, a
+        // relabelling that preserves order, an elimination bag written out
+        // ascending — and the scan that finds that out costs one pass where
+        // the sort costs several.
+        if !is_ascending(&vertices) {
+            vertices.sort_unstable();
+        }
+        Self {
+            vertices,
+            sorted: true,
+        }
+    }
+
+    /// A bag whose vertices the caller has already put in non-decreasing
+    /// order: the same result as [`Self::new`], without the scan.
+    pub(crate) fn already_sorted(vertices: Vec<u32>) -> Self {
+        debug_assert!(is_ascending(&vertices), "bag is not in ascending order");
         Self {
             vertices,
             sorted: true,
@@ -29,8 +50,22 @@ impl TdBag {
     /// traversal result. Public constructors still enter through [`Self::new`]
     /// and canonicalize arbitrary caller input.
     pub(crate) fn from_algorithm_order(vertices: Vec<u32>) -> Self {
-        let sorted = vertices.windows(2).all(|pair| pair[0] <= pair[1]);
+        let sorted = is_ascending(&vertices);
         Self { vertices, sorted }
+    }
+
+    /// Relabel the vertices through an ascending map, leaving the bag as
+    /// [`Self::new`] would leave the relabelled vertices. The map preserves
+    /// order, so a bag known to be in order stays in order and only a bag
+    /// whose order was never established needs the sort.
+    pub(crate) fn relabel_ascending(&mut self, map: impl Fn(u32) -> u32) {
+        for vertex in &mut self.vertices {
+            *vertex = map(*vertex);
+        }
+        if !self.sorted {
+            self.vertices.sort_unstable();
+            self.sorted = true;
+        }
     }
 
     /// Whether the vertices are in non-decreasing order.
@@ -130,12 +165,32 @@ impl TreeDecomposition {
         Ok(td)
     }
 
+    /// [`Self::new_trusted`] for a caller whose bags are already canonical,
+    /// so that a rebuild does not sort bags it kept in order itself.
+    pub(crate) fn from_trusted_bags(
+        graph: &Graph,
+        bags: Vec<TdBag>,
+        tree_edges: impl IntoIterator<Item = (usize, usize)>,
+    ) -> Result<Self, Error> {
+        let td = Self::assemble_bags(graph.num_vertices, bags, tree_edges)?;
+        td.debug_validate(graph);
+        Ok(td)
+    }
+
     fn assemble(
         num_vertices: u32,
         bags: impl IntoIterator<Item = Vec<u32>>,
         tree_edges: impl IntoIterator<Item = (usize, usize)>,
     ) -> Result<Self, Error> {
         let bags: Vec<TdBag> = bags.into_iter().map(TdBag::new).collect();
+        Self::assemble_bags(num_vertices, bags, tree_edges)
+    }
+
+    fn assemble_bags(
+        num_vertices: u32,
+        bags: Vec<TdBag>,
+        tree_edges: impl IntoIterator<Item = (usize, usize)>,
+    ) -> Result<Self, Error> {
         let mut tree_edges: Vec<(usize, usize)> = tree_edges
             .into_iter()
             .map(|(left, right)| (left.min(right), left.max(right)))
@@ -178,6 +233,12 @@ impl TreeDecomposition {
     /// Bags in index order.
     pub fn bags(&self) -> &[TdBag] {
         &self.bags
+    }
+
+    /// Consume the decomposition and keep its bags, for a caller building a
+    /// new decomposition on them.
+    pub(crate) fn into_bags(self) -> Vec<TdBag> {
+        self.bags
     }
 
     /// Undirected bag adjacency, indexed like [`Self::bags`]. A decomposition

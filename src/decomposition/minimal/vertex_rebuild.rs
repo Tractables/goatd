@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use super::{SharedCompletion, rebuild_candidate};
-use crate::{Graph, TreeDecomposition};
+use crate::{Graph, TdBag, TreeDecomposition};
 
 #[cfg(test)]
 mod tests;
@@ -54,17 +54,13 @@ fn compact(mut tree: TreeDecomposition) -> TreeDecomposition {
 }
 
 fn edges(tree: &TreeDecomposition) -> Vec<(usize, usize)> {
-    tree.adjacency()
-        .iter()
-        .enumerate()
-        .flat_map(|(a, adjacent)| {
-            adjacent
-                .iter()
-                .copied()
-                .filter(move |&b| b > a)
-                .map(move |b| (a, b))
-        })
-        .collect()
+    // A forest over the bags has fewer edges than it has bags, so the list is
+    // allocated once at that size rather than grown as the rows come in.
+    let mut edges = Vec::with_capacity(tree.bags().len());
+    for (a, adjacent) in tree.adjacency().iter().enumerate() {
+        edges.extend(adjacent.iter().copied().filter(|&b| b > a).map(|b| (a, b)));
+    }
+    edges
 }
 
 /// A connected support in each needed component, meeting every required vertex.
@@ -162,47 +158,53 @@ fn rebuild(
     let small = crate::decomposition::ops::project_dropping_vertex(tree, vertex)?;
     let small = compact(small);
     let remaining_edges = graph.edges().len() - neighbours.len();
-    let small =
-        rebuild_candidate(&small, shared, vertex, remaining_edges, Some(deadline)).unwrap_or(small);
-    let small = compact(small);
+    // Compacting a tree that is already compacted takes nothing out of it, so
+    // the second compaction runs only where the minimalization rebuilt the
+    // bags.
+    let small = match rebuild_candidate(&small, shared, vertex, remaining_edges, Some(deadline)) {
+        Some(candidate) => compact(candidate),
+        None => small,
+    };
     let kept = support(&small, &required);
     let original = |v: u32| v + u32::from(v >= vertex);
-    let mut bags: Vec<Vec<u32>> = small
-        .bags()
-        .iter()
-        .map(|bag| bag.vertices().iter().copied().map(original).collect())
-        .collect();
     // Deletion can disconnect the graph. Each selected support gets a new
     // attachment bag, and those bags connect through the restored vertex.
+    // They are the only new bags: the others go into the candidate as they
+    // are, at the end.
     let mut tree_edges = edges(&small);
     let mut attachment: Vec<_> = (0..kept.len()).collect();
+    let mut connecting: Vec<Vec<u32>> = Vec::new();
     for (index, &on_support) in kept.iter().enumerate() {
         if on_support {
-            attachment[index] = bags.len();
-            let mut bag = vec![vertex];
+            attachment[index] = kept.len() + connecting.len();
+            let members = small.bags()[index].vertices();
+            let mut bag = Vec::with_capacity(1 + members.len());
+            bag.push(vertex);
             bag.extend(
-                small.bags()[index]
-                    .vertices()
+                members
                     .iter()
                     .copied()
                     .filter(|&v| required[v as usize])
                     .map(original),
             );
-            bags.push(bag);
+            connecting.push(bag);
         }
     }
+    let mut separator: Vec<u32> = Vec::new();
     for edge in &mut tree_edges {
         let (a, b) = *edge;
         if kept[a] && kept[b] {
-            let separator: Vec<_> = small.bags()[a]
-                .vertices()
-                .iter()
-                .copied()
-                .filter(|v| small.bags()[b].vertices().binary_search(v).is_ok())
-                .map(original)
-                .collect();
-            bags[attachment[a]].extend_from_slice(&separator);
-            bags[attachment[b]].extend_from_slice(&separator);
+            separator.clear();
+            separator.extend(
+                small.bags()[a]
+                    .vertices()
+                    .iter()
+                    .copied()
+                    .filter(|v| small.bags()[b].vertices().binary_search(v).is_ok())
+                    .map(original),
+            );
+            connecting[attachment[a] - kept.len()].extend_from_slice(&separator);
+            connecting[attachment[b] - kept.len()].extend_from_slice(&separator);
             *edge = (attachment[a], attachment[b]);
         }
     }
@@ -212,7 +214,7 @@ fn rebuild(
         }
     }
     // A separator can occur on several support edges.
-    for bag in &mut bags[kept.len()..] {
+    for bag in &mut connecting {
         bag.sort_unstable();
         bag.dedup();
     }
@@ -239,8 +241,30 @@ fn rebuild(
             }
         }
     }
-    let candidate = TreeDecomposition::new_trusted(graph, bags, tree_edges).ok()?;
+    // The bags the rebuild did not change move into the candidate as they
+    // stand; raising their ids over the restored vertex preserves their order.
+    let mut bags = small.into_bags();
+    for bag in &mut bags {
+        bag.relabel_ascending(original);
+    }
+    bags.extend(connecting.into_iter().map(TdBag::already_sorted));
+    let candidate = TreeDecomposition::from_trusted_bags(graph, bags, tree_edges).ok()?;
     Some(compact(candidate))
+}
+
+/// Every vertex of the tree's graph, those in the widest bags first, ties in
+/// vertex order.
+fn widest_first(tree: &TreeDecomposition, order: &mut Vec<u32>) {
+    let mut widest = vec![0u32; tree.num_vertices() as usize];
+    for bag in tree.bags() {
+        let size = bag.vertices().len() as u32;
+        for &v in bag.vertices() {
+            widest[v as usize] = widest[v as usize].max(size);
+        }
+    }
+    order.clear();
+    order.extend(0..tree.num_vertices());
+    order.sort_by_key(|&v| std::cmp::Reverse(widest[v as usize]));
 }
 
 /// Rebuild vertices and retain strict width-then-mass improvements.
@@ -260,6 +284,12 @@ pub fn improve(
 /// Reinsert vertices using connecting bags of neighbours and separators.
 /// The caller establishes that the input tree is valid for the graph.
 ///
+/// The vertices are tried in a cycle, the vertices of the widest bags first.
+/// An improvement is kept at once, the order is drawn again for the new tree
+/// and the cycle goes on from the same position, so the vertices that failed
+/// just before it come around last; the search ends when every vertex has
+/// failed since the last improvement, or at the deadline.
+///
 /// # Panics
 /// Debug builds assert input validity. Release callers must establish it.
 pub fn improve_trusted(
@@ -270,19 +300,28 @@ pub fn improve_trusted(
     debug_assert!(start.validate(graph).is_ok());
     let mut best = compact(start.clone());
     let mut stats = Stats::default();
+    let n = graph.num_vertices();
+    if n == 0 {
+        return (best, stats);
+    }
     // The neighbour lists and the shared completion are built for the first
-    // round that runs, not before: the gate below turns most large graphs
+    // round that runs, not before: the gate below turns the largest graphs
     // away, and the completion is a quadratic allocation.
     let mut shared: Option<(Vec<Vec<u32>>, SharedCompletion)> = None;
-    while !crate::deadline::expired(Some(deadline)) {
-        let n = graph.num_vertices() as u64;
+    // The position of the next vertex to try in the order, and how many have
+    // failed since the last improvement.
+    let mut cursor = 0;
+    let mut failed = 0;
+    let mut order = Vec::new();
+    'rounds: while !crate::deadline::expired(Some(deadline)) {
+        // Completing the tree again costs a word per 64 vertices per vertex
+        // to clear and an insert per pair of a bag; a completion that would
+        // take more than an eighth of what is left is not started.
         let squares = best.bags().iter().fold(0u64, |sum, bag| {
             let size = bag.vertices().len() as u64;
             sum.saturating_add(size.saturating_mul(size))
         });
-        let projected = squares
-            .saturating_mul(n.div_ceil(64))
-            .saturating_add(n.saturating_mul(n));
+        let projected = (u64::from(n).saturating_mul(u64::from(n)) / 64).saturating_add(squares);
         if Duration::from_millis(crate::meter::milliseconds_for_units(projected))
             > deadline.saturating_duration_since(crate::meter::now()) / 8
         {
@@ -293,11 +332,13 @@ pub fn improve_trusted(
         let (adjacency, shared) =
             shared.get_or_insert_with(|| (adjacency(graph), SharedCompletion::new(graph)));
         shared.complete(&best);
-        let mut moved = false;
-        for vertex in 0..graph.num_vertices() {
-            if crate::deadline::expired(Some(deadline)) {
-                break;
+        widest_first(&best, &mut order);
+        loop {
+            if failed >= n || crate::deadline::expired(Some(deadline)) {
+                break 'rounds;
             }
+            let vertex = order[cursor as usize];
+            cursor = (cursor + 1) % n;
             let candidate = rebuild(
                 graph,
                 &adjacency[vertex as usize],
@@ -307,18 +348,17 @@ pub fn improve_trusted(
                 deadline,
             );
             let Some(candidate) = candidate else {
+                failed += 1;
                 continue;
             };
             stats.tried += 1;
             if quality(&candidate) < best_quality {
                 best = candidate;
                 stats.improved += 1;
-                moved = true;
+                failed = 0;
                 break;
             }
-        }
-        if !moved {
-            break;
+            failed += 1;
         }
     }
     (best, stats)

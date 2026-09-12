@@ -181,9 +181,7 @@ pub(crate) fn project_dropping_vertex(
     let mut projected = project_bags_where(td, |v| v != vertex)?;
     // Lowering is order-preserving, so bags sorted by global id stay sorted.
     for bag in &mut projected.bags {
-        for v in &mut bag.vertices {
-            *v -= u32::from(*v > vertex);
-        }
+        bag.relabel_ascending(|v| v - u32::from(v > vertex));
     }
     projected.num_vertices = td.num_vertices.saturating_sub(1);
     Some(projected)
@@ -199,10 +197,18 @@ fn project_bags_where(
         return None;
     }
 
-    let projected: Vec<Vec<u32>> = td
+    // Each projected bag is gathered in one buffer and then copied out at the
+    // length it reached, so a bag is one allocation of its own size rather
+    // than a series of them as the filtered vertices come in.
+    let mut gathered: Vec<u32> = Vec::new();
+    let mut projected: Vec<Vec<u32>> = td
         .bags
         .iter()
-        .map(|bag| bag.vertices.iter().copied().filter(|&v| keep(v)).collect())
+        .map(|bag| {
+            gathered.clear();
+            gathered.extend(bag.vertices.iter().copied().filter(|&v| keep(v)));
+            gathered.as_slice().to_vec()
+        })
         .collect();
 
     let non_empty: Vec<usize> = (0..n).filter(|&i| !projected[i].is_empty()).collect();
@@ -233,9 +239,18 @@ fn project_bags_where(
         }
     }
 
+    // Dropping vertices from a bag leaves the rest in the order they were in,
+    // so a bag that was in order needs neither a copy nor a sort here.
     let new_bags: Vec<TdBag> = non_empty
         .iter()
-        .map(|&old_id| TdBag::new(projected[old_id].clone()))
+        .map(|&old_id| {
+            let vertices = std::mem::take(&mut projected[old_id]);
+            if td.bags[old_id].is_sorted() {
+                TdBag::already_sorted(vertices)
+            } else {
+                TdBag::new(vertices)
+            }
+        })
         .collect();
 
     Some(TreeDecomposition::from_parts(
@@ -295,9 +310,7 @@ fn project(td: &TreeDecomposition, keep: &[u32]) -> Result<Projection, Error> {
     // Relabelling is order-preserving (a local id is the rank of its global id
     // in `sorted`), so bags that came back sorted by global id stay sorted.
     for bag in &mut projected.bags {
-        for v in &mut bag.vertices {
-            *v = global_to_local[&*v];
-        }
+        bag.relabel_ascending(|v| global_to_local[&v]);
     }
     projected.num_vertices = sorted.len() as u32;
 
@@ -330,12 +343,24 @@ fn bag_is_subset(left: &TdBag, right: &TdBag) -> bool {
             .all(|vertex| right.vertices.contains(vertex));
     }
 
-    // Both sides are non-decreasing, so one walk over `right` serves every
-    // vertex of `left`. The matched position is not stepped over: if `left`
-    // repeats a vertex, the repeat matches there again, and otherwise the
-    // scan below moves past it on its own. `rest` is what the walk has not
-    // passed yet, so the scan runs over a slice instead of indexing the row
-    // through a bound it has already established.
+    // Both sides are non-decreasing, so the smallest and the largest vertex of
+    // each are its first and last. A `left` reaching outside that range on
+    // either side is not contained, which settles most pairs before the walk.
+    let (Some(&low), Some(&high)) = (left.vertices.first(), left.vertices.last()) else {
+        return true;
+    };
+    if right.vertices.first().is_none_or(|&first| low < first)
+        || right.vertices.last().is_none_or(|&last| high > last)
+    {
+        return false;
+    }
+
+    // One walk over `right` then serves every vertex of `left`. The matched
+    // position is not stepped over: if `left` repeats a vertex, the repeat
+    // matches there again, and otherwise the scan below moves past it on its
+    // own. `rest` is what the walk has not passed yet, so the scan runs over a
+    // slice instead of indexing the row through a bound it has already
+    // established.
     let mut rest = right.vertices.as_slice();
     for vertex in &left.vertices {
         let Some(at) = rest.iter().position(|candidate| candidate >= vertex) else {
