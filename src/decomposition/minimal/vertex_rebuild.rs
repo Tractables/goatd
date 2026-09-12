@@ -260,6 +260,11 @@ pub fn improve(
 /// Reinsert vertices using connecting bags of neighbours and separators.
 /// The caller establishes that the input tree is valid for the graph.
 ///
+/// The vertices are tried in a cycle. An improvement is kept at once and the
+/// cycle goes on from the next vertex, so the vertices that failed just before
+/// it come around last; the search ends when every vertex has failed since the
+/// last improvement, or at the deadline.
+///
 /// # Panics
 /// Debug builds assert input validity. Release callers must establish it.
 pub fn improve_trusted(
@@ -270,19 +275,26 @@ pub fn improve_trusted(
     debug_assert!(start.validate(graph).is_ok());
     let mut best = compact(start.clone());
     let mut stats = Stats::default();
+    let n = graph.num_vertices();
+    if n == 0 {
+        return (best, stats);
+    }
     // The neighbour lists and the shared completion are built for the first
     // round that runs, not before: the gate below turns most large graphs
     // away, and the completion is a quadratic allocation.
     let mut shared: Option<(Vec<Vec<u32>>, SharedCompletion)> = None;
-    while !crate::deadline::expired(Some(deadline)) {
-        let n = graph.num_vertices() as u64;
+    // The next vertex to try, and how many have failed since the last
+    // improvement.
+    let mut cursor = 0;
+    let mut failed = 0;
+    'rounds: while !crate::deadline::expired(Some(deadline)) {
         let squares = best.bags().iter().fold(0u64, |sum, bag| {
             let size = bag.vertices().len() as u64;
             sum.saturating_add(size.saturating_mul(size))
         });
         let projected = squares
-            .saturating_mul(n.div_ceil(64))
-            .saturating_add(n.saturating_mul(n));
+            .saturating_mul(u64::from(n).div_ceil(64))
+            .saturating_add(u64::from(n).saturating_mul(u64::from(n)));
         if Duration::from_millis(crate::meter::milliseconds_for_units(projected))
             > deadline.saturating_duration_since(crate::meter::now()) / 8
         {
@@ -293,11 +305,12 @@ pub fn improve_trusted(
         let (adjacency, shared) =
             shared.get_or_insert_with(|| (adjacency(graph), SharedCompletion::new(graph)));
         shared.complete(&best);
-        let mut moved = false;
-        for vertex in 0..graph.num_vertices() {
-            if crate::deadline::expired(Some(deadline)) {
-                break;
+        loop {
+            if failed >= n || crate::deadline::expired(Some(deadline)) {
+                break 'rounds;
             }
+            let vertex = cursor;
+            cursor = (cursor + 1) % n;
             let candidate = rebuild(
                 graph,
                 &adjacency[vertex as usize],
@@ -307,18 +320,17 @@ pub fn improve_trusted(
                 deadline,
             );
             let Some(candidate) = candidate else {
+                failed += 1;
                 continue;
             };
             stats.tried += 1;
             if quality(&candidate) < best_quality {
                 best = candidate;
                 stats.improved += 1;
-                moved = true;
+                failed = 0;
                 break;
             }
-        }
-        if !moved {
-            break;
+            failed += 1;
         }
     }
     (best, stats)
