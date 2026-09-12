@@ -721,8 +721,12 @@ pub(super) fn rebuild_candidate(
     edge_count: usize,
     deadline: Option<Instant>,
 ) -> Option<TreeDecomposition> {
+    // No fit gate here: the sweep and the rebuild stop at the deadline on
+    // their own, the reinsertion pass runs to that deadline in any case, and
+    // the projection a gate would use overstates what the shared completion
+    // costs by an order of magnitude.
     let vertices = decomposition.num_vertices() as usize;
-    if vertices == 0 || !fits(decomposition, vertices, deadline) {
+    if vertices == 0 {
         return None;
     }
     charge_completion(decomposition, deadline)?;

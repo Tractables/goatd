@@ -29,7 +29,7 @@ use candidates::{CandidateSet, ScheduleStop};
 use config::{
     DIVERSE_PASS_RESERVE, FLOWCUTTER_RESERVE, LOCAL_MERGE_WINDOW_SHARE, MERGE_LOOP_WINDOW_SHARE,
     MIN_FLOWCUTTER_CANDIDATE_MS, MIN_RECOMBINATION_RESERVE, RECOMBINATION_PASSES,
-    RECOMBINATION_RATE_PER_MS, RECOMBINATION_WINDOW_SHARE, VARIETY_SLOT,
+    RECOMBINATION_RATE_PER_MS, RECOMBINATION_WINDOW_SHARE, REINSERTION_WINDOW_SHARE, VARIETY_SLOT,
 };
 
 pub use config::{
@@ -1536,15 +1536,20 @@ fn run_portfolio(
     // hard deadline that much earlier and the stage keeps the rest. Where the
     // stage does not run, the two deadlines are the same and nothing moves.
     let window_end = deadlines.hard;
-    // The local re-triangulation stage runs last of all and reads the answer of
-    // the two before it, so its share comes off the end first; the merge loop
-    // takes its share from what is left, and the recombination stage from what
-    // that leaves.
-    let local_share = local_merge_gate(graph, config, window_end)
-        .then(|| local_merge_reserve(graph, started, window_end))
+    // The vertex reinsertion runs after everything and starts from the answer
+    // everything left, so its share comes off the very end; the stages before
+    // it see the window end that much earlier.
+    let reinsertion_share = reinsertion_reserve(graph, started, window_end);
+    let pooled_end = less_reserve(window_end, reinsertion_share, soft_deadline);
+    // The local re-triangulation stage runs last of the pooled stages and
+    // reads the answer of the two before it, so its share comes off that end
+    // first; the merge loop takes its share from what is left, and the
+    // recombination stage from what that leaves.
+    let local_share = local_merge_gate(graph, config, pooled_end)
+        .then(|| local_merge_reserve(graph, started, pooled_end))
         .flatten();
     let local_merge = local_share.is_some();
-    let merge_end = less_reserve(window_end, local_share, soft_deadline);
+    let merge_end = less_reserve(pooled_end, local_share, soft_deadline);
     let merge_share = merge_gate(graph, config, merge_end)
         .then(|| merge_reserve(graph, started, merge_end))
         .flatten();
@@ -2291,7 +2296,7 @@ fn run_portfolio(
     // the other leave between them, triangulated on its own, and its cliques
     // added to the list the programme reads. It starts from the best answer the
     // run has, so what it comes back with is never wider.
-    if local_merge && !expired(window_end) {
+    if local_merge && !expired(pooled_end) {
         let start = candidates
             .best()
             .cloned()
@@ -2299,7 +2304,7 @@ fn run_portfolio(
         let before = start.quality_key();
         let found = candidates
             .bag_pool()
-            .and_then(|pool| decomposition::local_merge(pool, graph, &start, seed, window_end));
+            .and_then(|pool| decomposition::local_merge(pool, graph, &start, seed, pooled_end));
         // Nothing comes back where the stage did not beat the answer it started
         // from, where its share ran out, or where the search would have held
         // more than its cap allows.
@@ -2312,7 +2317,7 @@ fn run_portfolio(
             elapsed: crate::meter::now().saturating_duration_since(started),
         });
     }
-    if active > 0 && fill_pass_cost.is_some_and(|cost| relative_fill_fits(cost, window_end)) {
+    if active > 0 && fill_pass_cost.is_some_and(|cost| relative_fill_fits(cost, pooled_end)) {
         let run = engine::run_order_prebuilt(
             &mut prebuilt,
             engine::RunSpec {
@@ -2322,11 +2327,11 @@ fn run_portfolio(
                 update_order_ties: false,
                 stop: ElimStop {
                     soft_deadline: None,
-                    hard_deadline: window_end,
+                    hard_deadline: pooled_end,
                     width_bound: candidates.best_width(),
                 },
                 complete_on_deadline: false,
-                setup_deadline: window_end,
+                setup_deadline: pooled_end,
             },
         );
         let origin = CandidateOrigin {
@@ -2368,6 +2373,26 @@ fn less_reserve(
         _ => end,
     }
     .or(end)
+}
+
+/// The share of the window the final vertex reinsertion is given: its share
+/// outright, where the graph is small enough for it to matter. A rebuild
+/// copies the rows of the completion, a word per 64 vertices per vertex, so a
+/// share that would not hold 64 such copies is not taken from the stages
+/// before it; on a tight window the reserve would reach the soft deadline
+/// and nothing moves.
+fn reinsertion_reserve(
+    graph: &Graph,
+    started: Instant,
+    window_end: Option<Instant>,
+) -> Option<Duration> {
+    let window = window_end?.saturating_duration_since(started);
+    let share = window / REINSERTION_WINDOW_SHARE;
+    let vertices = u64::from(graph.num_vertices());
+    let copies = Duration::from_millis(crate::meter::milliseconds_for_units(
+        vertices.saturating_mul(vertices),
+    ));
+    (copies <= share / REINSERTION_WINDOW_SHARE).then_some(share)
 }
 
 /// Whether the merge loop runs on this graph: it needs a hard window to take a

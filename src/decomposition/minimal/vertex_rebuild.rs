@@ -296,7 +296,7 @@ pub fn improve_trusted(
         return (best, stats);
     }
     // The neighbour lists and the shared completion are built for the first
-    // round that runs, not before: the gate below turns most large graphs
+    // round that runs, not before: the gate below turns the largest graphs
     // away, and the completion is a quadratic allocation.
     let mut shared: Option<(Vec<Vec<u32>>, SharedCompletion)> = None;
     // The position of the next vertex to try in the order, and how many have
@@ -305,13 +305,14 @@ pub fn improve_trusted(
     let mut failed = 0;
     let mut order = Vec::new();
     'rounds: while !crate::deadline::expired(Some(deadline)) {
+        // Completing the tree again costs a word per 64 vertices per vertex
+        // to clear and an insert per pair of a bag; a completion that would
+        // take more than an eighth of what is left is not started.
         let squares = best.bags().iter().fold(0u64, |sum, bag| {
             let size = bag.vertices().len() as u64;
             sum.saturating_add(size.saturating_mul(size))
         });
-        let projected = squares
-            .saturating_mul(u64::from(n).div_ceil(64))
-            .saturating_add(u64::from(n).saturating_mul(u64::from(n)));
+        let projected = (u64::from(n).saturating_mul(u64::from(n)) / 64).saturating_add(squares);
         if Duration::from_millis(crate::meter::milliseconds_for_units(projected))
             > deadline.saturating_duration_since(crate::meter::now()) / 8
         {
