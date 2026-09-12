@@ -162,9 +162,13 @@ fn rebuild(
     let small = crate::decomposition::ops::project_dropping_vertex(tree, vertex)?;
     let small = compact(small);
     let remaining_edges = graph.edges().len() - neighbours.len();
-    let small =
-        rebuild_candidate(&small, shared, vertex, remaining_edges, Some(deadline)).unwrap_or(small);
-    let small = compact(small);
+    // Compacting a tree that is already compacted takes nothing out of it, so
+    // the second compaction runs only where the minimalization rebuilt the
+    // bags.
+    let small = match rebuild_candidate(&small, shared, vertex, remaining_edges, Some(deadline)) {
+        Some(candidate) => compact(candidate),
+        None => small,
+    };
     let kept = support(&small, &required);
     let original = |v: u32| v + u32::from(v >= vertex);
     let mut bags: Vec<Vec<u32>> = small
