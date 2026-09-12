@@ -69,6 +69,49 @@ impl RowSet {
         self.rows[other * self.words + vertex / 64] &= !(1u64 << (vertex % 64));
     }
 
+    /// Add every pair of `bag` as an edge, which is what completing a bag of a
+    /// decomposition to a clique means.
+    ///
+    /// `mask` is scratch of one word per 64 vertices, all zero on entry and
+    /// zero again on return. A wide bag is turned into that mask once and the
+    /// mask is then merged into each member's row, which is a word per member
+    /// over the range the bag spans rather than an insert per pair. A bag with
+    /// few members for the range it covers has fewer pairs than that comes to,
+    /// and takes them one at a time. Either way the same edges go in.
+    fn insert_clique(&mut self, bag: &[u32], mask: &mut [u64]) {
+        let (Some(&low), Some(&high)) = (bag.iter().min(), bag.iter().max()) else {
+            return;
+        };
+        let (low, high) = (low as usize / 64, high as usize / 64);
+        if bag.len() < 2 * (high + 1 - low) {
+            for (position, &left) in bag.iter().enumerate() {
+                for &right in &bag[position + 1..] {
+                    self.insert(left as usize, right as usize);
+                }
+            }
+            return;
+        }
+        for &member in bag {
+            mask[member as usize / 64] |= 1u64 << (member % 64);
+        }
+        for &member in bag {
+            let member = member as usize;
+            let bit = 1u64 << (member % 64);
+            // A vertex is not its own neighbour, so its bit comes out of the
+            // mask while its own row is merged.
+            mask[member / 64] &= !bit;
+            let start = member * self.words;
+            let row = &mut self.rows[start + low..=start + high];
+            for (word, &source) in row.iter_mut().zip(&mask[low..=high]) {
+                *word |= source;
+            }
+            mask[member / 64] |= bit;
+        }
+        for &member in bag {
+            mask[member as usize / 64] = 0;
+        }
+    }
+
     /// How many edges the set holds.
     fn edges(&self) -> u64 {
         crate::meter::charge(self.rows.len() as u64);
@@ -414,6 +457,7 @@ fn completion(
     deadline: Option<Instant>,
 ) -> Option<RowSet> {
     let mut completion = RowSet::new(vertices);
+    let mut mask = vec![0u64; completion.words];
     let mut pacer = DeadlinePacer::new();
     for bag in decomposition.bags() {
         let bag = bag.vertices();
@@ -423,11 +467,7 @@ fn completion(
         if pacer.due() && expired(deadline) {
             return None;
         }
-        for (position, &left) in bag.iter().enumerate() {
-            for &right in &bag[position + 1..] {
-                completion.insert(left as usize, right as usize);
-            }
-        }
+        completion.insert_clique(bag, &mut mask);
     }
     Some(completion)
 }
@@ -758,13 +798,9 @@ impl SharedCompletion {
     /// from, in place of whatever was completed before.
     pub(super) fn complete(&mut self, decomposition: &TreeDecomposition) {
         self.completion.rows.fill(0);
+        let mut mask = vec![0u64; self.completion.words];
         for bag in decomposition.bags() {
-            let bag = bag.vertices();
-            for (position, &left) in bag.iter().enumerate() {
-                for &right in &bag[position + 1..] {
-                    self.completion.insert(left as usize, right as usize);
-                }
-            }
+            self.completion.insert_clique(bag.vertices(), &mut mask);
         }
         self.witnesses.rebuild(&self.completion, &self.original);
     }
