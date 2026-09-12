@@ -47,10 +47,13 @@ candidate, described under *Recombining the candidates' bags*; then one that
 builds a decomposition independently of everything above and merges it in,
 described under *Merging independent decompositions*; and last one that
 re-triangulates between the trees the run pooled, described under
-*Re-triangulating between two pooled trees*. With time still left, a final
-vertex-reinsertion pass rebuilds attachments through neighbour and separator
-bags. It uses the original hard deadline. The portfolio ranks its result by
-width and total bag size, as it ranks the other candidates.
+*Re-triangulating between two pooled trees*. Last, a vertex-reinsertion pass
+rebuilds attachments through neighbour and separator bags. It is given an
+eighth of the hard window, taken off the end before the pooled stages take
+their shares, where the graph is small enough for that share to hold a few
+dozen rebuilds; otherwise it runs on whatever the stages before it leave. It
+runs to the original hard deadline. The portfolio ranks its result by width
+and total bag size, as it ranks the other candidates.
 
 The residual left after preprocessing picks between three schedules. At or
 below 10,000 vertices all of the above runs. Above that line it runs where the
@@ -430,9 +433,14 @@ counterpart. This construction avoids adding the restored vertex to unrelated
 vertices in a large bag and needs no final global minimalization.
 
 `decomposition::vertex_rebuild::improve` checks the supplied decomposition;
-`improve_trusted` accepts an already validated one. Both retain strict
-width-then-mass improvements until the deadline. The standard portfolio uses
-the trusted entry only when time remains.
+`improve_trusted` accepts an already validated one. Both try the vertices in a
+cycle, those of the widest bags first, keep a strict width-then-mass
+improvement as soon as one is found and go on from the next vertex, so the
+vertices that failed just before come around last; the search ends when every
+vertex has failed since the last improvement, or at the deadline. A round's
+completion of the tree is skipped when it would cost more than an eighth of
+what is left. The standard portfolio uses the trusted entry only when time
+remains.
 
 ## Nested dissection and multilevel bisection
 
