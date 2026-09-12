@@ -343,12 +343,24 @@ fn bag_is_subset(left: &TdBag, right: &TdBag) -> bool {
             .all(|vertex| right.vertices.contains(vertex));
     }
 
-    // Both sides are non-decreasing, so one walk over `right` serves every
-    // vertex of `left`. The matched position is not stepped over: if `left`
-    // repeats a vertex, the repeat matches there again, and otherwise the
-    // scan below moves past it on its own. `rest` is what the walk has not
-    // passed yet, so the scan runs over a slice instead of indexing the row
-    // through a bound it has already established.
+    // Both sides are non-decreasing, so the smallest and the largest vertex of
+    // each are its first and last. A `left` reaching outside that range on
+    // either side is not contained, which settles most pairs before the walk.
+    let (Some(&low), Some(&high)) = (left.vertices.first(), left.vertices.last()) else {
+        return true;
+    };
+    if right.vertices.first().is_none_or(|&first| low < first)
+        || right.vertices.last().is_none_or(|&last| high > last)
+    {
+        return false;
+    }
+
+    // One walk over `right` then serves every vertex of `left`. The matched
+    // position is not stepped over: if `left` repeats a vertex, the repeat
+    // matches there again, and otherwise the scan below moves past it on its
+    // own. `rest` is what the walk has not passed yet, so the scan runs over a
+    // slice instead of indexing the row through a bound it has already
+    // established.
     let mut rest = right.vertices.as_slice();
     for vertex in &left.vertices {
         let Some(at) = rest.iter().position(|candidate| candidate >= vertex) else {
