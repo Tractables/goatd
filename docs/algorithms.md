@@ -6,6 +6,8 @@ or from the vendored upstream code.
 
 ## The portfolio
 
+`PortfolioConfig::without_vertex_reinsertion` disables final vertex reinsertion.
+
 `portfolio::candidates` runs a fixed schedule and returns every distinct
 decomposition it produces, each with the bags an adjacent bag contains
 contracted and the list sorted by width and then total bag size, so its head
