@@ -9,6 +9,9 @@ use crate::{Graph, TdBag, TreeDecomposition};
 #[cfg(test)]
 mod tests;
 
+mod session;
+pub use session::Session;
+
 /// Work performed by vertex reconstruction.
 #[derive(Default, Debug)]
 pub struct Stats {
@@ -142,7 +145,7 @@ fn rebuild(
     shared: &mut SharedCompletion,
     tree: &TreeDecomposition,
     vertex: u32,
-    deadline: Instant,
+    deadline: impl Into<Option<Instant>>,
 ) -> Option<TreeDecomposition> {
     if graph.num_vertices() <= 1 || neighbours.is_empty() {
         return None;
@@ -161,7 +164,7 @@ fn rebuild(
     // Compacting a tree that is already compacted takes nothing out of it, so
     // the second compaction runs only where the minimalization rebuilt the
     // bags.
-    let small = match rebuild_candidate(&small, shared, vertex, remaining_edges, Some(deadline)) {
+    let small = match rebuild_candidate(&small, shared, vertex, remaining_edges, deadline.into()) {
         Some(candidate) => compact(candidate),
         None => small,
     };
@@ -298,68 +301,13 @@ pub fn improve_trusted(
     deadline: Instant,
 ) -> (TreeDecomposition, Stats) {
     debug_assert!(start.validate(graph).is_ok());
-    let mut best = compact(start.clone());
-    let mut stats = Stats::default();
-    let n = graph.num_vertices();
-    if n == 0 {
-        return (best, stats);
-    }
-    // The neighbour lists and the shared completion are built for the first
-    // round that runs, not before: the gate below turns the largest graphs
-    // away, and the completion is a quadratic allocation.
-    let mut shared: Option<(Vec<Vec<u32>>, SharedCompletion)> = None;
-    // The position of the next vertex to try in the order, and how many have
-    // failed since the last improvement.
-    let mut cursor = 0;
-    let mut failed = 0;
-    let mut order = Vec::new();
-    'rounds: while !crate::deadline::expired(Some(deadline)) {
-        // Completing the tree again costs a word per 64 vertices per vertex
-        // to clear and an insert per pair of a bag; a completion that would
-        // take more than an eighth of what is left is not started.
-        let squares = best.bags().iter().fold(0u64, |sum, bag| {
-            let size = bag.vertices().len() as u64;
-            sum.saturating_add(size.saturating_mul(size))
-        });
-        let projected = (u64::from(n).saturating_mul(u64::from(n)) / 64).saturating_add(squares);
-        if Duration::from_millis(crate::meter::milliseconds_for_units(projected))
-            > deadline.saturating_duration_since(crate::meter::now()) / 8
-        {
-            break;
-        }
-        stats.rounds += 1;
-        let best_quality = quality(&best);
-        let (adjacency, shared) =
-            shared.get_or_insert_with(|| (adjacency(graph), SharedCompletion::new(graph)));
-        shared.complete(&best);
-        widest_first(&best, &mut order);
-        loop {
-            if failed >= n || crate::deadline::expired(Some(deadline)) {
-                break 'rounds;
-            }
-            let vertex = order[cursor as usize];
-            cursor = (cursor + 1) % n;
-            let candidate = rebuild(
-                graph,
-                &adjacency[vertex as usize],
-                shared,
-                &best,
-                vertex,
-                deadline,
-            );
-            let Some(candidate) = candidate else {
-                failed += 1;
-                continue;
-            };
-            stats.tried += 1;
-            if quality(&candidate) < best_quality {
-                best = candidate;
-                stats.improved += 1;
-                failed = 0;
-                break;
-            }
-            failed += 1;
+    let mut session = Session::trusted(graph, compact(start.clone()));
+    while let crate::decomposition::polishing::Advance::Proposal(proposal) =
+        session.advance_legacy(deadline)
+    {
+        if proposal.recommended() {
+            proposal.accept();
         }
     }
-    (best, stats)
+    session.finish_legacy()
 }

@@ -11,6 +11,7 @@ mod minimal;
 mod model;
 mod ops;
 mod pmc;
+pub mod polishing;
 mod refine;
 
 pub(crate) use minimal::{minimalize_at, minimalize_fits};
@@ -20,4 +21,6 @@ pub(crate) use ops::SubsumedBagCompaction;
 pub use ops::{Projection, RootedForest};
 pub use pmc::decompose_by_merging;
 pub(crate) use pmc::{BagPool, Limits as BagPoolLimits, local_merge, merge_loop, recombine};
-pub use refine::refine_with_flowcutter;
+pub use refine::{
+    Config as FlowCutterConfig, Session as FlowCutterSession, refine_with_flowcutter,
+};

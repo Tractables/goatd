@@ -23,17 +23,20 @@ mod cutter;
 mod expanded;
 mod graph;
 mod result;
+mod search;
 use cutter::*;
 use expanded::*;
 use graph::*;
+pub(crate) use search::Search;
 
 pub use result::Separator;
+pub(crate) use result::with_sides;
 
 /// `expanded` assigns two nodes per vertex and two arcs per original directed
 /// arc, all in one `u32` index space.
 const MAX_EXPANDED_BASE: u64 = u32::MAX as u64 / 2;
 
-fn validate_graph_size(num_vertices: u32, num_edges: usize) -> Result<(), Error> {
+pub(crate) fn validate_graph_size(num_vertices: u32, num_edges: usize) -> Result<(), Error> {
     let num_edges = u64::try_from(num_edges).unwrap_or(u64::MAX);
     let expanded_base = u64::from(num_vertices).saturating_add(num_edges.saturating_mul(2));
     if expanded_base > MAX_EXPANDED_BASE {
@@ -160,178 +163,15 @@ fn compute_vertices(
     iters: i32,
     timeout_ms: i64,
 ) -> Option<Vec<u32>> {
-    if n < 3 {
-        return None;
-    }
-
-    let g = OrigGraph::build(n as u32, edges)?;
-    if !is_connected(&g) {
-        return None;
-    }
-
-    // The construction clock, not the wall — and here the cap it feeds is a
-    // decision rather than a safety bound. It sits INSIDE the search instead of
-    // around a finished build: the iteration it stops is an iteration that might
-    // have found a smaller separator, so wherever the cap binds it picks which
-    // separator comes back, hence the decomposition assembled from that
-    // separator. A cap that chooses the answer has to be measured on the same
-    // clock as the budget it was derived from, or the answer moves with how
-    // fast and how loaded the machine was.
+    let mut search = Search::new(n, edges, steps, iters)?;
     let start = crate::meter::now();
-    let has_deadline = timeout_ms > 0;
-    let deadline_ms = timeout_ms as u128;
-
-    // Seeded with 0, matching C++ minstd_rand's default; only need deterministic,
-    // well-mixed seeds for SmallRng, not bit-exact parity with C++.
-    let mut outer_rng = MinstdRand::new(0);
-
-    let mut best: Option<Vec<u32>> = None;
-    let mut best_size = i32::MAX;
-
-    // One cutter for the whole search. Every iteration starts it over, and
-    // starting it over costs nothing beyond the clearing `init` already does,
-    // whereas a fresh one allocates and zeroes several graph-sized arrays that
-    // `init` then overwrites.
-    let mut multi = MultiCutter::new();
-
-    let n_orig = g.n as i64;
-    let m_arc = (g.tail.len() as i64).max(1);
-    let step_cost = (((n_orig as f64).sqrt() * (m_arc as f64).sqrt()) / 50.0).max(1.0) as i64;
-
-    let iter_cap = iters.max(1);
-    let mut steps_left = steps;
-
-    // The C++ implementation increments cutter_count every 16 iters; we pin it to 1
-    // because in differential tests on small graphs MultiCutter's switching
-    // rule discards good single-cutter trajectories.
-    for i in 0..iter_cap {
-        if crate::stop::requested() {
-            break;
-        }
-        if has_deadline && elapsed_since(start) >= deadline_ms {
-            break;
-        }
-        if steps_left <= 0 {
-            break;
-        }
-        steps_left -= step_cost;
-        // ONE cost model for both FlowCutter implementations. An outer iteration
-        // here does what an iteration of the vendored restart loop does — a pass
-        // over the whole graph — so it is charged the same way, from this
-        // graph's own counts: `n_orig` vertices and `m_arc / 2` undirected edges
-        // (`m_arc` counts every edge once per direction). There is no second
-        // constant and no second model to keep in step.
-        let iter_units = super::native::iteration_work_units(n_orig as u64, (m_arc / 2) as u64);
-        crate::meter::charge(iter_units);
-
-        let min_small_side = match i % 3 {
-            2 => 0.2_f32,
-            1 => 0.1_f32,
-            _ => 0.0_f32,
-        };
-
-        let cfg = SearchConfig {
-            cutter_count: 1,
-            random_seed: outer_rng.next() as u64,
-            max_cut_size: 10_000,
-            min_small_side_size: min_small_side,
-        };
-
-        if let Some(sep) =
-            compute_separator_one(&g, &mut multi, &cfg, deadline_ms, start, has_deadline)
-            && !sep.is_empty()
-            && (sep.len() as i32) < best_size
-        {
-            best_size = sep.len() as i32;
-            best = Some(sep);
-        }
+    while !search.exhausted()
+        && !crate::deadline::expired(None)
+        && (timeout_ms <= 0 || elapsed_since(start) < timeout_ms as u128)
+    {
+        let _ = search.step(false);
     }
-
-    best
-}
-
-#[derive(Clone)]
-struct SearchConfig {
-    cutter_count: u32,
-    random_seed: u64,
-    max_cut_size: i32,
-    min_small_side_size: f32,
-}
-
-// Ports `flow_cutter::ComputeSeparator`'s node_min_expansion branch only —
-// the only one IFlowCutter uses; other branches aren't implemented here.
-fn compute_separator_one(
-    g: &OrigGraph,
-    multi: &mut MultiCutter,
-    cfg: &SearchConfig,
-    deadline_ms: u128,
-    start: Instant,
-    has_deadline: bool,
-) -> Option<Vec<u32>> {
-    let n_orig = g.n;
-    let a_orig = g.tail.len() as u32;
-    let n_exp_v = n_exp(n_orig);
-    let exp = Exp { g, a_orig };
-
-    let pairs = select_random_st_pairs(n_orig, cfg.cutter_count, cfg.random_seed);
-    if pairs.is_empty() {
-        return None;
-    }
-
-    let exp_pairs: Vec<(u32, u32)> = pairs
-        .iter()
-        .map(|&(s, t)| (orig_node_to_exp(s, false), orig_node_to_exp(t, true)))
-        .collect();
-
-    multi.init(&exp, a_orig, &exp_pairs);
-
-    let mut best: Option<Vec<u32>> = None;
-    let mut best_score = f64::INFINITY;
-    let exp_node_count_f = n_exp_v as f64;
-
-    let min_balance_threshold = cfg.min_small_side_size as f64 * exp_node_count_f;
-
-    let mut iter_guard: u32 = 0;
-    loop {
-        if has_deadline && elapsed_since(start) >= deadline_ms {
-            break;
-        }
-        iter_guard += 1;
-        if iter_guard > 10_000_000 {
-            break;
-        }
-
-        let cut_size = multi.current_cut_size() as f64;
-        let small_side = multi.current_smaller_size() as f64;
-        let mut score = if small_side > 0.0 {
-            cut_size / small_side
-        } else {
-            f64::INFINITY
-        };
-        if multi.current_smaller_size() < min_balance_threshold as u32 {
-            score += 1_000_000.0;
-        }
-
-        if score < best_score {
-            best_score = score;
-            let sep = extract_original_separator(g, a_orig, multi);
-            if (sep.len() as i32) > cfg.max_cut_size {
-                best = Some(sep);
-                break;
-            }
-            best = Some(sep);
-        }
-
-        let potential_best_next = (cut_size + 1.0) / (exp_node_count_f / 2.0);
-        if potential_best_next >= best_score {
-            break;
-        }
-        if !multi.advance(&exp, a_orig) {
-            break;
-        }
-    }
-
-    best
+    search.into_vertices()
 }
 
 /// Recover the original-space vertex separator (not expanded-space) from the
