@@ -41,7 +41,8 @@ mod vertex_cover_separator;
 #[cfg(test)]
 mod tests;
 
-use execution::ElimStop;
+mod prepared;
+pub use prepared::{Cutoff, Preparation, Prepared, RunConfig, RunOutcome};
 
 pub use order::Order;
 
@@ -69,40 +70,12 @@ pub fn decompose(
     seed: u64,
     soft_budget: Option<Duration>,
 ) -> Result<crate::TreeDecomposition, crate::Error> {
-    if let Some(weights) = order.tie_weights()
-        && weights.len() != graph.num_vertices as usize
-    {
-        return Err(crate::Error::InvalidInput(format!(
-            "sampled elimination has {} weights for {} vertices",
-            weights.len(),
-            graph.num_vertices
-        )));
-    }
+    prepared::validate_order(graph, order)?;
     let deadlines = crate::deadline::two_stage(crate::meter::now(), soft_budget, "elimination")?;
-    let mut prebuilt = engine::prebuild(graph, deadlines.soft);
-    let run = engine::run_order_prebuilt(
-        &mut prebuilt,
-        engine::RunSpec {
-            order,
-            seed,
-            // A single order samples the exact minimum; the band is a
-            // portfolio setting.
-            sample_band: 0,
-            update_order_ties: false,
-            stop: ElimStop {
-                soft_deadline: deadlines.soft,
-                hard_deadline: deadlines.hard,
-                width_bound: None,
-            },
-            // Always produce a valid TD.
-            complete_on_deadline: true,
-            setup_deadline: None,
-        },
-    );
-    match run {
-        engine::OrderRun::Completed(decomposition)
-        | engine::OrderRun::CompletedAtDeadline(_, decomposition) => Ok(decomposition),
-        engine::OrderRun::DeadlineAborted(_) | engine::OrderRun::WidthAborted => {
+    let mut prepared = Prepared::at_deadline(graph, deadlines.soft);
+    match prepared.run_at(order, seed, RunConfig::default(), deadlines)? {
+        RunOutcome::Completed(tree) | RunOutcome::CompletedAtDeadline(_, tree) => Ok(tree),
+        RunOutcome::DeadlineAborted(_) | RunOutcome::WidthAborted => {
             unreachable!("a deadline-completing, unbounded run must produce a decomposition")
         }
     }

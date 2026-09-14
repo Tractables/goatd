@@ -1,6 +1,7 @@
 //! Shared construction and inspection of absolute deadlines. `None` is an
 //! unbounded run and never expires.
 
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use crate::Error;
@@ -64,7 +65,38 @@ pub(crate) fn staged(
 /// A set stop flag answers here exactly as an expired deadline does, including
 /// on a run that was given no deadline at all.
 pub(crate) fn expired(deadline: Option<Instant>) -> bool {
-    crate::stop::requested() || deadline.is_some_and(|deadline| crate::meter::now() >= deadline)
+    crate::stop::requested()
+        || WALL_DEADLINE.with(|limit| limit.get().is_some_and(|end| Instant::now() >= end))
+        || deadline.is_some_and(|deadline| crate::meter::now() >= deadline)
+}
+
+thread_local! {
+    static WALL_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// A cooperative wall cutoff independent of the construction meter. A nested
+/// operation cannot extend an enclosing cutoff, and returning a proposal drops
+/// the guard before the caller begins scoring it.
+pub(crate) struct WallGuard(Option<Instant>);
+
+impl WallGuard {
+    pub(crate) fn new(deadline: Option<Instant>) -> Self {
+        let previous = WALL_DEADLINE.with(|limit| {
+            let previous = limit.get();
+            limit.set(match (previous, deadline) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            });
+            previous
+        });
+        Self(previous)
+    }
+}
+
+impl Drop for WallGuard {
+    fn drop(&mut self) {
+        WALL_DEADLINE.with(|limit| limit.set(self.0));
+    }
 }
 
 /// How long there is until `deadline` — zero once it has passed, and zero once

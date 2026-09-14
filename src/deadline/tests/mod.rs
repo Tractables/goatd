@@ -37,3 +37,20 @@ fn an_armed_deadline_advances_only_with_charged_work() {
     assert!(expired(Some(deadline)));
     assert_eq!(remaining(deadline), Duration::ZERO);
 }
+
+#[test]
+fn nested_wall_cutoffs_restore_the_enclosing_limit_with_an_armed_meter() {
+    let epoch = Instant::now();
+    let _meter = crate::meter::arm(epoch);
+    let future = epoch + Duration::from_secs(60);
+    let _outer = super::WallGuard::new(Some(future));
+    assert!(!expired(None));
+    {
+        let _inner = super::WallGuard::new(Some(epoch));
+        assert!(expired(None));
+        let _cannot_extend = super::WallGuard::new(Some(future));
+        assert!(expired(None));
+    }
+    assert!(!expired(None));
+    assert_eq!(crate::meter::now(), epoch);
+}

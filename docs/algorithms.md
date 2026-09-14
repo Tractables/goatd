@@ -4,6 +4,13 @@ goatd provides several tree-decomposition constructions and a portfolio that
 combines them. This page describes what differs from a textbook implementation
 or from the vendored upstream code.
 
+`elimination::Prepared` shares graph reductions and scratch across caller-selected
+orders, seeds and per-run budgets, with optional width pruning.
+
+`decomposition::vertex_rebuild::Session` and `decomposition::FlowCutterSession`
+resume refinement under operation and real-time limits and let the caller
+accept complete original-graph decomposition proposals.
+
 ## The portfolio
 
 `PortfolioConfig::without_vertex_reinsertion` disables final vertex reinsertion.
@@ -492,7 +499,7 @@ implementations of it:
   a whole decomposition.
 
 The Rust search uses one cutter per restart rather than a growing multi-cutter
-batch, and goatd's seeded RNG. Refinement projects an existing decomposition
+batch, and goatd's seeded RNG. The whole-pass refinement wrapper projects an existing decomposition
 onto both sides of a separator, glues the projections at a new separator bag,
 and accepts the replacement only when `(treewidth, total bag size)` improves;
 recursion applies the same monotone check.

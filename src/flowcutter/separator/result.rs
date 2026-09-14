@@ -43,7 +43,7 @@ impl Separator {
 }
 
 /// Add the two sides of `separator` in `graph`.
-pub(super) fn with_sides(graph: &crate::Graph, separator: Vec<u32>) -> Option<Separator> {
+pub(crate) fn with_sides(graph: &crate::Graph, separator: Vec<u32>) -> Option<Separator> {
     let num_nodes = graph.num_vertices as usize;
     if num_nodes < 3 {
         return None;
