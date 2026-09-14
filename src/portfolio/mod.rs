@@ -1539,7 +1539,10 @@ fn run_portfolio(
     // The vertex reinsertion runs after everything and starts from the answer
     // everything left, so its share comes off the very end; the stages before
     // it see the window end that much earlier.
-    let reinsertion_share = reinsertion_reserve(graph, started, window_end);
+    let reinsertion_share = config
+        .vertex_reinsertion
+        .then(|| reinsertion_reserve(graph, started, window_end))
+        .flatten();
     let pooled_end = less_reserve(window_end, reinsertion_share, soft_deadline);
     // The local re-triangulation stage runs last of the pooled stages and
     // reads the answer of the two before it, so its share comes off that end
@@ -2592,7 +2595,9 @@ fn standard_candidate_set(
         collection,
         trace,
     )?;
-    reinsert_at_end(graph, seed, started, &mut candidates, trace);
+    if config.vertex_reinsertion {
+        reinsert_at_end(graph, seed, started, &mut candidates, trace);
+    }
     Ok(candidates)
 }
 

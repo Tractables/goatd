@@ -698,3 +698,33 @@ fn the_unbudgeted_portfolio_does_not_recombine() {
     .unwrap();
     assert!(!stages.contains(&Stage::Recombined));
 }
+
+#[test]
+fn callers_can_skip_final_reinsertion_without_skipping_candidate_generation() {
+    let graph = Graph::new(8, [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7)]);
+    let weights = vec![1; 8];
+    let config = PortfolioConfig::standard()
+        .with_sampling_runs(0)
+        .with_soft_budget(std::time::Duration::from_millis(500))
+        .with_hard_budget(std::time::Duration::from_secs(1));
+    let mut default_stages = Vec::new();
+    goatd::portfolio::candidates_traced(&graph, &weights, 0, config, &mut |record| {
+        default_stages.push(record.stage)
+    })
+    .unwrap();
+    assert!(default_stages.contains(&goatd::portfolio::Stage::Reinserted));
+    let mut stages = Vec::new();
+    let candidates = goatd::portfolio::candidates_traced(
+        &graph,
+        &weights,
+        0,
+        config.without_vertex_reinsertion(),
+        &mut |record| stages.push(record.stage),
+    )
+    .unwrap();
+    assert!(!candidates.is_empty());
+    assert!(!stages.contains(&goatd::portfolio::Stage::Reinserted));
+    for candidate in candidates {
+        candidate.decomposition.validate(&graph).unwrap();
+    }
+}

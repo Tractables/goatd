@@ -560,6 +560,7 @@ pub struct PortfolioConfig {
     pub(super) maximum_cardinality: Option<u32>,
     pub(super) minimal_triangulation: Option<u32>,
     pub(super) triangulation_refinement: Option<u32>,
+    pub(super) vertex_reinsertion: bool,
     pub(super) recombination: Option<u32>,
     pub(super) merge_loop: Option<u32>,
     pub(super) local_merge: Option<u32>,
@@ -587,6 +588,7 @@ impl PartialEq for PortfolioConfig {
             && self.maximum_cardinality == other.maximum_cardinality
             && self.minimal_triangulation == other.minimal_triangulation
             && self.triangulation_refinement == other.triangulation_refinement
+            && self.vertex_reinsertion == other.vertex_reinsertion
             && self.recombination == other.recombination
             && self.merge_loop == other.merge_loop
             && self.local_merge == other.local_merge
@@ -619,6 +621,7 @@ impl PortfolioConfig {
             maximum_cardinality: None,
             minimal_triangulation: None,
             triangulation_refinement: None,
+            vertex_reinsertion: true,
             recombination: None,
             merge_loop: None,
             local_merge: None,
@@ -729,6 +732,7 @@ impl PortfolioConfig {
             maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
+            vertex_reinsertion: true,
             // The stage wants a share of a hard window, and this schedule has
             // no deadline to take one from.
             recombination: None,
@@ -810,6 +814,7 @@ impl PortfolioConfig {
             maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
             minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
             triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
+            vertex_reinsertion: true,
             recombination: Some(DEFAULT_RECOMBINATION_VERTICES),
             merge_loop: Some(DEFAULT_MERGE_LOOP_VERTICES),
             local_merge: Some(DEFAULT_LOCAL_MERGE_VERTICES),
@@ -1024,6 +1029,13 @@ impl PortfolioConfig {
     /// Run no MCS-M candidate.
     pub fn without_minimal_triangulation(mut self) -> Self {
         self.minimal_triangulation = None;
+        self
+    }
+
+    /// Omit final vertex reinsertion and give its reserved time to candidate search.
+    /// The standard portfolio enables reinsertion by default.
+    pub fn without_vertex_reinsertion(mut self) -> Self {
+        self.vertex_reinsertion = false;
         self
     }
 
