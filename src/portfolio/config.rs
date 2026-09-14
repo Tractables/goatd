@@ -1034,6 +1034,14 @@ impl PortfolioConfig {
 
     /// Omit final vertex reinsertion and give its reserved time to candidate search.
     /// The standard portfolio enables reinsertion by default.
+    ///
+    /// To schedule polishing separately, pass any returned decomposition to
+    /// [`vertex_rebuild::improve`](crate::decomposition::vertex_rebuild::improve)
+    /// with a caller-chosen deadline. It returns the proposed decomposition and
+    /// attempt/improvement counts; the input remains available for comparison.
+    /// [`refine_with_flowcutter`](crate::decomposition::refine_with_flowcutter)
+    /// is a separate pass with its own budget. Callers choose their order,
+    /// allocations, stopping policy and which results to retain.
     pub fn without_vertex_reinsertion(mut self) -> Self {
         self.vertex_reinsertion = false;
         self

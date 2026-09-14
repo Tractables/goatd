@@ -701,6 +701,7 @@ fn the_unbudgeted_portfolio_does_not_recombine() {
 
 #[test]
 fn callers_can_skip_final_reinsertion_without_skipping_candidate_generation() {
+    let _clock = goatd::meter::arm(std::time::Instant::now());
     let graph = Graph::new(8, [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7)]);
     let weights = vec![1; 8];
     let config = PortfolioConfig::standard()
@@ -727,4 +728,34 @@ fn callers_can_skip_final_reinsertion_without_skipping_candidate_generation() {
     for candidate in candidates {
         candidate.decomposition.validate(&graph).unwrap();
     }
+}
+
+#[test]
+fn callers_can_schedule_polishing_after_candidate_generation() {
+    let _clock = goatd::meter::arm(std::time::Instant::now());
+    let graph = grid(4);
+    let weights = vec![1; graph.num_vertices() as usize];
+    let config = PortfolioConfig::standard()
+        .without_vertex_reinsertion()
+        .with_sampling_runs(0);
+    let trees = candidates(&graph, &weights, 0, config).unwrap();
+    let original = &trees[0];
+    let original_text = original.to_td();
+
+    let (rebuilt, stats) = goatd::decomposition::vertex_rebuild::improve(
+        &graph,
+        original,
+        goatd::meter::now() + Duration::from_millis(10),
+    )
+    .unwrap();
+    assert!(stats.tried > 0);
+    rebuilt.validate(&graph).unwrap();
+    let refined = goatd::decomposition::refine_with_flowcutter(
+        rebuilt,
+        &graph,
+        Some(Duration::from_millis(10)),
+    )
+    .unwrap();
+    refined.validate(&graph).unwrap();
+    assert_eq!(original.to_td(), original_text);
 }
