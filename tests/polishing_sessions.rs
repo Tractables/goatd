@@ -257,3 +257,26 @@ fn recursive_acceptance_commits_the_complete_offered_tree() {
         assert!(proposals > 2);
     }
 }
+
+#[test]
+fn callers_can_accept_a_wider_separator_proposal() {
+    let graph = grid(5);
+    let tree =
+        goatd::elimination::decompose(&graph, goatd::elimination::Order::MinFill, 0, None).unwrap();
+    let mut session =
+        FlowCutterSession::new(&graph, tree, FlowCutterConfig::default().with_iterations(8))
+            .unwrap();
+    let mut accepted = None;
+    while let Advance::Proposal(proposal) = session.advance(Budget::new(10_000)) {
+        if proposal.candidate().treewidth() > proposal.current().treewidth() {
+            proposal.candidate().validate(&graph).unwrap();
+            accepted = Some(proposal.candidate().to_td());
+            proposal.accept();
+            break;
+        }
+    }
+    assert_eq!(
+        session.current().to_td(),
+        accepted.expect("fixture must offer a wider valid tree")
+    );
+}
