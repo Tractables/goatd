@@ -278,7 +278,7 @@ pub(super) fn matching_order(
             j += 1;
         }
         for k in (i + 1..j).rev() {
-            let l = i + (rng.next_u64() as usize) % (k - i + 1);
+            let l = i + rng.below(k - i + 1);
             perm.swap(k, l);
         }
         i = j;
@@ -350,7 +350,7 @@ pub(super) fn random_bisection(vertex_weights: &[u32], rng: &mut Xorshift64) -> 
 
     let mut perm: Vec<usize> = (0..n).collect();
     for i in (1..n).rev() {
-        let j = (rng.next_u64() as usize) % (i + 1);
+        let j = rng.below(i + 1);
         perm.swap(i, j);
     }
 

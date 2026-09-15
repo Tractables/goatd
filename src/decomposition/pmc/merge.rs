@@ -297,7 +297,7 @@ impl Loop<'_> {
         deadline: Option<Instant>,
     ) -> Option<Vec<Vec<u32>>> {
         let width = answer.width() as usize;
-        let pick = (self.rng.next_u64() % answer.bags.len() as u64) as usize;
+        let pick = self.rng.below(answer.bags.len());
         let chosen = answer.bags[pick].clone();
         Some(self.focuses_from(&chosen, &side.bags, width, scratch, deadline))
     }

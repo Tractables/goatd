@@ -59,6 +59,15 @@ impl Xorshift64 {
     pub(crate) fn next_u32(&mut self) -> u32 {
         self.next_u64() as u32
     }
+
+    /// An index in `0..bound`: the next draw modulo `bound`.
+    ///
+    /// The whole 64-bit draw is reduced before it is narrowed to `usize`, so a
+    /// seed picks the same index on 32-bit and 64-bit targets. Panics if
+    /// `bound` is zero.
+    pub(crate) fn below(&mut self, bound: usize) -> usize {
+        (self.next_u64() % bound as u64) as usize
+    }
 }
 
 #[cfg(test)]

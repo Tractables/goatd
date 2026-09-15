@@ -153,7 +153,7 @@ pub(super) fn initial_partition(
     // Restart count: see "Where the two bisectors differ" in the shared
     // partition bookkeeping.
     for _ in 0..4.min(n) {
-        let seed = (rng.next_u64() as usize) % n;
+        let seed = rng.below(n);
         let part = greedy_graph_growing(graph, seed, stop);
         if stop.stopped() {
             return part;
