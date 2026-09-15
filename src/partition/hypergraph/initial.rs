@@ -122,7 +122,7 @@ pub(super) fn initial_partition(
     let num_rand = if n >= 30 { 6 } else { 4 };
 
     for _ in 0..num_ggg.min(n) {
-        let seed = (rng.next_u64() as usize) % n;
+        let seed = rng.below(n);
         let part = greedy_growing(hg, seed);
         let candidate_cut = hyperedge_cut(hg, &part);
         if candidate_cut < best_cut {

@@ -290,7 +290,7 @@ fn assert_updates_match_recounts(
         let live: Vec<u32> = (0..n as u32)
             .filter(|&v| graph.active[v as usize])
             .collect();
-        let v = live[(rng.next_u64() % live.len() as u64) as usize];
+        let v = live[rng.below(live.len())];
         nbrs.clear();
         graph.collect_live_nbrs_into(v, &mut nbrs);
         if fill[v as usize] == 0 {
