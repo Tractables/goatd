@@ -20,6 +20,18 @@ fn next_u32_is_the_low_half_of_the_same_next_u64_draw() {
 }
 
 #[test]
+fn an_index_draw_reduces_all_64_bits_before_narrowing() {
+    // 2^32 is 1 modulo 3, so a draw cut to its low 32 bits before the modulus
+    // lands on a different index whenever its high half is not a multiple of 3.
+    let mut wide = Xorshift64::from_state(17);
+    let mut index = Xorshift64::from_state(17);
+
+    for _ in 0..64 {
+        assert_eq!(index.below(3) as u64, wide.next_u64() % 3);
+    }
+}
+
+#[test]
 fn zero_is_the_documented_fixed_point() {
     let mut rng = Xorshift64::from_state(0);
 
@@ -74,8 +86,8 @@ fn random_graph(n: usize, m: usize) -> Vec<(u32, u32)> {
         edges.push((vertex as u32, ((vertex + 1) % n) as u32));
     }
     while edges.len() < m {
-        let u = (rng.next_u64() as usize) % n;
-        let v = (rng.next_u64() as usize) % n;
+        let u = rng.below(n);
+        let v = rng.below(n);
         if u != v {
             edges.push((u.min(v) as u32, u.max(v) as u32));
         }

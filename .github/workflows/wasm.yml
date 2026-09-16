@@ -122,6 +122,21 @@ jobs:
           CXXFLAGS_wasm32_unknown_emscripten: -fwasm-exceptions
         run: cargo clippy --release --all-targets -- -D warnings
 
+      # `usize` is 32 bits on this target and 64 on every other runner, so
+      # these tests catch seeded output that depends on its width. Library
+      # tests only: the integration tests start the CLI as a process, which
+      # Emscripten cannot do. The build has no threads, so the tests run one
+      # at a time, with the page's stack size.
+      - name: Test the library on a 32-bit target
+        if: ${{ !cancelled() }}
+        env:
+          CXX_wasm32_unknown_emscripten: em++
+          AR_wasm32_unknown_emscripten: emar
+          CXXFLAGS_wasm32_unknown_emscripten: -fwasm-exceptions
+          CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_RUSTFLAGS: -Clink-arg=-sALLOW_MEMORY_GROWTH=1 -Clink-arg=-sSTACK_SIZE=8388608
+          CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_RUNNER: node
+        run: cargo test --release --locked --target wasm32-unknown-emscripten --lib -- --test-threads=1
+
       - name: Upload the page
         if: always()
         uses: actions/upload-artifact@v4
