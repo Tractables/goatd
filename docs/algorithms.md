@@ -63,8 +63,9 @@ their shares, where the graph is small enough for that share to hold a few
 dozen rebuilds; otherwise it runs on whatever the stages before it leave. It
 runs to the original hard deadline. The pass sits above the portfolio, so a
 run whose caller will not reach it — a bipartite-lift rung, or the sampled
-min-fill set — keeps the eighth instead of holding it back. The portfolio ranks its result by width
-and total bag size, as it ranks the other candidates.
+min-fill set — keeps the eighth instead of holding it back. The portfolio
+ranks its result by width and total bag size, as it ranks the other
+candidates.
 
 The residual left after preprocessing picks between three schedules. At or
 below 10,000 vertices all of the above runs. Above that line it runs where the
