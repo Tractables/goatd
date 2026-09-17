@@ -1334,6 +1334,10 @@ const BIPARTITE_LIFT_SHARE: f64 = 0.25;
 /// [`bipartite_lift`] for what the construction is and why there is more than
 /// one cutoff.
 ///
+/// `hard_deadline` is the run's own, read between rungs: a rung is a whole
+/// sub-run with a deadline of its own, so this is where a stop request or a
+/// window the rungs before it overran ends the stage.
+///
 /// # Errors
 ///
 /// Returns an error when the sub-run does, and when a lift finds no bag to put
@@ -1348,6 +1352,7 @@ fn run_bipartite_lift(
     config: PortfolioConfig,
     candidates: &mut CandidateSet,
     started: Instant,
+    hard_deadline: Option<Instant>,
     trace: &mut dyn FnMut(CandidateTrace),
 ) -> Result<(), crate::Error> {
     let origin = CandidateOrigin {
@@ -1463,6 +1468,13 @@ fn run_bipartite_lift(
         let mut produced_any = false;
         let mut reported = None;
         for priced in ladder {
+            // Each rung is a whole sub-run, so a caller who asked to stop, or
+            // a window the rungs before this one overran, waits out one more
+            // elimination and its writeout unless it is read here. Every other
+            // stage of the schedule polls the same call.
+            if expired(hard_deadline) {
+                break;
+            }
             let Some(projection) = bipartite_lift::project(graph, &adjacency, keep, drop, priced)
             else {
                 continue;
@@ -1630,6 +1642,7 @@ fn run_portfolio(
         config,
         &mut candidates,
         started,
+        window_end,
         trace,
     )?;
 
