@@ -97,6 +97,7 @@ fn num_hg_restarts(n: usize, effort_scale: f64) -> usize {
 /// Returns 0/1 per vertex of `hg`. The projection down the levels is carried
 /// incrementally, one majority vote per new level, as the graph sibling
 /// carries its own.
+///
 /// A sweep `stop` cut short returns whatever the phase it was in had reached,
 /// which the caller discards.
 fn multilevel_pass(

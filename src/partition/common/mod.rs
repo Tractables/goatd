@@ -293,6 +293,47 @@ pub(super) fn matching_order(
     perm
 }
 
+/// The move a localized Fiduccia-Mattheyses pass makes next: the highest-gain
+/// unlocked vertex of `region_list` the balance window admits, as
+/// `(vertex, its gain)`.
+///
+/// The region is capped, so this is a linear scan of it rather than a bucket
+/// queue. `region_list` is in ascending index order and the comparison is
+/// strict, so a gain tie goes to the lowest index.
+pub(super) fn select_region_move(
+    region_list: &[usize],
+    gain: &[i64],
+    locked: &[bool],
+    part: &[u8],
+    vertex_weights: &[u32],
+    balance: &FmBalance,
+) -> Option<(usize, i64)> {
+    let &FmBalance {
+        weight,
+        min_part_weight,
+        max_part_weight,
+    } = balance;
+    let mut best_vertex = None;
+    let mut best_gain = i64::MIN;
+    for &v in region_list {
+        if locked[v] {
+            continue;
+        }
+        let from = part[v] as usize;
+        let to = 1 - from;
+        if weight[from] - vertex_weights[v] < min_part_weight
+            || weight[to] + vertex_weights[v] > max_part_weight
+        {
+            continue;
+        }
+        if best_vertex.is_none() || gain[v] > best_gain {
+            best_gain = gain[v];
+            best_vertex = Some(v);
+        }
+    }
+    best_vertex.map(|vertex| (vertex, best_gain))
+}
+
 /// The move a Fiduccia-Mattheyses pass makes next: the highest-gain queued
 /// vertex the balance window admits, as `(vertex, the side it leaves, its
 /// gain)`.

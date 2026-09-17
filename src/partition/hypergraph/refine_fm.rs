@@ -16,7 +16,8 @@ use std::collections::VecDeque;
 
 use super::model::Hypergraph;
 use crate::partition::common::{
-    BisectionStop, FmBalance, GainBuckets, Stall, commit_best_prefix, fm_balance, select_move,
+    BisectionStop, GainBuckets, Stall, commit_best_prefix, fm_balance, select_move,
+    select_region_move,
 };
 
 pub(super) struct FmScratch {
@@ -290,12 +291,7 @@ pub(super) fn localized_fm_pass(
     stop: &mut BisectionStop,
 ) -> bool {
     let n = hg.num_vertices;
-    let Some(FmBalance {
-        mut weight,
-        min_part_weight,
-        max_part_weight,
-    }) = fm_balance(n, &hg.vertex_weights, part, max_imbalance)
-    else {
+    let Some(mut balance) = fm_balance(n, &hg.vertex_weights, part, max_imbalance) else {
         return false;
     };
 
@@ -372,32 +368,21 @@ pub(super) fn localized_fm_pass(
         if stop.reached() {
             break;
         }
-        let mut best_v = None;
-        let mut best_gain = i64::MIN;
-        for &v in region_list.iter() {
-            if locked[v] {
-                continue;
-            }
-            let from = part[v] as usize;
-            let to = 1 - from;
-            let nfw = weight[from] - hg.vertex_weights[v];
-            let ntw = weight[to] + hg.vertex_weights[v];
-            if nfw < min_part_weight || ntw > max_part_weight {
-                continue;
-            }
-            if best_v.is_none() || gain[v] > best_gain {
-                best_gain = gain[v];
-                best_v = Some(v);
-            }
-        }
-        let Some(v) = best_v else {
+        let Some((v, best_gain)) = select_region_move(
+            region_list,
+            gain,
+            locked,
+            part,
+            &hg.vertex_weights,
+            &balance,
+        ) else {
             break;
         };
         let from = part[v] as usize;
         let to = 1 - from;
 
-        weight[from] -= hg.vertex_weights[v];
-        weight[to] += hg.vertex_weights[v];
+        balance.weight[from] -= hg.vertex_weights[v];
+        balance.weight[to] += hg.vertex_weights[v];
         part[v] = to as u8;
         locked[v] = true;
 
