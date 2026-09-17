@@ -159,6 +159,22 @@ impl TreeDecomposition {
         self.inner.total_bag_size()
     }
 
+    /// `log2` of the sum over bags of `2^len(bag)`: what a consumer compiling
+    /// over the bags pays in the worst case, on the same scale as the width.
+    /// Scaled by the largest bag before the logarithm, so it answers where the
+    /// direct sum is already infinite.
+    #[getter]
+    fn bag_mass(&self) -> f64 {
+        self.inner.bag_mass()
+    }
+
+    /// The most vertices two adjacent bags share, which is what a consumer
+    /// joining two bags carries between them.
+    #[getter]
+    fn max_separator(&self) -> usize {
+        self.inner.max_separator()
+    }
+
     /// Check that this is a tree decomposition of `graph`, raising `Error`
     /// with the first violation found.
     fn validate(&self, graph: &Graph) -> PyResult<()> {

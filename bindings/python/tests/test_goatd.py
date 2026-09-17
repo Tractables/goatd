@@ -1,5 +1,6 @@
 """Tests for the goatd extension module, run against an installed wheel."""
 
+import math
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -83,6 +84,17 @@ def check(td, graph):
     largest = max((len(bag) for bag in bags), default=0)
     assert td.treewidth == max(largest - 1, 0)
     assert td.total_bag_size == sum(len(bag) for bag in bags)
+
+    if bags:
+        direct = math.log2(sum(2 ** len(bag) for bag in bags))
+        assert td.bag_mass == pytest.approx(direct, abs=1e-6)
+    else:
+        assert td.bag_mass == 0.0
+    shared = max(
+        (len(set(bags[left]) & set(bags[right])) for left, right in td.edges),
+        default=0,
+    )
+    assert td.max_separator == shared
 
 
 def test_module_surface():
