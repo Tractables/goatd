@@ -461,6 +461,16 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--order", "portfolio", "--sampling-patience", "0"],
             &["--sampling-patience", "positive"],
         ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--sample-band",
+                "0",
+                "--sample-band-alternate",
+            ],
+            &["--sample-band-alternate", "--sample-band 0"],
+        ),
         (&["--ties", "salt"], &["--ties"]),
         (&["--budget", "0"], &["--budget", "positive"]),
         (&["--order", "treewidth"], &["--order"]),
@@ -484,6 +494,18 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             );
         }
     }
+}
+
+/// The library's own band is not zero, so alternating without `--sample-band`
+/// alternates between the minimum and that band and is a run, not a usage
+/// error.
+#[test]
+fn alternating_without_a_band_of_its_own_runs() {
+    let out = goatd(
+        &["-", "--order", "portfolio", "--sample-band-alternate"],
+        Some(&grid_gr()),
+    );
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr_of(&out));
 }
 
 #[test]
