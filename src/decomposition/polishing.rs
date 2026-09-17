@@ -49,11 +49,14 @@ impl Budget {
 pub enum Pause {
     /// The allotted operations were consumed.
     Steps,
-    /// The real-time or legacy construction deadline was reached.
+    /// The budget's deadline was reached.
     Deadline,
     /// The caller requested cancellation through the stop flag.
     Stopped,
-    /// The legacy pass's setup estimate does not fit its remaining allocation.
+    /// The session had to rebuild its shared state before it could propose
+    /// anything, and the estimated cost of that rebuild did not fit the time
+    /// left. Only a budget carrying a deadline can see this: with no deadline
+    /// there is no time left to compare the estimate against.
     SetupEstimate,
 }
 
@@ -214,6 +217,12 @@ impl Slice {
 
     pub(crate) fn wall_guard(&self) -> crate::deadline::WallGuard {
         crate::deadline::WallGuard::new(self.budget.deadline)
+    }
+
+    /// The deadline the caller set on the budget, for the work inside the
+    /// slice: `pause` only bounds the loop around it.
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        self.budget.deadline
     }
 
     pub(crate) fn record(self, progress: &mut Progress) {
