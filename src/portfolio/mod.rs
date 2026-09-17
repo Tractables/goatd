@@ -811,6 +811,16 @@ impl Spent {
 /// one solve per core it is several. The value is never scaled down: the
 /// estimate at the model's own rate is the floor. Under an armed meter both
 /// numbers come from the same clock and the estimate is returned unchanged.
+///
+/// The ratio is an upper bound on that cost rather than a measurement of it,
+/// because the charge does not cover the whole run: the vendored FlowCutter
+/// backend charges nothing unless the meter is armed, and the nested-dissection
+/// recursion's scans, localized FM and preprocessing's own sweeps charge
+/// nothing either way. Every millisecond they spend lands in `elapsed` and
+/// nowhere in `charged_units`, so the error is one-sided and this only ever
+/// comes out too large. Where that matters is [`flowcutter_window`], which
+/// subtracts the reserve this sizes: too large a reserve shrinks the trailing
+/// candidate's window, and near the threshold removes it.
 fn at_observed_rate(estimate: Duration, spent: Spent) -> Duration {
     let modelled = crate::meter::milliseconds_for_units(spent.charged_units);
     let elapsed = u64::try_from(spent.elapsed.as_millis()).unwrap_or(u64::MAX);
