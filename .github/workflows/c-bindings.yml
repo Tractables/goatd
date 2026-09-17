@@ -141,6 +141,14 @@ jobs:
              /Fe:example-static.exe /link %OUT%\goatd_c.lib %NATIVE_STATIC_LIBS% || exit /b 1
           example-static.exe || exit /b 1
 
+      # The example exercises the happy path on all three platforms; these
+      # cover the option checks and the array checks it does not reach. Once,
+      # on Linux: neither depends on the platform.
+      - name: Test
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        working-directory: bindings/c
+        run: cargo test --release
+
       - name: Check formatting
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: bindings/c
