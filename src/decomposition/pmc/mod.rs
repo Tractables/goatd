@@ -88,7 +88,9 @@ pub(crate) use merge::merge_loop;
 /// This is the portfolio's merge stage standing on its own, without a
 /// portfolio to start it off. Where the budget runs out before the programme
 /// settles anything, a single min-fill decomposition comes back instead, so
-/// the call always answers.
+/// the call always answers. `None` runs until the merged list stops getting
+/// narrower or the search caps are reached, which on a large graph can take a
+/// long time.
 ///
 /// # Errors
 ///
@@ -185,6 +187,9 @@ pub(crate) struct BagPool {
 struct Kept {
     slot: u32,
     decomposition: TreeDecomposition,
+    /// `decomposition.quality_key()`, kept because every offer compares
+    /// against every slot and the key is a pass over all the bags.
+    key: (u32, usize),
 }
 
 impl BagPool {
@@ -199,8 +204,9 @@ impl BagPool {
     pub(crate) fn absorb(&mut self, decomposition: &TreeDecomposition, slot: u32) {
         let key = decomposition.quality_key();
         if let Some(held) = self.kept.iter_mut().find(|held| held.slot == slot) {
-            if key < held.decomposition.quality_key() {
+            if key < held.key {
                 held.decomposition = decomposition.clone();
+                held.key = key;
             }
             return;
         }
@@ -208,6 +214,7 @@ impl BagPool {
             self.kept.push(Kept {
                 slot,
                 decomposition: decomposition.clone(),
+                key,
             });
             return;
         }
@@ -218,15 +225,16 @@ impl BagPool {
             .kept
             .iter()
             .enumerate()
-            .max_by_key(|(_, held)| held.decomposition.quality_key())
+            .max_by_key(|(_, held)| held.key)
             .map(|(index, _)| index)
         else {
             return;
         };
-        if key < self.kept[widest].decomposition.quality_key() {
+        if key < self.kept[widest].key {
             self.kept[widest] = Kept {
                 slot,
                 decomposition: decomposition.clone(),
+                key,
             };
         }
     }
@@ -262,7 +270,7 @@ impl BagPool {
     ) -> Vec<Vec<VertexSet>> {
         let mut sources: Vec<TreeDecomposition> = Vec::new();
         let mut order: Vec<&Kept> = self.kept.iter().collect();
-        order.sort_by_key(|held| held.decomposition.quality_key());
+        order.sort_by_key(|held| held.key);
         for held in order {
             if expired(deadline) {
                 break;
@@ -435,6 +443,9 @@ fn grow(
     widest.truncate(GROWTH_PIECES);
     let known: FxHashSet<&VertexSet> = bags.iter().collect();
     let mut fresh: Vec<VertexSet> = Vec::new();
+    // The bags added earlier in this call, so a later piece tests membership
+    // instead of comparing its bag against every row added so far.
+    let mut added: FxHashSet<VertexSet> = FxHashSet::default();
     let mut done: Vec<VertexSet> = Vec::new();
     let mut stored: usize = bags.iter().map(VertexSet::len).sum();
     for index in widest {
@@ -452,13 +463,14 @@ fn grow(
         }
         done.push(piece.clone());
         for bag in decompose_piece(&piece, adjacency, deadline) {
-            if known.contains(&bag) || fresh.contains(&bag) {
+            if known.contains(&bag) || added.contains(&bag) {
                 continue;
             }
             if bags.len() + fresh.len() >= limits.bags || stored >= limits.pool_vertices {
                 break;
             }
             stored += bag.len();
+            added.insert(bag.clone());
             fresh.push(bag);
         }
     }
@@ -585,9 +597,13 @@ impl Search<'_> {
         if self.stored.saturating_add(size) > self.limits.block_vertices {
             return None;
         }
+        // `split` emits no empty component and `capped_block` checks its set
+        // holds the rest of the bag, so this is not the second way out that
+        // the callers read as a full block map.
+        debug_assert!(!component.is_empty(), "a block's component holds a vertex");
+        let representative = component.first()?;
         self.stored += size;
         let index = self.blocks.len();
-        let representative = component.first()?;
         self.index.insert(component.clone(), index);
         self.blocks.push(Block {
             component,

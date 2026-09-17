@@ -315,23 +315,49 @@ impl Loop<'_> {
         scratch: &mut Scratch,
         deadline: Option<Instant>,
     ) -> Vec<Vec<u32>> {
+        let Some(inside) = self.anchor_reach(chosen, scratch) else {
+            return Vec::new();
+        };
+        self.focuses_against(chosen, &inside, partners, width, scratch, deadline)
+    }
+
+    /// `N[C]` for the largest component `C` of `G − chosen`: where a partner
+    /// of `chosen` has to lie. `None` where removing `chosen` leaves nothing.
+    ///
+    /// It depends on the graph and `chosen` alone, so a caller pairing one bag
+    /// with several lists of partners computes it once.
+    pub(super) fn anchor_reach(
+        &self,
+        chosen: &VertexSet,
+        scratch: &mut Scratch,
+    ) -> Option<VertexSet> {
         let split = self.adjacency.split(chosen, scratch);
-        let Some(largest) = split
+        let largest = split
             .components
             .iter()
             .zip(&split.borders)
-            .max_by_key(|(component, _)| component.len())
-        else {
-            return Vec::new();
-        };
+            .max_by_key(|(component, _)| component.len())?;
         let mut inside = largest.0.clone();
         inside.union_with(largest.1);
+        Some(inside)
+    }
+
+    /// [`Self::focuses_from`] with the anchor's reach already in hand.
+    pub(super) fn focuses_against(
+        &self,
+        chosen: &VertexSet,
+        inside: &VertexSet,
+        partners: &[VertexSet],
+        width: usize,
+        scratch: &mut Scratch,
+        deadline: Option<Instant>,
+    ) -> Vec<Vec<u32>> {
         let mut found: Vec<Vec<u32>> = Vec::new();
         for (index, partner) in partners.iter().enumerate() {
             if index % DEADLINE_STRIDE == 0 && expired(deadline) {
                 break;
             }
-            if partner.len() > width || !partner.is_subset(&inside) {
+            if partner.len() > width || !partner.is_subset(inside) {
                 continue;
             }
             let across = self.adjacency.split(partner, scratch);
@@ -340,7 +366,7 @@ impl Loop<'_> {
                 let mut closed = component.clone();
                 closed.union_with(border);
                 if chosen.is_subset(&closed) {
-                    closed.intersect_with(&inside);
+                    closed.intersect_with(inside);
                     focus = Some(closed);
                     break;
                 }
