@@ -15,6 +15,7 @@
 use std::collections::VecDeque;
 
 use super::model::Hypergraph;
+use super::refine_flow::FinestScratch;
 use crate::partition::common::{
     BisectionStop, GainBuckets, Stall, commit_best_prefix, fm_balance, select_move,
     select_region_move,
@@ -25,9 +26,12 @@ pub(super) struct FmScratch {
     locked: Vec<bool>,
     moves: Vec<usize>,
     cumulative_gain: Vec<i64>,
-    pin_counts: Vec<[u32; 2]>,
+    /// Rebuilt by every pass that reads it, and by the finest level's boundary
+    /// scan and flow pass, which run between passes rather than inside one.
+    pub(super) pin_counts: Vec<[u32; 2]>,
     bq: [GainBuckets; 2],
     pub(super) region: RegionScratch,
+    pub(super) finest: FinestScratch,
 }
 
 impl FmScratch {
@@ -40,6 +44,7 @@ impl FmScratch {
             pin_counts: Vec::new(),
             bq: [GainBuckets::empty(), GainBuckets::empty()],
             region: RegionScratch::new(),
+            finest: FinestScratch::new(),
         }
     }
 
