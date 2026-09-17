@@ -83,9 +83,10 @@ fn run(gr: &str, order: u32, seed: u64, budget_ms: u64) -> Result<String, String
         ORDER_FLOWCUTTER => flowcutter(&graph, Budget::standalone(budget, None)),
         ORDER_PORTFOLIO => {
             let weights = vec![1; graph.num_vertices() as usize];
-            let config = budget.map_or_else(PortfolioConfig::standard, |budget| {
-                PortfolioConfig::standard().with_soft_budget(budget)
-            });
+            let config = budget.map_or_else(
+                PortfolioConfig::standard,
+                PortfolioConfig::standard_with_budget,
+            );
             portfolio(&graph, &weights, seed, config)
         }
         unknown => return Err(format!("unknown order {unknown}")),
