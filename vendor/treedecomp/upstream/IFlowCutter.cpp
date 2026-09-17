@@ -830,6 +830,12 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
           // goatd: an abandoned pass returns an EMPTY order, never a partial
           // one, and is skipped exactly as if the gate above had excluded it.
           auto md_order = compute_greedy_min_degree_order(tail, head, order_deadline, unit_budget);
+          // goatd: take the reading here, so the shortcut pass below is handed
+          // what is LEFT of `unit_budget` rather than a second full one. Each
+          // pass measures its own budget from the counter at its own entry, so
+          // without this a build that saturated both spent twice what the slot
+          // was sized for. `test_new_order` does not touch this counter.
+          greedy_spent += greedy_order_take_touches();
           if(md_order.preimage_count() != 0)
             test_new_order(chain(std::move(md_order), inv_preorder), td);
         }
@@ -847,10 +853,17 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
           const bool sc_density_ok = arc_count < 64 * (int64_t)node_count;
           // goatd: tightness-gated for the same reason as md_limit above.
           int sc_limit = tight ? 1000 : 10000;
-          if(node_count < sc_limit && sc_density_ok && !deadline_fired()){
+          // goatd: what the min-degree pass left. Zero is the "no budget"
+          // sentinel in `greedy_order_budget_spent`, so an unmetered build
+          // still passes 0 and keeps the deadline behaviour; a metered one
+          // whose first pass spent the lot skips this pass rather than
+          // starting it on a budget it has already used.
+          const int64_t sc_budget = unit_budget > 0 ? unit_budget - greedy_spent : 0;
+          if(node_count < sc_limit && sc_density_ok && !deadline_fired()
+             && (unit_budget <= 0 || sc_budget > 0)){
             print_comment("min shortcut heuristic");
             // goatd: same all-or-nothing contract as min-degree above.
-            auto sc_order = compute_greedy_min_shortcut_order(tail, head, order_deadline, unit_budget);
+            auto sc_order = compute_greedy_min_shortcut_order(tail, head, order_deadline, sc_budget);
             if(sc_order.preimage_count() != 0)
               test_new_order(chain(std::move(sc_order), inv_preorder), td);
           }
@@ -861,7 +874,7 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
         // REMAINDER of `unit_budget`. Without this the two phases each got a
         // full budget, and a build that saturated both cost about twice what it
         // was scheduled.
-        greedy_spent = greedy_order_take_touches();
+        greedy_spent += greedy_order_take_touches();
 
         if(deadline_fired()) goto done;
 
