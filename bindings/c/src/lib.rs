@@ -75,7 +75,8 @@ pub struct GoatdOptions {
     pub budget_ms: u64,
     /// `GOATD_ORDER_FLOWCUTTER` only: a step budget in place of a clock, for a
     /// run that repeats exactly. 0 leaves it unset. Give either this or
-    /// `budget_ms`, not both.
+    /// `budget_ms`, not both; with neither, FlowCutter runs for its own
+    /// default of 200 ms.
     pub steps: u64,
     /// `GOATD_ORDER_MIN_FILL` and `GOATD_ORDER_MIN_DEGREE` only: break ties by
     /// weighted sampling from the whole tie set instead of by salt.
@@ -428,11 +429,6 @@ fn check_options(options: &GoatdOptions, graph: &Graph) -> Result<(), Error> {
             ));
         }
     }
-    if options.order == GOATD_ORDER_FLOWCUTTER && options.steps == 0 && options.budget_ms == 0 {
-        return Err(invalid(
-            "GOATD_ORDER_FLOWCUTTER needs a budget_ms or a steps limit",
-        ));
-    }
     Ok(())
 }
 
@@ -634,7 +630,6 @@ mod tests {
         ] {
             let mut inert = options(order);
             inert.sample_ties = true;
-            inert.steps = u64::from(order == GOATD_ORDER_FLOWCUTTER);
             refused(&inert, "sample_ties");
         }
     }
@@ -681,12 +676,15 @@ mod tests {
     }
 
     #[test]
-    fn flowcutter_takes_one_bound_and_needs_one() {
+    fn flowcutter_takes_one_bound_or_neither() {
         let mut both = options(GOATD_ORDER_FLOWCUTTER);
         both.steps = 100;
         both.budget_ms = 100;
         refused(&both, "give one");
-        refused(&options(GOATD_ORDER_FLOWCUTTER), "budget_ms");
+        // With neither, FlowCutter runs on its own default, as it does from
+        // the command line and from the other two bindings.
+        check_options(&options(GOATD_ORDER_FLOWCUTTER), &graph())
+            .expect("FlowCutter has a default of its own");
     }
 
     #[test]
@@ -700,7 +698,6 @@ mod tests {
         ] {
             let mut refined = options(order);
             refined.refine = true;
-            refined.steps = u64::from(order == GOATD_ORDER_FLOWCUTTER) * 100;
             check_options(&refined, &graph()).expect("refinement runs after every order");
         }
     }

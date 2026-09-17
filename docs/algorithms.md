@@ -728,7 +728,8 @@ The construction shares min-fill's score updates and elimination engine.
 
 The portfolio tries it once after its existing stages when a completed
 min-fill pass cost no more than one eighth of the remaining time. It uses the
-current width bound and original hard deadline, and discards incomplete runs.
+current width bound and the hard deadline less the vertex-reinsertion reserve,
+and discards incomplete runs.
 
 Merge partners and the additional draws for local pieces use the same
 fill-per-degree ranking with seeded ties, followed by the existing

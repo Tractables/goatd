@@ -109,7 +109,8 @@ typedef struct GoatdOptions {
   /**
    * `GOATD_ORDER_FLOWCUTTER` only: a step budget in place of a clock, for a
    * run that repeats exactly. 0 leaves it unset. Give either this or
-   * `budget_ms`, not both.
+   * `budget_ms`, not both; with neither, FlowCutter runs for its own
+   * default of 200 ms.
    */
   uint64_t steps;
   /**

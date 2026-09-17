@@ -23,8 +23,8 @@
 
 A C ABI over the goatd library: a graph goes in as a vertex count and a flat
 edge array, and a tree decomposition comes out as bag offsets, a concatenated
-vertex array, and the edges between bags. The orders, budgets, seeds and
-refinement are the ones the `goatd` command line exposes.
+vertex array, and the edges between bags. Five of the command line's orders,
+with its budgets, seeds and refinement.
 
 **The ABI is unstable before 1.0.** Struct layouts, status codes and
 signatures can change in any release. Build against the version you ship with
