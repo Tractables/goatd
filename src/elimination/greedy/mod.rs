@@ -4,8 +4,7 @@
 //! The sampling cores draw from the full set tied on the primary key.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, hash_map::Entry};
-use std::hash::{BuildHasherDefault, Hasher};
+use std::collections::{BTreeMap, BinaryHeap, btree_map::Entry};
 use std::time::Instant;
 
 use super::execution::{Cutoff, DeadlinePacer, ElimExit, ElimSink, ElimStop, exceeds_width_bound};
@@ -827,34 +826,9 @@ struct Bucket {
 /// The vectors an empty bucket hands back for the next bucket to reuse.
 type SpareBucket = (Vec<u32>, Vec<u64>);
 
-/// Hashes internal `u64` priority keys without the cost of general-purpose
-/// keyed hashing.
-#[derive(Clone, Default)]
-struct PriorityHasher(u64);
-
-impl Hasher for PriorityHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        let mut hash = 0u64;
-        for &byte in bytes {
-            hash = hash.rotate_left(8) ^ u64::from(byte);
-        }
-        self.0 = hash;
-    }
-
-    fn write_u64(&mut self, value: u64) {
-        self.0 = value;
-    }
-}
-
-type PriorityHashMap = HashMap<u64, Bucket, BuildHasherDefault<PriorityHasher>>;
-
 /// How many priority keys per vertex get a direct slot. A fill-based score is
 /// a fill count plus, for the diverse orders, up to `32 * n` from the degree
-/// coefficient, so this covers the keys those cores produce without a hash.
+/// coefficient, so this covers the keys those cores produce in the slots.
 const DENSE_KEYS_PER_VERTEX: usize = 64;
 
 /// The most keys that ever get a slot. Slots are allocated lazily up to the
@@ -876,7 +850,15 @@ struct PriorityBuckets {
     /// Bucket storage that no key names any more, waiting to be handed out.
     free: Vec<u32>,
     dense_keys: usize,
-    overflow: PriorityHashMap,
+    /// The buckets above the dense range, ordered by key so that
+    /// [`Self::smallest_key_from`] reads the smallest one instead of scanning
+    /// them. On a residual wide enough to put most keys here, every
+    /// elimination step asks for that minimum, and a scan made the run
+    /// quadratic in the live vertex count. The order costs a comparison walk
+    /// on each lookup and update above the dense range, which is a fraction of
+    /// the scan it replaces: keys reach the map at all only once the dense
+    /// range is full of them.
+    overflow: BTreeMap<u64, Bucket>,
 }
 
 impl PriorityBuckets {
@@ -886,7 +868,7 @@ impl PriorityBuckets {
             buckets: Vec::new(),
             free: Vec::new(),
             dense_keys: Self::dense_keys_for(vertex_count),
-            overflow: PriorityHashMap::default(),
+            overflow: BTreeMap::new(),
         }
     }
 
@@ -983,8 +965,10 @@ impl PriorityBuckets {
         }
     }
 
-    /// The smallest live key, scanning the slots from `from` upwards. Callers
-    /// pass a key no live bucket sits below.
+    /// The smallest live key, scanning the slots from `from` upwards and then
+    /// taking the first key of the overflow. Callers pass a key no live bucket
+    /// sits below, so the overflow's first key is also its first key at or
+    /// above `from`.
     fn smallest_key_from(&self, from: u64) -> Option<u64> {
         let start = usize::try_from(from)
             .unwrap_or(usize::MAX)
@@ -995,7 +979,7 @@ impl PriorityBuckets {
         {
             return Some((start + offset) as u64);
         }
-        self.overflow.keys().copied().min()
+        self.overflow.first_key_value().map(|(&key, _)| key)
     }
 }
 
@@ -1056,7 +1040,8 @@ impl BucketStorage {
             self.buckets.free.clear();
             let count = u32::try_from(self.buckets.buckets.len()).expect("bucket count fits u32");
             self.buckets.free.extend(0..count);
-            for (_, mut bucket) in self.buckets.overflow.drain() {
+            let overflow = std::mem::take(&mut self.buckets.overflow);
+            for mut bucket in overflow.into_values() {
                 // A bucket only reaches the spare pool empty: what comes out
                 // of it becomes another key's bucket as it stands.
                 bucket.vertices.clear();
