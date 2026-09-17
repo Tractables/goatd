@@ -70,6 +70,9 @@ pub(super) struct RegionScratch {
     /// The vertices whose `boundary` entry this pass wrote.
     boundary_touched: Vec<usize>,
     region_list: Vec<usize>,
+    /// The region vertices still unlocked, in region order. Starts as a copy of
+    /// `region_list` and shrinks as the pass moves vertices.
+    active: Vec<usize>,
     queue: VecDeque<usize>,
     moves: Vec<usize>,
     cumulative_gain: Vec<i64>,
@@ -84,6 +87,7 @@ impl RegionScratch {
             boundary: Vec::new(),
             boundary_touched: Vec::new(),
             region_list: Vec::new(),
+            active: Vec::new(),
             queue: VecDeque::new(),
             moves: Vec::new(),
             cumulative_gain: Vec::new(),
@@ -106,6 +110,7 @@ impl RegionScratch {
         debug_assert!(self.boundary.iter().all(|&state| state == 0));
         self.boundary_touched.clear();
         self.region_list.clear();
+        self.active.clear();
         self.queue.clear();
         self.moves.clear();
         self.cumulative_gain.clear();
@@ -259,6 +264,7 @@ pub(super) fn localized_fm_pass(
     let boundary = scratch.boundary.as_mut_slice();
     let boundary_touched = &mut scratch.boundary_touched;
     let region_list = &mut scratch.region_list;
+    let active = &mut scratch.active;
     let queue = &mut scratch.queue;
 
     // region_list is collected alongside in_region to avoid a separate O(n)
@@ -342,21 +348,18 @@ pub(super) fn localized_fm_pass(
     let mut running_gain: i64 = 0;
     let mut stall = Stall::new(region_list.len() / 2);
 
-    // O(region²), not O(n × region): only region_list is scanned per move.
-    // Ties go to whichever vertex BFS reached first because `gain[v] > best_g`
-    // is strict. The hypergraph pass scans its region in ascending index order.
+    // O(region²), not O(n × region): only the region is scanned per move, and
+    // the selection drops each vertex it locks. Ties go to whichever vertex BFS
+    // reached first because `gain[v] > best_g` is strict. The hypergraph pass
+    // scans its region in ascending index order.
+    active.extend_from_slice(region_list);
     for _ in 0..region_list.len() {
         if stop.reached() {
             break;
         }
-        let Some((v, best_g)) = select_region_move(
-            region_list,
-            gain,
-            locked,
-            part,
-            &graph.vertex_weights,
-            &balance,
-        ) else {
+        let Some((v, best_g)) =
+            select_region_move(active, gain, locked, part, &graph.vertex_weights, &balance)
+        else {
             break;
         };
         let from = part[v] as usize;

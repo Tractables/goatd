@@ -294,14 +294,19 @@ pub(super) fn matching_order(
 }
 
 /// The move a localized Fiduccia-Mattheyses pass makes next: the highest-gain
-/// unlocked vertex of `region_list` the balance window admits, as
-/// `(vertex, its gain)`.
+/// vertex of `active` the balance window admits, as `(vertex, its gain)`.
 ///
 /// The region is capped, so this is a linear scan of it rather than a bucket
-/// queue. `region_list` is in ascending index order and the comparison is
-/// strict, so a gain tie goes to the lowest index.
+/// queue. The comparison is strict, so a gain tie goes to whichever vertex the
+/// caller listed first: the graph pass lists its region in the order the growth
+/// reached it, the hypergraph pass in ascending index order.
+///
+/// A vertex the pass has moved is locked for the rest of the pass, so `active`
+/// drops it here: the entries are compacted in place, keeping their order, and
+/// a pass that makes every move it can scans half of what it would otherwise.
+/// The caller keeps the full region list for its own cleanup.
 pub(super) fn select_region_move(
-    region_list: &[usize],
+    active: &mut Vec<usize>,
     gain: &[i64],
     locked: &[bool],
     part: &[u8],
@@ -315,22 +320,25 @@ pub(super) fn select_region_move(
     } = balance;
     let mut best_vertex = None;
     let mut best_gain = i64::MIN;
-    for &v in region_list {
+    // `retain` visits every entry once, in order, and keeps the order of the
+    // ones it keeps, so the scan and the compaction are the same pass.
+    active.retain(|&v| {
         if locked[v] {
-            continue;
+            return false;
         }
         let from = part[v] as usize;
         let to = 1 - from;
         if weight[from] - vertex_weights[v] < min_part_weight
             || weight[to] + vertex_weights[v] > max_part_weight
         {
-            continue;
+            return true;
         }
         if best_vertex.is_none() || gain[v] > best_gain {
             best_gain = gain[v];
             best_vertex = Some(v);
         }
-    }
+        true
+    });
     best_vertex.map(|vertex| (vertex, best_gain))
 }
 

@@ -67,6 +67,9 @@ pub(super) struct RegionScratch {
     in_region: Vec<bool>,
     locked: Vec<bool>,
     region_list: Vec<usize>,
+    /// The region vertices still unlocked, in region order. Starts as a copy of
+    /// `region_list` and shrinks as the pass moves vertices.
+    active: Vec<usize>,
     queue: VecDeque<usize>,
     moves: Vec<usize>,
     cumulative_gain: Vec<i64>,
@@ -80,6 +83,7 @@ impl RegionScratch {
             in_region: Vec::new(),
             locked: Vec::new(),
             region_list: Vec::new(),
+            active: Vec::new(),
             queue: VecDeque::new(),
             moves: Vec::new(),
             cumulative_gain: Vec::new(),
@@ -100,6 +104,7 @@ impl RegionScratch {
         debug_assert!(self.in_region.iter().all(|&member| !member));
         debug_assert!(self.locked.iter().all(|&locked| !locked));
         self.region_list.clear();
+        self.active.clear();
         self.queue.clear();
         self.moves.clear();
         self.cumulative_gain.clear();
@@ -334,6 +339,7 @@ pub(super) fn localized_fm_pass(
     // tie-break in the move loop: `gain[v] > best_gain` keeps the first vertex
     // reaching the max.
     let region_list = &mut scratch.region_list;
+    let active = &mut scratch.active;
     region_list.extend((0..n).filter(|&v| in_region[v]));
     debug_assert_eq!(region_list.len(), region_size);
 
@@ -363,19 +369,16 @@ pub(super) fn localized_fm_pass(
     let mut running_gain: i64 = 0;
     let mut stall = Stall::new(region_list.len() / 2);
 
-    // O(region²), not O(region·n): region_list, not 0..n, is scanned per move.
+    // O(region²), not O(region·n): the region, not 0..n, is scanned per move,
+    // and the selection drops each vertex it locks.
+    active.extend_from_slice(region_list);
     for _ in 0..region_list.len() {
         if stop.reached() {
             break;
         }
-        let Some((v, best_gain)) = select_region_move(
-            region_list,
-            gain,
-            locked,
-            part,
-            &hg.vertex_weights,
-            &balance,
-        ) else {
+        let Some((v, best_gain)) =
+            select_region_move(active, gain, locked, part, &hg.vertex_weights, &balance)
+        else {
             break;
         };
         let from = part[v] as usize;

@@ -1,7 +1,7 @@
 use crate::partition::common::{
     FmBalance, GainBuckets, Stall, balance_bounds, commit_best_prefix, fm_balance, index_split,
     lift_to_fine, matching_order, max_vcycles, project_to_coarse, random_bisection,
-    repair_bisection, select_move, shrank_enough, tiny_bisection,
+    repair_bisection, select_move, select_region_move, shrank_enough, tiny_bisection,
 };
 use crate::rng::Xorshift64;
 
@@ -138,6 +138,50 @@ fn move_selection_takes_the_best_gain_and_skips_a_side_the_window_blocks() {
         select_move(&bq, &gain, &locked, &vertex_weights, &pinned),
         None
     );
+}
+
+#[test]
+fn a_localized_selection_drops_what_it_locks_and_keeps_the_region_order() {
+    let gain = [1i64, 7, 7, 2, 9];
+    let part = [0u8, 0, 0, 1, 1];
+    let vertex_weights = [1u32; 5];
+    let mut locked = [false; 5];
+    locked[4] = true;
+    let window = FmBalance {
+        weight: [3, 2],
+        min_part_weight: 1,
+        max_part_weight: 4,
+    };
+
+    // The region is listed 3, 1, 2, 0, 4. Vertex 4 is locked already, and the
+    // gain tie between 1 and 2 goes to whichever the caller listed first.
+    let mut active = vec![3, 1, 2, 0, 4];
+    assert_eq!(
+        select_region_move(&mut active, &gain, &locked, &part, &vertex_weights, &window),
+        Some((1, 7))
+    );
+    assert_eq!(active, vec![3, 1, 2, 0]);
+
+    // Moving 1 locks it, and the next call drops it without a second look.
+    locked[1] = true;
+    assert_eq!(
+        select_region_move(&mut active, &gain, &locked, &part, &vertex_weights, &window),
+        Some((2, 7))
+    );
+    assert_eq!(active, vec![3, 2, 0]);
+
+    // A vertex the window blocks is no candidate but stays in the region: a
+    // later move can put it back inside the window.
+    let pinned = FmBalance {
+        weight: [3, 3],
+        min_part_weight: 3,
+        max_part_weight: 3,
+    };
+    assert_eq!(
+        select_region_move(&mut active, &gain, &locked, &part, &vertex_weights, &pinned),
+        None
+    );
+    assert_eq!(active, vec![3, 2, 0]);
 }
 
 #[test]
