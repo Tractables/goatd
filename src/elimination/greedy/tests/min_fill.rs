@@ -300,3 +300,22 @@ fn a_band_of_one_draws_outside_the_minimum_fill() {
         "a band of one puts vertices 2 and 3 in the first draw, so some seed opens on one",
     );
 }
+
+/// A heap entry is its key and nothing else. A seeding scan pushes one per
+/// active vertex and every score update pushes another, so a field that
+/// repeats part of the key is paid for tens of millions of times over.
+#[test]
+fn a_heap_entry_carries_nothing_beside_its_key() {
+    use std::cmp::Reverse;
+    use std::mem::size_of;
+
+    type Key = (
+        Reverse<u64>,
+        Reverse<usize>,
+        Reverse<u32>,
+        Reverse<u32>,
+        u64,
+    );
+    assert_eq!(size_of::<HeapEntry<false>>(), size_of::<Key>());
+    assert_eq!(size_of::<HeapEntry<true>>(), size_of::<Key>());
+}
