@@ -226,7 +226,8 @@ pub fn multilevel_hypergraph_bisect(
     }
 
     let mut best_part = Vec::new();
-    let mut best_cut = u32::MAX;
+    // Wider than the cut it holds; see the same value in `initial`.
+    let mut best_cut = u64::MAX;
 
     // Best-of-N on the cut, the objective the caller asked for here; see "Where
     // the two bisectors differ" in the shared partition bookkeeping.
@@ -241,7 +242,7 @@ pub fn multilevel_hypergraph_bisect(
             config.effort,
             &mut scratch,
         );
-        let candidate_cut = hyperedge_cut(hg, &part);
+        let candidate_cut = u64::from(hyperedge_cut(hg, &part));
         if candidate_cut < best_cut {
             best_cut = candidate_cut;
             best_part = part;

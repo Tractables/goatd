@@ -268,3 +268,16 @@ fn bisection_configs_reject_out_of_range_values() {
         .is_err()
     );
 }
+
+#[test]
+fn a_hyperedge_of_maximum_weight_still_yields_two_sides() {
+    // The total hyperedge weight may be exactly u32::MAX, so a cut of that
+    // size is a legal candidate. A restart loop starting from u32::MAX as its
+    // "nothing yet" value never accepted one and returned an empty partition.
+    let hypergraph = Hypergraph::new(4, &[vec![0, 1, 2, 3]], Some(&[u32::MAX])).unwrap();
+
+    for seed in 0..4 {
+        let bisection = multilevel_hypergraph_bisect(&hypergraph, hypergraph_config(seed)).unwrap();
+        assert_two_nonempty_sides(bisection.parts(), 4);
+    }
+}
