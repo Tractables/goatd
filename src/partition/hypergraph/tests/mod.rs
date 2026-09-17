@@ -106,3 +106,28 @@ fn flow_refinement_declines_tiny_hypergraphs_without_changing_them() {
     ));
     assert_eq!(part, vec![0, 0, 1, 1]);
 }
+
+/// The corridor cap stops the pin walk part way, and the pins it does not walk
+/// are charged all the same: a budgeted run repeats on the meter, so where the
+/// walk stops must not show up in the units.
+#[test]
+fn a_corridor_over_the_cap_is_declined_at_the_same_charge() {
+    // 600 two-pin hyperedges over 1,200 vertices, every one of them cut, so the
+    // corridor passes the cap about two fifths of the way through.
+    let hyperedges: Vec<Vec<u32>> = (0..600u32).map(|h| vec![2 * h, 2 * h + 1]).collect();
+    let hg = Hypergraph::from_hyperedges(1_200, &hyperedges, None);
+    let mut part: Vec<u8> = (0..1_200).map(|v| (v % 2) as u8).collect();
+    let before = part.clone();
+
+    let guard = crate::meter::arm(std::time::Instant::now());
+    let start = crate::meter::units_spent();
+    let refined = flow_refine(&hg, &mut part, 0.25, &mut BisectionStop::new(None));
+    let spent = crate::meter::units_spent() - start;
+    drop(guard);
+
+    assert!(!refined);
+    assert_eq!(part, before);
+    // The counts walk every pin once, and the corridor charges for every pin of
+    // every cut hyperedge whether it walked it or not.
+    assert_eq!(spent, 2 * 1_200);
+}

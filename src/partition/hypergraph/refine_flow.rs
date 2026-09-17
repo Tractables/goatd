@@ -117,6 +117,9 @@ impl FlowNetwork {
     }
 }
 
+/// The largest corridor the flow pass will build a network over.
+const MAX_CORRIDOR: usize = 500;
+
 /// Models cut hyperedges as flow-network nodes; the min cut proposes new sides
 /// for the boundary vertices.
 ///
@@ -144,25 +147,40 @@ pub(super) fn flow_refine(
     // Corridor: every pin of every cut hyperedge. Interior vertices are left
     // out of the network entirely, which is what keeps it small enough for a
     // whole-corridor max-flow to be worth running.
+    //
+    // Max-flow cost grows with corridor size, so a corridor over the cap skips
+    // the pass rather than pays for it. The count is kept as the corridor is
+    // marked, so a hypergraph far over the cap stops at the cap instead of
+    // walking every cut hyperedge's pins first.
     let mut is_boundary = vec![false; n];
     let mut cut_hyperedges = Vec::new();
+    let mut boundary_count = 0usize;
     for (hyperedge, counts) in pin_counts.iter().enumerate() {
         if counts[0] > 0 && counts[1] > 0 {
             cut_hyperedges.push(hyperedge);
             for &vertex in hg.charged_hyperedge_pins(hyperedge) {
-                is_boundary[vertex as usize] = true;
+                if !is_boundary[vertex as usize] {
+                    is_boundary[vertex as usize] = true;
+                    boundary_count += 1;
+                }
+            }
+            if boundary_count > MAX_CORRIDOR {
+                // The pins the walk stops short of are charged all the same: a
+                // budgeted run repeats on the meter, so skipped work still has
+                // to pay for itself. A cut hyperedge's two counts add up to its
+                // pin count.
+                let unwalked: u64 = pin_counts[hyperedge + 1..]
+                    .iter()
+                    .filter(|rest| rest[0] > 0 && rest[1] > 0)
+                    .map(|rest| u64::from(rest[0]) + u64::from(rest[1]))
+                    .sum();
+                crate::meter::charge(unwalked);
+                return false;
             }
         }
     }
 
     if cut_hyperedges.is_empty() {
-        return false;
-    }
-
-    let boundary_count = is_boundary.iter().filter(|&&b| b).count();
-    if boundary_count > 500 {
-        // Tuned cap: max-flow cost grows with corridor size, so large
-        // boundary regions skip flow refinement rather than pay for it.
         return false;
     }
 
