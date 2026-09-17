@@ -137,12 +137,12 @@ pub enum Pass {
 /// and [`candidates`](crate::portfolio::candidates) do not pay for them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shape {
-    /// `log2` of the sum over bags of `2^|bag|`: what a consumer compiling
-    /// over the bags pays in the worst case. Equal widths can differ here by
-    /// the number of bags at that width and the sizes of the rest.
+    /// [`TreeDecomposition::bag_mass`](crate::TreeDecomposition::bag_mass).
+    /// Equal widths can differ here by the number of bags at that width and
+    /// the sizes of the rest.
     pub bag_mass: f64,
-    /// The largest number of vertices two adjacent bags share: what a consumer
-    /// carries across the widest join in the tree.
+    /// [`TreeDecomposition::max_separator`](crate::TreeDecomposition::max_separator):
+    /// what a consumer carries across the widest join in the tree.
     pub max_separator: usize,
 }
 

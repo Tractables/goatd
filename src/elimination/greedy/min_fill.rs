@@ -19,21 +19,23 @@ use super::deterministic::{AfterElim, ElimPolicy, Seeded, eliminate_greedy};
 use super::*;
 use crate::deadline::expired;
 
-/// Heap entry ordered by fill or fill/degree, then degree and salt. The `fill` field is
-/// duplicated out of the key so the stale-snapshot check can compare it
-/// against a live recomputed fill without destructuring the `Reverse` tuple.
+/// Heap entry ordered by fill or fill/degree, then degree and salt.
+///
+/// The key carries everything an entry knows — fill, degree, salt and vertex
+/// descending, and the generation the score was filed under — and the
+/// accessors read it. A seeding scan pushes one entry per active vertex and
+/// every update pushes another, so a run on a large residual holds tens of
+/// millions of these at once, and the three fields that used to repeat part of
+/// the key took nearly half of every one of them.
 #[derive(Eq, PartialEq)]
 pub(super) struct HeapEntry<const RELATIVE: bool> {
-    pub key: (
+    key: (
         Reverse<u64>,
         Reverse<usize>,
         Reverse<u32>,
         Reverse<u32>,
         u64,
     ),
-    pub vertex: u32,
-    pub fill: u64,
-    pub generation: u64,
 }
 
 impl<const RELATIVE: bool> HeapEntry<RELATIVE> {
@@ -46,18 +48,29 @@ impl<const RELATIVE: bool> HeapEntry<RELATIVE> {
                 Reverse(v),
                 generation,
             ),
-            vertex: v,
-            fill,
-            generation,
         }
+    }
+
+    fn fill(&self) -> u64 {
+        self.key.0.0
+    }
+
+    fn degree(&self) -> usize {
+        self.key.1.0
+    }
+
+    /// Which push filed this score. An entry an update has superseded is
+    /// discarded when it surfaces.
+    fn generation(&self) -> u64 {
+        self.key.4
     }
 }
 
 impl<const RELATIVE: bool> Ord for HeapEntry<RELATIVE> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         if RELATIVE {
-            let left = u128::from(self.fill) * other.key.1.0.max(1) as u128;
-            let right = u128::from(other.fill) * self.key.1.0.max(1) as u128;
+            let left = u128::from(self.fill()) * other.degree().max(1) as u128;
+            let right = u128::from(other.fill()) * self.degree().max(1) as u128;
             right.cmp(&left).then_with(|| {
                 (self.key.1, self.key.2, self.key.3, self.key.4).cmp(&(
                     other.key.1,
@@ -80,10 +93,10 @@ impl<const RELATIVE: bool> PartialOrd for HeapEntry<RELATIVE> {
 
 impl<const RELATIVE: bool> ElimEntry for HeapEntry<RELATIVE> {
     fn vertex(&self) -> u32 {
-        self.vertex
+        self.key.3.0
     }
     fn snapshot(&self) -> u64 {
-        self.fill
+        self.fill()
     }
 }
 
@@ -175,7 +188,7 @@ impl<const RELATIVE: bool> ElimPolicy for MinFill<'_, RELATIVE> {
     }
 
     fn entry_is_current(&self, entry: &HeapEntry<RELATIVE>) -> bool {
-        self.generation[entry.vertex as usize] == entry.generation
+        self.generation[entry.vertex() as usize] == entry.generation()
     }
 
     fn live_score(&mut self, graph: &EliminationGraph, v: u32) -> u64 {

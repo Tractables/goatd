@@ -3,13 +3,21 @@
 //! These stay outside `greedy.rs`'s skeleton on purpose. They do not pop from
 //! a heap: they draw a vertex at random from the minimum-priority bucket of a
 //! [`BucketMap`] — or, with a `band`, from every bucket within `band` of the
-//! minimum — which means no lazy deletion, no stale entries to skip, and a
-//! priority structure that has to be kept exact rather than corrected on pop.
+//! minimum — so there is no lazy deletion and nothing to discard on a pop.
 //! `eliminate_sampled_min_fill` also has no clique-residual fast drain — at
 //! fill 0 every remaining vertex ties, and draining them in index order would
 //! change the sampled order. Folding them into the skeleton would mean more
 //! hooks that only they use, and the sampling loop would be harder to read
 //! for it, not easier.
+//!
+//! The two fill cores keep their buckets exact. `eliminate_sampled_min_degree`
+//! does not: it marks a neighbour of the eliminated vertex and refiles its
+//! degree at the draw that lands on it. Eliminating `v` leaves `u` at
+//! `deg(u) - 1 + fill(u)`, which can be below the key `u` is filed under, and
+//! while it sits one bucket too high it is outside the minimum band, so the
+//! draw is over the tie set the buckets hold rather than the one the live
+//! degrees define. Refiling eagerly was measured on the counting benchmark and
+//! moved no width on either hard block, so the lazy version stays.
 
 use super::*;
 use crate::deadline::expired;

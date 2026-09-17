@@ -18,6 +18,19 @@ fn separator_on_path_graph_is_small() {
         "path separator too big: {:?}",
         r.vertices()
     );
+    // The size bound above is loose enough to pass on a separator that does
+    // not separate, so check the property itself: no edge of the path joins
+    // the two sides.
+    let side_a: std::collections::HashSet<u32> = r.side_a().iter().copied().collect();
+    let side_b: std::collections::HashSet<u32> = r.side_b().iter().copied().collect();
+    let crossing = graph.edges().iter().find(|&&(u, v)| {
+        (side_a.contains(&u) && side_b.contains(&v)) || (side_b.contains(&u) && side_a.contains(&v))
+    });
+    assert!(
+        crossing.is_none(),
+        "the edge {crossing:?} crosses a separator of {:?}",
+        r.vertices()
+    );
 }
 
 #[test]

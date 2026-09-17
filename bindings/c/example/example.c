@@ -76,6 +76,14 @@ static void check(const GoatdDecomposition *td, const char *what) {
   REQUIRE(td->treewidth + 1 == widest, "%s: width %u beside a bag of %zu", what,
           td->treewidth, widest);
 
+  /* The other two shape numbers, against the bounds the widest bag puts on
+     them: two adjacent bags share no more than the smaller of them holds, and
+     the widest bag alone already contributes 2^widest to the mass. */
+  REQUIRE(td->max_separator <= widest, "%s: separator %u beside a bag of %zu",
+          what, td->max_separator, widest);
+  REQUIRE(td->bag_mass >= (double)widest, "%s: mass %g under a bag of %zu",
+          what, td->bag_mass, widest);
+
   for (size_t edge = 0; edge < NUM_EDGES; edge++) {
     uint32_t u = EDGES[2 * edge], v = EDGES[2 * edge + 1];
     REQUIRE(edge_is_covered(td, u, v), "%s: edge %u-%u is in no bag", what, u, v);
@@ -114,7 +122,8 @@ static GoatdDecomposition run(GoatdOptions options, const char *what) {
           goatd_last_error_message());
   check(&td, what);
   REQUIRE(has_clique_bag(&td), "%s: no bag holds the whole clique", what);
-  printf("%s: width %u, %zu bags\n", what, td.treewidth, td.num_bags);
+  printf("%s: width %u, %zu bags, separator %u, mass %.2f\n", what,
+         td.treewidth, td.num_bags, td.max_separator, td.bag_mass);
   return td;
 }
 

@@ -811,6 +811,16 @@ impl Spent {
 /// one solve per core it is several. The value is never scaled down: the
 /// estimate at the model's own rate is the floor. Under an armed meter both
 /// numbers come from the same clock and the estimate is returned unchanged.
+///
+/// The ratio is an upper bound on that cost rather than a measurement of it,
+/// because the charge does not cover the whole run: the vendored FlowCutter
+/// backend charges nothing unless the meter is armed, and the nested-dissection
+/// recursion's scans, localized FM and preprocessing's own sweeps charge
+/// nothing either way. Every millisecond they spend lands in `elapsed` and
+/// nowhere in `charged_units`, so the error is one-sided and this only ever
+/// comes out too large. Where that matters is [`flowcutter_window`], which
+/// subtracts the reserve this sizes: too large a reserve shrinks the trailing
+/// candidate's window, and near the threshold removes it.
 fn at_observed_rate(estimate: Duration, spent: Spent) -> Duration {
     let modelled = crate::meter::milliseconds_for_units(spent.charged_units);
     let elapsed = u64::try_from(spent.elapsed.as_millis()).unwrap_or(u64::MAX);
@@ -1220,6 +1230,10 @@ struct Collection {
     /// a trace sink has anywhere to report them, and they cost a pass over the
     /// bags, so an untraced run does not compute them.
     traced: bool,
+    /// Whether the caller runs the vertex reinsertion on what comes back. That
+    /// stage runs a level above the portfolio, so the run holds back its share
+    /// of the window only for a caller that will spend it.
+    reinserts_after: bool,
 }
 
 impl Collection {
@@ -1227,6 +1241,7 @@ impl Collection {
         Collection {
             retention: CandidateRetention::All,
             traced,
+            reinserts_after: false,
         }
     }
 
@@ -1234,6 +1249,14 @@ impl Collection {
         Collection {
             retention: CandidateRetention::BestOnly,
             traced,
+            reinserts_after: false,
+        }
+    }
+
+    fn reinserting(self) -> Self {
+        Collection {
+            reinserts_after: true,
+            ..self
         }
     }
 }
@@ -1311,6 +1334,10 @@ const BIPARTITE_LIFT_SHARE: f64 = 0.25;
 /// [`bipartite_lift`] for what the construction is and why there is more than
 /// one cutoff.
 ///
+/// `hard_deadline` is the run's own, read between rungs: a rung is a whole
+/// sub-run with a deadline of its own, so this is where a stop request or a
+/// window the rungs before it overran ends the stage.
+///
 /// # Errors
 ///
 /// Returns an error when the sub-run does, and when a lift finds no bag to put
@@ -1325,6 +1352,7 @@ fn run_bipartite_lift(
     config: PortfolioConfig,
     candidates: &mut CandidateSet,
     started: Instant,
+    hard_deadline: Option<Instant>,
     trace: &mut dyn FnMut(CandidateTrace),
 ) -> Result<(), crate::Error> {
     let origin = CandidateOrigin {
@@ -1440,6 +1468,13 @@ fn run_bipartite_lift(
         let mut produced_any = false;
         let mut reported = None;
         for priced in ladder {
+            // Each rung is a whole sub-run, so a caller who asked to stop, or
+            // a window the rungs before this one overran, waits out one more
+            // elimination and its writeout unless it is read here. Every other
+            // stage of the schedule polls the same call.
+            if expired(hard_deadline) {
+                break;
+            }
             let Some(projection) = bipartite_lift::project(graph, &adjacency, keep, drop, priced)
             else {
                 continue;
@@ -1539,9 +1574,9 @@ fn run_portfolio(
     let window_end = deadlines.hard;
     // The vertex reinsertion runs after everything and starts from the answer
     // everything left, so its share comes off the very end; the stages before
-    // it see the window end that much earlier.
-    let reinsertion_share = config
-        .vertex_reinsertion
+    // it see the window end that much earlier. It runs a level up, so only a
+    // caller that will run it pays for it.
+    let reinsertion_share = (config.vertex_reinsertion && collection.reinserts_after)
         .then(|| reinsertion_reserve(graph, started, window_end))
         .flatten();
     let (pooled_end, _) = less_reserve(window_end, reinsertion_share, soft_deadline);
@@ -1607,6 +1642,7 @@ fn run_portfolio(
         config,
         &mut candidates,
         started,
+        window_end,
         trace,
     )?;
 
@@ -2572,7 +2608,7 @@ fn standard_candidate_set(
         seed,
         standard_orders,
         config,
-        collection,
+        collection.reinserting(),
         trace,
     )?;
     if config.vertex_reinsertion {

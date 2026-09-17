@@ -160,7 +160,8 @@ options:
                         portfolio only: alternate the ordinary restarts
                         between the exact minimum and --sample-band, an even
                         restart drawing from the minimum and an odd one from
-                        the band. Needs --sample-band above 0
+                        the band. Refused with --sample-band 0, which is the
+                        exact minimum
   --sampling-patience <n>
                         portfolio only: the ordinary restarts stop once n of
                         them have run and the last one that improved the best
@@ -803,17 +804,19 @@ fn parse_args(argv: &[String]) -> Args {
         needs("--sample-band", order == Method::Portfolio, "portfolio");
     }
     // Alternating with a band of zero is the exact minimum on every restart,
-    // so the flag would decide nothing.
+    // so the flag would decide nothing. Without --sample-band the library's
+    // own band applies, which is not zero, so only the flag set to zero is
+    // the inert pair.
     if sample_band_alternate {
         needs(
             "--sample-band-alternate",
             order == Method::Portfolio,
             "portfolio",
         );
-        if sample_band.unwrap_or(0) == 0 {
+        if sample_band == Some(0) {
             usage_error(
-                "--sample-band-alternate requires --sample-band above 0: it alternates \
-                 between the exact minimum and the band",
+                "--sample-band-alternate alternates between the exact minimum and the band, \
+                 and --sample-band 0 is the exact minimum",
             );
         }
     }

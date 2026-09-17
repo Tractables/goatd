@@ -74,6 +74,14 @@ fn a_rejected_gr_names_what_is_wrong() {
             "fewer edge lines than the problem line declares",
             &["declares 2 edge lines", "contains 1"],
         ),
+        // A count too wide for a 32-bit pointer has to be rejected by the
+        // check that knows what is wrong with it, not by the parser, or the
+        // message depends on the target.
+        (
+            "p tw 2 18446744073709551615\n1 2\n",
+            "an edge count wider than a 32-bit pointer",
+            &["declares 18446744073709551615 edge lines", "contains 1"],
+        ),
     ];
     for &(text, what, expected) in cases {
         let err = Graph::from_gr(text)
@@ -304,6 +312,19 @@ fn a_rejected_td_names_the_offending_id_and_the_count_it_was_checked_against() {
             "s td 1 1 10\nb 1 1\n",
             "a vertex count above what the file's bytes can list",
             &["declares 10 vertices", "bytes of input"],
+        ),
+        (
+            "s td 1 18446744073709551615 1\nb 1 1\n",
+            "a maximum bag size wider than a 32-bit pointer",
+            &[
+                "declares maximum bag size 18446744073709551615",
+                "largest bag contains 1",
+            ],
+        ),
+        (
+            "s td 1 1 1\nb 18446744073709551615 1\n",
+            "a bag id wider than a 32-bit pointer",
+            &["bag id 18446744073709551615 is out of range", "declares 1"],
         ),
     ];
     for &(td_str, what, expected) in cases {

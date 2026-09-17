@@ -99,10 +99,13 @@ impl Drop for WallGuard {
     }
 }
 
-/// How long there is until `deadline` — zero once it has passed, and zero once
-/// the caller has asked the solve to stop.
+/// How long there is until `deadline` — zero once it has passed, and zero
+/// whenever [`expired`] answers true for one of its other reasons: the caller
+/// asked the solve to stop, or an enclosing wall cutoff has run out. Callers
+/// size a sub-budget from this and then pace it with `expired`, so the two
+/// have to agree about whether there is time left.
 pub(crate) fn remaining(deadline: Instant) -> Duration {
-    if crate::stop::requested() {
+    if expired(None) {
         return Duration::ZERO;
     }
     deadline.saturating_duration_since(crate::meter::now())

@@ -54,3 +54,15 @@ fn nested_wall_cutoffs_restore_the_enclosing_limit_with_an_armed_meter() {
     assert!(!expired(None));
     assert_eq!(crate::meter::now(), epoch);
 }
+
+#[test]
+fn a_wall_cutoff_that_has_run_out_leaves_no_time_on_a_later_deadline() {
+    let epoch = Instant::now();
+    let _meter = crate::meter::arm(epoch);
+    let deadline = epoch + Duration::from_secs(60);
+
+    assert!(remaining(deadline) > Duration::ZERO);
+    let _guard = super::WallGuard::new(Some(epoch));
+    assert!(expired(None));
+    assert_eq!(remaining(deadline), Duration::ZERO);
+}

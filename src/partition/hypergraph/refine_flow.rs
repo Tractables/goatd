@@ -7,6 +7,8 @@
 //! This phase has no counterpart on the graph side, and runs only at the finest
 //! level, from [`refine_finest_level`] below.
 
+use std::collections::VecDeque;
+
 use super::initial::hyperedge_cut;
 use super::model::Hypergraph;
 use super::refine_fm::{FmScratch, localized_fm_pass, refine_level};
@@ -18,14 +20,33 @@ use crate::partition::common::{BisectionStop, balance_bounds};
 pub(super) struct FlowNetwork {
     adjacency: Vec<Vec<(usize, usize)>>,
     residual_capacity: Vec<i64>,
+    parent: Vec<Option<(usize, usize)>>,
+    queue: VecDeque<usize>,
 }
 
 impl FlowNetwork {
     pub(super) fn new(num_nodes: usize) -> Self {
-        Self {
-            adjacency: vec![Vec::new(); num_nodes],
+        let mut network = Self {
+            adjacency: Vec::new(),
             residual_capacity: Vec::new(),
+            parent: Vec::new(),
+            queue: VecDeque::new(),
+        };
+        network.reset(num_nodes);
+        network
+    }
+
+    /// Empty the network and size it for `num_nodes`. Each adjacency list is
+    /// cleared rather than dropped, so a network built again at the next level
+    /// reuses the lists the last one grew.
+    pub(super) fn reset(&mut self, num_nodes: usize) {
+        for list in &mut self.adjacency {
+            list.clear();
         }
+        self.adjacency.resize_with(num_nodes, Vec::new);
+        self.residual_capacity.clear();
+        self.parent.clear();
+        self.parent.resize(num_nodes, None);
     }
 
     pub(super) fn add_edge(&mut self, from: usize, to: usize, capacity: i64) {
@@ -53,45 +74,43 @@ impl FlowNetwork {
         stop: &mut BisectionStop,
     ) -> i64 {
         let mut total_flow = 0i64;
-        let mut parent = vec![None; self.adjacency.len()];
-        let mut queue = std::collections::VecDeque::new();
 
         loop {
             if stop.reached() {
                 break;
             }
-            parent.fill(None);
-            parent[source] = Some((source, 0));
-            queue.clear();
-            queue.push_back(source);
+            self.parent.fill(None);
+            self.parent[source] = Some((source, 0));
+            self.queue.clear();
+            self.queue.push_back(source);
 
-            while let Some(node) = queue.pop_front() {
+            while let Some(node) = self.queue.pop_front() {
                 if node == sink {
                     break;
                 }
                 for &(neighbor, edge) in &self.adjacency[node] {
-                    if parent[neighbor].is_none() && self.residual_capacity[edge] > 0 {
-                        parent[neighbor] = Some((node, edge));
-                        queue.push_back(neighbor);
+                    if self.parent[neighbor].is_none() && self.residual_capacity[edge] > 0 {
+                        self.parent[neighbor] = Some((node, edge));
+                        self.queue.push_back(neighbor);
                     }
                 }
             }
 
-            if parent[sink].is_none() {
+            if self.parent[sink].is_none() {
                 break;
             }
 
             let mut path_capacity = i64::MAX;
             let mut node = sink;
             while node != source {
-                let (previous, edge) = parent[node].expect("a reached node has a parent");
+                let (previous, edge) = self.parent[node].expect("a reached node has a parent");
                 path_capacity = path_capacity.min(self.residual_capacity[edge]);
                 node = previous;
             }
 
             node = sink;
             while node != source {
-                let (previous, edge) = parent[node].expect("an augmenting path has parents");
+                let (previous, edge) = self.parent[node].expect("an augmenting path has parents");
                 self.residual_capacity[edge] -= path_capacity;
                 self.residual_capacity[edge ^ 1] += path_capacity;
                 node = previous;
@@ -102,18 +121,87 @@ impl FlowNetwork {
 
         source_side.fill(false);
         source_side[source] = true;
-        queue.clear();
-        queue.push_back(source);
-        while let Some(node) = queue.pop_front() {
+        self.queue.clear();
+        self.queue.push_back(source);
+        while let Some(node) = self.queue.pop_front() {
             for &(neighbor, edge) in &self.adjacency[node] {
                 if !source_side[neighbor] && self.residual_capacity[edge] > 0 {
                     source_side[neighbor] = true;
-                    queue.push_back(neighbor);
+                    self.queue.push_back(neighbor);
                 }
             }
         }
 
         total_flow
+    }
+}
+
+/// The largest corridor the flow pass will build a network over.
+const MAX_CORRIDOR: usize = 500;
+
+/// The largest network it will build over one. The corridor cap bounds the
+/// vertex side — a node and a terminal arc each — and this bounds the other:
+/// the cut hyperedges, a node each and an arc per pin. Nothing else bounds
+/// them, and they are not bounded by the corridor, because the same few
+/// hundred vertices can be the cut pins of any number of hyperedges. A
+/// variable in a great many clauses is that shape.
+///
+/// Read it as sixty-four cut hyperedges per corridor vertex, which is far
+/// above what a corridor of a few hundred vertices ordinarily carries: this is
+/// a bound on the structure, like the bitset's size cap, not a gate tuned
+/// against a time budget.
+const MAX_CORRIDOR_ARCS: usize = 64 * MAX_CORRIDOR;
+
+/// Working storage for the finest level: the boundary the localized passes are
+/// seeded from, and everything [`flow_refine`] builds its network out of. Held
+/// across the levels of a sweep and across the sweeps of a bisection.
+///
+/// A corridor is at most [`MAX_CORRIDOR`] vertices out of `n`, so the
+/// per-vertex arrays are stamped with the pass number rather than cleared: a
+/// vertex is in the corridor when its stamp is this pass's, and a pass that
+/// declines leaves nothing behind to undo.
+pub(super) struct FinestScratch {
+    pub(super) boundary: Vec<usize>,
+    stamp: Vec<u32>,
+    pass: u32,
+    node_by_vertex: Vec<u32>,
+    corridor: Vec<usize>,
+    cut_hyperedges: Vec<usize>,
+    reachable: Vec<bool>,
+    moves: Vec<(usize, u8)>,
+    network: FlowNetwork,
+}
+
+impl FinestScratch {
+    pub(super) fn new() -> Self {
+        FinestScratch {
+            boundary: Vec::new(),
+            stamp: Vec::new(),
+            pass: 0,
+            node_by_vertex: Vec::new(),
+            corridor: Vec::new(),
+            cut_hyperedges: Vec::new(),
+            reachable: Vec::new(),
+            moves: Vec::new(),
+            network: FlowNetwork::new(0),
+        }
+    }
+
+    /// Start a flow pass over `n` vertices. The stamp moves on instead of the
+    /// arrays being cleared; the one clear a run needs is at the wrap.
+    fn prepare(&mut self, n: usize) {
+        self.stamp.resize(n, 0);
+        self.node_by_vertex.resize(n, u32::MAX);
+        self.pass = match self.pass.checked_add(1) {
+            Some(pass) => pass,
+            None => {
+                self.stamp.fill(0);
+                1
+            }
+        };
+        self.corridor.clear();
+        self.cut_hyperedges.clear();
+        self.moves.clear();
     }
 }
 
@@ -130,6 +218,7 @@ pub(super) fn flow_refine(
     hg: &Hypergraph,
     part: &mut [u8],
     max_imbalance: f64,
+    scratch: &mut FmScratch,
     stop: &mut BisectionStop,
 ) -> bool {
     let n = hg.num_vertices;
@@ -139,116 +228,150 @@ pub(super) fn flow_refine(
 
     let (min_part_weight, max_part_weight) = balance_bounds(&hg.vertex_weights, max_imbalance);
 
-    let pin_counts = hg.pin_counts(part);
+    hg.fill_pin_counts(part, &mut scratch.pin_counts);
+    let pin_counts = scratch.pin_counts.as_slice();
+    let finest = &mut scratch.finest;
+    finest.prepare(n);
 
     // Corridor: every pin of every cut hyperedge. Interior vertices are left
     // out of the network entirely, which is what keeps it small enough for a
     // whole-corridor max-flow to be worth running.
-    let mut is_boundary = vec![false; n];
-    let mut cut_hyperedges = Vec::new();
+    //
+    // Max-flow cost grows with the network, so a corridor over either cap
+    // skips the pass rather than pays for it. Both counts are kept as the
+    // corridor is marked, so a hypergraph far over a cap stops at it instead
+    // of walking every cut hyperedge's pins first.
+    let mut arcs = 0usize;
     for (hyperedge, counts) in pin_counts.iter().enumerate() {
         if counts[0] > 0 && counts[1] > 0 {
-            cut_hyperedges.push(hyperedge);
+            finest.cut_hyperedges.push(hyperedge);
+            arcs += usize::try_from(counts[0] + counts[1]).unwrap_or(usize::MAX);
             for &vertex in hg.charged_hyperedge_pins(hyperedge) {
-                is_boundary[vertex as usize] = true;
+                let vertex = vertex as usize;
+                if finest.stamp[vertex] != finest.pass {
+                    finest.stamp[vertex] = finest.pass;
+                    finest.corridor.push(vertex);
+                }
+            }
+            if finest.corridor.len() > MAX_CORRIDOR || arcs > MAX_CORRIDOR_ARCS {
+                // The pins the walk stops short of are charged all the same: a
+                // budgeted run repeats on the meter, so skipped work still has
+                // to pay for itself. A cut hyperedge's two counts add up to its
+                // pin count.
+                let unwalked: u64 = pin_counts[hyperedge + 1..]
+                    .iter()
+                    .filter(|rest| rest[0] > 0 && rest[1] > 0)
+                    .map(|rest| u64::from(rest[0]) + u64::from(rest[1]))
+                    .sum();
+                crate::meter::charge(unwalked);
+                return false;
             }
         }
     }
 
-    if cut_hyperedges.is_empty() {
+    if finest.cut_hyperedges.is_empty() {
         return false;
     }
 
-    let boundary_count = is_boundary.iter().filter(|&&b| b).count();
-    if boundary_count > 500 {
-        // Tuned cap: max-flow cost grows with corridor size, so large
-        // boundary regions skip flow refinement rather than pay for it.
-        return false;
-    }
-
-    // Flow-network node-ID layout: source (0), sink (1), boundary vertices
-    // (2..2+boundary_count), cut hyperedge nodes (2+boundary_count..).
-    let mut node_by_vertex = vec![None; n];
-    let mut boundary_vertices = Vec::new();
+    // Flow-network node-ID layout: source (0), sink (1), corridor vertices
+    // (2..2+corridor), cut hyperedge nodes (2+corridor..). The corridor is
+    // sorted rather than collected by a scan of the whole vertex range, which
+    // is the same ascending order over at most `MAX_CORRIDOR` entries.
+    finest.corridor.sort_unstable();
     let mut next_node = 2usize;
-    for v in 0..n {
-        if is_boundary[v] {
-            node_by_vertex[v] = Some(next_node);
-            boundary_vertices.push(v);
-            next_node += 1;
-        }
+    for &vertex in &finest.corridor {
+        finest.node_by_vertex[vertex] = next_node as u32;
+        next_node += 1;
     }
     let hyperedge_node_start = next_node;
-    let total_nodes = hyperedge_node_start + cut_hyperedges.len();
+    let total_nodes = hyperedge_node_start + finest.cut_hyperedges.len();
     let source = 0;
     let sink = 1;
 
-    let mut network = FlowNetwork::new(total_nodes);
+    finest.network.reset(total_nodes);
 
     // Source feeds partition-0 boundary vertices; partition-1 ones feed sink.
     // A vertex therefore ends on side 0 exactly when the residual graph still
     // reaches it from the source, and cutting its terminal edge is what the
     // network charges for relocating it.
-    for &vertex in &boundary_vertices {
-        let vertex_node = node_by_vertex[vertex].expect("a boundary vertex has a flow node");
+    for &vertex in &finest.corridor {
+        let vertex_node = finest.node_by_vertex[vertex] as usize;
         if part[vertex] == 0 {
-            network.add_edge(source, vertex_node, i64::from(hg.vertex_weights[vertex]));
+            finest
+                .network
+                .add_edge(source, vertex_node, i64::from(hg.vertex_weights[vertex]));
         } else {
-            network.add_edge(vertex_node, sink, i64::from(hg.vertex_weights[vertex]));
+            finest
+                .network
+                .add_edge(vertex_node, sink, i64::from(hg.vertex_weights[vertex]));
         }
     }
 
     // Boundary-vertex-to-cut-hyperedge capacity equals the hyperedge weight,
     // so the min-cut cost matches the hg cut it approximates.
-    for (cut_index, &hyperedge) in cut_hyperedges.iter().enumerate() {
+    for (cut_index, &hyperedge) in finest.cut_hyperedges.iter().enumerate() {
         let hyperedge_node = hyperedge_node_start + cut_index;
         let hyperedge_weight = i64::from(hg.hyperedge_weights[hyperedge]);
         for &vertex in hg.charged_hyperedge_pins(hyperedge) {
             let vertex = vertex as usize;
-            let vertex_node =
-                node_by_vertex[vertex].expect("every cut-hyperedge pin has a flow node");
+            debug_assert_eq!(
+                finest.stamp[vertex], finest.pass,
+                "every cut-hyperedge pin is in the corridor"
+            );
+            let vertex_node = finest.node_by_vertex[vertex] as usize;
             if part[vertex] == 0 {
-                network.add_edge(vertex_node, hyperedge_node, hyperedge_weight);
+                finest
+                    .network
+                    .add_edge(vertex_node, hyperedge_node, hyperedge_weight);
             } else {
-                network.add_edge(hyperedge_node, vertex_node, hyperedge_weight);
+                finest
+                    .network
+                    .add_edge(hyperedge_node, vertex_node, hyperedge_weight);
             }
         }
     }
 
-    let mut reachable_from_source = vec![false; total_nodes];
-    network.max_flow(source, sink, &mut reachable_from_source, stop);
+    finest.reachable.resize(total_nodes, false);
+    finest
+        .network
+        .max_flow(source, sink, &mut finest.reachable, stop);
 
-    let mut proposal = part.to_vec();
     let mut part_weight = [0u32; 2];
     for vertex in 0..n {
         part_weight[part[vertex] as usize] += hg.vertex_weights[vertex];
     }
 
-    let mut changed = false;
-    for &vertex in &boundary_vertices {
-        let vertex_node = node_by_vertex[vertex].expect("a boundary vertex has a flow node");
-        let new_side = u8::from(!reachable_from_source[vertex_node]);
+    for &vertex in &finest.corridor {
+        let vertex_node = finest.node_by_vertex[vertex] as usize;
+        let new_side = u8::from(!finest.reachable[vertex_node]);
         if new_side != part[vertex] {
             let from = part[vertex] as usize;
             let to = new_side as usize;
             let weight_after_leaving = part_weight[from] - hg.vertex_weights[vertex];
             let weight_after_joining = part_weight[to] + hg.vertex_weights[vertex];
             if weight_after_leaving >= min_part_weight && weight_after_joining <= max_part_weight {
-                proposal[vertex] = new_side;
+                finest.moves.push((vertex, new_side));
                 part_weight[from] = weight_after_leaving;
                 part_weight[to] = weight_after_joining;
-                changed = true;
             }
         }
     }
 
-    if changed {
-        let old_cut = hyperedge_cut(hg, part);
-        let new_cut = hyperedge_cut(hg, &proposal);
-        if new_cut < old_cut {
-            part.copy_from_slice(&proposal);
-            return true;
-        }
+    if finest.moves.is_empty() {
+        return false;
+    }
+
+    // The proposal goes onto `part` and comes back off where it does not pay.
+    // There are two sides, so a move's other side is the one it came from.
+    let old_cut = hyperedge_cut(hg, part);
+    for &(vertex, new_side) in &finest.moves {
+        part[vertex] = new_side;
+    }
+    if hyperedge_cut(hg, part) < old_cut {
+        return true;
+    }
+    for &(vertex, new_side) in &finest.moves {
+        part[vertex] = 1 - new_side;
     }
     false
 }
@@ -277,9 +400,11 @@ pub(super) fn refine_finest_level(
     // 7919 below is prime, so successive tries land in unrelated stretches of
     // the boundary list rather than in one region's worth of adjacent vertices.
     let num_tries = 4.min(n);
-    let mut boundary: Vec<usize> = Vec::new();
+    hg.fill_pin_counts(part, &mut scratch.pin_counts);
     {
-        let pin_counts = hg.pin_counts(part);
+        let pin_counts = scratch.pin_counts.as_slice();
+        let boundary = &mut scratch.finest.boundary;
+        boundary.clear();
         for v in 0..n {
             for &hei in hg.vertex_hyperedges(v) {
                 if pin_counts[hei as usize][0] > 0 && pin_counts[hei as usize][1] > 0 {
@@ -289,15 +414,16 @@ pub(super) fn refine_finest_level(
             }
         }
     }
-    if !boundary.is_empty() {
+    if !scratch.finest.boundary.is_empty() {
         for i in 0..num_tries {
             if stop.stopped() {
                 return;
             }
+            let boundary = &scratch.finest.boundary;
             let seed = boundary[(i * 7919) % boundary.len()];
             localized_fm_pass(hg, part, seed, imbalance, &mut scratch.region, stop);
         }
     }
 
-    flow_refine(hg, part, imbalance, stop);
+    flow_refine(hg, part, imbalance, scratch, stop);
 }

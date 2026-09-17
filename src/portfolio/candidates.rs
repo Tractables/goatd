@@ -301,12 +301,9 @@ impl CandidateSet {
 /// read them. They cost a pass over the bags, so a run with no trace sink does
 /// not compute them.
 fn shape_of(traced: bool, decomposition: &TreeDecomposition) -> Option<Shape> {
-    traced.then(|| {
-        let (bag_mass, max_separator) = decomposition.shape();
-        Shape {
-            bag_mass,
-            max_separator,
-        }
+    traced.then(|| Shape {
+        bag_mass: decomposition.bag_mass(),
+        max_separator: decomposition.max_separator(),
     })
 }
 

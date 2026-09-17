@@ -156,6 +156,10 @@ typedef int32_t GoatdStatus;
  * `goatd_decompose` fills the struct the caller supplies and takes ownership
  * of nothing; the three arrays inside belong to the caller and are released
  * together by `goatd_decomposition_free`.
+ *
+ * `treewidth`, `max_separator` and `bag_mass` describe the decomposition that
+ * was built. They are written, never read: a struct the caller filled in for
+ * `goatd_validate` is checked on its arrays alone.
  */
 typedef struct GoatdDecomposition {
   /**
@@ -187,6 +191,22 @@ typedef struct GoatdDecomposition {
    * treewidth.
    */
   uint32_t treewidth;
+  /**
+   * The most vertices two adjacent bags share, which is what a consumer
+   * joining two bags carries between them. No bags is `0`.
+   */
+  uint32_t max_separator;
+  /**
+   * `log2` of the sum over bags of `2^(bag size)`: what a consumer
+   * compiling over the bags pays in the worst case, on the same scale as
+   * the width. No bags is `0`.
+   *
+   * The sum is scaled by the largest bag before the logarithm, so a bag of
+   * a few thousand vertices still gives an answer where `2^(bag size)` on
+   * its own is already infinite. The plain sum of the bag sizes is
+   * `bag_offsets[num_bags]` and is not repeated here.
+   */
+  double bag_mass;
 } GoatdDecomposition;
 
 #ifdef __cplusplus

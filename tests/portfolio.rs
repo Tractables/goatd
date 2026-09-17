@@ -759,3 +759,38 @@ fn callers_can_schedule_polishing_after_candidate_generation() {
     refined.validate(&graph).unwrap();
     assert_eq!(original.to_td(), original_text);
 }
+
+#[test]
+fn the_portfolio_takes_a_graph_whose_only_edges_are_self_loops() {
+    // `Graph::new` drops a self-loop, so this reaches the portfolio as the
+    // edgeless case; what the test pins is that it reaches it at all, and that
+    // every stage holds on a graph with nothing to eliminate.
+    let loops: Vec<(u32, u32)> = (0..64).map(|vertex| (vertex, vertex)).collect();
+    let graph = Graph::new(64, loops);
+    assert!(graph.edges().is_empty(), "a self-loop is not an edge");
+    let weight = vec![1; graph.num_vertices() as usize];
+
+    let td = decompose(&graph, &weight, 0, PortfolioConfig::standard())
+        .expect("an edgeless graph has a decomposition");
+    td.validate(&graph)
+        .expect("the decomposition is valid for the graph");
+    assert_eq!(td.treewidth(), 0, "no edges, no bag of two vertices");
+}
+
+#[test]
+fn a_large_edgeless_graph_costs_one_bag_a_vertex() {
+    // Preprocessing takes every vertex as an islet, so the residual is empty
+    // and the schedule runs on nothing. The size is past the point where an
+    // accidental `n × n` allocation would be noticed.
+    let graph = Graph::new(100_000, Vec::<(u32, u32)>::new());
+    let weight = vec![1; graph.num_vertices() as usize];
+
+    let td = decompose(&graph, &weight, 0, PortfolioConfig::standard())
+        .expect("an edgeless graph has a decomposition");
+    td.validate(&graph)
+        .expect("the decomposition is valid for the graph");
+    assert_eq!(td.treewidth(), 0);
+    // Width 0 means a bag holds at most one vertex, so covering the graph
+    // takes one bag a vertex at least.
+    assert!(td.bags().len() >= 100_000);
+}

@@ -29,7 +29,8 @@ use crate::deadline::expired;
 /// tests are the expensive part of them, so on a dense residual one pass can
 /// take seconds. Reduction is optional — whatever it has not done, the
 /// elimination that follows does — so it stops when the caller's soft cutoff
-/// arrives and hands the rest of the graph on.
+/// arrives, or when the caller asks the solve to stop, and hands the rest of
+/// the graph on.
 pub(crate) struct PreprocessStop {
     deadline: Option<Instant>,
     pacer: DeadlinePacer,
@@ -47,12 +48,17 @@ impl PreprocessStop {
 
     /// Whether the cutoff has arrived, asked at most once per millisecond of
     /// charged work.
+    ///
+    /// The pass with no deadline of its own asks as well, since `expired` is
+    /// also where the caller's stop flag and an enclosing wall cutoff are
+    /// read: a fixed-point scan over a large dense graph takes seconds, and
+    /// nothing else would end it.
     #[inline]
     fn reached(&mut self) -> bool {
         if self.stopped {
             return true;
         }
-        if self.deadline.is_some() && self.pacer.due() && expired(self.deadline) {
+        if self.pacer.due() && expired(self.deadline) {
             self.stopped = true;
         }
         self.stopped

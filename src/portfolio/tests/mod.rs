@@ -880,6 +880,61 @@ fn a_run_with_no_soft_budget_bounds_no_stage() {
 }
 
 #[test]
+fn a_stage_that_needs_a_window_is_refused_on_a_run_with_none() {
+    let refuse = |config: PortfolioConfig, stage: &str| {
+        let message = validate(config)
+            .expect_err("the configuration is not usable")
+            .to_string();
+        assert!(
+            message.contains(stage) && message.contains("no soft budget"),
+            "{message:?} does not name {stage} and the missing budget",
+        );
+    };
+
+    let base = PortfolioConfig::standard();
+    refuse(base.with_bipartite_lift(4.0), "bipartite lift");
+    refuse(base.with_recombination(2_000), "recombination stage");
+    refuse(base.with_merge_loop(2_000), "merge loop");
+    refuse(base.with_local_merge(2_000), "local re-triangulation stage");
+
+    // The same four with a budget to take the share out of, and the budgeted
+    // standard set, which turns all four on itself.
+    let budget = Duration::from_millis(500);
+    let funded = base.with_soft_budget(budget);
+    assert!(validate(funded.with_bipartite_lift(4.0)).is_ok());
+    assert!(validate(funded.with_recombination(2_000)).is_ok());
+    assert!(validate(funded.with_merge_loop(2_000)).is_ok());
+    assert!(validate(funded.with_local_merge(2_000)).is_ok());
+    assert!(validate(PortfolioConfig::standard_with_budget(budget)).is_ok());
+    assert!(validate(base).is_ok());
+}
+
+#[test]
+fn alternating_with_a_band_of_zero_is_refused() {
+    let message = validate(
+        PortfolioConfig::standard()
+            .with_sample_band(0)
+            .with_sample_band_alternate(true),
+    )
+    .expect_err("the configuration is not usable")
+    .to_string();
+    assert!(
+        message.contains("alternating sample band"),
+        "{message:?} does not name the band",
+    );
+    // Either half on its own is a setting the run can act on.
+    assert!(validate(PortfolioConfig::standard().with_sample_band(0)).is_ok());
+    assert!(
+        validate(
+            PortfolioConfig::standard()
+                .with_sample_band(4)
+                .with_sample_band_alternate(true)
+        )
+        .is_ok()
+    );
+}
+
+#[test]
 fn a_reserve_outside_the_unit_interval_is_refused() {
     let refuse = |fraction: f64| {
         let message = validate(PortfolioConfig::standard().with_hedge_reserve(fraction))
