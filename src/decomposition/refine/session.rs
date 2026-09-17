@@ -329,10 +329,26 @@ impl<'g> Session<'g> {
                     }
                     if self.active.is_none() {
                         let start = Instant::now();
-                        let graph = self
-                            .graph
-                            .induced_subgraph(&self.node(node).vertices)
-                            .expect("regions keep unique original-graph vertices");
+                        // The root region is the whole vertex range in order,
+                        // and a split gives each child its own side plus the
+                        // separator while the other side is never empty, so a
+                        // region with as many vertices as the graph is the
+                        // root, and inducing on it rebuilds the graph. Charge
+                        // what that scan would have charged, so a budgeted run
+                        // stops where it stopped before.
+                        let region = &self.node(node).vertices;
+                        let graph = if region.len() == self.graph.num_vertices() as usize {
+                            debug_assert!(
+                                region.iter().copied().eq(0..self.graph.num_vertices()),
+                                "a region as large as the graph is its vertex range in order"
+                            );
+                            crate::meter::charge(self.graph.edges().len() as u64);
+                            self.graph.clone()
+                        } else {
+                            self.graph
+                                .induced_subgraph(region)
+                                .expect("regions keep unique original-graph vertices")
+                        };
                         let steps = self
                             .config
                             .per_vertex
