@@ -226,10 +226,11 @@ fn a_decomposition_of_another_graph_is_refused() {
 
 #[test]
 fn a_completion_is_declined_above_a_gibibyte_of_matrix() {
-    // n * ceil(n / 64) * 8 bytes: 92,672 vertices is the last size under a
-    // gibibyte, and the pass declines from the next multiple of 64 up.
+    // n * ceil(n / 64) * 8 bytes. The row width steps at every multiple of 64,
+    // so 92,672 is both a multiple of 64 and the last size that fits; one more
+    // vertex takes another word per row and puts the matrix over the cap.
     assert!(super::completion_fits(92_672));
-    assert!(!super::completion_fits(92_736));
+    assert!(!super::completion_fits(92_673));
     assert!(super::completion_fits(0));
     assert!(
         !super::completion_fits(usize::MAX),
