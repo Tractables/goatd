@@ -12,11 +12,10 @@
 //! [`crate::flowcutter`].
 //!
 
-use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
 use std::time::{Duration, Instant};
 
 use super::duration_ms;
+use crate::rng::{SEED_OFFSET, Xorshift64};
 use crate::{Error, Graph};
 
 mod cutter;
@@ -222,8 +221,15 @@ fn extract_original_separator(g: &OrigGraph, a_orig: u32, multi: &MultiCutter) -
     sep
 }
 
+/// The source and sink pairs the cutter runs between, drawn from the crate's
+/// own generator like every other seeded search here.
+///
+/// `rand`'s documentation says its algorithms may change in any release,
+/// which would move this pass's answer between two versions of the crate that
+/// are otherwise the same. A separator is documented as a function of the
+/// graph and the seed, so the stream has to be one the crate owns.
 fn select_random_st_pairs(n: u32, count: u32, seed: u64) -> Vec<(u32, u32)> {
-    let mut rng = SmallRng::seed_from_u64(seed);
+    let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
     let mut out = Vec::with_capacity(count as usize);
     if n < 2 {
         return out;
@@ -232,8 +238,8 @@ fn select_random_st_pairs(n: u32, count: u32, seed: u64) -> Vec<(u32, u32)> {
         let mut s;
         let mut t;
         loop {
-            s = rng.next_u32() % n;
-            t = rng.next_u32() % n;
+            s = rng.below(n as usize) as u32;
+            t = rng.below(n as usize) as u32;
             if s != t {
                 break;
             }

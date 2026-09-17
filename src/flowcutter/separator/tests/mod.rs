@@ -4,7 +4,7 @@
 mod cutter;
 mod separator;
 
-use super::{MAX_EXPANDED_BASE, validate_graph_size};
+use super::{MAX_EXPANDED_BASE, select_random_st_pairs, validate_graph_size};
 
 #[test]
 fn expanded_graph_size_guard_checks_its_exact_boundary() {
@@ -13,4 +13,18 @@ fn expanded_graph_size_guard_checks_its_exact_boundary() {
 
     validate_graph_size(vertices as u32, max_edges).expect("the index limit is inclusive");
     assert!(validate_graph_size(vertices as u32, max_edges + 1).is_err());
+}
+
+/// The source and sink draw is part of the answer this module documents as a
+/// function of the graph and the seed, so the stream is pinned here: moving it
+/// moves every separator a stored seed produces.
+#[test]
+fn the_source_and_sink_draw_is_pinned_to_one_stream() {
+    let pairs = select_random_st_pairs(64, 4, 7);
+    assert_eq!(pairs, [(36, 59), (23, 25), (3, 55), (48, 13)]);
+
+    // No pair repeats a vertex, and a graph with one vertex has no pair to
+    // draw at all.
+    assert!(pairs.iter().all(|&(s, t)| s != t));
+    assert!(select_random_st_pairs(1, 4, 7).is_empty());
 }

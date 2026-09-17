@@ -42,7 +42,6 @@ name = "goatd"
 path = "src/bin/goatd.rs"
 
 [dependencies]
-rand = "0.10"
 rustc-hash = "2"
 
 # The command-line tool's SIGTERM handler. The library itself uses no platform
