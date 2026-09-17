@@ -175,7 +175,12 @@ impl NativeDecomposition {
 
         charge_build(vertices, num_edges as u64, iterations_done, greedy_touches);
 
-        (!raw.is_null()).then_some(Self(raw))
+        // Only a live handle is wrapped: `then_some` takes its argument by
+        // value, so it built a null one and dropped it again.
+        if raw.is_null() {
+            return None;
+        }
+        Some(Self(raw))
     }
 }
 

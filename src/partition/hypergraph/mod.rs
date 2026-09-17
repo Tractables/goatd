@@ -54,6 +54,10 @@ impl HypergraphBisectionConfig {
     /// Configure a bisection at the baseline effort. `max_imbalance` is the
     /// allowed deviation from a half-and-half split, in `0.0..=0.5`; `seed`
     /// selects the deterministic RNG streams.
+    ///
+    /// At `0.0` on an even vertex count, any single move breaks the tolerance,
+    /// so the move-based refinement can do nothing and the result is the
+    /// initial partition brought to balance.
     pub fn new(max_imbalance: f64, seed: u64) -> Self {
         Self {
             max_imbalance,
@@ -91,9 +95,8 @@ fn num_hg_restarts(n: usize, effort_scale: f64) -> usize {
 /// If `existing_part` is provided, uses partition-aware coarsening (V-cycle).
 ///
 /// Returns 0/1 per vertex of `hg`. The projection down the levels is carried
-/// incrementally, one majority vote per new level; the graph sibling replays
-/// the whole chain from the original partition at every level instead, for the
-/// reason recorded on its own `multilevel_pass`.
+/// incrementally, one majority vote per new level, as the graph sibling
+/// carries its own.
 fn multilevel_pass(
     hg: &Hypergraph,
     existing_part: Option<&[u8]>,

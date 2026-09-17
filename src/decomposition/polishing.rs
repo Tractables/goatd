@@ -8,9 +8,11 @@ use super::TreeDecomposition;
 /// Limits for one advance of a refinement session.
 ///
 /// Steps count the session's documented operations, independently of machine
-/// speed. The optional deadline always uses real elapsed time, even when the
-/// construction work meter is armed. Operations are cooperative: an individual
-/// reconstruction or cutter advance can finish after the deadline.
+/// speed. They are not equal in size: one cutter advance is a step and so is
+/// one re-glue of an accepted subtree. The optional deadline always uses real
+/// elapsed time, even when the construction work meter is armed. Operations
+/// are cooperative: an individual reconstruction or cutter advance can finish
+/// after the deadline.
 #[derive(Clone, Copy, Debug)]
 #[must_use]
 pub struct Budget {
