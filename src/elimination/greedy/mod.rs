@@ -886,6 +886,9 @@ impl PriorityBuckets {
             .filter(|&key| key < self.dense_keys)
     }
 
+    /// The bucket at one exact key. The band walk is what the samplers use;
+    /// this is for the tests that check one key's storage.
+    #[cfg(test)]
     fn get(&self, key: u64) -> Option<&Bucket> {
         match self.dense_index(key) {
             Some(key) => match self.slots.get(key) {
@@ -1315,6 +1318,7 @@ impl<'a> BucketMap<'a> {
         (!position.is_vacant()).then_some(position.key)
     }
 
+    #[cfg(test)]
     fn bucket(&self, key: u64) -> Option<&Bucket> {
         self.buckets.get(key)
     }
