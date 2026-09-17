@@ -126,6 +126,32 @@ fn priority_buckets_recompute_an_emptied_minimum() {
     assert_eq!(buckets.minimum(), Some(7));
 }
 
+/// A band wide enough to cross the dense boundary takes the slots and then
+/// the overflow, ascending by key throughout, and a band that runs to the top
+/// of the key space costs what the map holds rather than what it spans.
+#[test]
+fn a_band_across_the_dense_boundary_walks_its_buckets_in_key_order() {
+    let weights = [1; 5];
+    let mut storage = super::BucketStorage::new();
+    let mut buckets =
+        super::BucketMap::with_weights(&mut storage, &weights, Some(super::sampling_mass(1)));
+    let dense = super::PriorityBuckets::dense_keys_for(weights.len()) as u64;
+
+    buckets.insert(0, dense + 4);
+    buckets.insert(1, 0);
+    buckets.insert(2, dense);
+    buckets.insert(3, dense - 1);
+    buckets.insert(4, u64::MAX);
+
+    let (vertices, mass) = tie_set(&mut buckets, u64::MAX).expect("a live minimum");
+    assert_eq!(vertices, [1, 3, 2, 0, 4]);
+    assert_eq!(mass, 5 * super::sampling_mass(1));
+
+    // A band that stops inside the slots leaves the overflow where it is.
+    let (vertices, _) = tie_set(&mut buckets, dense - 1).expect("a live minimum");
+    assert_eq!(vertices, [1, 3]);
+}
+
 #[test]
 fn priority_buckets_keep_their_slots_when_a_key_overflows() {
     let weights = [1, 1];

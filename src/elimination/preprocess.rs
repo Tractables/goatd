@@ -127,15 +127,18 @@ fn eliminate_and_record(
     vertex: u32,
     needs_fill: bool,
 ) -> usize {
-    let neighbours = graph.live_neighbours(vertex);
-    let degree = neighbours.len();
+    // The bag is collected first and the elimination takes a slice of it, so
+    // the neighbour list is built once rather than into a vector the bag then
+    // copies.
+    let degree = graph.degree(vertex);
     let mut bag = Vec::with_capacity(degree + 1);
     bag.push(vertex);
-    bag.extend_from_slice(&neighbours);
+    graph.collect_live_nbrs_into(vertex, &mut bag);
+    debug_assert_eq!(bag.len(), degree + 1, "degree counts the live neighbours");
     if needs_fill {
-        graph.eliminate_with_nbrs(vertex, &neighbours);
+        graph.eliminate_with_nbrs(vertex, &bag[1..]);
     } else {
-        graph.remove_without_fill_nbrs(vertex, &neighbours);
+        graph.remove_without_fill_nbrs(vertex, &bag[1..]);
     }
     prefix.sink().record(vertex, bag);
     degree
@@ -242,11 +245,11 @@ fn peel_low_degree(graph: &mut EliminationGraph, prefix: &mut ElimSteps) -> bool
                     fired = true;
                 }
                 1 => {
-                    let neighbours = graph.live_neighbours(v as u32);
-                    graph.remove_without_fill_nbrs(v as u32, &neighbours);
-                    prefix
-                        .sink()
-                        .record(v as u32, vec![v as u32, neighbours[0]]);
+                    let mut bag = Vec::with_capacity(2);
+                    bag.push(v as u32);
+                    graph.collect_live_nbrs_into(v as u32, &mut bag);
+                    graph.remove_without_fill_nbrs(v as u32, &bag[1..]);
+                    prefix.sink().record(v as u32, bag);
                     fired = true;
                 }
                 _ => {}

@@ -965,6 +965,34 @@ impl PriorityBuckets {
         }
     }
 
+    /// The live buckets with a key in `from..=to`, ascending by key. Dense
+    /// keys are all below `dense_keys` and overflow keys all at or above it,
+    /// so the slots followed by the overflow range is ascending order.
+    ///
+    /// The walk is over the buckets that exist rather than over the keys in
+    /// the range, so a wide band costs what it holds and not what it spans.
+    fn range(&self, from: u64, to: u64) -> impl Iterator<Item = &Bucket> {
+        let start = usize::try_from(from)
+            .unwrap_or(usize::MAX)
+            .min(self.slots.len());
+        let end = usize::try_from(to)
+            .unwrap_or(usize::MAX)
+            .saturating_add(1)
+            .min(self.slots.len())
+            .max(start);
+        let dense = self.slots[start..end]
+            .iter()
+            .filter(|&&slot| slot != NO_BUCKET)
+            .map(move |&slot| &self.buckets[slot as usize]);
+        let overflow_from = from.max(self.dense_keys as u64);
+        let overflow = (overflow_from <= to)
+            .then(|| self.overflow.range(overflow_from..=to))
+            .into_iter()
+            .flatten()
+            .map(|(_, bucket)| bucket);
+        dense.chain(overflow)
+    }
+
     /// The smallest live key, scanning the slots from `from` upwards and then
     /// taking the first key of the overflow. Callers pass a key no live bucket
     /// sits below, so the overflow's first key is also its first key at or
@@ -1204,7 +1232,7 @@ impl<'a> BucketMap<'a> {
     /// in storage order, gives the tie set the samplers draw from, so the tie
     /// set is a function of the map's history alone.
     fn band_buckets(&self, minimum: u64, band: u64) -> impl Iterator<Item = &Bucket> {
-        (minimum..=minimum.saturating_add(band)).filter_map(|key| self.bucket(key))
+        self.buckets.range(minimum, minimum.saturating_add(band))
     }
 
     /// Pick one vertex from the tie set within `band` of the minimum, giving

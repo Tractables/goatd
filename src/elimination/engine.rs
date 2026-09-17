@@ -274,12 +274,14 @@ pub(super) fn find_connected_components(graph: &EliminationGraph) -> Vec<Vec<u32
     let mut visited = vec![false; n];
     let mut components: Vec<Vec<u32>> = Vec::new();
     let mut nbrs_buf: Vec<u32> = Vec::new();
+    // One queue for every component: the walk below drains it, so a residual
+    // of many small components does not allocate one each.
+    let mut queue: VecDeque<u32> = VecDeque::new();
     for start in 0..n {
         if !graph.active[start] || visited[start] {
             continue;
         }
         let mut comp: Vec<u32> = Vec::new();
-        let mut queue = VecDeque::new();
         visited[start] = true;
         queue.push_back(start as u32);
         while let Some(v) = queue.pop_front() {
