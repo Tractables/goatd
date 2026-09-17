@@ -94,6 +94,9 @@ impl Config {
 /// state survives pauses, including an unfinished cutter trajectory. A completed
 /// restart offers its candidate before width or bag-size acceptance; rejecting
 /// it continues the same search. Accepting descends into the proposed sides.
+/// Preparing a region whose graph is disconnected offers a split at its
+/// components rather than starting a search, since the search has no separator
+/// to find there; rejecting that one drops the region.
 ///
 /// Recursive candidates are glued into their surrounding decomposition before
 /// [`Proposal::candidate`] exposes them. This assembly is lazy and can be more
@@ -368,9 +371,29 @@ impl<'g> Session<'g> {
                                 graph,
                                 search,
                             });
-                        } else {
-                            self.tasks.pop();
+                            continue;
                         }
+                        // The search declines a region with fewer than
+                        // three vertices and a disconnected one alike. The
+                        // second kind is not a dead end: no edge runs between
+                        // two components, so each of them is a region of its
+                        // own and both are searchable once they are apart.
+                        // Dropping the region here would leave the whole
+                        // subtree below it unrefined, and the root region is
+                        // the whole graph, so one isolated vertex would end
+                        // the pass before it found anything.
+                        if let Some((candidate, split, recommended)) =
+                            self.make_component_split(node, &graph)
+                        {
+                            self.pending = Some(Pending::Split {
+                                split,
+                                finish_on_reject: true,
+                            });
+                            self.progress.proposed += 1;
+                            slice.record(&mut self.progress);
+                            return polishing::proposal(self, candidate, recommended);
+                        }
+                        self.tasks.pop();
                         continue;
                     }
                     let active = self.active.as_mut().expect("search was prepared");
@@ -460,19 +483,56 @@ impl<'g> Session<'g> {
         vertices: Vec<u32>,
     ) -> Option<(TreeDecomposition, Split, bool)> {
         let separator = separator::with_sides(graph, vertices)?;
-        let region = self.node(node);
-        let Kind::Leaf(tree) = &region.kind else {
-            unreachable!();
-        };
-        let sep = to_global_vertices(separator.vertices(), &region.vertices);
-        let mut left_vertices = to_global_vertices(separator.side_a(), &region.vertices);
-        let mut right_vertices = to_global_vertices(separator.side_b(), &region.vertices);
+        let region = &self.node(node).vertices;
+        let sep = to_global_vertices(separator.vertices(), region);
+        let mut left_vertices = to_global_vertices(separator.side_a(), region);
+        let mut right_vertices = to_global_vertices(separator.side_b(), region);
         left_vertices.extend_from_slice(&sep);
         right_vertices.extend_from_slice(&sep);
+        self.split_region(node, left_vertices, right_vertices, sep)
+    }
+
+    /// Split a disconnected region into its largest component and the rest of
+    /// it, with no separator between them. `None` where the region graph is
+    /// connected.
+    fn make_component_split(
+        &self,
+        node: usize,
+        graph: &Graph,
+    ) -> Option<(TreeDecomposition, Split, bool)> {
+        let (inside, outside) = largest_component_split(graph)?;
+        let region = &self.node(node).vertices;
+        let left_vertices = to_global_vertices(&inside, region);
+        let right_vertices = to_global_vertices(&outside, region);
+        self.split_region(node, left_vertices, right_vertices, Vec::new())
+    }
+
+    /// The candidate that replaces `node`'s decomposition with the two sides,
+    /// and the record accepting it turns into two child regions.
+    ///
+    /// An empty `separator` marks a split along a component boundary. Every
+    /// vertex then lands on exactly one side, so the two projections hold
+    /// between them exactly what the region held and the quality key ties
+    /// unless a bag spanned the boundary. Recommending only a strict
+    /// improvement would turn down every such split.
+    fn split_region(
+        &self,
+        node: usize,
+        left_vertices: Vec<u32>,
+        right_vertices: Vec<u32>,
+        separator: Vec<u32>,
+    ) -> Option<(TreeDecomposition, Split, bool)> {
+        let Kind::Leaf(tree) = &self.node(node).kind else {
+            unreachable!();
+        };
         let left = project_td_keeping_global_ids(tree, &left_vertices)?;
         let right = project_td_keeping_global_ids(tree, &right_vertices)?;
-        let candidate = glue_at_separator(left.clone(), right.clone(), &sep)?;
-        let recommended = candidate.quality_key() < tree.quality_key();
+        let candidate = join_sides(left.clone(), right.clone(), &separator)?;
+        let recommended = if separator.is_empty() {
+            candidate.quality_key() <= tree.quality_key()
+        } else {
+            candidate.quality_key() < tree.quality_key()
+        };
         Some((
             candidate,
             Split {
@@ -481,7 +541,7 @@ impl<'g> Session<'g> {
                 right,
                 left_vertices,
                 right_vertices,
-                separator: sep,
+                separator,
             },
             recommended,
         ))
@@ -513,8 +573,8 @@ impl<'g> Session<'g> {
                         let b = trees.pop().expect("right subtree assembled");
                         let a = trees.pop().expect("left subtree assembled");
                         trees.push(
-                            glue_at_separator(a, b, separator)
-                                .expect("accepted regions share their separator"),
+                            join_sides(a, b, separator)
+                                .expect("accepted sides rejoin as they were split"),
                         );
                     } else {
                         tasks.extend([(id, true), (*right, false), (*left, false)]);

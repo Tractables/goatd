@@ -505,6 +505,15 @@ onto both sides of a separator, glues the projections at a new separator bag,
 and accepts the replacement only when `(treewidth, total bag size)` improves;
 recursion applies the same monotone check.
 
+The search needs a connected graph, and a region often is not one: the root
+region is the whole graph, and a separator's two sides are packed from the
+components of `G \ S`. A disconnected region is split at its largest connected
+component, with no separator between the sides and no bag joining them, which
+leaves both sides searchable. Every vertex lands on exactly one side, so the
+two projections divide the region's bags between them and no bag grows; unlike
+a separator replacement, this split is taken when `(treewidth, total bag size)`
+only ties.
+
 The C++ builder carries several practical changes over the PACE source: memory
 guards for the dense adjacency matrix and the bag-adjacency graph, 64-bit
 heap-position arithmetic, bounded greedy-order passes with work-unit metering,
