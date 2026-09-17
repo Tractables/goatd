@@ -109,3 +109,26 @@ jobs:
       # target set and nothing else.
       - name: Check
         run: cargo +${{ env.MSRV }} check --locked --all-targets
+
+  # A 32-bit target is where a `usize` narrower than a `u64` shows up: index
+  # arithmetic that fits on the runners can wrap here, and a draw that reads
+  # `usize` picks different vertices. Both have happened. The i686 binaries
+  # run on the x86_64 runner, so this is a test run and not only a compile.
+  thirty-two-bit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the target and a 32-bit C++ toolchain
+        run: |
+          rustup target add i686-unknown-linux-gnu
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib g++-multilib
+
+      - name: Test
+        env:
+          # `g++-multilib` gives the 32-bit headers to the runner's default
+          # `g++` and to no other, while `build.rs` would otherwise take the
+          # newest versioned one on PATH, which does not have them.
+          GOATD_CXX: g++
+        run: cargo test --release --all-targets --locked --target i686-unknown-linux-gnu
