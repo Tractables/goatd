@@ -242,13 +242,21 @@ impl Hypergraph {
     /// reaching 0, 1 or 2, so every refiner starts by building them and then
     /// maintains them across its own moves.
     pub(super) fn pin_counts(&self, part: &[u8]) -> Vec<[u32; 2]> {
-        let mut counts = vec![[0u32; 2]; self.num_hyperedges()];
+        let mut counts = Vec::new();
+        self.fill_pin_counts(part, &mut counts);
+        counts
+    }
+
+    /// The same counts into a buffer the caller keeps, for a refiner that
+    /// rebuilds them once per pass and runs ten passes a level.
+    pub(super) fn fill_pin_counts(&self, part: &[u8], counts: &mut Vec<[u32; 2]>) {
+        counts.clear();
+        counts.resize(self.num_hyperedges(), [0u32; 2]);
         for (hei, he_counts) in counts.iter_mut().enumerate() {
             for &v in self.charged_hyperedge_pins(hei) {
                 he_counts[part[v as usize] as usize] += 1;
             }
         }
-        counts
     }
 
     /// The other charged incidence direction.

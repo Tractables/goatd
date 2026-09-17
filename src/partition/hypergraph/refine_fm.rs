@@ -24,6 +24,7 @@ pub(super) struct FmScratch {
     locked: Vec<bool>,
     moves: Vec<usize>,
     cumulative_gain: Vec<i64>,
+    pin_counts: Vec<[u32; 2]>,
     bq: [GainBuckets; 2],
     pub(super) region: RegionScratch,
 }
@@ -35,6 +36,7 @@ impl FmScratch {
             locked: Vec::new(),
             moves: Vec::new(),
             cumulative_gain: Vec::new(),
+            pin_counts: Vec::new(),
             bq: [GainBuckets::empty(), GainBuckets::empty()],
             region: RegionScratch::new(),
         }
@@ -67,6 +69,7 @@ pub(super) struct RegionScratch {
     queue: VecDeque<usize>,
     moves: Vec<usize>,
     cumulative_gain: Vec<i64>,
+    pin_counts: Vec<[u32; 2]>,
 }
 
 impl RegionScratch {
@@ -79,6 +82,7 @@ impl RegionScratch {
             queue: VecDeque::new(),
             moves: Vec::new(),
             cumulative_gain: Vec::new(),
+            pin_counts: Vec::new(),
         }
     }
 
@@ -112,9 +116,9 @@ pub(super) fn fm_refine_pass(
         return false;
     };
 
-    let mut pin_counts = hg.pin_counts(part);
-
     scratch.prepare(n);
+    hg.fill_pin_counts(part, &mut scratch.pin_counts);
+    let pin_counts = scratch.pin_counts.as_mut_slice();
     let gain = scratch.gain.as_mut_slice();
     let bq = &mut scratch.bq;
 
@@ -290,9 +294,9 @@ pub(super) fn localized_fm_pass(
         return false;
     };
 
-    let mut pin_counts = hg.pin_counts(part);
-
     scratch.prepare(n);
+    hg.fill_pin_counts(part, &mut scratch.pin_counts);
+    let pin_counts = scratch.pin_counts.as_mut_slice();
     let in_region = scratch.in_region.as_mut_slice();
     let region_queue = &mut scratch.queue;
 
