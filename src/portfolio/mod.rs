@@ -2240,14 +2240,15 @@ fn run_portfolio(
         // set holds that decomposition already, so only an improvement is
         // recorded. The trace reports the pass either way, so a caller can see
         // what it cost on a graph where it changed nothing.
-        let outcome = candidates.record_stage(Stage::Minimalized, seed, before, Some(minimalized));
-        trace(CandidateTrace {
-            stage: Stage::Minimalized,
+        close_stage(
+            &mut candidates,
+            trace,
+            started,
             seed,
-            pass: Pass::Only,
-            outcome,
-            elapsed: crate::meter::now().saturating_duration_since(started),
-        });
+            Stage::Minimalized,
+            before,
+            Some(minimalized),
+        );
     }
     // Last of all, the bags of every candidate together. The pool holds the
     // winner's bags among the rest, so the search cannot come back wider than
@@ -2264,14 +2265,15 @@ fn run_portfolio(
             .expect("a candidate has produced a decomposition");
         // Nothing comes back where the pool was empty, the search ran past its
         // share, or it would have held more than its cap allows.
-        let outcome = candidates.record_stage(Stage::Recombined, seed, before, found);
-        trace(CandidateTrace {
-            stage: Stage::Recombined,
+        close_stage(
+            &mut candidates,
+            trace,
+            started,
             seed,
-            pass: Pass::Only,
-            outcome,
-            elapsed: crate::meter::now().saturating_duration_since(started),
-        });
+            Stage::Recombined,
+            before,
+            found,
+        );
     }
     // And last, the merge loop: a decomposition built independently of
     // everything above, improved on its own until it is no wider than the best
@@ -2292,14 +2294,15 @@ fn run_portfolio(
         // Nothing comes back where the share ran out before the programme
         // settled anything, or where the search would have held more than its
         // cap allows.
-        let outcome = candidates.record_stage(Stage::Merged, seed, before, found);
-        trace(CandidateTrace {
-            stage: Stage::Merged,
+        close_stage(
+            &mut candidates,
+            trace,
+            started,
             seed,
-            pass: Pass::Only,
-            outcome,
-            elapsed: crate::meter::now().saturating_duration_since(started),
-        });
+            Stage::Merged,
+            before,
+            found,
+        );
     }
     // Last of all, the local re-triangulations between the answer and the other
     // trees the run pooled: the piece of the graph a bag of the one and a bag of
@@ -2317,14 +2320,15 @@ fn run_portfolio(
         // Nothing comes back where the stage did not beat the answer it started
         // from, where its share ran out, or where the search would have held
         // more than its cap allows.
-        let outcome = candidates.record_stage(Stage::LocallyMerged, seed, before, found);
-        trace(CandidateTrace {
-            stage: Stage::LocallyMerged,
+        close_stage(
+            &mut candidates,
+            trace,
+            started,
             seed,
-            pass: Pass::Only,
-            outcome,
-            elapsed: crate::meter::now().saturating_duration_since(started),
-        });
+            Stage::LocallyMerged,
+            before,
+            found,
+        );
     }
     if active > 0 && fill_pass_cost.is_some_and(|cost| relative_fill_fits(cost, pooled_end)) {
         let run = engine::run_order_prebuilt(
@@ -2370,6 +2374,29 @@ fn relative_fill_fits(cost: Duration, deadline: Option<Instant>) -> bool {
 ///
 /// A reserve that would put the hard deadline at or before the soft one is not
 /// taken: the stages before it would then have no window of their own.
+/// Record what a closing stage produced and trace the pass. The set keeps the
+/// decomposition only where it beats what the run already had; the trace
+/// reports the pass either way, so a caller can see what a stage cost on a
+/// graph where it changed nothing.
+fn close_stage(
+    candidates: &mut CandidateSet,
+    trace: &mut dyn FnMut(CandidateTrace),
+    started: Instant,
+    seed: u64,
+    stage: Stage,
+    before: (u32, usize),
+    produced: Option<TreeDecomposition>,
+) {
+    let outcome = candidates.record_stage(stage, seed, before, produced);
+    trace(CandidateTrace {
+        stage,
+        seed,
+        pass: Pass::Only,
+        outcome,
+        elapsed: crate::meter::now().saturating_duration_since(started),
+    });
+}
+
 fn less_reserve(
     end: Option<Instant>,
     reserve: Option<Duration>,
