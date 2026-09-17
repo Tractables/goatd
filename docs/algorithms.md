@@ -4,8 +4,9 @@ goatd provides several tree-decomposition constructions and a portfolio that
 combines them. This page describes what differs from a textbook implementation
 or from the vendored upstream code.
 
-`elimination::Prepared` shares graph reductions and scratch across caller-selected
-orders, seeds and per-run budgets, with optional width pruning.
+`elimination::Prepared` shares graph reductions and scratch across
+caller-selected orders, seeds and per-run budgets, with optional width
+pruning.
 
 `decomposition::vertex_rebuild::Session` and `decomposition::FlowCutterSession`
 resume refinement under operation and real-time limits and let the caller
@@ -110,9 +111,9 @@ run out of time puts each unfinished residual component in a bag of its own and
 attaches the elimination bags it did build, at a cost linear in the residual.
 On a residual running the whole schedule later candidates just stop, since a
 valid decomposition already exists; on a paced one every candidate completes,
-and the one that left the smallest residual wins. At the soft deadline that completion
-covers only the component in hand, and the ones behind it get their own orders
-against the hard deadline.
+and the one that left the smallest residual wins. At the soft deadline that
+completion covers only the component in hand, and the ones behind it get their
+own orders against the hard deadline.
 
 `PortfolioConfig::with_sampling_patience` asks the restarts to stop once they
 stall: after a floor number of them, a run whose last improvement on the
@@ -418,8 +419,8 @@ completion and rebuilds the bags from a perfect elimination ordering of what
 remains. Dropping edges cannot enlarge a clique, so the pass never widens; when
 it improves neither the width nor the total bag size, the input comes back
 unchanged. It holds two `n × n` bit matrices, one row per vertex, so it costs
-about `n²/4` bytes, which is why `PortfolioConfig::with_triangulation_refinement`
-gates it on the vertex count.
+about `n²/4` bytes, which is why
+`PortfolioConfig::with_triangulation_refinement` gates it on the vertex count.
 The portfolio applies it to its winner, whatever candidate produced it, and
 hands the result back as one more candidate.
 
@@ -481,10 +482,10 @@ pass that needs longer than the projection is stopped and the candidate returns
 nothing.
 
 The graph bisector is public on its own, as is a separate hypergraph bisector
-that minimizes cut hyperedges with FM and flow-based refinement. Hypergraph
-coarsening matches vertices by their total shared hyperedge weight, so explicit
-weights and repeated hyperedges affect both the coarsening and the cut
-objective.
+that minimizes cut hyperedges with FM and flow-based refinement; no
+construction here calls that one. Hypergraph coarsening matches vertices by
+their total shared hyperedge weight, so explicit weights and repeated
+hyperedges affect both the coarsening and the cut objective.
 
 Partition refinement belongs to the partitioner: it improves the temporary 0/1
 bisection during uncoarsening and returns another bisection. Decomposition
@@ -503,10 +504,11 @@ implementations of it:
   a whole decomposition.
 
 The Rust search uses one cutter per restart rather than a growing multi-cutter
-batch, and goatd's seeded RNG. The whole-pass refinement wrapper projects an existing decomposition
-onto both sides of a separator, glues the projections at a new separator bag,
-and accepts the replacement only when `(treewidth, total bag size)` improves;
-recursion applies the same monotone check.
+batch, and goatd's seeded RNG. The whole-pass refinement wrapper projects an
+existing decomposition onto both sides of a separator, glues the projections
+at a new separator bag, and accepts the replacement only when
+`(treewidth, total bag size)` improves; recursion applies the same monotone
+check.
 
 The search needs a connected graph, and a region often is not one: the root
 region is the whole graph, and a separator's two sides are packed from the
@@ -546,12 +548,12 @@ list of candidate bags rather than run over every potential maximal clique of
 the graph. A *block* is a connected component `C` of `G` less a pool bag,
 carried with its separator `N(C)`; a *cap* of a block is a pool bag `Ω` with
 `N(C) ⊆ Ω ⊆ C ∪ N(C)` and a vertex inside `C`. Collection discards caps
-containing vertices outside that block and its separator. The width of a block is the
-cheapest way to decompose `C ∪ N(C)` with `N(C)` in its top bag: everything in
-one bag, or a cap with the blocks it leaves inside `C` under it. Blocks are
-evaluated smallest first, so a block's sub-blocks are settled before it and one
-pass is enough; the answer is the same expression over the whole graph,
-minimised over the choice of top bag.
+containing vertices outside that block and its separator. The width of a block
+is the cheapest way to decompose `C ∪ N(C)` with `N(C)` in its top bag:
+everything in one bag, or a cap with the blocks it leaves inside `C` under it.
+Blocks are evaluated smallest first, so a block's sub-blocks are settled before
+it and one pass is enough; the answer is the same expression over the whole
+graph, minimised over the choice of top bag.
 
 The tree that comes out is a valid decomposition whatever the pool holds, so no
 bag is tested for being a potential maximal clique: a cap and the blocks below
@@ -570,25 +572,25 @@ answer stops improving, or at the deadline.
 `PortfolioConfig::with_recombination` gates the stage on a vertex count,
 because the search costs a pass over the graph per bag in the pool and the pool
 holds thousands: above the gate the reserve it would need is more of the window
-than the stage can be worth. What the search holds is capped separately, by constants the
-graph's size does not enter: 4,000 bags and a million vertex ids in the pool,
-32 million in the blocks. On reaching a cap it stops taking bags in and
-searches the part of the pool it has, which is a narrower search rather than a
-wrong one.
+than the stage can be worth. What the search holds is capped separately, by
+constants the graph's size does not enter: 4,000 bags and a million vertex ids
+in the pool, 32 million in the blocks. On reaching a cap it stops taking bags
+in and searches the part of the pool it has, which is a narrower search rather
+than a wrong one.
 
 The sets the programme works with — a bag, a block, a separator — are held as
 words rather than as sorted lists of ids, since it compares and combines them
 far more often than it walks them, and the graph is held as one row of words
 per vertex so that the components of the graph less a bag are read off those
-rows. The rows cost `n²/8` bytes; a graph whose rows would be larger than
-64 MiB is not searched at all, and neither stage runs on one that large in any
-case. The reserve the stage takes off the end of the hard window is what
-its own search is estimated to cost on this graph — the pool it will hold,
-times a pass over the graph each, a few times over — and where that is more
-than an eighth of the window the stage is given no reserve and does not run,
-because it would reach the deadline with nothing and the schedule would have
-stopped early for it. A run with no budget at all has no window to take a share
-of and does not run the stage either. At its deadline the search hands back nothing rather
+rows. The rows cost `n²/8` bytes; a graph whose rows would be larger than 64
+MiB is not searched at all, and neither stage runs on one that large in any
+case. The reserve the stage takes off the end of the hard window is what its
+own search is estimated to cost on this graph — the pool it will hold, times a
+pass over the graph each, a few times over — and where that is more than an
+eighth of the window the stage is given no reserve and does not run, because it
+would reach the deadline with nothing and the schedule would have stopped early
+for it. A run with no budget at all has no window to take a share of and does
+not run the stage either. At its deadline the search hands back nothing rather
 than a part-built answer, and the portfolio returns what it had.
 
 The reference for the dynamic programme is Bouchitté and Todinca, "Treewidth
