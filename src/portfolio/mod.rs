@@ -1220,6 +1220,10 @@ struct Collection {
     /// a trace sink has anywhere to report them, and they cost a pass over the
     /// bags, so an untraced run does not compute them.
     traced: bool,
+    /// Whether the caller runs the vertex reinsertion on what comes back. That
+    /// stage runs a level above the portfolio, so the run holds back its share
+    /// of the window only for a caller that will spend it.
+    reinserts_after: bool,
 }
 
 impl Collection {
@@ -1227,6 +1231,7 @@ impl Collection {
         Collection {
             retention: CandidateRetention::All,
             traced,
+            reinserts_after: false,
         }
     }
 
@@ -1234,6 +1239,14 @@ impl Collection {
         Collection {
             retention: CandidateRetention::BestOnly,
             traced,
+            reinserts_after: false,
+        }
+    }
+
+    fn reinserting(self) -> Self {
+        Collection {
+            reinserts_after: true,
+            ..self
         }
     }
 }
@@ -1539,9 +1552,9 @@ fn run_portfolio(
     let window_end = deadlines.hard;
     // The vertex reinsertion runs after everything and starts from the answer
     // everything left, so its share comes off the very end; the stages before
-    // it see the window end that much earlier.
-    let reinsertion_share = config
-        .vertex_reinsertion
+    // it see the window end that much earlier. It runs a level up, so only a
+    // caller that will run it pays for it.
+    let reinsertion_share = (config.vertex_reinsertion && collection.reinserts_after)
         .then(|| reinsertion_reserve(graph, started, window_end))
         .flatten();
     let (pooled_end, _) = less_reserve(window_end, reinsertion_share, soft_deadline);
@@ -2572,7 +2585,7 @@ fn standard_candidate_set(
         seed,
         standard_orders,
         config,
-        collection,
+        collection.reinserting(),
         trace,
     )?;
     if config.vertex_reinsertion {
