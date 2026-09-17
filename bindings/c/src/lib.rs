@@ -106,6 +106,10 @@ pub struct GoatdOptions {
 /// `goatd_decompose` fills the struct the caller supplies and takes ownership
 /// of nothing; the three arrays inside belong to the caller and are released
 /// together by `goatd_decomposition_free`.
+///
+/// `treewidth`, `max_separator` and `bag_mass` describe the decomposition that
+/// was built. They are written, never read: a struct the caller filled in for
+/// `goatd_validate` is checked on its arrays alone.
 #[repr(C)]
 pub struct GoatdDecomposition {
     /// Vertices in the graph this decomposition was built for.
@@ -123,6 +127,18 @@ pub struct GoatdDecomposition {
     /// Vertices in the largest bag, less one. An upper bound on the graph's
     /// treewidth.
     pub treewidth: u32,
+    /// The most vertices two adjacent bags share, which is what a consumer
+    /// joining two bags carries between them. No bags is `0`.
+    pub max_separator: u32,
+    /// `log2` of the sum over bags of `2^(bag size)`: what a consumer
+    /// compiling over the bags pays in the worst case, on the same scale as
+    /// the width. No bags is `0`.
+    ///
+    /// The sum is scaled by the largest bag before the logarithm, so a bag of
+    /// a few thousand vertices still gives an answer where `2^(bag size)` on
+    /// its own is already infinite. The plain sum of the bag sizes is
+    /// `bag_offsets[num_bags]` and is not repeated here.
+    pub bag_mass: f64,
 }
 
 impl GoatdDecomposition {
@@ -135,6 +151,8 @@ impl GoatdDecomposition {
             num_tree_edges: 0,
             tree_edges: std::ptr::null(),
             treewidth: 0,
+            max_separator: 0,
+            bag_mass: 0.0,
         }
     }
 }
@@ -510,6 +528,10 @@ fn flatten(td: &TreeDecomposition) -> GoatdDecomposition {
         num_tree_edges: tree_edges.len() / 2,
         tree_edges: release(tree_edges),
         treewidth: td.treewidth(),
+        // A separator is a set of the graph's vertices, so it counts in the
+        // same type the vertices do.
+        max_separator: td.max_separator() as u32,
+        bag_mass: td.bag_mass(),
     }
 }
 
@@ -713,6 +735,8 @@ mod tests {
             num_tree_edges: tree_edges.len() / 2,
             tree_edges: tree_edges.as_ptr(),
             treewidth: 0,
+            max_separator: 0,
+            bag_mass: 0.0,
         }
     }
 
@@ -835,6 +859,50 @@ mod tests {
         // Freeing leaves the struct empty, so a second call has nothing to do.
         unsafe { goatd_decomposition_free(&raw mut td) };
         unsafe { goatd_decomposition_free(std::ptr::null_mut()) };
+    }
+
+    #[test]
+    fn the_shape_numbers_describe_the_arrays_beside_them() {
+        // A path of four: whatever order wins, the bags are small enough to
+        // re-derive all three numbers from the arrays directly, which is what
+        // a consumer would otherwise have to write for itself.
+        let edges = [0u32, 1, 1, 2, 2, 3];
+        let mut td = GoatdDecomposition::empty();
+        let defaults = goatd_options_default();
+        let status =
+            unsafe { goatd_decompose(4, edges.as_ptr(), 3, &raw const defaults, &raw mut td) };
+        assert_eq!(status, GOATD_OK, "{}", last_error());
+        let offsets = unsafe { slice::from_raw_parts(td.bag_offsets, td.num_bags + 1) };
+        let vertices = unsafe { slice::from_raw_parts(td.bag_vertices, offsets[td.num_bags]) };
+        let bag = |index: usize| &vertices[offsets[index]..offsets[index + 1]];
+
+        let widest = (0..td.num_bags).map(|i| bag(i).len()).max().expect("bags");
+        assert_eq!(td.treewidth, widest as u32 - 1);
+
+        let direct: f64 = (0..td.num_bags).map(|i| (bag(i).len() as f64).exp2()).sum();
+        assert!(
+            (td.bag_mass - direct.log2()).abs() < 1e-9,
+            "{} against {}",
+            td.bag_mass,
+            direct.log2()
+        );
+
+        let tree_edges = unsafe { slice::from_raw_parts(td.tree_edges, 2 * td.num_tree_edges) };
+        let shared = tree_edges
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| {
+                bag(pair[0])
+                    .iter()
+                    .filter(|vertex| bag(pair[1]).contains(vertex))
+                    .count()
+            })
+            .max()
+            .unwrap_or(0);
+        assert_eq!(td.max_separator, shared as u32);
+
+        unsafe { goatd_decomposition_free(&raw mut td) };
     }
 
     #[test]
