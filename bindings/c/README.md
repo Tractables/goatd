@@ -138,7 +138,7 @@ dropped.
 
 For the elimination orders and the portfolio `budget_ms` is a soft budget and a
 hard cutoff at twice it ends the construction, so such a call can take about
-twice `budget_ms`.
+twice `budget_ms`, and `refine` gets its own `budget_ms` on top of that.
 
 goatd is single-threaded. Each thread may call it independently, on its own
 graph; error messages are recorded per thread.

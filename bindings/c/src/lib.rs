@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::ffi::{CString, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::slice;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use goatd::decomposition::refine_with_flowcutter;
 use goatd::elimination::{Order, decompose as eliminate};
@@ -68,7 +68,8 @@ pub struct GoatdOptions {
     pub seed: u64,
     /// Milliseconds the construction may spend, or 0 for no limit. It is the
     /// soft deadline of the elimination orders and of the portfolio,
-    /// FlowCutter's run time, and the refinement's deadline.
+    /// FlowCutter's run time, and the refinement's deadline. Each is its own
+    /// deadline, so `refine` can spend it twice.
     pub budget_ms: u64,
     /// `GOATD_ORDER_FLOWCUTTER` only: a step budget in place of a clock, for a
     /// run that repeats exactly. 0 leaves it unset. Give either this or
@@ -435,7 +436,6 @@ fn construct(
     options: &GoatdOptions,
     weights: Option<&[u32]>,
 ) -> Result<TreeDecomposition, Error> {
-    let start = Instant::now();
     let budget = (options.budget_ms != 0).then(|| Duration::from_millis(options.budget_ms));
     let td = match options.order {
         GOATD_ORDER_MIN_FILL | GOATD_ORDER_MIN_DEGREE => {
@@ -476,8 +476,11 @@ fn construct(
     if !options.refine {
         return Ok(td);
     }
-    let remaining = budget.map(|budget| budget.saturating_sub(start.elapsed()));
-    refine_with_flowcutter(td, graph, remaining)
+    // The budget is a deadline per phase, as the header says it is for every
+    // phase it lists. Giving the pass what the construction left of one shared
+    // budget made it a no-op on every graph the construction did not finish
+    // early, which is the graph it is wanted on.
+    refine_with_flowcutter(td, graph, budget)
 }
 
 fn flatten(td: &TreeDecomposition) -> GoatdDecomposition {

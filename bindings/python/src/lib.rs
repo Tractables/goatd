@@ -6,7 +6,7 @@
 //! decomposition; it checks arguments, calls the library, and converts the
 //! result back.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use goatd::elimination::{Order, decompose as eliminate};
 use goatd::flowcutter::{Budget, decompose as flowcutter};
@@ -339,10 +339,11 @@ fn construct(
 /// integer per vertex, a smaller weight being eliminated earlier.
 ///
 /// `budget_ms` is the elimination orders' soft deadline, flowcutter's run
-/// time, and the portfolio's soft deadline; what is left of it bounds the
-/// refinement. `steps` replaces flowcutter's clock with a step count, for a
-/// run that repeats exactly. `refine=True` re-cuts the result along FlowCutter
-/// separators before returning it.
+/// time, the portfolio's soft deadline, and the refinement's deadline. Each is
+/// its own deadline, so `refine` can spend it twice. `steps` replaces
+/// flowcutter's clock with a step count, for a run that repeats exactly.
+/// `refine=True` re-cuts the result along FlowCutter separators before
+/// returning it.
 ///
 /// An argument the chosen order cannot act on raises `ValueError` naming both.
 /// The interpreter lock is released for the whole construction.
@@ -380,17 +381,18 @@ fn decompose(
         budget_ms,
         steps,
     )?;
-    let start = Instant::now();
     let inner = py
         .detach(|| -> Result<goatd::TreeDecomposition, goatd::Error> {
             let td = construct(graph, &knobs)?;
             if !refine {
                 return Ok(td);
             }
-            let left = knobs
-                .budget
-                .map(|budget| budget.saturating_sub(start.elapsed()));
-            goatd::decomposition::refine_with_flowcutter(td, graph, left)
+            // The budget is a deadline per phase, as it is for every other
+            // phase the docstring lists. Giving the pass what the construction
+            // left of one shared budget made it a no-op on every graph the
+            // construction did not finish early, which is the graph it is
+            // wanted on.
+            goatd::decomposition::refine_with_flowcutter(td, graph, knobs.budget)
         })
         .map_err(py_error)?;
     Ok(TreeDecomposition { inner })

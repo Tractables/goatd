@@ -58,7 +58,8 @@ An argument the chosen order cannot act on raises `ValueError` naming both.
 Budgets are milliseconds, so the name is `budget_ms` rather than the command
 line's `--budget`. For the elimination orders and the portfolio `budget_ms` is
 a soft budget and a hard cutoff at twice it ends the construction, so such a
-call can take about `2 * budget_ms`.
+call can take about `2 * budget_ms`, and `refine=True` gets its own
+`budget_ms` on top of that.
 
 `goatd.Graph.from_gr` and `TreeDecomposition.from_td` read the PACE formats;
 `to_gr` and `to_td` write them.
