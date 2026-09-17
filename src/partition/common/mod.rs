@@ -19,6 +19,11 @@
 //!   that ranks candidates but is not the cut reduction; the hypergraph side
 //!   recomputes the exact gain each step, paying a scan of every unplaced
 //!   vertex's incidences for it.
+//! - **What a stopped sweep hands back.** Both read the cutoff in the loops
+//!   they spend their time in, so both answer a caller's stop flag. The graph
+//!   side has one sweep to lose and gives the index split. The hypergraph side
+//!   ranks restarts, so it keeps the best restart that finished and falls back
+//!   to the index split only when none did.
 
 #[cfg(test)]
 mod tests;
@@ -67,7 +72,9 @@ pub(super) fn max_vcycles(num_vertices: usize) -> usize {
 /// answer is sticky: the first loop to see the cutoff reached sets it, and
 /// every enclosing loop reads it and stops too, without another clock read.
 ///
-/// With no cutoff nothing here reads a clock, which is what lets
+/// With no cutoff nothing here reads a clock — a caller's stop flag and an
+/// enclosing wall cutoff are still read, and neither of those is a clock read
+/// until one is set — which is what lets
 /// [`multilevel_graph_bisect`](crate::partition::multilevel_graph_bisect) say
 /// that one seed gives one bisection.
 pub(super) struct BisectionStop {
@@ -88,7 +95,7 @@ impl BisectionStop {
     /// Count one iteration and report whether the bisection should stop,
     /// reading the clock as often as the rest of the library does.
     pub(super) fn reached(&mut self) -> bool {
-        if !self.stopped && self.deadline.is_some() && self.pacer.due() && expired(self.deadline) {
+        if !self.stopped && self.pacer.due() && expired(self.deadline) {
             self.stopped = true;
         }
         self.stopped
@@ -284,6 +291,47 @@ pub(super) fn matching_order(
         i = j;
     }
     perm
+}
+
+/// The move a localized Fiduccia-Mattheyses pass makes next: the highest-gain
+/// unlocked vertex of `region_list` the balance window admits, as
+/// `(vertex, its gain)`.
+///
+/// The region is capped, so this is a linear scan of it rather than a bucket
+/// queue. `region_list` is in ascending index order and the comparison is
+/// strict, so a gain tie goes to the lowest index.
+pub(super) fn select_region_move(
+    region_list: &[usize],
+    gain: &[i64],
+    locked: &[bool],
+    part: &[u8],
+    vertex_weights: &[u32],
+    balance: &FmBalance,
+) -> Option<(usize, i64)> {
+    let &FmBalance {
+        weight,
+        min_part_weight,
+        max_part_weight,
+    } = balance;
+    let mut best_vertex = None;
+    let mut best_gain = i64::MIN;
+    for &v in region_list {
+        if locked[v] {
+            continue;
+        }
+        let from = part[v] as usize;
+        let to = 1 - from;
+        if weight[from] - vertex_weights[v] < min_part_weight
+            || weight[to] + vertex_weights[v] > max_part_weight
+        {
+            continue;
+        }
+        if best_vertex.is_none() || gain[v] > best_gain {
+            best_gain = gain[v];
+            best_vertex = Some(v);
+        }
+    }
+    best_vertex.map(|vertex| (vertex, best_gain))
 }
 
 /// The move a Fiduccia-Mattheyses pass makes next: the highest-gain queued

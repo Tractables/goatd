@@ -114,8 +114,9 @@ impl Embedding {
     /// returns true; `stop` is polled once per round, so a caller can pass a
     /// deadline check. The coordinates of the last round are returned.
     ///
-    /// `dim` is clamped to `1..=`[`MAX_DIM`]. `seed` selects the stream the
-    /// starting positions are drawn from. A vertex with no neighbour is never
+    /// `dim` is clamped to `1..=`[`MAX_DIM`] and `patience` of 0 is raised to
+    /// 1, so a settled round always ends the loop. `seed` selects the stream
+    /// the starting positions are drawn from. A vertex with no neighbour is never
     /// averaged and takes no part in the whitening statistics; the whitening
     /// the rest of the cloud decides on still moves it.
     ///

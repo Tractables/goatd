@@ -100,13 +100,17 @@ typedef struct GoatdOptions {
   /**
    * Milliseconds the construction may spend, or 0 for no limit. It is the
    * soft deadline of the elimination orders and of the portfolio,
-   * FlowCutter's run time, and the refinement's deadline.
+   * FlowCutter's run time, and the refinement's deadline. The elimination
+   * orders and the portfolio stop for good at twice their soft deadline,
+   * and the refinement's deadline is its own, so a call can take about
+   * `2 * budget_ms`, or `3 * budget_ms` with `refine`.
    */
   uint64_t budget_ms;
   /**
    * `GOATD_ORDER_FLOWCUTTER` only: a step budget in place of a clock, for a
    * run that repeats exactly. 0 leaves it unset. Give either this or
-   * `budget_ms`, not both.
+   * `budget_ms`, not both; with neither, FlowCutter runs for its own
+   * default of 200 ms.
    */
   uint64_t steps;
   /**
@@ -126,7 +130,10 @@ typedef struct GoatdOptions {
   size_t tie_weights_len;
   /**
    * Re-cut the decomposition along FlowCutter separators before returning
-   * it. Accepted with every order.
+   * it. Accepted with every order. With `budget_ms` set the pass is bounded
+   * and skips subgraphs over 100 000 vertices; with 0 it runs to completion,
+   * ungated, and one uninterruptible separator search on a large graph can
+   * take minutes.
    */
   bool refine;
 } GoatdOptions;

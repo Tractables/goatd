@@ -80,6 +80,11 @@ pub(crate) fn local_merge(
         }
     }
     let mut best = start.clone();
+    // The anchors, and for each of them the reach a partner has to lie in, are
+    // a function of `best` alone. `best` moves only where a search below beats
+    // it, so the splits behind them are taken once for it rather than once per
+    // pooled tree and once per round.
+    let mut reaches = anchor_reaches(&state, &best, &adjacency, &mut scratch);
     for _ in 0..ROUNDS {
         let mut round_moved = false;
         for partners in &sources {
@@ -88,12 +93,18 @@ pub(crate) fn local_merge(
             }
             let width = best.treewidth();
             let mut fresh = false;
-            for anchor in anchors(&best, &adjacency) {
+            for (anchor, inside) in &reaches {
                 if expired(deadline) {
                     break;
                 }
-                let focuses =
-                    state.focuses_from(&anchor, partners, width as usize, &mut scratch, deadline);
+                let focuses = state.focuses_against(
+                    anchor,
+                    inside,
+                    partners,
+                    width as usize,
+                    &mut scratch,
+                    deadline,
+                );
                 for focus in focuses {
                     if expired(deadline) || list.full() {
                         break;
@@ -129,6 +140,7 @@ pub(crate) fn local_merge(
                 // k + 2 vertices, so the list drops them: they are what the
                 // merges would otherwise pile up.
                 list.trim(best.treewidth() as usize + 2);
+                reaches = anchor_reaches(&state, &best, &adjacency, &mut scratch);
             }
         }
         if !round_moved {
@@ -136,6 +148,23 @@ pub(crate) fn local_merge(
         }
     }
     (best.quality_key() < start.quality_key()).then_some(best)
+}
+
+/// Each anchor of `answer` with the reach a partner of it has to lie inside.
+/// An anchor whose removal leaves nothing is dropped: it has no partner.
+fn anchor_reaches(
+    state: &Loop<'_>,
+    answer: &TreeDecomposition,
+    adjacency: &Adjacency,
+    scratch: &mut Scratch,
+) -> Vec<(VertexSet, VertexSet)> {
+    anchors(answer, adjacency)
+        .into_iter()
+        .filter_map(|anchor| {
+            let inside = state.anchor_reach(&anchor, scratch)?;
+            Some((anchor, inside))
+        })
+        .collect()
 }
 
 /// The bags of `answer` to re-triangulate around, widest first.

@@ -70,23 +70,11 @@ const DEFAULT_RECOMBINATION_VERTICES: u32 = 2_000;
 /// where the reserve it would need stops being worth the window.
 const DEFAULT_MERGE_LOOP_VERTICES: u32 = DEFAULT_RECOMBINATION_VERTICES;
 
-/// The most of the hard window the merge loop is given, taken off the end
-/// before the recombination stage takes its own share. The loop runs one
-/// programme per side answer it builds, so its share is the same size as the
-/// recombination stage's.
-pub(super) const MERGE_LOOP_WINDOW_SHARE: u32 = RECOMBINATION_WINDOW_SHARE;
-
 /// Graph size at or below which the standard budgeted portfolio re-triangulates
 /// between the trees it pooled. The stage runs the same search over a list of
 /// the same order as the two stages before it, so the same size is where the
 /// reserve it would need stops being worth the window.
 const DEFAULT_LOCAL_MERGE_VERTICES: u32 = DEFAULT_RECOMBINATION_VERTICES;
-
-/// The most of the hard window the local re-triangulation stage is given, taken
-/// off the end before the merge loop takes its own share. It runs one programme
-/// per pooled tree it pairs the answer with, so its share is the same size as
-/// theirs.
-pub(super) const LOCAL_MERGE_WINDOW_SHARE: u32 = RECOMBINATION_WINDOW_SHARE;
 
 /// The share of the hard window the final vertex reinsertion is given, taken
 /// off the end before the stages ahead of it take theirs. The pass has no cost
@@ -95,9 +83,11 @@ pub(super) const LOCAL_MERGE_WINDOW_SHARE: u32 = RECOMBINATION_WINDOW_SHARE;
 /// share to hold a few dozen rebuilds (`reinsertion_reserve`).
 pub(super) const REINSERTION_WINDOW_SHARE: u32 = RECOMBINATION_WINDOW_SHARE;
 
-/// The most of the hard window the recombination stage is given, taken off the
-/// end so the rest of the schedule finishes that much earlier. It is given the
-/// estimated cost of its own search where that is less.
+/// The most of the hard window each pooled stage is given, taken off the end
+/// so the rest of the schedule finishes that much earlier. A stage is given
+/// the estimated cost of its own search where that is less. The recombination,
+/// the merge loop and the local re-triangulation run the same search over
+/// lists of the same order of size, so the one share covers all three.
 pub(super) const RECOMBINATION_WINDOW_SHARE: u32 = 8;
 /// The least the stage is given, whatever the estimate comes to.
 pub(super) const MIN_RECOMBINATION_RESERVE: Duration = Duration::from_millis(50);

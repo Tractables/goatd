@@ -25,6 +25,7 @@ cargo clippy --manifest-path bindings/python/Cargo.toml --release --locked -- -D
 
 cargo fmt --check --manifest-path bindings/c/Cargo.toml
 cargo clippy --manifest-path bindings/c/Cargo.toml --release --all-targets -- -D warnings
+cargo test --manifest-path bindings/c/Cargo.toml --release
 
 cargo fmt --check --manifest-path bindings/wasm/Cargo.toml
 ```

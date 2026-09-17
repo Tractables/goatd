@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use super::{SharedCompletion, rebuild_candidate};
+use super::{SharedCompletion, completion_fits, rebuild_candidate};
 use crate::{Graph, TdBag, TreeDecomposition};
 
 #[cfg(test)]

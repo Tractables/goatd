@@ -1,6 +1,6 @@
 //! Tree-decomposition surgery: rooting a decomposition into a walkable
-//! forest, projecting one onto a vertex subset, and gluing two back together
-//! at a shared separator.
+//! forest, projecting one onto a vertex subset, gluing two back together at a
+//! shared separator, and standing two that share no vertex side by side.
 //!
 //! Every function here that returns a decomposition preserves the running
 //! intersection property (RIP): a vertex's bags form a connected subtree of
@@ -712,6 +712,37 @@ pub(super) fn glue_at_separator(
     adj[0].push(b_offset + anchor_b);
     adj[b_offset + anchor_b].push(0);
 
+    Some(TreeDecomposition::from_parts(num_vertices, bags, adj))
+}
+
+/// Stand two decompositions of the same graph side by side, joined by nothing.
+///
+/// The caller passes two projections that share no vertex and whose vertices
+/// have no edge between them, so neither side constrains the other and a bag
+/// joining them would only carry vertices that nothing needs. The result is a
+/// forest, which [`TreeDecomposition::validate`] accepts and
+/// [`TreeDecomposition::write_td`] writes by linking the component roots.
+///
+/// The running intersection property survives because each vertex keeps all
+/// of its bags on one side, where they were already connected.
+///
+/// Returns `None` when the two decompositions are over different vertex counts.
+pub(super) fn disjoint_union(
+    left: TreeDecomposition,
+    right: TreeDecomposition,
+) -> Option<TreeDecomposition> {
+    if left.num_vertices != right.num_vertices {
+        return None;
+    }
+    let num_vertices = left.num_vertices;
+    let offset = left.bags.len();
+    let mut bags = left.bags;
+    bags.extend(right.bags);
+    let mut adj = left.adj;
+    adj.reserve(right.adj.len());
+    for neighbours in right.adj {
+        adj.push(neighbours.into_iter().map(|bag| bag + offset).collect());
+    }
     Some(TreeDecomposition::from_parts(num_vertices, bags, adj))
 }
 

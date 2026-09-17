@@ -45,9 +45,10 @@ goatd graph.gr > graph.td
 ```
 
 `goatd` reads and writes the PACE `.gr` and `.td` formats. Choose `--order
-minfill`, `mindegree`, `nested-dissection`, `flowcutter`, or `portfolio`; run
-`goatd --help` for budgets, seeds, weighted ties, and refinement. The same
-solver runs [in the browser](https://tractables.github.io/goatd/).
+minfill`, `mindegree`, `nested-dissection`, `flowcutter`, `merge-loop`, or
+`portfolio`; run `goatd --help` for budgets, seeds, weighted ties, and
+refinement. The same solver runs
+[in the browser](https://tractables.github.io/goatd/).
 
 ## Library
 

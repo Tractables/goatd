@@ -169,37 +169,26 @@ pub(crate) struct RunSpec<'a> {
 pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> OrderRun {
     if spec.order.uses_initial_fill_cache() && prebuilt.initial_fill.is_none() {
         let graph = &prebuilt.reduced.graph;
-        let fill = if let Some(deadline) = spec.setup_deadline {
-            // The count is quadratic in a vertex's degree, and on a graph of a
-            // million edges the whole pass outlasts a short cutoff, so it is
-            // paced like an elimination: the clock is read between vertices
-            // and a pass that reaches the cutoff leaves no cache behind.
-            let mut scratch = greedy::FillScratch::new(graph.len());
-            let mut pacer = execution::DeadlinePacer::new();
-            let mut counts = Vec::with_capacity(graph.len());
-            for vertex in 0..graph.len() {
-                if graph.active[vertex] {
-                    if pacer.due() && crate::deadline::expired(Some(deadline)) {
-                        return OrderRun::DeadlineAborted(Cutoff::Hard);
-                    }
-                    counts.push(scratch.fill_count_of(graph, vertex as u32));
-                } else {
-                    counts.push(0);
-                }
-            }
-            counts
-        } else if graph.bitset_words > 0 {
-            (0..graph.len())
-                .map(|vertex| {
-                    if graph.active[vertex] {
-                        graph.fill_count_of_bs(vertex as u32)
-                    } else {
-                        0
-                    }
-                })
-                .collect()
+        // A setup deadline is the caller asking for the pass to stop at it,
+        // whatever else the run promises. With none, the clock is read only
+        // where the run may come back without a decomposition, which is what
+        // lets the stop flag end a pass that would otherwise run to the end.
+        let abortable = spec.setup_deadline.is_some() || !spec.complete_on_deadline;
+        // The pass is charged as it always was: with no setup deadline and a
+        // bitset to count from, the count is taken straight off the bitset,
+        // which is what `FillScratch` would choose and does not charge here.
+        let fill = if spec.setup_deadline.is_none() && graph.bitset_words > 0 {
+            greedy::initial_fill(graph, None, abortable, |vertex| {
+                graph.fill_count_of_bs(vertex)
+            })
         } else {
-            greedy::compute_initial_fill(graph)
+            let mut scratch = greedy::FillScratch::new(graph.len());
+            greedy::initial_fill(graph, spec.setup_deadline, abortable, |vertex| {
+                scratch.fill_count_of(graph, vertex)
+            })
+        };
+        let Some(fill) = fill else {
+            return OrderRun::DeadlineAborted(Cutoff::Hard);
         };
         prebuilt.initial_fill = Some(fill);
     }
@@ -274,12 +263,14 @@ pub(super) fn find_connected_components(graph: &EliminationGraph) -> Vec<Vec<u32
     let mut visited = vec![false; n];
     let mut components: Vec<Vec<u32>> = Vec::new();
     let mut nbrs_buf: Vec<u32> = Vec::new();
+    // One queue for every component: the walk below drains it, so a residual
+    // of many small components does not allocate one each.
+    let mut queue: VecDeque<u32> = VecDeque::new();
     for start in 0..n {
         if !graph.active[start] || visited[start] {
             continue;
         }
         let mut comp: Vec<u32> = Vec::new();
-        let mut queue = VecDeque::new();
         visited[start] = true;
         queue.push_back(start as u32);
         while let Some(v) = queue.pop_front() {

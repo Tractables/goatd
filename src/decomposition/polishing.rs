@@ -8,9 +8,11 @@ use super::TreeDecomposition;
 /// Limits for one advance of a refinement session.
 ///
 /// Steps count the session's documented operations, independently of machine
-/// speed. The optional deadline always uses real elapsed time, even when the
-/// construction work meter is armed. Operations are cooperative: an individual
-/// reconstruction or cutter advance can finish after the deadline.
+/// speed. They are not equal in size: one cutter advance is a step and so is
+/// one re-glue of an accepted subtree. The optional deadline always uses real
+/// elapsed time, even when the construction work meter is armed. Operations
+/// are cooperative: an individual reconstruction or cutter advance can finish
+/// after the deadline.
 #[derive(Clone, Copy, Debug)]
 #[must_use]
 pub struct Budget {
@@ -54,9 +56,10 @@ pub enum Pause {
     /// The caller requested cancellation through the stop flag.
     Stopped,
     /// The session had to rebuild its shared state before it could propose
-    /// anything, and the estimated cost of that rebuild did not fit the time
-    /// left. Only a budget carrying a deadline can see this: with no deadline
-    /// there is no time left to compare the estimate against.
+    /// anything, and the rebuild was turned down: its estimated cost did not
+    /// fit the time left, or the completion it needs is larger than the pass
+    /// will hold. A budget with no deadline sees only the second of those,
+    /// since there is no time left to compare an estimate against.
     SetupEstimate,
 }
 

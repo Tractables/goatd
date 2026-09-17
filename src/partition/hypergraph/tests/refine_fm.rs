@@ -1,3 +1,4 @@
+use crate::partition::common::BisectionStop;
 use crate::partition::hypergraph::model::Hypergraph;
 use crate::partition::hypergraph::refine_fm::{RegionScratch, localized_fm_pass};
 
@@ -22,7 +23,14 @@ fn a_localized_pass_keeps_only_the_move_that_pays() {
     let mut part = start;
     let mut scratch = RegionScratch::new();
 
-    assert!(localized_fm_pass(&hg, &mut part, 9, 0.2, &mut scratch));
+    assert!(localized_fm_pass(
+        &hg,
+        &mut part,
+        9,
+        0.2,
+        &mut scratch,
+        &mut BisectionStop::new(None)
+    ));
     let one_cut_hyperedge: Vec<u8> = (0..20).map(|v| u8::from(v >= 11)).collect();
     assert_eq!(part, one_cut_hyperedge);
 }
@@ -36,18 +44,39 @@ fn a_localized_pass_on_used_scratch_matches_one_on_fresh_scratch() {
 
     let mut scratch = RegionScratch::new();
     let mut first = start.clone();
-    let first_improved = localized_fm_pass(&hg, &mut first, 9, 0.2, &mut scratch);
+    let first_improved = localized_fm_pass(
+        &hg,
+        &mut first,
+        9,
+        0.2,
+        &mut scratch,
+        &mut BisectionStop::new(None),
+    );
 
     // Same call, same scratch: a region mark, a lock or a stale gain left behind
     // by the first call would change what the second one does.
     let mut second = start.clone();
-    let second_improved = localized_fm_pass(&hg, &mut second, 9, 0.2, &mut scratch);
+    let second_improved = localized_fm_pass(
+        &hg,
+        &mut second,
+        9,
+        0.2,
+        &mut scratch,
+        &mut BisectionStop::new(None),
+    );
     assert_eq!(first_improved, second_improved);
     assert_eq!(first, second);
 
     let mut fresh = RegionScratch::new();
     let mut third = start;
-    let third_improved = localized_fm_pass(&hg, &mut third, 9, 0.2, &mut fresh);
+    let third_improved = localized_fm_pass(
+        &hg,
+        &mut third,
+        9,
+        0.2,
+        &mut fresh,
+        &mut BisectionStop::new(None),
+    );
     assert_eq!(first_improved, third_improved);
     assert_eq!(first, third);
 }

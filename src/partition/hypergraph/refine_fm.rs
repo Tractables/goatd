@@ -16,7 +16,8 @@ use std::collections::VecDeque;
 
 use super::model::Hypergraph;
 use crate::partition::common::{
-    FmBalance, GainBuckets, Stall, commit_best_prefix, fm_balance, select_move,
+    BisectionStop, GainBuckets, Stall, commit_best_prefix, fm_balance, select_move,
+    select_region_move,
 };
 
 pub(super) struct FmScratch {
@@ -24,6 +25,7 @@ pub(super) struct FmScratch {
     locked: Vec<bool>,
     moves: Vec<usize>,
     cumulative_gain: Vec<i64>,
+    pin_counts: Vec<[u32; 2]>,
     bq: [GainBuckets; 2],
     pub(super) region: RegionScratch,
 }
@@ -35,6 +37,7 @@ impl FmScratch {
             locked: Vec::new(),
             moves: Vec::new(),
             cumulative_gain: Vec::new(),
+            pin_counts: Vec::new(),
             bq: [GainBuckets::empty(), GainBuckets::empty()],
             region: RegionScratch::new(),
         }
@@ -67,6 +70,7 @@ pub(super) struct RegionScratch {
     queue: VecDeque<usize>,
     moves: Vec<usize>,
     cumulative_gain: Vec<i64>,
+    pin_counts: Vec<[u32; 2]>,
 }
 
 impl RegionScratch {
@@ -79,6 +83,7 @@ impl RegionScratch {
             queue: VecDeque::new(),
             moves: Vec::new(),
             cumulative_gain: Vec::new(),
+            pin_counts: Vec::new(),
         }
     }
 
@@ -106,15 +111,16 @@ pub(super) fn fm_refine_pass(
     part: &mut [u8],
     max_imbalance: f64,
     scratch: &mut FmScratch,
+    stop: &mut BisectionStop,
 ) -> bool {
     let n = hg.num_vertices;
     let Some(mut balance) = fm_balance(n, &hg.vertex_weights, part, max_imbalance) else {
         return false;
     };
 
-    let mut pin_counts = hg.pin_counts(part);
-
     scratch.prepare(n);
+    hg.fill_pin_counts(part, &mut scratch.pin_counts);
+    let pin_counts = scratch.pin_counts.as_mut_slice();
     let gain = scratch.gain.as_mut_slice();
     let bq = &mut scratch.bq;
 
@@ -154,6 +160,9 @@ pub(super) fn fm_refine_pass(
     let mut stall = Stall::new((n / 2).max(20));
 
     for _ in 0..n {
+        if stop.reached() {
+            break;
+        }
         let Some((v, from, best_gain)) =
             select_move(bq, gain, locked, &hg.vertex_weights, &balance)
         else {
@@ -279,20 +288,16 @@ pub(super) fn localized_fm_pass(
     seed: usize,
     max_imbalance: f64,
     scratch: &mut RegionScratch,
+    stop: &mut BisectionStop,
 ) -> bool {
     let n = hg.num_vertices;
-    let Some(FmBalance {
-        mut weight,
-        min_part_weight,
-        max_part_weight,
-    }) = fm_balance(n, &hg.vertex_weights, part, max_imbalance)
-    else {
+    let Some(mut balance) = fm_balance(n, &hg.vertex_weights, part, max_imbalance) else {
         return false;
     };
 
-    let mut pin_counts = hg.pin_counts(part);
-
     scratch.prepare(n);
+    hg.fill_pin_counts(part, &mut scratch.pin_counts);
+    let pin_counts = scratch.pin_counts.as_mut_slice();
     let in_region = scratch.in_region.as_mut_slice();
     let region_queue = &mut scratch.queue;
 
@@ -360,32 +365,24 @@ pub(super) fn localized_fm_pass(
 
     // O(region²), not O(region·n): region_list, not 0..n, is scanned per move.
     for _ in 0..region_list.len() {
-        let mut best_v = None;
-        let mut best_gain = i64::MIN;
-        for &v in region_list.iter() {
-            if locked[v] {
-                continue;
-            }
-            let from = part[v] as usize;
-            let to = 1 - from;
-            let nfw = weight[from] - hg.vertex_weights[v];
-            let ntw = weight[to] + hg.vertex_weights[v];
-            if nfw < min_part_weight || ntw > max_part_weight {
-                continue;
-            }
-            if best_v.is_none() || gain[v] > best_gain {
-                best_gain = gain[v];
-                best_v = Some(v);
-            }
+        if stop.reached() {
+            break;
         }
-        let Some(v) = best_v else {
+        let Some((v, best_gain)) = select_region_move(
+            region_list,
+            gain,
+            locked,
+            part,
+            &hg.vertex_weights,
+            &balance,
+        ) else {
             break;
         };
         let from = part[v] as usize;
         let to = 1 - from;
 
-        weight[from] -= hg.vertex_weights[v];
-        weight[to] += hg.vertex_weights[v];
+        balance.weight[from] -= hg.vertex_weights[v];
+        balance.weight[to] += hg.vertex_weights[v];
         part[v] = to as u8;
         locked[v] = true;
 
@@ -457,10 +454,11 @@ pub(super) fn refine_level(
     part: &mut [u8],
     imbalance: f64,
     scratch: &mut FmScratch,
+    stop: &mut BisectionStop,
 ) {
     let max_passes = 10;
     for _ in 0..max_passes {
-        if !fm_refine_pass(hg, part, imbalance, scratch) {
+        if !fm_refine_pass(hg, part, imbalance, scratch, stop) || stop.stopped() {
             break;
         }
     }

@@ -16,7 +16,10 @@ publish = false
 
 [lib]
 name = "goatd_c"
-crate-type = ["cdylib", "staticlib"]
+# The two library kinds a C program links against, and `rlib` so `cargo test`
+# has something to link the test harness to. It adds a file to target/ and
+# nothing to the release archive, which names the files it ships.
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 # The checkout this crate sits in, not the crates.io release, so a change to

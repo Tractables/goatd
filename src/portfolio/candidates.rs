@@ -42,7 +42,6 @@ struct Retained {
 /// elimination candidates.
 pub(super) struct CandidateSet {
     retained: Vec<Retained>,
-    best_width: Option<u32>,
     best_quality_key: Option<(u32, usize)>,
     retain_only_best: bool,
     /// Whether a produced candidate carries its shape numbers. Only a traced
@@ -59,7 +58,6 @@ impl CandidateSet {
     pub(super) fn all(capacity: usize) -> Self {
         Self {
             retained: Vec::with_capacity(capacity),
-            best_width: None,
             best_quality_key: None,
             retain_only_best: false,
             report_shape: false,
@@ -71,7 +69,6 @@ impl CandidateSet {
     pub(super) fn best_only() -> Self {
         Self {
             retained: Vec::with_capacity(1),
-            best_width: None,
             best_quality_key: None,
             retain_only_best: true,
             report_shape: false,
@@ -113,8 +110,12 @@ impl CandidateSet {
         self.pool.as_mut()
     }
 
+    /// The incumbent width later elimination candidates are given as a bound.
+    ///
+    /// Every candidate narrower than the incumbent takes the key with it, so
+    /// the key's width is the narrowest any candidate has produced.
     pub(super) fn best_width(&self) -> Option<u32> {
-        self.best_width
+        self.best_quality_key.map(|key| key.0)
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -145,7 +146,6 @@ impl CandidateSet {
         }
         let (width, total_bag_size) = decomposition.quality_key();
         let mut shape = None;
-        self.best_width = Some(self.best_width.map_or(width, |best| best.min(width)));
         // A candidate wider than the incumbent cannot win in either mode, and
         // a plan it will not be sorted on is not worth computing; in
         // all-candidates mode every decomposition is returned and needs one.
@@ -204,11 +204,12 @@ impl CandidateSet {
                 (self.push(decomposition, origin), ScheduleStop::Continue)
             }
             OrderRun::CompletedAtDeadline(Cutoff::Hard, decomposition) => {
-                self.push(decomposition, origin);
-                (
-                    CandidateOutcome::DeadlineReached,
-                    ScheduleStop::HardDeadline,
-                )
+                // The candidate produced a decomposition and the hard cutoff
+                // ends the schedule. The trace reports both, so a reader can
+                // still see which candidate the run returns: where this is the
+                // first candidate it is the winner, and no later event carries
+                // `best`.
+                (self.push(decomposition, origin), ScheduleStop::HardDeadline)
             }
             OrderRun::DeadlineAborted(Cutoff::Soft) => {
                 (CandidateOutcome::DeadlineReached, ScheduleStop::Continue)

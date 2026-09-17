@@ -170,6 +170,11 @@ pub(super) fn nested_dissection_order(
     };
     let sep =
         vertex_cover_separator::minimum_vertex_cover_separator(n, &local_edges, bisection.parts());
+    // The level's own copy of the edge list, twice over, and nothing below
+    // reads either: the recursion induces its sides from the caller's list.
+    // Dropping them here keeps them off the peak the deeper levels run at.
+    drop(local_edges);
+    drop(partition_graph);
 
     // Degenerate partition — nothing to recurse on. Fall back to local min-fill.
     if sep.side_a.is_empty() || sep.side_b.is_empty() || sep.separator.len() >= n {

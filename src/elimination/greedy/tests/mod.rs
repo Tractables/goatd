@@ -126,6 +126,32 @@ fn priority_buckets_recompute_an_emptied_minimum() {
     assert_eq!(buckets.minimum(), Some(7));
 }
 
+/// A band wide enough to cross the dense boundary takes the slots and then
+/// the overflow, ascending by key throughout, and a band that runs to the top
+/// of the key space costs what the map holds rather than what it spans.
+#[test]
+fn a_band_across_the_dense_boundary_walks_its_buckets_in_key_order() {
+    let weights = [1; 5];
+    let mut storage = super::BucketStorage::new();
+    let mut buckets =
+        super::BucketMap::with_weights(&mut storage, &weights, Some(super::sampling_mass(1)));
+    let dense = super::PriorityBuckets::dense_keys_for(weights.len()) as u64;
+
+    buckets.insert(0, dense + 4);
+    buckets.insert(1, 0);
+    buckets.insert(2, dense);
+    buckets.insert(3, dense - 1);
+    buckets.insert(4, u64::MAX);
+
+    let (vertices, mass) = tie_set(&mut buckets, u64::MAX).expect("a live minimum");
+    assert_eq!(vertices, [1, 3, 2, 0, 4]);
+    assert_eq!(mass, 5 * super::sampling_mass(1));
+
+    // A band that stops inside the slots leaves the overflow where it is.
+    let (vertices, _) = tie_set(&mut buckets, dense - 1).expect("a live minimum");
+    assert_eq!(vertices, [1, 3]);
+}
+
 #[test]
 fn priority_buckets_keep_their_slots_when_a_key_overflows() {
     let weights = [1, 1];
@@ -449,4 +475,44 @@ fn neighbour_fill_updates_match_recounts_on_a_large_graph() {
     edges.extend((1..400).map(|leaf| (0, leaf * 40)));
     assert_updates_match_recounts(17_000, &edges, false, 9, 300, 100);
     assert_updates_match_recounts(17_000, &edges, true, 9, 300, 100);
+}
+
+#[test]
+fn the_initial_fill_pass_leaves_no_cache_when_it_is_abortable_and_the_clock_has_passed() {
+    use std::time::{Duration, Instant};
+
+    use crate::elimination::graph::EliminationGraph;
+
+    let graph = EliminationGraph::from_edges(4, &[(0, 1), (1, 2), (2, 3), (0, 2)]);
+    let past = Instant::now() - Duration::from_secs(1);
+    let counted = |_vertex| 1;
+
+    assert_eq!(
+        super::initial_fill(&graph, None, true, counted),
+        Some(vec![1, 1, 1, 1]),
+        "no deadline and no stop is a pass that finishes",
+    );
+    assert_eq!(
+        super::initial_fill(&graph, Some(past), true, counted),
+        None,
+        "an abortable pass stops at its deadline",
+    );
+    assert_eq!(
+        super::initial_fill(&graph, Some(past), false, counted),
+        Some(vec![1, 1, 1, 1]),
+        "a pass that has to leave a complete decomposition runs to the end",
+    );
+}
+
+#[test]
+fn the_initial_fill_pass_counts_nothing_for_an_eliminated_vertex() {
+    use crate::elimination::graph::EliminationGraph;
+
+    let mut graph = EliminationGraph::from_edges(4, &[(0, 1), (1, 2), (2, 3), (0, 2)]);
+    graph.active[1] = false;
+
+    assert_eq!(
+        super::initial_fill(&graph, None, true, |_| 7),
+        Some(vec![7, 0, 7, 7]),
+    );
 }

@@ -32,8 +32,8 @@ use refine_fm::{FmScratch, refine_level};
 use crate::Error;
 use crate::partition::Bisection;
 use crate::partition::common::{
-    MIN_COARSEN_SIZE, index_split, lift_to_fine, max_vcycles, project_to_coarse, repair_bisection,
-    tiny_bisection, validate_max_imbalance,
+    BisectionStop, MIN_COARSEN_SIZE, index_split, lift_to_fine, max_vcycles, project_to_coarse,
+    repair_bisection, tiny_bisection, validate_max_imbalance,
 };
 use crate::rng::{Xorshift64, bisector_stream, restart_seed};
 
@@ -54,6 +54,10 @@ impl HypergraphBisectionConfig {
     /// Configure a bisection at the baseline effort. `max_imbalance` is the
     /// allowed deviation from a half-and-half split, in `0.0..=0.5`; `seed`
     /// selects the deterministic RNG streams.
+    ///
+    /// At `0.0` on an even vertex count, any single move breaks the tolerance,
+    /// so the move-based refinement can do nothing and the result is the
+    /// initial partition brought to balance.
     pub fn new(max_imbalance: f64, seed: u64) -> Self {
         Self {
             max_imbalance,
@@ -91,15 +95,18 @@ fn num_hg_restarts(n: usize, effort_scale: f64) -> usize {
 /// If `existing_part` is provided, uses partition-aware coarsening (V-cycle).
 ///
 /// Returns 0/1 per vertex of `hg`. The projection down the levels is carried
-/// incrementally, one majority vote per new level; the graph sibling replays
-/// the whole chain from the original partition at every level instead, for the
-/// reason recorded on its own `multilevel_pass`.
+/// incrementally, one majority vote per new level, as the graph sibling
+/// carries its own.
+///
+/// A sweep `stop` cut short returns whatever the phase it was in had reached,
+/// which the caller discards.
 fn multilevel_pass(
     hg: &Hypergraph,
     existing_part: Option<&[u8]>,
     rng: &mut Xorshift64,
     imbalance: f64,
     scratch: &mut FmScratch,
+    stop: &mut BisectionStop,
 ) -> Vec<u8> {
     let n = hg.num_vertices;
 
@@ -114,6 +121,9 @@ fn multilevel_pass(
     // tracks the partition of `current` — a coarse vertex takes the side most
     // of its fine vertices are on, ties to side 0.
     loop {
+        if stop.reached() {
+            return index_split(n);
+        }
         let coarse_part_ref = projected_part.as_deref();
         if let Some(level) = coarsen_one_level(current, MIN_COARSEN_SIZE, rng, coarse_part_ref) {
             if let Some(ref mut pp) = projected_part {
@@ -140,25 +150,28 @@ fn multilevel_pass(
     let mut part = if let Some(pp) = projected_part {
         pp
     } else {
-        initial_partition(current, rng, imbalance, scratch)
+        initial_partition(current, rng, imbalance, scratch, stop)
     };
 
     // Coarse hyperedges carry the summed weight of every fine hyperedge merged
     // into them, so a move here can be worth many fine hyperedges.
-    refine_level(current, &mut part, imbalance, scratch);
+    refine_level(current, &mut part, imbalance, scratch, stop);
 
     // Uncoarsening. Each step hands every fine vertex its coarse vertex's side,
     // then refines with the freedom the finer hypergraph exposes; only the
     // finest level pays for the localized and flow passes on top.
     for (li, level) in levels.iter().enumerate().rev() {
+        if stop.reached() {
+            break;
+        }
         lift_to_fine(&part, &level.mapping, &mut projection);
         std::mem::swap(&mut part, &mut projection);
 
         let fine_hg = if li > 0 { &levels[li - 1].hg } else { hg };
         if li == 0 {
-            refine_finest_level(fine_hg, &mut part, imbalance, scratch);
+            refine_finest_level(fine_hg, &mut part, imbalance, scratch, stop);
         } else {
-            refine_level(fine_hg, &mut part, imbalance, scratch);
+            refine_level(fine_hg, &mut part, imbalance, scratch, stop);
         }
     }
 
@@ -171,8 +184,12 @@ fn multilevel_bisect_once(
     imbalance: f64,
     effort_scale: f64,
     scratch: &mut FmScratch,
-) -> Vec<u8> {
-    let mut part = multilevel_pass(hg, None, rng, imbalance, scratch);
+    stop: &mut BisectionStop,
+) -> Option<Vec<u8>> {
+    let mut part = multilevel_pass(hg, None, rng, imbalance, scratch, stop);
+    if stop.stopped() {
+        return None;
+    }
 
     let vc_base = max_vcycles(hg.num_vertices);
     let num_vcycles = (vc_base as f64 * effort_scale.sqrt()).round() as usize;
@@ -180,7 +197,10 @@ fn multilevel_bisect_once(
     // a ceiling rather than a count.
     for _ in 0..num_vcycles {
         let old_cut = hyperedge_cut(hg, &part);
-        let new_part = multilevel_pass(hg, Some(&part), rng, imbalance, scratch);
+        let new_part = multilevel_pass(hg, Some(&part), rng, imbalance, scratch, stop);
+        if stop.stopped() {
+            return None;
+        }
         let new_cut = hyperedge_cut(hg, &new_part);
         if new_cut < old_cut {
             part = new_part;
@@ -189,7 +209,7 @@ fn multilevel_bisect_once(
         }
     }
 
-    part
+    Some(part)
 }
 
 /// Multilevel 2-way bisection of a hypergraph: the best hyperedge cut over
@@ -198,8 +218,12 @@ fn multilevel_bisect_once(
 ///
 /// `config.max_imbalance` bounds each side at
 /// `ceil((0.5 + max_imbalance) * num_vertices)`. `config.seed` selects the RNG
-/// streams; nothing here reads a clock. `config.effort` scales restart and
-/// V-cycle counts, with `1.0` as the baseline.
+/// streams; nothing here reads a clock of its own. `config.effort` scales
+/// restart and V-cycle counts, with `1.0` as the baseline.
+///
+/// A caller that sets [`crate::stop_flag`] gets the best restart that had
+/// already finished, or the index split — the first half of the vertices
+/// against the second — where none had.
 ///
 /// # Errors
 ///
@@ -233,15 +257,21 @@ pub fn multilevel_hypergraph_bisect(
     // the two bisectors differ" in the shared partition bookkeeping.
     let restarts = num_hg_restarts(num_vertices, config.effort);
     let mut scratch = FmScratch::new();
+    let mut stop = BisectionStop::new(None);
     for restart in 0..restarts {
         let mut rng = bisector_stream(restart_seed(config.seed, restart));
-        let part = multilevel_bisect_once(
+        // A stopped restart is half-refined, so it comes back as `None` and is
+        // dropped rather than ranked against the restarts that finished.
+        let Some(part) = multilevel_bisect_once(
             hg,
             &mut rng,
             config.max_imbalance,
             config.effort,
             &mut scratch,
-        );
+            &mut stop,
+        ) else {
+            break;
+        };
         let candidate_cut = u64::from(hyperedge_cut(hg, &part));
         if candidate_cut < best_cut {
             best_cut = candidate_cut;
@@ -249,5 +279,8 @@ pub fn multilevel_hypergraph_bisect(
         }
     }
 
+    if best_part.is_empty() {
+        best_part = index_split(num_vertices);
+    }
     Ok(Bisection::new(best_part))
 }

@@ -23,8 +23,8 @@
 
 A C ABI over the goatd library: a graph goes in as a vertex count and a flat
 edge array, and a tree decomposition comes out as bag offsets, a concatenated
-vertex array, and the edges between bags. The orders, budgets, seeds and
-refinement are the ones the `goatd` command line exposes.
+vertex array, and the edges between bags. Five of the command line's orders,
+with its budgets, seeds and refinement.
 
 **The ABI is unstable before 1.0.** Struct layouts, status codes and
 signatures can change in any release. Build against the version you ship with
@@ -138,7 +138,7 @@ dropped.
 
 For the elimination orders and the portfolio `budget_ms` is a soft budget and a
 hard cutoff at twice it ends the construction, so such a call can take about
-twice `budget_ms`.
+twice `budget_ms`, and `refine` gets its own `budget_ms` on top of that.
 
 goatd is single-threaded. Each thread may call it independently, on its own
 graph; error messages are recorded per thread.

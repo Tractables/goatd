@@ -886,6 +886,9 @@ impl PriorityBuckets {
             .filter(|&key| key < self.dense_keys)
     }
 
+    /// The bucket at one exact key. The band walk is what the samplers use;
+    /// this is for the tests that check one key's storage.
+    #[cfg(test)]
     fn get(&self, key: u64) -> Option<&Bucket> {
         match self.dense_index(key) {
             Some(key) => match self.slots.get(key) {
@@ -963,6 +966,34 @@ impl PriorityBuckets {
                 spare.push((bucket.vertices, bucket.masses));
             }
         }
+    }
+
+    /// The live buckets with a key in `from..=to`, ascending by key. Dense
+    /// keys are all below `dense_keys` and overflow keys all at or above it,
+    /// so the slots followed by the overflow range is ascending order.
+    ///
+    /// The walk is over the buckets that exist rather than over the keys in
+    /// the range, so a wide band costs what it holds and not what it spans.
+    fn range(&self, from: u64, to: u64) -> impl Iterator<Item = &Bucket> {
+        let start = usize::try_from(from)
+            .unwrap_or(usize::MAX)
+            .min(self.slots.len());
+        let end = usize::try_from(to)
+            .unwrap_or(usize::MAX)
+            .saturating_add(1)
+            .min(self.slots.len())
+            .max(start);
+        let dense = self.slots[start..end]
+            .iter()
+            .filter(|&&slot| slot != NO_BUCKET)
+            .map(move |&slot| &self.buckets[slot as usize]);
+        let overflow_from = from.max(self.dense_keys as u64);
+        let overflow = (overflow_from <= to)
+            .then(|| self.overflow.range(overflow_from..=to))
+            .into_iter()
+            .flatten()
+            .map(|(_, bucket)| bucket);
+        dense.chain(overflow)
     }
 
     /// The smallest live key, scanning the slots from `from` upwards and then
@@ -1204,7 +1235,7 @@ impl<'a> BucketMap<'a> {
     /// in storage order, gives the tie set the samplers draw from, so the tie
     /// set is a function of the map's history alone.
     fn band_buckets(&self, minimum: u64, band: u64) -> impl Iterator<Item = &Bucket> {
-        (minimum..=minimum.saturating_add(band)).filter_map(|key| self.bucket(key))
+        self.buckets.range(minimum, minimum.saturating_add(band))
     }
 
     /// Pick one vertex from the tie set within `band` of the minimum, giving
@@ -1287,25 +1318,41 @@ impl<'a> BucketMap<'a> {
         (!position.is_vacant()).then_some(position.key)
     }
 
+    #[cfg(test)]
     fn bucket(&self, key: u64) -> Option<&Bucket> {
         self.buckets.get(key)
     }
 }
 
-/// Fill counts for every active vertex via adj-based `FillScratch`, so the
-/// O(n·d²) computation can be cached once and reused across multiple seeds.
-pub(super) fn compute_initial_fill(graph: &EliminationGraph) -> Vec<u64> {
-    let n = graph.len();
-    let mut scratch = FillScratch::new(n);
-    (0..n)
-        .map(|v| {
-            if graph.active[v] {
-                scratch.fill_count_of(graph, v as u32)
-            } else {
-                0
-            }
-        })
-        .collect()
+/// Fill counts for every active vertex, cached once and reused across seeds.
+///
+/// The count is quadratic in a vertex's degree, so on a graph of a million
+/// edges the pass takes seconds. An abortable run reads the clock between
+/// vertices: it stops at `deadline`, and it stops on a caller's stop flag
+/// whether or not it was given one, which is what makes a long pass answer
+/// `SIGTERM`. A run that has to leave a complete decomposition behind is not
+/// abortable and the pass runs to the end.
+///
+/// `None` when the pass stopped, so it leaves no cache behind.
+pub(super) fn initial_fill(
+    graph: &EliminationGraph,
+    deadline: Option<Instant>,
+    abortable: bool,
+    mut count: impl FnMut(u32) -> u64,
+) -> Option<Vec<u64>> {
+    let mut pacer = DeadlinePacer::new();
+    let mut counts = Vec::with_capacity(graph.len());
+    for vertex in 0..graph.len() {
+        if !graph.active[vertex] {
+            counts.push(0);
+            continue;
+        }
+        if abortable && pacer.due() && crate::deadline::expired(deadline) {
+            return None;
+        }
+        counts.push(count(vertex as u32));
+    }
+    Some(counts)
 }
 
 /// Sampling mass for a public, earlier-first weight. Adding one after the

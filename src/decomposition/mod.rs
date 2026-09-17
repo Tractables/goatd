@@ -4,8 +4,10 @@
 //! instead operates on complete tree decompositions: [`refine_with_flowcutter`]
 //! finds separators and rewrites bags, [`minimalize_triangulation`] drops the
 //! fill edges the bags do not need, and [`TreeDecomposition::project`]
-//! restricts a decomposition to a vertex subset. `recombine` searches a pool of
-//! bags for the narrowest decomposition built out of them.
+//! restricts a decomposition to a vertex subset. [`FlowCutterSession`] is that
+//! refinement one slice of work at a time, for a caller that holds the clock,
+//! and [`decompose_by_merging`] builds a decomposition out of the bags of
+//! several others.
 
 mod minimal;
 mod model;

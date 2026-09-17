@@ -155,8 +155,17 @@ pub(crate) fn cardinality_search(
                 touched.push(neighbour);
                 buckets[count].push(neighbour);
             }
+            // A step that reaches a handful of vertices would otherwise index
+            // and pop every one of the `n + 1` buckets. A vertex is only ever
+            // added to the level being drained or to a higher one, so once
+            // every bucket is empty no later level can fill.
+            let mut bucketed = raised.len();
             for level in 0..=n {
+                if bucketed == 0 {
+                    break;
+                }
                 while let Some(interior) = buckets[level].pop() {
+                    bucketed -= 1;
                     crate::meter::charge(adjacency[interior as usize].len() as u64);
                     if pacer.due() && expired(hard_deadline) {
                         return None;
@@ -171,6 +180,7 @@ pub(crate) fn cardinality_search(
                         *state = REACHED;
                         let count = counts[next as usize] as usize;
                         touched.push(next);
+                        bucketed += 1;
                         if count > level {
                             raised.push(next);
                             buckets[count].push(next);

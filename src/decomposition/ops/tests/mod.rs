@@ -303,3 +303,25 @@ fn gluing_requires_a_bag_on_each_side() {
     assert!(glue_at_separator(empty.clone(), one.clone(), &[]).is_none());
     assert!(glue_at_separator(one, empty, &[]).is_none());
 }
+
+#[test]
+fn a_disjoint_union_keeps_every_bag_and_joins_the_two_with_nothing() {
+    let left = make_td_for(6, vec![vec![0, 1], vec![1, 2]], vec![(0, 1)]);
+    let right = make_td_for(6, vec![vec![3, 4], vec![4, 5]], vec![(0, 1)]);
+
+    let united = disjoint_union(left.clone(), right.clone()).expect("the two cover one graph");
+
+    assert_eq!(united.bags, [left.bags, right.bags].concat());
+    assert_eq!(united.adj, vec![vec![1], vec![0], vec![3], vec![2]]);
+    united
+        .validate(&Graph::new(6, [(0, 1), (1, 2), (3, 4), (4, 5)]))
+        .expect("a forest is a decomposition of a graph in two components");
+}
+
+#[test]
+fn a_disjoint_union_rejects_two_different_vertex_counts() {
+    let left = make_td_for(2, vec![vec![0, 1]], Vec::new());
+    let right = make_td_for(3, vec![vec![2]], Vec::new());
+
+    assert!(disjoint_union(left, right).is_none());
+}

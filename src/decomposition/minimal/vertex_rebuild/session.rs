@@ -138,6 +138,14 @@ impl<'g> Session<'g> {
                 return Advance::Paused(reason);
             }
             if self.dirty {
+                // The shared completion is a bit per ordered pair of vertices,
+                // so on a large enough graph the allocation is the whole of
+                // memory. A budget with no deadline has no estimate to decline
+                // against, and the size is the one rule left.
+                if !completion_fits(self.graph.num_vertices() as usize) {
+                    slice.record(&mut self.progress);
+                    return Advance::Paused(Pause::SetupEstimate);
+                }
                 if let Some(deadline) = deadline {
                     let n = u64::from(self.graph.num_vertices());
                     let squares = self.best.bags().iter().fold(0u64, |sum, bag| {

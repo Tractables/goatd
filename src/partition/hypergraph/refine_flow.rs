@@ -10,7 +10,7 @@
 use super::initial::hyperedge_cut;
 use super::model::Hypergraph;
 use super::refine_fm::{FmScratch, localized_fm_pass, refine_level};
-use crate::partition::common::balance_bounds;
+use crate::partition::common::{BisectionStop, balance_bounds};
 
 /// A directed flow network with residual arcs stored in adjacent pairs.
 /// `add_edge` creates both arcs together, so `edge ^ 1` is always the reverse
@@ -38,14 +38,31 @@ impl FlowNetwork {
 
     /// Edmonds-Karp max flow from `source` to `sink`. `source_side` receives
     /// the vertices reachable from `source` in the final residual graph.
-    pub(super) fn max_flow(&mut self, source: usize, sink: usize, source_side: &mut [bool]) -> i64 {
+    ///
+    /// Each augmentation is a breadth-first search of the whole network, so the
+    /// clock is read once per augmentation. A stopped search returns the flow
+    /// it had reached, and the reachability scan below then gives a cut that is
+    /// valid but need not be minimal; the caller adopts a proposal only where
+    /// the hyperedge cut actually drops, so a stopped flow cannot make the
+    /// partition worse.
+    pub(super) fn max_flow(
+        &mut self,
+        source: usize,
+        sink: usize,
+        source_side: &mut [bool],
+        stop: &mut BisectionStop,
+    ) -> i64 {
         let mut total_flow = 0i64;
         let mut parent = vec![None; self.adjacency.len()];
+        let mut queue = std::collections::VecDeque::new();
 
         loop {
+            if stop.reached() {
+                break;
+            }
             parent.fill(None);
             parent[source] = Some((source, 0));
-            let mut queue = std::collections::VecDeque::new();
+            queue.clear();
             queue.push_back(source);
 
             while let Some(node) = queue.pop_front() {
@@ -85,7 +102,7 @@ impl FlowNetwork {
 
         source_side.fill(false);
         source_side[source] = true;
-        let mut queue = std::collections::VecDeque::new();
+        queue.clear();
         queue.push_back(source);
         while let Some(node) = queue.pop_front() {
             for &(neighbor, edge) in &self.adjacency[node] {
@@ -109,7 +126,12 @@ impl FlowNetwork {
 /// hyperedge-cut optimum. Balance filtering can also retain only part of the
 /// proposal. The resulting bisection is adopted only when `cut` actually
 /// drops. Returns whether it did.
-pub(super) fn flow_refine(hg: &Hypergraph, part: &mut [u8], max_imbalance: f64) -> bool {
+pub(super) fn flow_refine(
+    hg: &Hypergraph,
+    part: &mut [u8],
+    max_imbalance: f64,
+    stop: &mut BisectionStop,
+) -> bool {
     let n = hg.num_vertices;
     if n < 10 {
         return false;
@@ -194,7 +216,7 @@ pub(super) fn flow_refine(hg: &Hypergraph, part: &mut [u8], max_imbalance: f64) 
     }
 
     let mut reachable_from_source = vec![false; total_nodes];
-    network.max_flow(source, sink, &mut reachable_from_source);
+    network.max_flow(source, sink, &mut reachable_from_source, stop);
 
     let mut proposal = part.to_vec();
     let mut part_weight = [0u32; 2];
@@ -243,11 +265,12 @@ pub(super) fn refine_finest_level(
     part: &mut [u8],
     imbalance: f64,
     scratch: &mut FmScratch,
+    stop: &mut BisectionStop,
 ) {
-    refine_level(hg, part, imbalance, scratch);
+    refine_level(hg, part, imbalance, scratch, stop);
 
     let n = hg.num_vertices;
-    if n < 20 {
+    if n < 20 || stop.stopped() {
         return;
     }
 
@@ -268,10 +291,13 @@ pub(super) fn refine_finest_level(
     }
     if !boundary.is_empty() {
         for i in 0..num_tries {
+            if stop.stopped() {
+                return;
+            }
             let seed = boundary[(i * 7919) % boundary.len()];
-            localized_fm_pass(hg, part, seed, imbalance, &mut scratch.region);
+            localized_fm_pass(hg, part, seed, imbalance, &mut scratch.region, stop);
         }
     }
 
-    flow_refine(hg, part, imbalance);
+    flow_refine(hg, part, imbalance, stop);
 }

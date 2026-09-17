@@ -8,7 +8,7 @@
 
 use super::model::Hypergraph;
 use super::refine_fm::{FmScratch, refine_level};
-use crate::partition::common::random_bisection;
+use crate::partition::common::{BisectionStop, random_bisection};
 use crate::rng::Xorshift64;
 
 /// Grows side 0 outward from `seed` until it holds half the vertex weight;
@@ -18,7 +18,7 @@ use crate::rng::Xorshift64;
 /// than updated incrementally, which costs a scan of every unplaced vertex's
 /// incidences per step but keeps the score exact. See "Where the two bisectors
 /// differ" in the shared partition bookkeeping.
-pub(super) fn greedy_growing(hg: &Hypergraph, seed: usize) -> Vec<u8> {
+pub(super) fn greedy_growing(hg: &Hypergraph, seed: usize, stop: &mut BisectionStop) -> Vec<u8> {
     let n = hg.num_vertices;
     let total_weight: u32 = hg.vertex_weights.iter().sum();
     let target = total_weight / 2;
@@ -36,6 +36,12 @@ pub(super) fn greedy_growing(hg: &Hypergraph, seed: usize) -> Vec<u8> {
     }
 
     while set_weight < target {
+        // A step scans every unplaced vertex's incidences, so the cost of one
+        // is the cost of a pass over the hypergraph and the clock is read
+        // here, as the graph sibling reads it.
+        if stop.reached() {
+            break;
+        }
         let mut best_v = None;
         let mut best_gain = i64::MIN;
 
@@ -104,6 +110,7 @@ pub(super) fn initial_partition(
     rng: &mut Xorshift64,
     imbalance: f64,
     scratch: &mut FmScratch,
+    stop: &mut BisectionStop,
 ) -> Vec<u8> {
     let n = hg.num_vertices;
     if n == 0 {
@@ -126,7 +133,10 @@ pub(super) fn initial_partition(
 
     for _ in 0..num_ggg.min(n) {
         let seed = rng.below(n);
-        let part = greedy_growing(hg, seed);
+        let part = greedy_growing(hg, seed, stop);
+        if stop.stopped() {
+            return part;
+        }
         let candidate_cut = u64::from(hyperedge_cut(hg, &part));
         if candidate_cut < best_cut {
             best_cut = candidate_cut;
@@ -138,7 +148,10 @@ pub(super) fn initial_partition(
     // as produced.
     for _ in 0..num_rand.min(n) {
         let mut part = random_bisection(&hg.vertex_weights, rng);
-        refine_level(hg, &mut part, imbalance, scratch);
+        refine_level(hg, &mut part, imbalance, scratch, stop);
+        if stop.stopped() {
+            return part;
+        }
         let candidate_cut = u64::from(hyperedge_cut(hg, &part));
         if candidate_cut < best_cut {
             best_cut = candidate_cut;

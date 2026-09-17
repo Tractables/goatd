@@ -8,6 +8,16 @@ use std::process::{Command, Output};
 
 use goatd::{Graph, TreeDecomposition};
 
+/// The budget the tests that read the whole schedule give it. They pair it
+/// with `--capped-restarts`, so the run returns when the schedule is done
+/// rather than when the budget is: on this graph the eight weighted stages and
+/// their diverse passes cost about a third of a second in a debug build, and
+/// the rest of the budget is margin for a machine that stalls under a parallel
+/// build. Over a 4.75-second soft budget the trailing FlowCutter candidate
+/// runs to the end of its window instead of stopping early, and the run then
+/// spends the whole budget: 0.28 s at 4,000 against 5.3 s at 5,000.
+const SCHEDULE_BUDGET: &str = "2000";
+
 /// The 3×3 grid: nine vertices, twelve edges, treewidth 3.
 fn grid_gr() -> String {
     let mut edges = Vec::new();
@@ -479,7 +489,15 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
 #[test]
 fn the_trace_names_the_candidate_the_decomposition_came_from() {
     let out = goatd(
-        &["-", "--order", "portfolio", "--budget", "500", "--trace"],
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            SCHEDULE_BUDGET,
+            "--capped-restarts",
+            "--trace",
+        ],
         Some(&grid_gr()),
     );
 
@@ -499,8 +517,8 @@ fn the_trace_names_the_candidate_the_decomposition_came_from() {
         candidates.iter().any(|line| line.starts_with("min-fill ")),
         "{err}"
     );
-    // A graph this size costs nothing, so a 500 ms budget reaches the
-    // restarts whatever else the schedule admits.
+    // The restarts run once the schedule admits them, and the cap stops them
+    // at their count rather than at the deadline.
     assert!(
         candidates.iter().any(|line| line.starts_with("sample ")),
         "{err}"
@@ -525,7 +543,14 @@ fn the_trace_names_the_candidate_the_decomposition_came_from() {
     );
 
     let out = goatd(
-        &["-", "--order", "portfolio", "--budget", "500"],
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            SCHEDULE_BUDGET,
+            "--capped-restarts",
+        ],
         Some(&grid_gr()),
     );
     let err = stderr_of(&out);
@@ -543,7 +568,8 @@ fn the_default_portfolio_hedges_and_no_hedge_turns_that_off() {
             "--order",
             "portfolio",
             "--budget",
-            "500",
+            SCHEDULE_BUDGET,
+            "--capped-restarts",
             "--no-bipartite-lift",
             "--trace",
         ],
@@ -590,7 +616,8 @@ fn the_default_portfolio_hedges_and_no_hedge_turns_that_off() {
             "--order",
             "portfolio",
             "--budget",
-            "500",
+            SCHEDULE_BUDGET,
+            "--capped-restarts",
             "--no-hedge",
             "--no-bipartite-lift",
             "--trace",
@@ -735,7 +762,8 @@ fn hedge_dims_runs_one_weighted_stage_per_dimension() {
             "--order",
             "portfolio",
             "--budget",
-            "500",
+            SCHEDULE_BUDGET,
+            "--capped-restarts",
             "--trace",
             "--hedge-dims",
             "1,2,3",
@@ -780,7 +808,7 @@ fn hedge_random_runs_one_stage_per_draw_and_costs_what_the_rankings_cost() {
             "--order",
             "portfolio",
             "--budget",
-            "500",
+            SCHEDULE_BUDGET,
             "--capped-restarts",
             "--trace",
             "--hedge-random",
@@ -794,7 +822,7 @@ fn hedge_random_runs_one_stage_per_draw_and_costs_what_the_rankings_cost() {
             "--order",
             "portfolio",
             "--budget",
-            "500",
+            SCHEDULE_BUDGET,
             "--capped-restarts",
             "--trace",
             "--hedge-dims",
@@ -919,7 +947,8 @@ fn the_reserve_applies_to_the_default_series_without_a_dimension_flag() {
             "--order",
             "portfolio",
             "--budget",
-            "500",
+            SCHEDULE_BUDGET,
+            "--capped-restarts",
             "--trace",
             "--hedge-reserve",
             "1.0",
@@ -948,7 +977,7 @@ fn a_reserve_that_holds_the_stages_runs_all_of_them() {
             "--order",
             "portfolio",
             "--budget",
-            "500",
+            SCHEDULE_BUDGET,
             "--capped-restarts",
             "--trace",
             "--hedge-dims",
@@ -964,7 +993,7 @@ fn a_reserve_that_holds_the_stages_runs_all_of_them() {
             "--order",
             "portfolio",
             "--budget",
-            "500",
+            SCHEDULE_BUDGET,
             "--capped-restarts",
             "--trace",
             "--hedge-dims",

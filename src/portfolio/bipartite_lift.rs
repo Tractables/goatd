@@ -183,7 +183,12 @@ pub(super) fn cutoffs(adjacency: &[Vec<u32>], side: &[u32]) -> Vec<u32> {
         .map(|&vertex| adjacency[vertex as usize].len() as u32)
         .collect();
     degrees.sort_unstable();
-    let widest = degrees[degrees.len() - 1];
+    // Only the one rung for an empty side: the callers filter those out, but
+    // this is the shared entry point and the quantile arithmetic below needs a
+    // vertex to index.
+    let Some(&widest) = degrees.last() else {
+        return vec![u32::MAX];
+    };
     let mut out = vec![u32::MAX];
     for quantile in CUTOFF_QUANTILES {
         let index = (quantile * (degrees.len() - 1) as f64) as usize;
@@ -233,7 +238,7 @@ pub(super) fn project(
         vertices.push(vertex);
     }
     let mut edges = Vec::with_capacity(priced.work());
-    let mut eliminated = Vec::with_capacity(drop.len() - priced.kept);
+    let mut eliminated = Vec::with_capacity(drop.len().saturating_sub(priced.kept));
     let mut eliminated_width = 0u32;
     for &vertex in drop {
         if local[vertex as usize] != u32::MAX {
@@ -259,7 +264,10 @@ pub(super) fn project(
         }
         eliminated.push((vertex, neighbourhood));
     }
-    let projected = Graph::new(vertices.len() as u32, edges);
+    // A colouring that put an endpoint outside the projection would be the
+    // bug the assertion above names; the rung is skipped rather than taking
+    // the process down with it.
+    let projected = Graph::try_new(vertices.len() as u32, edges).ok()?;
     if projected.edges().len() > graph.edges().len() {
         return None;
     }

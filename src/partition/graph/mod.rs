@@ -60,6 +60,10 @@ impl GraphBisectionConfig {
     /// Configure a bisection. `max_imbalance` is the allowed deviation from a
     /// half-and-half split, in `0.0..=0.5`; `seed` selects the deterministic
     /// RNG stream.
+    ///
+    /// At `0.0` on an even vertex count, any single move breaks the tolerance,
+    /// so the move-based refinement can do nothing and the result is the
+    /// initial partition brought to balance.
     pub fn new(max_imbalance: f64, seed: u64) -> Self {
         Self {
             max_imbalance,
@@ -204,8 +208,13 @@ fn multilevel_graph_bisect_once(
 /// `ceil((0.5 + max_imbalance) * num_vertices)`. `config.seed` selects the RNG
 /// stream; nothing here reads a clock, so one seed gives one bisection.
 ///
-/// One pass and not a best-of-N over restarts, for the reason under "Where the
-/// two bisectors differ" in the shared partition bookkeeping.
+/// One pass and not a best-of-N over restarts: minimum edge cut does not
+/// correlate with minimum separator width, so ranking whole restarts by edge
+/// cut does not give a better separator.
+///
+/// A caller that sets [`crate::stop_flag`] gets the index split — the first
+/// half of the vertices against the second — rather than a half-refined
+/// partition.
 ///
 /// # Errors
 ///
@@ -216,7 +225,7 @@ pub fn multilevel_graph_bisect(
     config: GraphBisectionConfig,
 ) -> Result<Bisection, Error> {
     Ok(multilevel_graph_bisect_until(graph, config, None)?
-        .expect("a bisection under no cutoff always finishes"))
+        .unwrap_or_else(|| Bisection::new(index_split(graph.num_vertices as usize))))
 }
 
 /// [`multilevel_graph_bisect`] under a cutoff: `None` where the cutoff passed
