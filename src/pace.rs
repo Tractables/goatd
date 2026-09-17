@@ -42,8 +42,8 @@ impl Graph {
     /// problem line.
     pub fn from_gr(text: &str) -> Result<Self, Error> {
         let mut num_vertices: Option<u32> = None;
-        let mut declared_edge_lines = 0usize;
-        let mut num_edge_lines = 0usize;
+        let mut declared_edge_lines = 0u64;
+        let mut num_edge_lines = 0u64;
         let mut edges: Vec<(u32, u32)> = Vec::new();
         for line in text.lines() {
             let line = line.trim();
@@ -68,7 +68,7 @@ impl Graph {
                 }
                 num_vertices = Some(parse_count("vertex count", vertices)?);
                 declared_edge_lines = parse_count("edge count", edge_lines)?;
-                edges.reserve(declared_edge_lines.min(text.len() / 4));
+                edges.reserve(declared_edge_lines.min(text.len() as u64 / 4) as usize);
                 continue;
             }
             let Some(n) = num_vertices else {
@@ -82,8 +82,8 @@ impl Graph {
             if tokens.next().is_some() {
                 return Err(Error::Parse(format!("malformed edge line: {line}")));
             }
-            let u: u32 = to_zero_based("vertex", parse_count("vertex id", first)?, n as usize)?;
-            let v: u32 = to_zero_based("vertex", parse_count("vertex id", second)?, n as usize)?;
+            let u: u32 = to_zero_based("vertex", parse_count("vertex id", first)?, u64::from(n))?;
+            let v: u32 = to_zero_based("vertex", parse_count("vertex id", second)?, u64::from(n))?;
             num_edge_lines += 1;
             edges.push((u, v));
         }
@@ -221,7 +221,7 @@ impl TreeDecomposition {
         let mut bags: Vec<(usize, TdBag)> = Vec::new();
         let mut adj: Vec<Vec<usize>> = Vec::new();
         let mut num_bags = 0usize;
-        let mut declared_max_bag_size = 0usize;
+        let mut declared_max_bag_size = 0u64;
         let mut declared_vertices = 0u32;
         let mut saw_solution_line = false;
         // One buffer for every line's tokens: a decomposition of a large graph
@@ -246,7 +246,12 @@ impl TreeDecomposition {
                     if tokens.len() != 5 || tokens[1] != "td" {
                         return Err(Error::Parse(format!("malformed solution line: {line}")));
                     }
-                    num_bags = parse_count("bag count", tokens[2])?;
+                    // Every count in the file is read as `u64`, whatever it
+                    // is checked against. Parsing straight into `usize` would
+                    // reject a header wider than the target's pointer with the
+                    // parser's overflow message on a 32-bit build and with the
+                    // check's own message on a 64-bit one.
+                    let declared_bags: u64 = parse_count("bag count", tokens[2])?;
                     declared_max_bag_size = parse_count("maximum bag size", tokens[3])?;
                     declared_vertices = parse_count("vertex count", tokens[4])?;
                     // Every declared bag needs its own "b" line, which is
@@ -256,14 +261,15 @@ impl TreeDecomposition {
                     // allocations below sized by the file rather than by a
                     // number an ill-formed header asked for: `adj` alone is 24
                     // bytes a bag.
-                    if num_bags > text.len().div_ceil(4) {
+                    if declared_bags > text.len().div_ceil(4) as u64 {
                         return Err(Error::Parse(format!(
-                            "the solution line declares {num_bags} bags, more than the {} bytes \
-                             of input can define",
+                            "the solution line declares {declared_bags} bags, more than the \
+                             {} bytes of input can define",
                             text.len()
                         )));
                     }
-                    if declared_vertices as usize > text.len().div_ceil(2) {
+                    num_bags = declared_bags as usize;
+                    if u64::from(declared_vertices) > text.len().div_ceil(2) as u64 {
                         return Err(Error::Parse(format!(
                             "the solution line declares {declared_vertices} vertices, more than \
                              the {} bytes of input can list",
@@ -284,15 +290,18 @@ impl TreeDecomposition {
                             "bag line before the solution line: {line}"
                         )));
                     }
-                    let bag_id =
-                        to_zero_based("bag id", parse_count("bag id", tokens[1])?, num_bags)?;
+                    let bag_id = to_zero_based(
+                        "bag id",
+                        parse_count("bag id", tokens[1])?,
+                        num_bags as u64,
+                    )?;
                     let vertices: Vec<u32> = tokens[2..]
                         .iter()
                         .map(|t| {
                             to_zero_based(
                                 "vertex",
                                 parse_count("vertex id", t)?,
-                                declared_vertices as usize,
+                                u64::from(declared_vertices),
                             )
                         })
                         .collect::<Result<_, Error>>()?;
@@ -322,13 +331,13 @@ impl TreeDecomposition {
                     }
                     let a: usize = to_zero_based(
                         "bag id",
-                        parse_count::<usize>("bag id", tokens[0])?,
-                        num_bags,
+                        parse_count::<u64>("bag id", tokens[0])?,
+                        num_bags as u64,
                     )?;
                     let b: usize = to_zero_based(
                         "bag id",
-                        parse_count::<usize>("bag id", tokens[1])?,
-                        num_bags,
+                        parse_count::<u64>("bag id", tokens[1])?,
+                        num_bags as u64,
                     )?;
                     if a == b {
                         return Err(Error::Parse(format!(
@@ -380,7 +389,7 @@ impl TreeDecomposition {
             .map(|(_, bag)| bag.vertices.len())
             .max()
             .unwrap_or(0);
-        if actual_max_bag_size != declared_max_bag_size {
+        if actual_max_bag_size as u64 != declared_max_bag_size {
             return Err(Error::Parse(format!(
                 "the solution line declares maximum bag size {declared_max_bag_size} but the \
                  largest bag contains {actual_max_bag_size} vertices"
@@ -438,7 +447,7 @@ fn parse_count<T: std::str::FromStr<Err = std::num::ParseIntError>>(
 
 /// Ids are written 1-based and stored 0-based, so `0` is not an id at all;
 /// `limit` is the count the problem or solution line declared.
-fn to_zero_based<T: TryFrom<usize>>(what: &str, id: usize, limit: usize) -> Result<T, Error> {
+fn to_zero_based<T: TryFrom<u64>>(what: &str, id: u64, limit: u64) -> Result<T, Error> {
     if id == 0 {
         return Err(Error::Parse(format!(
             "{what} 0 is out of range; ids are 1-based"
