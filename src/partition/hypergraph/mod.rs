@@ -185,10 +185,10 @@ fn multilevel_bisect_once(
     effort_scale: f64,
     scratch: &mut FmScratch,
     stop: &mut BisectionStop,
-) -> Vec<u8> {
+) -> Option<Vec<u8>> {
     let mut part = multilevel_pass(hg, None, rng, imbalance, scratch, stop);
     if stop.stopped() {
-        return part;
+        return None;
     }
 
     let vc_base = max_vcycles(hg.num_vertices);
@@ -199,7 +199,7 @@ fn multilevel_bisect_once(
         let old_cut = hyperedge_cut(hg, &part);
         let new_part = multilevel_pass(hg, Some(&part), rng, imbalance, scratch, stop);
         if stop.stopped() {
-            break;
+            return None;
         }
         let new_cut = hyperedge_cut(hg, &new_part);
         if new_cut < old_cut {
@@ -209,7 +209,7 @@ fn multilevel_bisect_once(
         }
     }
 
-    part
+    Some(part)
 }
 
 /// Multilevel 2-way bisection of a hypergraph: the best hyperedge cut over
@@ -260,19 +260,18 @@ pub fn multilevel_hypergraph_bisect(
     let mut stop = BisectionStop::new(None);
     for restart in 0..restarts {
         let mut rng = bisector_stream(restart_seed(config.seed, restart));
-        let part = multilevel_bisect_once(
+        // A stopped restart is half-refined, so it comes back as `None` and is
+        // dropped rather than ranked against the restarts that finished.
+        let Some(part) = multilevel_bisect_once(
             hg,
             &mut rng,
             config.max_imbalance,
             config.effort,
             &mut scratch,
             &mut stop,
-        );
-        // A stopped restart is half-refined, so it is dropped rather than
-        // ranked against the restarts that finished.
-        if stop.stopped() {
+        ) else {
             break;
-        }
+        };
         let candidate_cut = u64::from(hyperedge_cut(hg, &part));
         if candidate_cut < best_cut {
             best_cut = candidate_cut;
