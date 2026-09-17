@@ -420,9 +420,11 @@ remains. Dropping edges cannot enlarge a clique, so the pass never widens; when
 it improves neither the width nor the total bag size, the input comes back
 unchanged. It holds two `n × n` bit matrices, one row per vertex, so it costs
 about `n²/4` bytes, which is why
-`PortfolioConfig::with_triangulation_refinement` gates it on the vertex count.
-The portfolio applies it to its winner, whatever candidate produced it, and
-hands the result back as one more candidate.
+`PortfolioConfig::with_triangulation_refinement` gates it on the vertex count
+and why the pass declines outright above a gibibyte a matrix — about 92,000
+vertices — and returns its input. The portfolio applies it to its winner,
+whatever candidate produced it, and hands the result back as one more
+candidate.
 
 How long the pass takes does not follow the vertex count. It follows the bags
 of the decomposition being rebuilt, and how many sweeps the edge-dropping needs
@@ -453,7 +455,9 @@ improvement as soon as one is found and go on from the next vertex, so the
 vertices that failed just before come around last; the search ends when every
 vertex has failed since the last improvement, or at the deadline. A round's
 completion of the tree is skipped when it would cost more than an eighth of
-what is left. The standard portfolio uses the trusted entry only when time
+what is left, and the pass stops before its first one on a graph over the same
+92,000 vertices the minimalization declines at, since it holds the same
+matrices. The standard portfolio uses the trusted entry only when time
 remains.
 
 ## Nested dissection and multilevel bisection
@@ -670,10 +674,11 @@ since no tree of that width has one, and the pass over the pooled trees is
 repeated once.
 
 A piece of at most sixty vertices is triangulated eight times — once by MCS-M
-and seven times by a randomised min-fill draw made minimal — and the programme
-is run over the bags of all eight together, which is at least as narrow as the
-best of them. That stands in for the exact treatment the paper gives a small
-piece. Larger pieces get the single MCS-M pass the merge loop uses.
+and seven times by a randomised fill-over-degree draw, each made minimal — and
+the programme is run over the bags of all eight together, which is at least as
+narrow as the best of them. That stands in for the exact treatment the paper
+gives a small piece. Larger pieces get the single MCS-M pass the merge loop
+uses.
 
 `PortfolioConfig::with_local_merge` gates the stage on a vertex count and gives
 it a share of the hard window, for the reason the two stages before it are
