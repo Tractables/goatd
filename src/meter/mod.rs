@@ -10,6 +10,7 @@
 //! around goatd can charge it to the same budget with [`charge`].
 
 use std::cell::Cell;
+use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
 /// Calibration used to express work budgets through duration-based APIs.
@@ -30,9 +31,13 @@ thread_local! {
 /// Guards must be dropped in the reverse of the order they were created, which
 /// is what a `let` binding in a nested scope does. Dropping an inner guard
 /// after an outer one restores the inner epoch and leaves the meter armed.
+///
+/// The state a guard restores is thread-local, so a guard is neither `Send`
+/// nor `Sync`: it has to be dropped on the thread that armed the meter.
 #[must_use = "the meter is armed only while the guard is alive"]
 pub struct Guard {
     previous: Option<(Instant, u64)>,
+    _not_send: PhantomData<*const ()>,
 }
 
 impl Drop for Guard {
@@ -47,7 +52,10 @@ impl Drop for Guard {
 pub fn arm(epoch: Instant) -> Guard {
     let previous = EPOCH.with(Cell::get);
     EPOCH.with(|c| c.set(Some((epoch, units_spent()))));
-    Guard { previous }
+    Guard {
+        previous,
+        _not_send: PhantomData,
+    }
 }
 
 /// Whether charged work currently drives [`now`].
