@@ -1291,19 +1291,6 @@ fn sampled_min_fill_orders(base_seed: u64, weights: &[u32]) -> Vec<InitialCandid
     }]
 }
 
-/// Run a portfolio: the initial orders the residual's size allows, then extra
-/// sampled orders with the remaining budget, then the trailing FlowCutter
-/// candidate where configured.
-///
-/// At least one candidate always carries a decomposition: the first is exempt from both
-/// between-candidate skips, runs with no `width_bound` (so it cannot abort on
-/// width) and with deadline completion enabled (so a deadline stop still
-/// yields a decomposition).
-///
-/// `weights` has one entry per vertex and is what the sampling orders draw tie
-/// sets with. Every candidate and every sampled order shares it unless the
-/// portfolio hedges, which runs a weighted stage per weighting on weights of
-/// its own.
 /// The share of the portfolio's whole window the bipartite lift may spend,
 /// split between the sides it tries.
 ///
@@ -1515,6 +1502,19 @@ fn run_bipartite_lift(
     Ok(())
 }
 
+/// Run a portfolio: the initial orders the residual's size allows, then extra
+/// sampled orders with the remaining budget, then the trailing FlowCutter
+/// candidate where configured.
+///
+/// At least one candidate always carries a decomposition: the first is exempt from both
+/// between-candidate skips, runs with no `width_bound` (so it cannot abort on
+/// width) and with deadline completion enabled (so a deadline stop still
+/// yields a decomposition).
+///
+/// `weights` has one entry per vertex and is what the sampling orders draw tie
+/// sets with. Every candidate and every sampled order shares it unless the
+/// portfolio hedges, which runs a weighted stage per weighting on weights of
+/// its own.
 fn run_portfolio(
     graph: &Graph,
     weights: &[u32],
@@ -1544,7 +1544,7 @@ fn run_portfolio(
         .vertex_reinsertion
         .then(|| reinsertion_reserve(graph, started, window_end))
         .flatten();
-    let pooled_end = less_reserve(window_end, reinsertion_share, soft_deadline);
+    let (pooled_end, _) = less_reserve(window_end, reinsertion_share, soft_deadline);
     // The local re-triangulation stage runs last of the pooled stages and
     // reads the answer of the two before it, so its share comes off that end
     // first; the merge loop takes its share from what is left, and the
@@ -1552,18 +1552,15 @@ fn run_portfolio(
     let local_share = stage_gate(graph, config.local_merge, pooled_end)
         .then(|| stage_reserve(graph, started, pooled_end))
         .flatten();
-    let local_merge = local_share.is_some();
-    let merge_end = less_reserve(pooled_end, local_share, soft_deadline);
+    let (merge_end, local_merge) = less_reserve(pooled_end, local_share, soft_deadline);
     let merge_share = stage_gate(graph, config.merge_loop, merge_end)
         .then(|| stage_reserve(graph, started, merge_end))
         .flatten();
-    let merge = merge_share.is_some();
-    let recombine_end = less_reserve(merge_end, merge_share, soft_deadline);
+    let (recombine_end, merge) = less_reserve(merge_end, merge_share, soft_deadline);
     let reserve = stage_gate(graph, config.recombination, recombine_end)
         .then(|| stage_reserve(graph, started, recombine_end))
         .flatten();
-    let recombine = reserve.is_some();
-    let hard_deadline = less_reserve(recombine_end, reserve, soft_deadline);
+    let (hard_deadline, recombine) = less_reserve(recombine_end, reserve, soft_deadline);
     let mut prebuilt = engine::prebuild(graph, soft_deadline);
     let active = prebuilt.num_active();
     // The class where the sizes settle it on their own. In the band between
@@ -2370,10 +2367,6 @@ fn relative_fill_fits(cost: Duration, deadline: Option<Instant>) -> bool {
     })
 }
 
-/// `end` less `reserve`, where that still leaves the soft deadline behind it.
-///
-/// A reserve that would put the hard deadline at or before the soft one is not
-/// taken: the stages before it would then have no window of their own.
 /// Record what a closing stage produced and trace the pass. The set keeps the
 /// decomposition only where it beats what the run already had; the trace
 /// reports the pass either way, so a caller can see what a stage cost on a
@@ -2397,18 +2390,26 @@ fn close_stage(
     });
 }
 
+/// `end` less `reserve`, and whether the subtraction happened.
+///
+/// A reserve that would put the hard deadline at or before the soft one is not
+/// taken: the stages before it would then have no window of their own. A
+/// caller that reads only its own `Some(reserve)` to decide whether its stage
+/// runs then arms a stage whose deadline never moved — and one of the four
+/// arms the bag pool, which costs a quality key per candidate and a clone per
+/// improving one, for a search that cannot start.
 fn less_reserve(
     end: Option<Instant>,
     reserve: Option<Duration>,
     soft_deadline: Option<Instant>,
-) -> Option<Instant> {
-    match (end, reserve) {
+) -> (Option<Instant>, bool) {
+    let taken = match (end, reserve) {
         (Some(end), Some(reserve)) => end
             .checked_sub(reserve)
             .filter(|earlier| soft_deadline.is_none_or(|soft| *earlier > soft)),
-        _ => end,
-    }
-    .or(end)
+        _ => None,
+    };
+    (taken.or(end), taken.is_some())
 }
 
 /// The share of the window the final vertex reinsertion is given: its share

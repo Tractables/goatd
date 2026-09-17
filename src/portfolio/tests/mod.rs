@@ -2036,3 +2036,42 @@ fn final_reinsertion_reports_an_unchanged_tree_without_claiming_a_deadline() {
         assert_eq!(retained[0].decomposition.to_td(), tree.to_td());
     }
 }
+
+/// A reserve that would put the hard deadline at or before the soft one is not
+/// taken, and then the stage that asked for it does not run either. Reading
+/// the reserve alone armed it: the deadline had not moved, the stage's own
+/// `!expired` check skipped it, and the bag pool that two of the three turn on
+/// stayed on for the rest of the run — a quality key per candidate and a clone
+/// per improving one, for a search that cannot start.
+#[test]
+fn a_refused_reserve_does_not_arm_its_stage() {
+    let now = crate::meter::now();
+    let soft = now + secs(5);
+    let hard = now + secs(6);
+
+    // A second of window past the soft deadline: half of it comes out.
+    let half = Duration::from_millis(500);
+    assert_eq!(
+        super::less_reserve(Some(hard), Some(half), Some(soft)),
+        (Some(hard - half), true)
+    );
+
+    // Two seconds would put the end before the soft deadline, so nothing is
+    // taken and nothing is armed.
+    assert_eq!(
+        super::less_reserve(Some(hard), Some(secs(2)), Some(soft)),
+        (Some(hard), false)
+    );
+
+    // Nothing to take, and nowhere to take it from. A run with no hard
+    // deadline reaches the second of these, and its stages are refused a
+    // reserve before this, so both said false before as well.
+    assert_eq!(
+        super::less_reserve(Some(hard), None, Some(soft)),
+        (Some(hard), false)
+    );
+    assert_eq!(
+        super::less_reserve(None, Some(secs(1)), Some(soft)),
+        (None, false)
+    );
+}
