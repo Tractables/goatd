@@ -62,13 +62,25 @@ pub(super) fn minimum_vertex_cover_separator(
         list.dedup();
     }
 
-    // Max matching via Kuhn's algorithm.
+    // Max matching via Kuhn's algorithm. Each left vertex's search carries its
+    // own generation stamp instead of clearing a right-boundary flag array
+    // before it: the same visited set, without the `la * lb` bytes of clearing
+    // that a large boundary costs. No search stamps 0, so a fresh array reads
+    // as unvisited.
     let mut match_l = vec![None; la];
     let mut match_r = vec![None; lb];
-    let mut visited_r: Vec<bool> = vec![false; lb];
+    let mut visited_r: Vec<u32> = vec![0; lb];
+    debug_assert!(la < u32::MAX as usize, "a left-side stamp has to fit u32");
     for u in 0..la {
-        visited_r.fill(false);
-        try_kuhn(u, &adj, &mut visited_r, &mut match_l, &mut match_r);
+        let generation = u as u32 + 1;
+        try_kuhn(
+            u,
+            &adj,
+            &mut visited_r,
+            generation,
+            &mut match_l,
+            &mut match_r,
+        );
     }
 
     // König's construction: Z = vertices reachable from unmatched L via
@@ -150,14 +162,18 @@ struct KuhnFrame {
 ///
 /// Depth-first over alternating paths, with the search levels held on an
 /// explicit stack rather than the call stack. Each level scans `adj[u]` in
-/// order, marks a right vertex the moment it is first tried, and records its
-/// own pairing as control returns through it once a level below reports
-/// success — so pairings are written deepest-first, exactly as the recursion
-/// would unwind.
+/// order, marks a right vertex with `generation` the moment it is first tried,
+/// and records its own pairing as control returns through it once a level below
+/// reports success — so pairings are written deepest-first, exactly as the
+/// recursion would unwind.
+///
+/// `generation` is this search's stamp in `visited_r`; every call gets one of
+/// its own, so a mark another search left is not this one's.
 fn try_kuhn(
     start: usize,
     adj: &[Vec<usize>],
-    visited_r: &mut [bool],
+    visited_r: &mut [u32],
+    generation: u32,
     match_l: &mut [Option<usize>],
     match_r: &mut [Option<usize>],
 ) -> bool {
@@ -192,10 +208,10 @@ fn try_kuhn(
         while stack[top].cursor < adj[u].len() {
             let v = adj[u][stack[top].cursor];
             stack[top].cursor += 1;
-            if visited_r[v] {
+            if visited_r[v] == generation {
                 continue;
             }
-            visited_r[v] = true;
+            visited_r[v] = generation;
             if let Some(matched) = match_r[v] {
                 stack.push(KuhnFrame {
                     u: matched,

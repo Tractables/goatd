@@ -39,3 +39,20 @@ fn empty_cut_yields_empty_separator() {
     assert_eq!(r.side_a.len(), 3);
     assert!(r.side_b.is_empty());
 }
+
+#[test]
+fn a_left_vertex_retries_a_right_vertex_the_one_before_it_took() {
+    // Left boundary {1, 2}, right boundary {3, 4}. Vertex 1 is matched to 3
+    // first; 2's only cross-edge is to 3, so it has to reach through 1 and move
+    // it to 4. That augmenting path exists only if 2's search starts with 3
+    // unvisited rather than carrying 1's mark, so the matching is 2 and the
+    // whole left boundary is the cover. With 3 still marked the matching would
+    // be 1 and the cover would come out as the right boundary instead.
+    let edges = vec![(1u32, 3), (1, 4), (2, 3)];
+    let part = vec![0u8, 0, 0, 1, 1];
+    let r = minimum_vertex_cover_separator(5, &edges, &part);
+
+    assert_eq!(r.separator, vec![1, 2]);
+    assert_eq!(r.side_a, vec![0]);
+    assert_eq!(r.side_b, vec![3, 4]);
+}
