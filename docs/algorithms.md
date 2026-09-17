@@ -593,9 +593,11 @@ own search is estimated to cost on this graph — the pool it will hold, times a
 pass over the graph each, a few times over — and where that is more than an
 eighth of the window the stage is given no reserve and does not run, because it
 would reach the deadline with nothing and the schedule would have stopped early
-for it. A run with no budget at all has no window to take a share of and does
-not run the stage either. At its deadline the search hands back nothing rather
-than a part-built answer, and the portfolio returns what it had.
+for it. A run with no soft budget has no window to take a share of at all, so
+asking for the stage there is refused rather than ignored, along with the merge
+loop, the local re-triangulation and the bipartite lift, which take their
+shares the same way. At its deadline the search hands back nothing rather than
+a part-built answer, and the portfolio returns what it had.
 
 The reference for the dynamic programme is Bouchitté and Todinca, "Treewidth
 and minimum fill-in: grouping the minimal separators", SIAM Journal on
