@@ -19,6 +19,21 @@ static void add_edges(TWD::Graph& graph, int num_edges, const int* edges) {
     }
 }
 
+// Build the graph the backend imports from, and release it again.
+//
+// TWD::Graph holds one adjacency bitset per vertex — n * ceil(n/64) * 8 bytes,
+// over a gigabyte at the Rust side's 100,000-vertex guard. importGraph copies
+// the whole graph into its own arc arrays and keeps no reference to it, so
+// scoping it here keeps that matrix off the peak the search runs at.
+static std::unique_ptr<TWD::IFlowCutter> import_graph(int num_nodes, int num_edges,
+                                                      const int* edges) {
+    TWD::Graph g(num_nodes);
+    add_edges(g, num_edges, edges);
+    auto fc = std::make_unique<TWD::IFlowCutter>(num_nodes, num_edges, /*verb=*/0);
+    fc->importGraph(g);
+    return fc;
+}
+
 static TdResult* store_result(TWD::TreeDecomposition td) {
     auto result = std::make_unique<TdResult>();
     result->td = std::move(td);
@@ -37,13 +52,10 @@ TdResult* td_compute(int num_nodes, int num_edges,
                      int64_t* iters_done, int64_t* greedy_touches,
                      int64_t unit_budget, int64_t units_per_iter) {
     try {
-        TWD::Graph g(num_nodes);
-        add_edges(g, num_edges, edges);
-        TWD::IFlowCutter fc(num_nodes, num_edges, /*verb=*/0);
-        fc.importGraph(g);
-        return store_result(fc.constructTD(steps, iters, iters_done,
-                                           greedy_touches, unit_budget,
-                                           units_per_iter));
+        auto fc = import_graph(num_nodes, num_edges, edges);
+        return store_result(fc->constructTD(steps, iters, iters_done,
+                                            greedy_touches, unit_budget,
+                                            units_per_iter));
     } catch (...) {
         return nullptr;
     }
@@ -57,11 +69,8 @@ TdResult* td_compute_timed_patience(int num_nodes, int num_edges,
                                     int64_t* greedy_touches,
                                     int64_t unit_budget, int64_t units_per_iter) {
     try {
-        TWD::Graph g(num_nodes);
-        add_edges(g, num_edges, edges);
-        TWD::IFlowCutter fc(num_nodes, num_edges, /*verb=*/0);
-        fc.importGraph(g);
-        return store_result(fc.constructTD_timed_patience(
+        auto fc = import_graph(num_nodes, num_edges, edges);
+        return store_result(fc->constructTD_timed_patience(
             steps, iters, timeout_ms, patience_ms, patience_unit_budget,
             tight_gates != 0,
             iters_done, greedy_touches, unit_budget, units_per_iter));
