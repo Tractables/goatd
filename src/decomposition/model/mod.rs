@@ -270,38 +270,45 @@ impl TreeDecomposition {
         self.bags.iter().map(|b| b.vertices.len()).sum()
     }
 
-    /// Two more numbers about the decomposition's shape, for a caller that
-    /// ranks candidates on something other than width.
+    /// `log2` of the sum over bags of `2^|bag|`: what a consumer compiling
+    /// over the bags pays in the worst case, on the same scale as the width.
+    /// No bags is `0.0`.
     ///
-    /// The mass is `log2` of the sum over bags of `2^|bag|`, which is what a
-    /// consumer compiling over the bags pays in the worst case; the sum is
-    /// scaled by the largest bag before the logarithm, so a bag of a few
-    /// thousand vertices does not overflow the exponent. No bags is `0.0`.
-    /// The separator is the largest number of vertices two adjacent bags
-    /// share, which is what a consumer joining two bags carries between them.
+    /// The sum is scaled by the largest bag before the logarithm, so a bag of
+    /// a few thousand vertices still gives an answer where `2^|bag|` on its
+    /// own is already infinite.
     ///
-    /// One pass over the bags and one over the tree edges, with a stamp array
-    /// over the graph's vertices for the intersections.
-    pub(crate) fn shape(&self) -> (f64, usize) {
+    /// One pass over the bags.
+    pub fn bag_mass(&self) -> f64 {
         let Some(largest) = self.bags.iter().map(|bag| bag.vertices.len()).max() else {
-            return (0.0, 0);
+            return 0.0;
         };
         let scaled: f64 = self
             .bags
             .iter()
             .map(|bag| (bag.vertices.len() as f64 - largest as f64).exp2())
             .sum();
-        let mass = largest as f64 + scaled.log2();
+        largest as f64 + scaled.log2()
+    }
 
+    /// The most vertices two adjacent bags share, which is what a consumer
+    /// joining two bags carries between them. No bags is `0`.
+    ///
+    /// One pass over the tree edges, with a stamp array over the graph's
+    /// vertices for the intersections.
+    pub fn max_separator(&self) -> usize {
+        if self.bags.is_empty() {
+            return 0;
+        }
         let mut stamp = vec![usize::MAX; self.num_vertices as usize];
         let mut separator = 0;
         for (index, neighbours) in self.adj.iter().enumerate() {
             for &vertex in &self.bags[index].vertices {
                 stamp[vertex as usize] = index;
             }
-            // Each edge is walked from both ends; the shared count is the same
-            // either way, so taking the maximum over all of them is enough.
-            for &neighbour in neighbours {
+            // The intersection is the same from either end, so each tree edge
+            // is taken once, from its lower-numbered bag.
+            for &neighbour in neighbours.iter().filter(|&&other| other > index) {
                 let shared = self.bags[neighbour]
                     .vertices
                     .iter()
@@ -310,7 +317,7 @@ impl TreeDecomposition {
                 separator = separator.max(shared);
             }
         }
-        (mass, separator)
+        separator
     }
 
     /// The ordering used when goatd compares two decompositions: narrower
