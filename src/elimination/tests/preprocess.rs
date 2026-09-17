@@ -123,6 +123,23 @@ fn preprocessing_stops_at_the_soft_cutoff_instead_of_reducing_to_the_end() {
 }
 
 #[test]
+fn preprocessing_stops_under_a_cutoff_it_was_given_no_deadline_for() {
+    // Every vertex of a clique is simplicial, so with no cutoff the rules
+    // eliminate all of them. An enclosing wall cutoff that has passed is read
+    // where a deadline of the pass's own would be, and so is a caller's stop
+    // flag, so the pass stops at its first check with the graph untouched.
+    let edges = complete_graph(500);
+    let _wall = crate::deadline::WallGuard::new(Some(std::time::Instant::now()));
+
+    let stopped = preprocess(EliminationGraph::from_edges(500, &edges), None);
+
+    assert_eq!(
+        stopped.graph.num_active, 500,
+        "preprocessing reduced a clique under a cutoff that had already passed"
+    );
+}
+
+#[test]
 fn the_almost_simplicial_rule_fires_on_a_single_missing_edge() {
     // K6 with (4, 5) removed. Vertices 4 and 5 are simplicial, so the earlier
     // rule takes them; what is left for the almost-simplicial rule is that the
