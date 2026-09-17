@@ -402,9 +402,11 @@ fn decompose(
 
 /// Re-cut `td` along FlowCutter separators and return the result.
 ///
-/// `budget_ms` bounds the pass; without one it runs to completion. The pass is
-/// anytime, so a decomposition it cannot improve comes back unchanged. The
-/// interpreter lock is released while it runs.
+/// `budget_ms` bounds the pass and arms a gate that skips subgraphs over
+/// 100 000 vertices. Without one the pass runs to completion, ungated: on a
+/// large graph one uninterruptible separator search can run for minutes. The
+/// pass is anytime, so a decomposition it cannot improve comes back unchanged.
+/// The interpreter lock is released while it runs.
 #[pyfunction]
 #[pyo3(signature = (td, graph, *, budget_ms = None))]
 fn refine_with_flowcutter(

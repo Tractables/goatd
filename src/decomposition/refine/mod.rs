@@ -61,7 +61,9 @@ const MAX_VERTICES_FOR_REFINE: usize = 100_000;
 /// It uses the construction clock, including charged work when the meter is armed;
 /// it also arms a gate that skips subgraphs over 100 000 vertices, where the
 /// uninterruptible setup a region pays before its search overruns the deadline
-/// on its own. The result is never worse than `td` under
+/// on its own. `None` is no deadline and no gate: on a large graph one
+/// uninterruptible separator search can run for minutes, and the stop flag is
+/// the only way out of such a run. The result is never worse than `td` under
 /// `(width, total_bag_size)`.
 ///
 /// # Errors

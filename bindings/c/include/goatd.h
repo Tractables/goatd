@@ -129,7 +129,10 @@ typedef struct GoatdOptions {
   size_t tie_weights_len;
   /**
    * Re-cut the decomposition along FlowCutter separators before returning
-   * it. Accepted with every order.
+   * it. Accepted with every order. With `budget_ms` set the pass is bounded
+   * and skips subgraphs over 100 000 vertices; with 0 it runs to completion,
+   * ungated, and one uninterruptible separator search on a large graph can
+   * take minutes.
    */
   bool refine;
 } GoatdOptions;
