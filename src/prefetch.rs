@@ -29,14 +29,18 @@ pub(crate) fn prefetch<T>(slice: &[T], index: usize) {
     }
 }
 
-/// Vertices from which a walk prefetches. Below this the table it reads at
-/// scattered indices is small enough to stay in cache, so the walk waits on
-/// nothing and a prefetch only costs it an instruction per entry; at this
-/// size and above the scattered read is the miss the walk waits on.
-pub(crate) const PREFETCH_MIN_VERTICES: usize = 1 << 16;
+/// Table entries from which a walk prefetches. Below this the table it reads
+/// at scattered indices is a few hundred kilobytes at most, which the last
+/// level of cache holds, so the walk waits on nothing and a prefetch only
+/// costs it an instruction per entry; at this size and above the scattered
+/// read is the miss the walk waits on.
+///
+/// The callers all walk one entry per vertex, so the figure is a vertex count
+/// in practice; it is applied to the table's length.
+pub(crate) const PREFETCH_MIN_ENTRIES: usize = 1 << 16;
 
 /// Whether a walk over a table of `len` entries prefetches.
 #[inline(always)]
 pub(crate) fn prefetching(len: usize) -> bool {
-    len >= PREFETCH_MIN_VERTICES
+    len >= PREFETCH_MIN_ENTRIES
 }
