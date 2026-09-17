@@ -223,3 +223,16 @@ fn a_decomposition_of_another_graph_is_refused() {
         .expect("a deterministic order takes no weights");
     assert!(minimalize_triangulation(td, &other, None).is_err());
 }
+
+#[test]
+fn a_completion_is_declined_above_a_gibibyte_of_matrix() {
+    // n * ceil(n / 64) * 8 bytes: 92,672 vertices is the last size under a
+    // gibibyte, and the pass declines from the next multiple of 64 up.
+    assert!(super::completion_fits(92_672));
+    assert!(!super::completion_fits(92_736));
+    assert!(super::completion_fits(0));
+    assert!(
+        !super::completion_fits(usize::MAX),
+        "the size itself must not overflow into a small one",
+    );
+}

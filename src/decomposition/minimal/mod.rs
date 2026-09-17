@@ -657,8 +657,9 @@ fn decompose_completion(
 /// either way, and never later than the budget.
 ///
 /// The pass holds two `n × n` bit matrices, one row per vertex, so it costs
-/// about `n²/4` bytes. A caller running it under a deadline should keep that
-/// in mind on a large graph.
+/// about `n²/4` bytes. Above a gibibyte a matrix — about 92,000 vertices — it
+/// declines and returns `decomposition` untouched, rather than asking for an
+/// allocation the machine cannot make.
 ///
 /// # Errors
 ///
@@ -713,6 +714,9 @@ pub(crate) fn minimalize_fits(
 }
 
 fn fits(decomposition: &TreeDecomposition, vertices: usize, deadline: Option<Instant>) -> bool {
+    if !completion_fits(vertices) {
+        return false;
+    }
     let Some(deadline) = deadline else {
         return true;
     };
@@ -758,6 +762,26 @@ fn minimalization_candidate(
         &mut NoWitnesses,
         deadline,
     )
+}
+
+/// The largest bit matrix over a graph's vertices the passes here will hold.
+///
+/// A completion is a bit per ordered pair, so it costs `n²/8` bytes: at a
+/// million vertices that is a request for 125 GB, which a caller that gave no
+/// deadline to decline against would otherwise make unconditionally. A
+/// gibibyte stops at about 92,000 vertices, past everything the crate's own
+/// paths reach — the portfolio's closing stages gate at 2,000 vertices and the
+/// prime-separator search at about 23,000 — so the cap answers only a caller
+/// that comes to the public entry points with a graph this size.
+const MAX_COMPLETION_BYTES: usize = 1 << 30;
+
+/// Whether a completion over `vertices` vertices fits in
+/// [`MAX_COMPLETION_BYTES`].
+fn completion_fits(vertices: usize) -> bool {
+    vertices
+        .checked_mul(vertices.div_ceil(64))
+        .and_then(|words| words.checked_mul(8))
+        .is_some_and(|bytes| bytes <= MAX_COMPLETION_BYTES)
 }
 
 /// The graph's own edges as a row set.
