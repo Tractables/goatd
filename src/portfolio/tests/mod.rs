@@ -119,6 +119,27 @@ fn a_candidate_that_completed_at_the_hard_cutoff_is_reported_as_produced() {
     assert_eq!(candidates.into_decompositions().len(), 1);
 }
 
+/// The bound handed to later elimination candidates is the narrowest width any
+/// candidate produced, whatever came after it.
+#[test]
+fn the_incumbent_width_stays_with_the_narrowest_candidate() {
+    let graph = Graph::new(3, []);
+    let wide = TreeDecomposition::new(&graph, [vec![0, 1, 2]], []).unwrap();
+    let narrow =
+        TreeDecomposition::new(&graph, [vec![0], vec![1], vec![2]], [(0, 1), (1, 2)]).unwrap();
+    let medium = TreeDecomposition::new(&graph, [vec![0, 1], vec![1, 2]], [(0, 1)]).unwrap();
+
+    for mut candidates in [CandidateSet::all(3), CandidateSet::best_only()] {
+        assert_eq!(candidates.best_width(), None);
+        candidates.push(wide.clone(), ORIGIN);
+        assert_eq!(candidates.best_width(), Some(2));
+        candidates.push(narrow.clone(), ORIGIN);
+        assert_eq!(candidates.best_width(), Some(0));
+        candidates.push(medium.clone(), ORIGIN);
+        assert_eq!(candidates.best_width(), Some(0));
+    }
+}
+
 #[test]
 fn best_only_candidate_storage_compares_compacted_bag_size() {
     let graph = Graph::new(3, []);

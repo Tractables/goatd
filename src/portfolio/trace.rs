@@ -163,7 +163,8 @@ pub enum CandidateOutcome {
         /// Whether the portfolio would now return this one.
         best: bool,
     },
-    /// A bag passed the width bound, so nothing usable came back. That bound
+    /// A bag passed the width bound, so nothing usable came back — or, for the
+    /// bipartite lift, no rung it built could beat the incumbent. That bound
     /// comes from a candidate that already produced one, so a winner exists.
     WidthAborted,
     /// A cutoff stopped this candidate with nothing completed, or a closing

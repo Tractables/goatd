@@ -27,9 +27,9 @@ use crate::{Error, Graph, TreeDecomposition};
 pub use candidates::Candidate;
 use candidates::{CandidateSet, ScheduleStop};
 use config::{
-    DIVERSE_PASS_RESERVE, FLOWCUTTER_RESERVE, LOCAL_MERGE_WINDOW_SHARE, MERGE_LOOP_WINDOW_SHARE,
-    MIN_FLOWCUTTER_CANDIDATE_MS, MIN_RECOMBINATION_RESERVE, RECOMBINATION_PASSES,
-    RECOMBINATION_RATE_PER_MS, RECOMBINATION_WINDOW_SHARE, REINSERTION_WINDOW_SHARE, VARIETY_SLOT,
+    DIVERSE_PASS_RESERVE, FLOWCUTTER_RESERVE, MIN_FLOWCUTTER_CANDIDATE_MS,
+    MIN_RECOMBINATION_RESERVE, RECOMBINATION_PASSES, RECOMBINATION_RATE_PER_MS,
+    RECOMBINATION_WINDOW_SHARE, REINSERTION_WINDOW_SHARE, VARIETY_SLOT,
 };
 
 pub use config::{
@@ -1497,16 +1497,17 @@ fn run_bipartite_lift(
         // after it unless nothing here could be built at all. The stage
         // reports once, on the narrowest lift its rungs produced.
         if produced_any {
-            match reported {
-                Some(outcome) => trace(CandidateTrace {
-                    stage: Stage::BipartiteLift,
-                    seed,
-                    pass: Pass::Only,
-                    outcome,
-                    elapsed: crate::meter::now().saturating_duration_since(started),
-                }),
-                None => give_up(trace),
-            }
+            // A rung that built a projection and then could not beat the
+            // incumbent has run, and spent its share doing it; only a stage
+            // the gates refused before any work reports as unstarted.
+            let outcome = reported.unwrap_or(CandidateOutcome::WidthAborted);
+            trace(CandidateTrace {
+                stage: Stage::BipartiteLift,
+                seed,
+                pass: Pass::Only,
+                outcome,
+                elapsed: crate::meter::now().saturating_duration_since(started),
+            });
             return Ok(());
         }
     }
@@ -1548,18 +1549,18 @@ fn run_portfolio(
     // reads the answer of the two before it, so its share comes off that end
     // first; the merge loop takes its share from what is left, and the
     // recombination stage from what that leaves.
-    let local_share = local_merge_gate(graph, config, pooled_end)
-        .then(|| local_merge_reserve(graph, started, pooled_end))
+    let local_share = stage_gate(graph, config.local_merge, pooled_end)
+        .then(|| stage_reserve(graph, started, pooled_end))
         .flatten();
     let local_merge = local_share.is_some();
     let merge_end = less_reserve(pooled_end, local_share, soft_deadline);
-    let merge_share = merge_gate(graph, config, merge_end)
-        .then(|| merge_reserve(graph, started, merge_end))
+    let merge_share = stage_gate(graph, config.merge_loop, merge_end)
+        .then(|| stage_reserve(graph, started, merge_end))
         .flatten();
     let merge = merge_share.is_some();
     let recombine_end = less_reserve(merge_end, merge_share, soft_deadline);
-    let reserve = recombination_gate(graph, config, recombine_end)
-        .then(|| recombination_reserve(graph, started, recombine_end))
+    let reserve = stage_gate(graph, config.recombination, recombine_end)
+        .then(|| stage_reserve(graph, started, recombine_end))
         .flatten();
     let recombine = reserve.is_some();
     let hard_deadline = less_reserve(recombine_end, reserve, soft_deadline);
@@ -2279,12 +2280,11 @@ fn run_portfolio(
     if merge && !expired(merge_end) {
         let start = candidates
             .best()
-            .cloned()
             .expect("a candidate has produced a decomposition");
         let before = start.quality_key();
         let found = decomposition::merge_loop(
             graph,
-            Some(&start),
+            Some(start),
             seed,
             decomposition::BagPoolLimits::standard(),
             merge_end,
@@ -2309,12 +2309,11 @@ fn run_portfolio(
     if local_merge && !expired(pooled_end) {
         let start = candidates
             .best()
-            .cloned()
             .expect("a candidate has produced a decomposition");
         let before = start.quality_key();
         let found = candidates
             .bag_pool()
-            .and_then(|pool| decomposition::local_merge(pool, graph, &start, seed, pooled_end));
+            .and_then(|pool| decomposition::local_merge(pool, graph, start, seed, pooled_end));
         // Nothing comes back where the stage did not beat the answer it started
         // from, where its share ran out, or where the search would have held
         // more than its cap allows.
@@ -2405,54 +2404,33 @@ fn reinsertion_reserve(
     (copies <= share / REINSERTION_WINDOW_SHARE).then_some(share)
 }
 
-/// Whether the merge loop runs on this graph: it needs a hard window to take a
-/// share of, and the gate bounds the traversals its search costs.
-fn merge_gate(graph: &Graph, config: PortfolioConfig, window_end: Option<Instant>) -> bool {
-    config
-        .merge_loop
-        .is_some_and(|gate| graph.num_vertices() <= gate)
-        && window_end.is_some()
+/// Whether a stage that takes a share off the end of the window runs on this
+/// graph: it needs a hard window to take a share of, and `gate` bounds the
+/// traversals its search costs.
+///
+/// The window is the derived one, so a run given only a soft budget has a hard
+/// deadline at twice it and these stages run there too.
+fn stage_gate(graph: &Graph, gate: Option<u32>, window_end: Option<Instant>) -> bool {
+    gate.is_some_and(|gate| graph.num_vertices() <= gate) && window_end.is_some()
 }
 
-/// What the merge loop is given: what one run of its search is estimated to
-/// cost on this graph, or nothing at all where that is more than a share of the
+/// What such a stage is given: what one run of its search is estimated to cost
+/// on this graph, or nothing at all where that is more than a share of the
 /// window.
 ///
-/// The estimate is the recombination stage's, priced the same way against the
-/// same caps, because the two run the same search over lists of the same order
-/// of size. A graph whose search does not fit the share is not worth stopping
-/// the rest of the schedule early for.
-fn merge_reserve(graph: &Graph, started: Instant, window_end: Option<Instant>) -> Option<Duration> {
-    let window = window_end?.saturating_duration_since(started);
-    let estimate = search_cost(graph);
-    (estimate <= window / MERGE_LOOP_WINDOW_SHARE).then_some(estimate)
-}
-
-/// Whether the local re-triangulation stage runs on this graph: it needs a hard
-/// window to take a share of, and the gate bounds the traversals its search
-/// costs.
-fn local_merge_gate(graph: &Graph, config: PortfolioConfig, window_end: Option<Instant>) -> bool {
-    config
-        .local_merge
-        .is_some_and(|gate| graph.num_vertices() <= gate)
-        && window_end.is_some()
-}
-
-/// What the local re-triangulation stage is given: what one run of its search is
-/// estimated to cost on this graph, or nothing at all where that is more than a
-/// share of the window.
+/// The recombination stage, the merge loop and the local re-triangulation run
+/// the same search over lists of the same order of size, so one estimate and
+/// one share cover all three. A graph whose search does not fit the share is
+/// not worth stopping the rest of the schedule early for — it would reach the
+/// deadline with nothing — so it is given no reserve, does not run the stage,
+/// and the whole window stays with the candidates.
 ///
-/// The estimate is the recombination stage's, priced the same way against the
-/// same caps, because the three run the same search over lists of the same order
-/// of size.
-fn local_merge_reserve(
-    graph: &Graph,
-    started: Instant,
-    window_end: Option<Instant>,
-) -> Option<Duration> {
+/// The estimate is priced against the pool rather than the window, because the
+/// pool is what the search reads.
+fn stage_reserve(graph: &Graph, started: Instant, window_end: Option<Instant>) -> Option<Duration> {
     let window = window_end?.saturating_duration_since(started);
     let estimate = search_cost(graph);
-    (estimate <= window / LOCAL_MERGE_WINDOW_SHARE).then_some(estimate)
+    (estimate <= window / RECOMBINATION_WINDOW_SHARE).then_some(estimate)
 }
 
 /// Sampled eliminations run only to feed the recombination pool.
@@ -2498,39 +2476,6 @@ fn variety_draws(
         };
         pool.absorb(&drawn, VARIETY_SLOT + index as u32);
     }
-}
-
-/// Whether the recombination stage runs on this graph: it needs a hard window
-/// to take a share of, and the gate bounds the traversals the search costs.
-///
-/// The window is the derived one, so a run given only a soft budget has a hard
-/// deadline at twice it and the stage runs there too.
-fn recombination_gate(graph: &Graph, config: PortfolioConfig, window_end: Option<Instant>) -> bool {
-    config
-        .recombination
-        .is_some_and(|gate| graph.num_vertices() <= gate)
-        && window_end.is_some()
-}
-
-/// What the stage is given: what its own search is estimated to cost on this
-/// graph, or nothing at all where that is more than a share of the window.
-///
-/// The estimate is priced against the pool rather than the window, because the
-/// pool is what the search reads. The pool holds at most its quota of bags per
-/// decomposition it keeps, and an elimination leaves about one bag per vertex,
-/// so the bags it will hold are the smaller of those two; each of them costs a
-/// pass over the graph, a few times over. A graph whose search does not fit the
-/// share is not worth stopping the rest of the schedule early for — it would
-/// reach the deadline with nothing — so it is given no reserve, does not run
-/// the stage, and the whole window stays with the candidates.
-fn recombination_reserve(
-    graph: &Graph,
-    started: Instant,
-    window_end: Option<Instant>,
-) -> Option<Duration> {
-    let window = window_end?.saturating_duration_since(started);
-    let estimate = search_cost(graph);
-    (estimate <= window / RECOMBINATION_WINDOW_SHARE).then_some(estimate)
 }
 
 /// What the programme's search over a full pool is estimated to cost on this
