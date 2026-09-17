@@ -1769,7 +1769,13 @@ fn run_portfolio(
         // What the restarts of an admitted residual follow: a min-fill order
         // that came back with a decomposition finished inside its cutoff, so
         // sampled min-fill has a prospect of finishing too.
-        if is_min_fill_variant(order) && matches!(outcome, CandidateOutcome::Produced { .. }) {
+        // The stop is in the test because a candidate that completed its
+        // residual at the hard cutoff now reports `Produced` rather than
+        // `DeadlineReached`, and it did not set this before.
+        if is_min_fill_variant(order)
+            && stop == ScheduleStop::Continue
+            && matches!(outcome, CandidateOutcome::Produced { .. })
+        {
             min_fill_finished = true;
             fill_pass_cost.get_or_insert(cost);
         }

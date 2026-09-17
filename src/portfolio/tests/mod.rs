@@ -2,7 +2,7 @@ use std::cell::OnceCell;
 use std::time::{Duration, Instant};
 
 use super::Schedule;
-use super::candidates::CandidateSet;
+use super::candidates::{CandidateSet, ScheduleStop};
 use super::config::{MAX_DIVERSE_SAMPLING_RUNS, validate};
 use super::trace::CandidateOrigin;
 use super::{CandidateOutcome, DEFAULT_HEDGE_DIMS, HedgeSeries, HedgeWeights, StageBudget};
@@ -11,6 +11,8 @@ use super::{FLOWCUTTER_RESERVE, restart_admitted, restart_deadline};
 use super::{Sample, SampleBand, SamplingPatience};
 use super::{Stage, elimination_stop, extra_sample, hedge_random_seed, sample_seed};
 use crate::elimination::Order;
+use crate::elimination::engine::OrderRun;
+use crate::elimination::execution::Cutoff;
 use crate::embedding::Adjacency;
 use crate::{Graph, TreeDecomposition};
 
@@ -93,6 +95,28 @@ fn best_only_candidate_storage_discards_losing_decompositions() {
     let retained = candidates.into_decompositions();
     assert_eq!(retained.len(), 1);
     assert_eq!(retained[0].treewidth(), 0);
+}
+
+/// A candidate that completes its residual at the hard cutoff is the winner
+/// where nothing came before it, and the trace has to say so: `decompose_traced`
+/// promises the returned decomposition is the last one reported as `Produced`
+/// with `best` set, and the command line reads exactly that to name the winner.
+#[test]
+fn a_candidate_that_completed_at_the_hard_cutoff_is_reported_as_produced() {
+    let graph = Graph::new(3, []);
+    let only =
+        TreeDecomposition::new(&graph, [vec![0], vec![1], vec![2]], [(0, 1), (1, 2)]).unwrap();
+    let mut candidates = CandidateSet::best_only();
+
+    let (outcome, stop) =
+        candidates.record_elimination(OrderRun::CompletedAtDeadline(Cutoff::Hard, only), ORIGIN);
+
+    assert!(matches!(
+        outcome,
+        CandidateOutcome::Produced { best: true, .. }
+    ));
+    assert_eq!(stop, ScheduleStop::HardDeadline);
+    assert_eq!(candidates.into_decompositions().len(), 1);
 }
 
 #[test]

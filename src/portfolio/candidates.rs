@@ -204,11 +204,12 @@ impl CandidateSet {
                 (self.push(decomposition, origin), ScheduleStop::Continue)
             }
             OrderRun::CompletedAtDeadline(Cutoff::Hard, decomposition) => {
-                self.push(decomposition, origin);
-                (
-                    CandidateOutcome::DeadlineReached,
-                    ScheduleStop::HardDeadline,
-                )
+                // The candidate produced a decomposition and the hard cutoff
+                // ends the schedule. The trace reports both, so a reader can
+                // still see which candidate the run returns: where this is the
+                // first candidate it is the winner, and no later event carries
+                // `best`.
+                (self.push(decomposition, origin), ScheduleStop::HardDeadline)
             }
             OrderRun::DeadlineAborted(Cutoff::Soft) => {
                 (CandidateOutcome::DeadlineReached, ScheduleStop::Continue)
