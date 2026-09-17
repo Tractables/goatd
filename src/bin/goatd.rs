@@ -6,7 +6,7 @@
 
 use std::io::{BufWriter, Read, Write};
 use std::process::exit;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use goatd::decomposition::refine_with_flowcutter;
 use goatd::elimination::{Order, decompose as eliminate};
@@ -47,7 +47,8 @@ options:
   --budget <ms>         wall-clock budget: the elimination orders' soft
                         deadline, flowcutter's run time, the portfolio's soft
                         deadline and the length of its trailing FlowCutter
-                        slot, and the refinement's deadline
+                        slot, and the refinement's deadline. Each is its own
+                        deadline, so --refine can spend it twice
   --hard-budget <ms>    portfolio only: hard wall-clock cutoff; defaults to
                         twice --budget
   --hedge-dims <list>   portfolio only: run the hedge's weighted stage once per
@@ -1164,16 +1165,16 @@ fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let args = parse_args(&argv);
 
-    let start = Instant::now();
     let graph = Graph::from_gr(&read_input(&args.input))
         .unwrap_or_else(|e| fail(&format!("{}: {e}", args.input)));
 
     let mut td = construct(&args, &graph);
     if args.refine {
-        let remaining = args
-            .budget
-            .map(|budget| budget.saturating_sub(start.elapsed()));
-        td = refine_with_flowcutter(td, &graph, remaining)
+        // The budget is a deadline per phase, as it is for every other phase
+        // the usage text lists. Giving the pass what the construction left of
+        // one shared budget made it a no-op on every graph the construction
+        // did not finish early, which is the graph it is wanted on.
+        td = refine_with_flowcutter(td, &graph, args.budget)
             .unwrap_or_else(|error| fail(&error.to_string()));
     }
 
