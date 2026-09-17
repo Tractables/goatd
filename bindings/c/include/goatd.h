@@ -100,8 +100,10 @@ typedef struct GoatdOptions {
   /**
    * Milliseconds the construction may spend, or 0 for no limit. It is the
    * soft deadline of the elimination orders and of the portfolio,
-   * FlowCutter's run time, and the refinement's deadline. Each is its own
-   * deadline, so `refine` can spend it twice.
+   * FlowCutter's run time, and the refinement's deadline. The elimination
+   * orders and the portfolio stop for good at twice their soft deadline,
+   * and the refinement's deadline is its own, so a call can take about
+   * `2 * budget_ms`, or `3 * budget_ms` with `refine`.
    */
   uint64_t budget_ms;
   /**

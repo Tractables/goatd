@@ -32,8 +32,10 @@ fn main() {}
 ///
 /// `order` is one of the `ORDER_` values above. `budget_ms` is what the
 /// construction may spend, or 0 for no limit; FlowCutter reads 0 as its own
-/// default rather than as unlimited. Both are `u32` so that every argument
-/// crosses the boundary as a JavaScript number.
+/// default rather than as unlimited. The elimination orders and the portfolio
+/// stop for good at twice their soft deadline, so a call can take about twice
+/// `budget_ms`. Both are `u32` so that every argument crosses the boundary as
+/// a JavaScript number.
 ///
 /// # Safety
 ///

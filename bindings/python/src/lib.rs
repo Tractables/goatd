@@ -339,11 +339,13 @@ fn construct(
 /// integer per vertex, a smaller weight being eliminated earlier.
 ///
 /// `budget_ms` is the elimination orders' soft deadline, flowcutter's run
-/// time, the portfolio's soft deadline, and the refinement's deadline. Each is
-/// its own deadline, so `refine` can spend it twice. `steps` replaces
-/// flowcutter's clock with a step count, for a run that repeats exactly.
-/// `refine=True` re-cuts the result along FlowCutter separators before
-/// returning it.
+/// time, the portfolio's soft deadline, and the refinement's deadline. The
+/// elimination orders and the portfolio stop for good at twice their soft
+/// deadline, and the refinement's deadline is its own, so a call can take
+/// about `2 * budget_ms`, or `3 * budget_ms` with `refine=True`. `steps`
+/// replaces flowcutter's clock with a step count, for a run that repeats
+/// exactly. `refine=True` re-cuts the result along FlowCutter separators
+/// before returning it.
 ///
 /// An argument the chosen order cannot act on raises `ValueError` naming both.
 /// The interpreter lock is released for the whole construction.
