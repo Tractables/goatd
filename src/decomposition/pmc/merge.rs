@@ -391,7 +391,10 @@ impl Loop<'_> {
         if triangulated.treewidth() > width {
             return Vec::new();
         }
-        self.cliques_of(&triangulated, &order, width, scratch)
+        // The merge loop reads each clique's size against its pooled-vertex
+        // cap as it takes them, so leaving one out here could move where that
+        // cap stops it. It passes an empty list and tests every clique.
+        self.cliques_of(&triangulated, &order, width, &FxHashSet::default(), scratch)
     }
 
     /// The same piece triangulated harder: `draws` minimal triangulations of
@@ -409,6 +412,7 @@ impl Loop<'_> {
         focus: &[u32],
         width: u32,
         draws: usize,
+        held: &FxHashSet<VertexSet>,
         scratch: &mut Scratch,
         deadline: Option<Instant>,
     ) -> Vec<VertexSet> {
@@ -437,11 +441,7 @@ impl Loop<'_> {
             let Ok(drawn) = crate::elimination::decompose(&local, choice, seed, budget) else {
                 continue;
             };
-            let drawn = if crate::decomposition::minimalize_fits(&drawn, &local, deadline) {
-                crate::decomposition::minimalize_at(drawn, &local, deadline)
-            } else {
-                drawn
-            };
+            let drawn = crate::decomposition::minimalize_at(drawn, &local, deadline);
             for bag in drawn.bags() {
                 let set = rows.set_of(bag.vertices());
                 if seen.insert(set.clone()) {
@@ -466,21 +466,26 @@ impl Loop<'_> {
         if chosen.treewidth() > width {
             return Vec::new();
         }
-        self.cliques_of(&chosen, &order, width, scratch)
+        self.cliques_of(&chosen, &order, width, held, scratch)
     }
 
     /// The bags of `triangulated`, in the whole graph's numbering, keeping the
-    /// ones that are potential maximal cliques of it and no wider than `width`.
+    /// ones that are potential maximal cliques of it and no wider than `width`,
+    /// less the ones `held` already has.
     ///
     /// A clique of a triangulation of the local graph is either a potential
     /// maximal clique of the whole graph or a minimal separator of it; the
     /// test drops the separators, which cost the programme a pass over the
-    /// graph and split nothing.
+    /// graph and split nothing. That test is a pass over the graph, and a
+    /// caller with a list of its own would drop the clique on arrival, so the
+    /// list is read first — which needs the clique's set, so with nothing held
+    /// the set is still built only for a clique that survives the test.
     fn cliques_of(
         &self,
         triangulated: &TreeDecomposition,
         order: &[u32],
         width: u32,
+        held: &FxHashSet<VertexSet>,
         scratch: &mut Scratch,
     ) -> Vec<VertexSet> {
         triangulated
@@ -496,11 +501,19 @@ impl Loop<'_> {
                 vertices.dedup();
                 vertices
             })
-            .filter(|clique| {
-                clique.len() as u32 <= width
-                    && is_potential_maximal_clique(clique, self.adjacency, scratch)
+            .filter_map(|clique| {
+                if clique.len() as u32 > width {
+                    return None;
+                }
+                if held.is_empty() {
+                    return is_potential_maximal_clique(&clique, self.adjacency, scratch)
+                        .then(|| self.adjacency.set_of(&clique));
+                }
+                let set = self.adjacency.set_of(&clique);
+                (!held.contains(&set)
+                    && is_potential_maximal_clique(&clique, self.adjacency, scratch))
+                .then_some(set)
             })
-            .map(|clique| self.adjacency.set_of(&clique))
             .collect()
     }
 
