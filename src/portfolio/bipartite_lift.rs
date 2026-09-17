@@ -152,7 +152,7 @@ pub(super) fn price(
         }
         priced.pairs = priced
             .pairs
-            .saturating_add(degree * degree.saturating_sub(1) / 2);
+            .saturating_add(degree.saturating_mul(degree.saturating_sub(1)) / 2);
         if priced.pairs > limit {
             return None;
         }
