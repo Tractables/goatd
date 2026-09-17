@@ -224,13 +224,18 @@ impl TreeDecomposition {
         let mut declared_max_bag_size = 0usize;
         let mut declared_vertices = 0u32;
         let mut saw_solution_line = false;
+        // One buffer for every line's tokens: a decomposition of a large graph
+        // runs to hundreds of thousands of bag lines, and collecting each
+        // line's tokens into a vector of its own is an allocation apiece.
+        let mut tokens: Vec<&str> = Vec::new();
 
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('c') {
                 continue;
             }
-            let tokens: Vec<&str> = line.split_whitespace().collect();
+            tokens.clear();
+            tokens.extend(line.split_whitespace());
             match tokens[0] {
                 "s" => {
                     // "s td <num_bags> <max_bag_size> <num_vertices>" — the
