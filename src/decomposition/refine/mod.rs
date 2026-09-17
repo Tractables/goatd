@@ -38,11 +38,11 @@ const MAX_REFINEMENT_STEPS: u64 = 20_000;
 const MIN_REFINEMENT_VERTICES: usize = 16;
 /// Maximum number of nested separator replacements.
 const MAX_RECURSION_DEPTH: u32 = 20;
-/// Above this number of active vertices, a single FlowCutter iteration can
-/// take seconds and is uninterruptible mid-iteration (the FlowCutter deadline check
-/// only fires between iterations). Very large graphs can exceed this bound,
-/// at which point post-process refinement reliably
-/// overruns the deadline it was given. Above this gate, skip refinement and
+/// Above this number of active vertices, the search itself is stoppable — the
+/// driver reads the deadline before every step — but the setup each region pays
+/// first is not: building the region's graph and testing it for connectivity
+/// charges nothing and cannot be interrupted, and on a region this size that
+/// setup alone overruns the deadline. Above this gate, skip refinement and
 /// return the input decomposition unchanged.
 const MAX_VERTICES_FOR_REFINE: usize = 100_000;
 
@@ -53,9 +53,10 @@ const MAX_VERTICES_FOR_REFINE: usize = 100_000;
 /// `budget` is checked between separator searches and inside their search loops;
 /// graph setup, cutter advances and decomposition reconstruction are indivisible.
 /// It uses the construction clock, including charged work when the meter is armed;
-/// it also arms a gate that skips subgraphs over 100 000 vertices, where one
-/// uninterruptible search can run for seconds. The result is never worse than
-/// `td` under `(width, total_bag_size)`.
+/// it also arms a gate that skips subgraphs over 100 000 vertices, where the
+/// uninterruptible setup a region pays before its search overruns the deadline
+/// on its own. The result is never worse than `td` under
+/// `(width, total_bag_size)`.
 ///
 /// # Errors
 ///

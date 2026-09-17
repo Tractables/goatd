@@ -144,6 +144,91 @@ fn priority_buckets_keep_their_slots_when_a_key_overflows() {
     assert_eq!(vertices, [1]);
 }
 
+/// The smallest key any of `vertices` is filed under, read back from the
+/// positions rather than from the minimum the map tracks.
+fn smallest_filed_key(buckets: &super::BucketMap<'_>, vertices: &[u32]) -> Option<u64> {
+    vertices.iter().filter_map(|&v| buckets.key_of(v)).min()
+}
+
+#[test]
+fn the_minimum_follows_the_smallest_key_across_the_dense_boundary() {
+    let weights = [1; 6];
+    let mut storage = super::BucketStorage::new();
+    let mut buckets =
+        super::BucketMap::with_weights(&mut storage, &weights, Some(super::sampling_mass(1)));
+    let dense = super::PriorityBuckets::dense_keys_for(weights.len()) as u64;
+    let all = [0, 1, 2, 3, 4, 5];
+
+    // Two keys in the slots and three above them, one of those shared by two
+    // vertices, filed in no particular order.
+    buckets.insert(0, dense + 9);
+    buckets.insert(1, dense + 2);
+    buckets.insert(2, dense);
+    buckets.insert(3, dense - 1);
+    buckets.insert(4, 0);
+    buckets.insert(5, dense + 2);
+    assert_eq!(buckets.buckets.overflow.len(), 3, "keys above the slots");
+
+    // Every removal but one takes the last vertex of the bucket the minimum
+    // names: the slots run out at the third, and `dense + 2` keeps 1 at the
+    // fourth.
+    for v in [4, 3, 2, 5, 1, 0] {
+        let expected = smallest_filed_key(&buckets, &all);
+        assert_eq!(buckets.minimum(), expected, "before removing {v}");
+        buckets.remove_vertex(v);
+    }
+    assert_eq!(buckets.minimum(), None);
+}
+
+#[test]
+fn an_insert_below_the_minimum_takes_it_on_either_side_of_the_boundary() {
+    let weights = [1; 4];
+    let mut storage = super::BucketStorage::new();
+    let mut buckets =
+        super::BucketMap::with_weights(&mut storage, &weights, Some(super::sampling_mass(1)));
+    let dense = super::PriorityBuckets::dense_keys_for(weights.len()) as u64;
+
+    buckets.insert(0, dense + 8);
+    assert_eq!(buckets.minimum(), Some(dense + 8));
+    buckets.insert(1, dense + 3);
+    assert_eq!(buckets.minimum(), Some(dense + 3));
+    buckets.insert(2, dense + 5);
+    assert_eq!(buckets.minimum(), Some(dense + 3), "an insert above it");
+
+    // A move into the slots empties the bucket the minimum named.
+    buckets.update(1, dense - 1);
+    assert_eq!(buckets.minimum(), Some(dense - 1));
+    assert_eq!(buckets.buckets.overflow.len(), 2);
+
+    // Emptying that slot hands the minimum back to the smallest key above the
+    // slots, which is not the one it left.
+    buckets.remove_vertex(1);
+    assert_eq!(buckets.minimum(), Some(dense + 5));
+}
+
+#[test]
+fn reused_storage_drops_the_buckets_a_stopped_run_left_above_the_slots() {
+    let weights = [1; 4];
+    let mass = super::sampling_mass(1);
+    let mut storage = super::BucketStorage::new();
+    let dense = super::PriorityBuckets::dense_keys_for(weights.len()) as u64;
+    {
+        // A run that stops at its deadline leaves its vertices filed.
+        let mut buckets = super::BucketMap::with_weights(&mut storage, &weights, Some(mass));
+        buckets.insert(0, 1);
+        buckets.insert(1, dense);
+        buckets.insert(2, dense + 4);
+        assert_eq!(buckets.buckets.overflow.len(), 2);
+    }
+
+    let mut buckets = super::BucketMap::with_weights(&mut storage, &weights, Some(mass));
+    assert!(buckets.buckets.overflow.is_empty());
+    assert_eq!(buckets.spare_vertices.len(), 2, "both buckets handed back");
+    assert_eq!(buckets.minimum(), None);
+    buckets.insert(0, dense + 1);
+    assert_eq!(buckets.minimum(), Some(dense + 1));
+}
+
 #[test]
 fn a_band_collects_the_buckets_above_the_minimum() {
     let weights = [1, 1, 1, 1];

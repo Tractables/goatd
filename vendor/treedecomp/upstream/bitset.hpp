@@ -34,10 +34,10 @@ constexpr int BITS = 64;
 
 namespace sspp {
 
-// Defense-in-depth: the original Bitset implementation called malloc with no
-// NULL check, so allocation failure caused SIGSEGV inside the bitset writes.
-// Reports the failure on stderr, naming the byte count and this allocator, and
-// then aborts.
+// goatd: defense in depth. The original Bitset implementation called malloc
+// with no NULL check, so allocation failure caused SIGSEGV inside the bitset
+// writes. Reports the failure on stderr, naming the byte count and this
+// allocator, and then aborts.
 // The Rust-side FlowCutter vertex guard should normally reject an oversized
 // matrix before construction; this is the safety net.
 inline void* bitset_xmalloc(size_t bytes) {

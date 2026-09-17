@@ -455,6 +455,44 @@ fn the_canonical_build_agrees_with_the_deduplicating_one() {
     assert!(EliminationGraph::from_edges(40, &clique(40)).bitset_words > 0);
 }
 
+/// `canonical` reversed with every other edge turned round: each edge is still
+/// there once and no self-loop is, but nothing about the order is sorted, which
+/// is the shape the two in-crate callers of `from_unique_edges` hand it.
+fn shuffled_unique(canonical: &[(u32, u32)]) -> Vec<(u32, u32)> {
+    canonical
+        .iter()
+        .rev()
+        .enumerate()
+        .map(|(i, &(u, v))| if i % 2 == 0 { (v, u) } else { (u, v) })
+        .collect()
+}
+
+#[test]
+fn the_unique_build_agrees_with_the_deduplicating_one_on_an_unsorted_list() {
+    let cases = [
+        ("ring 8", 8u32, ring(8)),
+        ("ring 600", 600, ring(600)),
+        ("wheel 600", 601, wheel(600)),
+        ("clique 40", 40, clique(40)),
+    ];
+    for (name, n, canonical) in cases {
+        let shuffled = shuffled_unique(&canonical);
+        assert_eq!(
+            crate::graph::canonical_edges(shuffled.clone()),
+            canonical,
+            "{name}"
+        );
+
+        // The general path is what `from_edges` takes on a list this far out of
+        // order, so this is the fast path against the one it replaces.
+        let unique = EliminationGraph::from_unique_edges(n, &shuffled);
+        let deduplicating = EliminationGraph::from_edges(n, &shuffled);
+
+        assert_eq!(unique.num_edges, shuffled.len(), "{name}");
+        assert!(unique.same_state_as(&deduplicating), "{name}");
+    }
+}
+
 #[test]
 fn the_canonical_build_orders_a_hub_row_the_way_the_edge_list_does() {
     // A hub long enough to carry a membership map, so the fast path has to

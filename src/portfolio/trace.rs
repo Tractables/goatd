@@ -166,8 +166,12 @@ pub enum CandidateOutcome {
     /// A bag passed the width bound, so nothing usable came back. That bound
     /// comes from a candidate that already produced one, so a winner exists.
     WidthAborted,
-    /// The hard deadline was reached, with or without a completed residual.
-    /// No later candidate starts.
+    /// A cutoff stopped this candidate, or a closing stage handed nothing
+    /// back — it ran out of its share of the window, or would have held more
+    /// bags than its cap allows. The hard cutoff also ends the schedule; the
+    /// soft one does not, and later candidates still run. A candidate that
+    /// bagged its unfinished residual at the hard cutoff reports this too, and
+    /// that decomposition still competes for the win.
     DeadlineReached,
     /// A candidate the portfolio did not start, and so has no result for. The
     /// nested-dissection slot reports this on a residual in the middle band

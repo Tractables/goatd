@@ -292,10 +292,10 @@ private:
 	}
 
 public:
-	// 64-bit child-index arithmetic. In a k-ary heap a node at position `pos`
-	// has children at k*pos+1 .. k*(pos+1). For pos beyond ~INT_MAX/k that
-	// product overflows signed 32-bit int, producing a negative index and an
-	// out-of-bounds heap[] access inside move_down. A pathologically large
+	// goatd: 64-bit child-index arithmetic. In a k-ary heap a node at position
+	// `pos` has children at k*pos+1 .. k*(pos+1). For pos beyond ~INT_MAX/k
+	// that product overflows signed 32-bit int, producing a negative index and
+	// an out-of-bounds heap[] access inside move_down. A pathologically large
 	// bag-adjacency graph (over 5e8 arcs) drove pos past the threshold and
 	// SIGSEGV'd. Computing in long long keeps the heap correct up to its int
 	// id-space limit (heap_end <= id_count <= INT_MAX). Public so the overflow

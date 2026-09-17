@@ -186,6 +186,37 @@ fn augmenting_a_disconnected_side_for_a_separator_keeps_the_running_intersection
     }
 }
 
+/// The glue sorts the bags it wrote into and leaves the rest as they are, so a
+/// side whose bags came out of an algorithm in its own order still comes back
+/// in ascending order and without repeats.
+#[test]
+fn glue_leaves_every_bag_of_both_sides_in_ascending_order() {
+    // Side A arrives in an algorithm's order and needs no augmenting: bag 1
+    // already holds the whole separator, so the loop writes into neither bag.
+    let td_a = TreeDecomposition::from_parts(
+        6,
+        vec![
+            TdBag::from_algorithm_order(vec![2, 0, 1]),
+            TdBag::from_algorithm_order(vec![3, 2, 1]),
+        ],
+        vec![vec![1], vec![0]],
+    );
+    let td_b = make_td_for(6, vec![vec![2, 3, 4], vec![3, 4, 5]], vec![(0, 1)]);
+
+    let glued = glue_at_separator(td_a, td_b, &[2u32, 3u32]).expect("glue should succeed");
+
+    for bag in &glued.bags {
+        assert!(
+            bag.vertices.windows(2).all(|pair| pair[0] < pair[1]),
+            "bag {:?} is out of order or holds a vertex twice",
+            bag.vertices
+        );
+    }
+    glued
+        .validate(&Graph::new(6, []))
+        .expect("the glued decomposition is valid");
+}
+
 #[test]
 fn project_td_keeping_global_ids_preserves_ids() {
     let td = make_test_td();

@@ -120,6 +120,11 @@ impl<'g> Session<'g> {
     fn advance_inner(&mut self, budget: Budget, deadline: Option<Instant>) -> Advance<'_> {
         let mut slice = budget.begin();
         let _wall = slice.wall_guard();
+        // The whole-pass entry points hand their deadline down; a caller
+        // driving the session itself sets one on the budget. Take whichever
+        // there is, so that a rebuild and the setup estimate are bounded the
+        // same way on both paths.
+        let deadline = deadline.or_else(|| slice.deadline());
         loop {
             if self.failed >= self.graph.num_vertices() {
                 slice.record(&mut self.progress);

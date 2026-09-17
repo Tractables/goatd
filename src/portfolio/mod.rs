@@ -2215,7 +2215,8 @@ fn run_portfolio(
     // never wider, and hands the result back as one more candidate so the set
     // compares it the way it compares every other.
     //
-    // The vertex gate is the cheap filter, for the two bitsets the pass holds.
+    // The vertex gate is the cheap filter, for the two n × n bit matrices the
+    // pass holds, at about n²/4 bytes.
     // What it costs in time follows the bags rather than the vertices, so the
     // clock rule is the winner's own size against what is left of the hard
     // deadline, asked before the winner is copied.

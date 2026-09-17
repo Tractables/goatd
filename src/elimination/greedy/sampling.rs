@@ -29,24 +29,34 @@ pub(crate) struct SampleDraw<'a> {
     pub(crate) seed: u64,
 }
 
+/// A vertex's bucket key, and the live vertex count a negative coefficient
+/// counts down from.
+///
+/// That count is the graph's active vertices when the run began, not its
+/// vertex range and not the count as it shrinks: every key in one run has to
+/// measure from the same point, or two vertices scored at different moments
+/// land in the wrong order. Reading it from the range instead would add the
+/// vertices preprocessing already removed to every key, which on a large input
+/// with a small residual is most of the key and pushes the whole run out of
+/// [`BucketMap`]'s dense keys into its overflow map.
 #[derive(Clone, Copy)]
 enum FillPriority {
     Fill,
-    FillDegree(i8),
+    FillDegree { coefficient: i8, live: u64 },
 }
 
 impl FillPriority {
-    fn key(self, fill: u64, degree: u64, vertex_count: u64) -> u64 {
+    fn key(self, fill: u64, degree: u64) -> u64 {
         match self {
             Self::Fill => fill,
-            Self::FillDegree(degree_coefficient) if degree_coefficient >= 0 => {
-                fill.saturating_add(degree.saturating_mul(degree_coefficient as u64))
+            Self::FillDegree { coefficient, .. } if coefficient >= 0 => {
+                fill.saturating_add(degree.saturating_mul(coefficient as u64))
             }
-            Self::FillDegree(degree_coefficient) => {
-                debug_assert!(degree <= vertex_count);
+            Self::FillDegree { coefficient, live } => {
+                debug_assert!(degree <= live);
                 fill.saturating_add(
-                    (vertex_count - degree)
-                        .saturating_mul(u64::from(degree_coefficient.unsigned_abs())),
+                    live.saturating_sub(degree)
+                        .saturating_mul(u64::from(coefficient.unsigned_abs())),
                 )
             }
         }
@@ -82,10 +92,7 @@ fn update_neighbours(
             if let Some(fills) = fills.as_deref_mut() {
                 fills[u as usize] = new_fill;
             }
-            buckets.update(
-                u,
-                priority.key(new_fill, graph.degree(u) as u64, graph.len() as u64),
-            );
+            buckets.update(u, priority.key(new_fill, graph.degree(u) as u64));
         }
     }
 }
@@ -110,10 +117,7 @@ fn seed_bucket(
     if let Some(fills) = fills.as_deref_mut() {
         fills[v as usize] = f;
     }
-    buckets.insert(
-        v,
-        priority.key(f, graph.degree(v) as u64, graph.len() as u64),
-    );
+    buckets.insert(v, priority.key(f, graph.degree(v) as u64));
 }
 
 /// htd-style min-fill elimination: priority = fill only (no secondary degree
@@ -131,16 +135,7 @@ pub(crate) fn eliminate_sampled_min_fill(
     active: Option<&[u32]>,
     scratch: &mut SampleScratch,
 ) -> ElimExit {
-    eliminate_sampled_fill_based(
-        graph,
-        draw,
-        sink,
-        stop,
-        initial_fill,
-        active,
-        FillPriority::Fill,
-        scratch,
-    )
+    eliminate_sampled_fill_based(graph, draw, sink, stop, initial_fill, active, None, scratch)
 }
 
 /// Fill-plus-coefficient-times-degree elimination with weighted sampling from
@@ -163,7 +158,7 @@ pub(crate) fn eliminate_sampled_fill_degree(
         stop,
         initial_fill,
         active,
-        FillPriority::FillDegree(degree_coefficient),
+        Some(degree_coefficient),
         scratch,
     )
 }
@@ -176,7 +171,7 @@ fn eliminate_sampled_fill_based(
     stop: ElimStop,
     initial_fill: Option<&[u64]>,
     active: Option<&[u32]>,
-    priority: FillPriority,
+    degree_coefficient: Option<i8>,
     scratch: &mut SampleScratch,
 ) -> ElimExit {
     let SampleDraw {
@@ -194,6 +189,13 @@ fn eliminate_sampled_fill_based(
     let n = graph.len();
     assert_eq!(weights.len(), n);
     let uniform_mass = uniform_sampling_mass(weights);
+    let priority = match degree_coefficient {
+        None => FillPriority::Fill,
+        Some(coefficient) => FillPriority::FillDegree {
+            coefficient,
+            live: graph.num_active as u64,
+        },
+    };
 
     if graph.should_promote_bitset() {
         graph.promote_bitset();
@@ -346,10 +348,7 @@ fn eliminate_sampled_fill_based(
                 if let Some(fills) = fills.as_deref_mut() {
                     fills[u as usize] = new_fill;
                 }
-                buckets.update(
-                    u,
-                    priority.key(new_fill, graph.degree(u) as u64, graph.len() as u64),
-                );
+                buckets.update(u, priority.key(new_fill, graph.degree(u) as u64));
             }
             update_neighbours(
                 affected,

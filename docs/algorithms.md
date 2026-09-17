@@ -414,8 +414,9 @@ edges until none is left gives a minimal triangulation.
 completion and rebuilds the bags from a perfect elimination ordering of what
 remains. Dropping edges cannot enlarge a clique, so the pass never widens; when
 it improves neither the width nor the total bag size, the input comes back
-unchanged. It holds two bitsets over the graph's vertices, which is why
-`PortfolioConfig::with_triangulation_refinement` gates it on the vertex count.
+unchanged. It holds two `n × n` bit matrices, one row per vertex, so it costs
+about `n²/4` bytes, which is why `PortfolioConfig::with_triangulation_refinement`
+gates it on the vertex count.
 The portfolio applies it to its winner, whatever candidate produced it, and
 hands the result back as one more candidate.
 

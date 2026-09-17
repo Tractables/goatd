@@ -610,8 +610,15 @@ fn augment_for_separator(td: &mut TreeDecomposition, sep: &[u32]) -> Option<usiz
         }
     }
 
+    // `push_unordered` clears the order flag on exactly the bags the loop
+    // wrote to, so those are the ones that need the sort. The rest are in
+    // ascending order already, and neither side can bring a repeat: both are
+    // projections of a validated decomposition, and the two writes above skip
+    // a vertex the bag holds.
     for bag in td.bags.iter_mut() {
-        bag.sort_dedup();
+        if !bag.is_sorted() {
+            bag.sort_dedup();
+        }
     }
 
     Some(anchor)

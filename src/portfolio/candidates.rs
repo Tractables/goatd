@@ -273,14 +273,17 @@ impl CandidateSet {
     pub(super) fn into_candidates(self) -> Vec<Candidate> {
         let mut retained = self.retained;
         retained.sort_by_key(|retained| retained.quality_key);
-        let mut seen = HashSet::with_capacity(retained.len());
+        // One decomposition has nothing to repeat, and a canonical form copies
+        // and sorts every bag of it.
+        let deduplicate = retained.len() > 1;
+        let mut seen = HashSet::with_capacity(if deduplicate { retained.len() } else { 0 });
         retained
             .into_iter()
             .map(|retained| Candidate {
                 decomposition: retained.compaction.apply(retained.decomposition),
                 origin: retained.origin,
             })
-            .filter(|candidate| seen.insert(bag_tree(&candidate.decomposition)))
+            .filter(|candidate| !deduplicate || seen.insert(bag_tree(&candidate.decomposition)))
             .collect()
     }
 

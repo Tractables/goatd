@@ -49,9 +49,9 @@ const DEFAULT_MINIMAL_TRIANGULATION_VERTICES: u32 = 1_000;
 const DEFAULT_MAXIMUM_CARDINALITY_VERTICES: u32 = 40_000;
 
 /// Graph size at or below which the standard portfolio minimalizes the
-/// triangulation behind its winner. The pass holds two bitsets over the
-/// vertices, so its memory grows with the square of this, which is what the
-/// gate is for. What the pass costs in time is not a function of the vertex
+/// triangulation behind its winner. The pass holds two `n × n` bit matrices,
+/// one row per vertex, so it costs about `n²/4` bytes, which is what the gate
+/// is for. What the pass costs in time is not a function of the vertex
 /// count at all — it follows the bags of the decomposition being rebuilt — so
 /// the clock is what keeps it inside the budget, and this only keeps the memory
 /// bounded.
@@ -1056,8 +1056,9 @@ impl PortfolioConfig {
     /// drops nothing, or improves neither the width nor the total bag size, the
     /// winner is returned unchanged.
     ///
-    /// The gate is a vertex count because the pass holds two bitsets over the
-    /// graph's vertices. It is not what keeps the pass inside the budget: the
+    /// The gate is a vertex count because the pass holds two `n × n` bit
+    /// matrices, one row per vertex, at about `n²/4` bytes. It is not what
+    /// keeps the pass inside the budget: the
     /// pass costs about what completing the winner's bags costs, which the
     /// winner says in advance, so the portfolio runs it only while that fits in
     /// what is left of the hard deadline and stops it there if the sweeps run

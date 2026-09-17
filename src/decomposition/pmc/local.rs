@@ -103,8 +103,14 @@ pub(crate) fn local_merge(
                     } else {
                         1
                     };
-                    let cliques =
-                        state.triangulate_pooled(&focus, width, draws, &mut scratch, deadline);
+                    let cliques = state.triangulate_pooled(
+                        &focus,
+                        width,
+                        draws,
+                        &list.held,
+                        &mut scratch,
+                        deadline,
+                    );
                     for clique in cliques {
                         fresh |= list.add(clique);
                     }

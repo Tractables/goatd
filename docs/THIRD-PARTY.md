@@ -61,6 +61,13 @@ a `// goatd:` comment naming the reason:
 - a per-thread touch counter and a touch budget on the two greedy elimination
   passes, in `flow-cutter-pace17/src/greedy_order.{cpp,hpp}`, which is what lets
   those passes be bounded and charged the same way;
+- a caller-owned stop flag, `TWD::g_external_stop` in `IFlowCutter.{cpp,hpp}`,
+  reaching the search through a `should_stop` predicate on FlowCutter's `Config`
+  (`flow-cutter-pace17/src/flow_cutter_config.hpp`), a `stop_now` test in the
+  cutter loops (`flow-cutter-pace17/src/separator.hpp`) and a `ShouldStop`
+  argument on `compute_multilevel_partition` (`IFlowCutter.cpp`), so a search
+  that is already running ends where it holds a result rather than only when it
+  finishes;
 - the GCC `__builtin_ctzll`/`__builtin_popcountll` intrinsics in `bitset.hpp`
   replaced with their C++20 `<bit>` equivalents, and an unused `<sys/time.h>`
   include dropped from `IFlowCutter.cpp`, so the sources compile under MSVC.

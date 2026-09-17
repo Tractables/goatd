@@ -114,7 +114,10 @@ pub(super) fn initial_partition(
     }
 
     let mut best_part = Vec::new();
-    let mut best_cut = u32::MAX;
+    // Wider than the cut it holds, as on the graph side: a hypergraph may
+    // carry a total hyperedge weight of `u32::MAX`, and a sentinel a candidate
+    // can tie leaves `best_part` empty.
+    let mut best_cut = u64::MAX;
 
     // Restart counts: see "Where the two bisectors differ" in the shared
     // partition bookkeeping.
@@ -124,7 +127,7 @@ pub(super) fn initial_partition(
     for _ in 0..num_ggg.min(n) {
         let seed = rng.below(n);
         let part = greedy_growing(hg, seed);
-        let candidate_cut = hyperedge_cut(hg, &part);
+        let candidate_cut = u64::from(hyperedge_cut(hg, &part));
         if candidate_cut < best_cut {
             best_cut = candidate_cut;
             best_part = part;
@@ -136,7 +139,7 @@ pub(super) fn initial_partition(
     for _ in 0..num_rand.min(n) {
         let mut part = random_bisection(&hg.vertex_weights, rng);
         refine_level(hg, &mut part, imbalance, scratch);
-        let candidate_cut = hyperedge_cut(hg, &part);
+        let candidate_cut = u64::from(hyperedge_cut(hg, &part));
         if candidate_cut < best_cut {
             best_cut = candidate_cut;
             best_part = part;

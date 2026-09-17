@@ -1,5 +1,7 @@
 use std::time::{Duration, Instant};
 
+use rustc_hash::FxHashSet;
+
 use super::sets::Adjacency;
 use super::{BagPool, Limits, recombine};
 use crate::{Graph, TreeDecomposition};
@@ -312,6 +314,38 @@ fn the_potential_maximal_clique_test_agrees_with_small_graphs() {
         &adjacency,
         &mut scratch
     ));
+}
+
+/// The cliques the caller already holds are dropped before the
+/// potential-maximal-clique test, which is where the pass over the graph is,
+/// and the rest of the answer is what it was.
+#[test]
+fn a_pooled_triangulation_leaves_out_the_cliques_the_caller_holds() {
+    // The four-cycle, whose potential maximal cliques are its four triangles.
+    let graph = Graph::new(4, [(0, 1), (1, 2), (2, 3), (3, 0)]);
+    let adjacency = Adjacency::of(&graph).expect("the rows fit");
+    let mut scratch = super::sets::Scratch::new(&adjacency);
+    let mut state = super::merge::Loop::new(&graph, &adjacency, Limits::standard(), 0);
+    let focus: Vec<u32> = (0..4).collect();
+
+    // One draw, so the triangulation is the deterministic one and the three
+    // calls below differ only in what they are told the caller holds.
+    let nothing = FxHashSet::default();
+    let cliques = state.triangulate_pooled(&focus, 3, 1, &nothing, &mut scratch, None);
+    assert!(
+        !cliques.is_empty(),
+        "a minimal triangulation of the four-cycle has a potential maximal clique"
+    );
+
+    let first: FxHashSet<_> = std::iter::once(cliques[0].clone()).collect();
+    let rest = state.triangulate_pooled(&focus, 3, 1, &first, &mut scratch, None);
+    let mut expected = cliques.clone();
+    expected.retain(|clique| *clique != cliques[0]);
+    assert_eq!(rest, expected);
+
+    let all: FxHashSet<_> = cliques.iter().cloned().collect();
+    let none = state.triangulate_pooled(&focus, 3, 1, &all, &mut scratch, None);
+    assert!(none.is_empty(), "every clique was already held");
 }
 
 #[test]
