@@ -150,6 +150,41 @@ fn a_corridor_over_the_cap_is_declined_at_the_same_charge() {
     assert_eq!(spent, 2 * 1_200);
 }
 
+/// A corridor inside the vertex cap whose cut hyperedges are not: the same
+/// twenty vertices carry twenty thousand of them, so the network the pass
+/// would build has a node per hyperedge and two arcs, and nothing about the
+/// corridor bounds it. It declines, and charges what it did not walk.
+#[test]
+fn a_network_over_the_arc_cap_is_declined_at_the_same_charge() {
+    // Twenty thousand two-pin hyperedges over twenty vertices, every one of
+    // them cut, so the arc count passes its cap four fifths of the way
+    // through while the corridor stays at twenty.
+    let hyperedges: Vec<Vec<u32>> = (0..20_000u32)
+        .map(|h| vec![h % 20, (h % 20 + 1) % 20])
+        .collect();
+    let hg = Hypergraph::from_hyperedges(20, &hyperedges, None);
+    let mut part: Vec<u8> = (0..20).map(|v| (v % 2) as u8).collect();
+    let before = part.clone();
+
+    let guard = crate::meter::arm(std::time::Instant::now());
+    let start = crate::meter::units_spent();
+    let refined = flow_refine(
+        &hg,
+        &mut part,
+        0.25,
+        &mut FmScratch::new(),
+        &mut BisectionStop::new(None),
+    );
+    let spent = crate::meter::units_spent() - start;
+    drop(guard);
+
+    assert!(!refined);
+    assert_eq!(part, before);
+    // As for the corridor cap: the counts walk every pin once, and the
+    // corridor charges for every pin of every cut hyperedge either way.
+    assert_eq!(spent, 2 * 40_000);
+}
+
 /// The finest level's scratch outlives a pass: it is held across the levels of
 /// a sweep and across the sweeps of a bisection, and the corridor is stamped
 /// with a pass number rather than cleared. A scratch that has been used already

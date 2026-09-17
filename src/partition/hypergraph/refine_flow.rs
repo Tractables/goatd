@@ -139,6 +139,19 @@ impl FlowNetwork {
 /// The largest corridor the flow pass will build a network over.
 const MAX_CORRIDOR: usize = 500;
 
+/// The largest network it will build over one. The corridor cap bounds the
+/// vertex side — a node and a terminal arc each — and this bounds the other:
+/// the cut hyperedges, a node each and an arc per pin. Nothing else bounds
+/// them, and they are not bounded by the corridor, because the same few
+/// hundred vertices can be the cut pins of any number of hyperedges. A
+/// variable in a great many clauses is that shape.
+///
+/// Read it as sixty-four cut hyperedges per corridor vertex, which is far
+/// above what a corridor of a few hundred vertices ordinarily carries: this is
+/// a bound on the structure, like the bitset's size cap, not a gate tuned
+/// against a time budget.
+const MAX_CORRIDOR_ARCS: usize = 64 * MAX_CORRIDOR;
+
 /// Working storage for the finest level: the boundary the localized passes are
 /// seeded from, and everything [`flow_refine`] builds its network out of. Held
 /// across the levels of a sweep and across the sweeps of a bisection.
@@ -224,13 +237,15 @@ pub(super) fn flow_refine(
     // out of the network entirely, which is what keeps it small enough for a
     // whole-corridor max-flow to be worth running.
     //
-    // Max-flow cost grows with corridor size, so a corridor over the cap skips
-    // the pass rather than pays for it. The count is kept as the corridor is
-    // marked, so a hypergraph far over the cap stops at the cap instead of
-    // walking every cut hyperedge's pins first.
+    // Max-flow cost grows with the network, so a corridor over either cap
+    // skips the pass rather than pays for it. Both counts are kept as the
+    // corridor is marked, so a hypergraph far over a cap stops at it instead
+    // of walking every cut hyperedge's pins first.
+    let mut arcs = 0usize;
     for (hyperedge, counts) in pin_counts.iter().enumerate() {
         if counts[0] > 0 && counts[1] > 0 {
             finest.cut_hyperedges.push(hyperedge);
+            arcs += usize::try_from(counts[0] + counts[1]).unwrap_or(usize::MAX);
             for &vertex in hg.charged_hyperedge_pins(hyperedge) {
                 let vertex = vertex as usize;
                 if finest.stamp[vertex] != finest.pass {
@@ -238,7 +253,7 @@ pub(super) fn flow_refine(
                     finest.corridor.push(vertex);
                 }
             }
-            if finest.corridor.len() > MAX_CORRIDOR {
+            if finest.corridor.len() > MAX_CORRIDOR || arcs > MAX_CORRIDOR_ARCS {
                 // The pins the walk stops short of are charged all the same: a
                 // budgeted run repeats on the meter, so skipped work still has
                 // to pay for itself. A cut hyperedge's two counts add up to its
