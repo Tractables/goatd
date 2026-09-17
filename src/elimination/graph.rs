@@ -1224,9 +1224,11 @@ impl EliminationGraph {
     /// `nbrs` — a probe per indexed row, a full pass over the others — as
     /// opposed to the size of the neighbourhood they are handed.
     ///
-    /// The metering guard keeps the summation off the un-metered path:
-    /// [`crate::meter::charge`] is inert there, so counting for it
-    /// would be pure overhead in every run that asked for no unit budget.
+    /// The metering guard keeps the summation off the un-metered path: the
+    /// units only bound an armed run's budget, and adding them up costs a
+    /// probe per neighbour — the same probe the scan they price is reporting.
+    /// An unarmed run charges less here and paces its clock reads by the
+    /// iteration count instead, which is what that ceiling is for.
     #[inline]
     fn nbr_scan_units(&self, nbrs: &[u32]) -> u64 {
         if !crate::meter::is_armed() {

@@ -70,6 +70,12 @@ pub fn is_armed() -> bool {
 /// while armed, but the library paces its deadline reads by it either way, so
 /// a loop whose iterations differ in cost by orders of magnitude can ask for
 /// the clock on the work it has done rather than on the iterations it has run.
+///
+/// Two callers charge only while armed, each because working the figure out
+/// costs about as much as the work it prices and neither has a loop inside it
+/// to pace: the vendored FlowCutter backend's build, and the row-lookup term
+/// of an elimination. An unarmed run there paces by the iteration count
+/// instead, which bounds the clock reads anyway.
 #[inline]
 pub fn charge(units: u64) {
     SPENT.with(|m| m.set(m.get().saturating_add(units)));
