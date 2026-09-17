@@ -24,6 +24,7 @@ THE SOFTWARE.
 
 #include <bit>  // goatd: countr_zero/popcount replace the GCC builtins (MSVC)
 #include <cstdint>
+#include <new>  // goatd: std::bad_alloc for the allocation failure below
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -37,7 +38,9 @@ namespace sspp {
 // goatd: defense in depth. The original Bitset implementation called malloc
 // with no NULL check, so allocation failure caused SIGSEGV inside the bitset
 // writes. Reports the failure on stderr, naming the byte count and this
-// allocator, and then aborts.
+// allocator, and then throws: the FFI shim catches it and the caller gets a
+// missing backend result, the same answer the arc-count budget gives, rather
+// than losing the process.
 // The Rust-side FlowCutter vertex guard should normally reject an oversized
 // matrix before construction; this is the safety net.
 inline void* bitset_xmalloc(size_t bytes) {
@@ -46,7 +49,7 @@ inline void* bitset_xmalloc(size_t bytes) {
     std::fprintf(stderr,
                  "memory allocation of %zu bytes failed (sspp::Bitset)\n",
                  bytes);
-    std::abort();
+    throw std::bad_alloc();
   }
   return p;
 }
@@ -77,9 +80,13 @@ class Bitset {
   Bitset& operator=(const Bitset& other) {
     if (this != &other) {
       if (chunks_ != other.chunks_) {
+        // goatd: allocate before freeing, so a failed allocation leaves the
+        // bitset holding the buffer it had rather than a dangling pointer for
+        // the destructor.
+        uint64_t* fresh = (uint64_t*)bitset_xmalloc(other.chunks_*sizeof(uint64_t));
         std::free(data_);
+        data_ = fresh;
         chunks_ = other.chunks_;
-        data_ = (uint64_t*)bitset_xmalloc(chunks_*sizeof(uint64_t));
       }
       for (size_t i=0;i<chunks_;i++){
         data_[i] = other.data_[i];

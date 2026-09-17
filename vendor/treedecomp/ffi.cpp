@@ -19,6 +19,20 @@ static void add_edges(TWD::Graph& graph, int num_edges, const int* edges) {
     }
 }
 
+// The edges importGraph will write, which is what the arc arrays have to hold.
+// addEdge drops a repeated edge and importGraph skips a self-loop, so the
+// caller's count is an upper bound; sizing from it would leave the tail of the
+// arc arrays uninitialized for input that repeats an edge.
+static int imported_edge_count(const TWD::Graph& g) {
+    int count = 0;
+    for (int i = 0; i < g.numNodes(); i++) {
+        for (int j : g.Neighbors(i)) {
+            if (i < j) count++;
+        }
+    }
+    return count;
+}
+
 // Build the graph the backend imports from, and release it again.
 //
 // TWD::Graph holds one adjacency bitset per vertex — n * ceil(n/64) * 8 bytes,
@@ -29,7 +43,8 @@ static std::unique_ptr<TWD::IFlowCutter> import_graph(int num_nodes, int num_edg
                                                       const int* edges) {
     TWD::Graph g(num_nodes);
     add_edges(g, num_edges, edges);
-    auto fc = std::make_unique<TWD::IFlowCutter>(num_nodes, num_edges, /*verb=*/0);
+    auto fc = std::make_unique<TWD::IFlowCutter>(num_nodes, imported_edge_count(g),
+                                                 /*verb=*/0);
     fc->importGraph(g);
     return fc;
 }

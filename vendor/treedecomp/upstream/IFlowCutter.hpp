@@ -45,7 +45,10 @@ namespace TWD {
 // search wherever a passed deadline ends it. Null when the caller has set none.
 // Read only, and only at the points the loop already reads its clock, so the
 // caller may set the byte from a signal handler.
-extern const volatile unsigned char* g_external_stop;
+//
+// Per thread, like the greedy touch counter beside it: the shim writes it on
+// every call, so two threads computing at once do not write one pointer.
+extern thread_local const volatile unsigned char* g_external_stop;
 
 struct SeparatorOutput {
   std::vector<int> separator;   // vertex IDs in input-node-id space

@@ -57,7 +57,7 @@ using namespace std;
 using namespace TWD;
 
 namespace TWD {
-const volatile unsigned char* g_external_stop = nullptr;
+thread_local const volatile unsigned char* g_external_stop = nullptr;
 }
 
 // goatd: whether the caller has asked for the search to end. Cheap enough to
@@ -770,9 +770,11 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
 
   try{
     {
-      preorder = compute_preorder(compute_successor_function(tail, head));
-      for(int i=0; i<tail.image_count(); ++i)
-        preorder[i] = i;
+      // goatd: the computed preorder was overwritten with the identity on the
+      // next line, so the traversal and the two graph-sized arrays it builds
+      // are skipped and the identity is built directly. The chain calls below
+      // stay: they leave every value where it is and set image_count.
+      preorder = identity_permutation(tail.image_count());
       inv_preorder = inverse_permutation(preorder);
       tail = chain(std::move(tail), inv_preorder);
       head = chain(std::move(head), inv_preorder);
@@ -954,9 +956,8 @@ SeparatorOutput IFlowCutter::computeSeparator(int64_t conf_steps, int conf_iters
 
   try {
     // Sort arcs first by tail then by head (matches constructTD_timed).  The
-    // preorder permutation in constructTD_timed is immediately overwritten to
-    // identity (lines 622–623), so node IDs are already in input space; skip
-    // the preorder block entirely.
+    // preorder permutation in constructTD_timed is the identity, so node IDs
+    // are already in input space; skip the preorder block entirely.
     {
       auto p = sort_arcs_first_by_tail_second_by_head(tail, head);
       tail = chain(p, std::move(tail));
