@@ -699,12 +699,10 @@ impl PortfolioConfig {
     /// A caller who wants the schedule the budget was measured for wants
     /// [`PortfolioConfig::standard_with_budget`].
     ///
-    /// The bipartite lift and the recombination stage are both off here. The
-    /// lift runs a portfolio of its own on a share of the window and the
-    /// recombination stage takes its time off the end of one, and this set has
-    /// no window to give either. [`PortfolioConfig::with_bipartite_lift`] and
-    /// [`PortfolioConfig::with_recombination`] turn them on without the
-    /// budgeted set's other changes.
+    /// The bipartite lift, the recombination stage, the merge loop and the
+    /// local re-triangulation are all off here. Each takes a share of a window
+    /// this set does not have, so turning one on without also setting a soft
+    /// budget is refused rather than ignored.
     pub fn standard() -> Self {
         Self {
             soft_budget: None,
@@ -885,6 +883,9 @@ impl PortfolioConfig {
     /// sequence either way, so the even restarts are the candidates a
     /// portfolio with no band runs, seed for seed, and the odd ones are what
     /// the band adds. Off, every restart draws from the band.
+    ///
+    /// A band of zero is the exact minimum on every restart, so turning this
+    /// on with one is an error rather than a setting that decides nothing.
     pub fn with_sample_band_alternate(mut self, alternate: bool) -> Self {
         self.sample_band_alternate = alternate;
         self
@@ -1076,9 +1077,9 @@ impl PortfolioConfig {
     ///
     /// The stage is given what its search is estimated to cost, never more than
     /// a share of the hard window, and it is taken off the end, so every other
-    /// candidate stops that much earlier. A run with no budget at all has no
-    /// window to take a share of, and does not run the stage. The gate is a
-    /// vertex count because the search costs a pass over the graph per bag in
+    /// candidate stops that much earlier. A run with no soft budget has no
+    /// window to take a share of, so setting this without one is an error. The
+    /// gate is a vertex count because the search costs a pass over the graph per bag in
     /// the pool: above it the reserve the stage would need is more of the
     /// window than it can be worth. What the search holds is capped separately,
     /// by a constant the graph's size does not enter.
@@ -1104,9 +1105,9 @@ impl PortfolioConfig {
     /// already has.
     ///
     /// Like [`PortfolioConfig::with_recombination`] it is given a share of the
-    /// hard window taken off the end, so a run with no budget does not run it,
-    /// and the gate is a vertex count because its search costs a pass over the
-    /// graph per bag of the list.
+    /// hard window taken off the end, so setting this on a run with no soft
+    /// budget is an error, and the gate is a vertex count because its search
+    /// costs a pass over the graph per bag of the list.
     pub fn with_merge_loop(mut self, max_vertices: u32) -> Self {
         self.merge_loop = Some(max_vertices);
         self
@@ -1128,9 +1129,9 @@ impl PortfolioConfig {
     /// already has.
     ///
     /// Like [`PortfolioConfig::with_recombination`] it is given a share of the
-    /// hard window taken off the end, so a run with no budget does not run it,
-    /// and the gate is a vertex count because its search costs a pass over the
-    /// graph per bag of the list.
+    /// hard window taken off the end, so setting this on a run with no soft
+    /// budget is an error, and the gate is a vertex count because its search
+    /// costs a pass over the graph per bag of the list.
     pub fn with_local_merge(mut self, max_vertices: u32) -> Self {
         self.local_merge = Some(max_vertices);
         self
@@ -1171,6 +1172,9 @@ impl PortfolioConfig {
     /// of the schedule. The stage is one candidate among the others: the
     /// portfolio keeps whichever decomposition is narrower, so it costs time
     /// and never width.
+    ///
+    /// The share comes out of the soft budget, so setting this on a run with
+    /// no soft budget is an error.
     pub fn with_bipartite_lift(mut self, edge_factor: f64) -> Self {
         self.bipartite_lift = Some(edge_factor);
         self
@@ -1291,6 +1295,46 @@ pub(super) fn validate(config: PortfolioConfig) -> Result<(), Error> {
             "portfolio hedge reserve {} is not a fraction in 0 < f <= 1",
             config.hedge_reserve
         )));
+    }
+    // Four stages take their time off a window a run with no soft budget does
+    // not have, so each gate set without one asks for a stage that cannot run.
+    // The command line refuses the equivalent flags; this is where a library
+    // caller meets the same rule. `standard` leaves all four off, and the
+    // bipartite lift's sub-runs carry the parent's budget, so neither reaches
+    // this.
+    if config.soft_budget.is_none() {
+        for (gated, stage, window) in [
+            (
+                config.bipartite_lift.is_some(),
+                "bipartite lift",
+                "soft budget",
+            ),
+            (
+                config.recombination.is_some(),
+                "recombination stage",
+                "hard window",
+            ),
+            (config.merge_loop.is_some(), "merge loop", "hard window"),
+            (
+                config.local_merge.is_some(),
+                "local re-triangulation stage",
+                "hard window",
+            ),
+        ] {
+            if gated {
+                return Err(Error::InvalidInput(format!(
+                    "portfolio {stage} runs on a share of the {window}, and a run with \
+                     no soft budget has none"
+                )));
+            }
+        }
+    }
+    // A band of zero is the exact minimum on every restart, so alternating
+    // between it and itself decides nothing.
+    if config.sample_band_alternate && config.sample_band == 0 {
+        return Err(Error::InvalidInput(
+            "portfolio alternating sample band needs a band above zero to alternate with".into(),
+        ));
     }
     Ok(())
 }
