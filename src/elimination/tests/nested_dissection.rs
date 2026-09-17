@@ -1,6 +1,7 @@
 use crate::elimination::execution::{ElimExit, ElimSink, ElimStop};
 use crate::elimination::graph::EliminationGraph;
 use crate::elimination::nested_dissection::*;
+use crate::graph::LocalIds;
 
 /// The parameters every test here runs under, varying only the base-case
 /// threshold: no deadline, seed 0, and the balance tolerance the production

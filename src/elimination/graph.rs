@@ -57,6 +57,25 @@ fn is_canonical(edges: &[(u32, u32)]) -> bool {
     true
 }
 
+/// Whether an edge list holds each undirected edge at most once, which is the
+/// contract [`EliminationGraph::from_unique_edges`] builds on. It sorts a copy
+/// of the list, so it is only called from a `debug_assert!`, and only up to a
+/// size where that sort is cheaper than the build it guards: the callers that
+/// make the promise are exercised by small graphs in the tests, and a long list
+/// would make a debug run of the nested-dissection recursion pay a sort per
+/// component.
+fn holds_each_edge_once(edges: &[(u32, u32)]) -> bool {
+    if edges.len() > 4096 {
+        return true;
+    }
+    let mut seen: Vec<(u32, u32)> = edges
+        .iter()
+        .map(|&(u, v)| if u <= v { (u, v) } else { (v, u) })
+        .collect();
+    seen.sort_unstable();
+    seen.windows(2).all(|pair| pair[0] != pair[1])
+}
+
 /// Whether a graph of `n` vertices and `num_edges` edges is kept as a flat
 /// bitset indexed by vertex id: small enough for the bitset to fit and dense
 /// enough for it to win.
@@ -486,7 +505,7 @@ impl EliminationGraph {
             // graph goes to bitset mode is too, and the row maps that mode
             // drops are not built in the first place.
             let index_rows = !bitset_mode(n, edges.len());
-            g.fill_rows_from_canonical(edges, index_rows);
+            g.fill_rows(edges, index_rows);
         } else {
             for &(u, v) in edges {
                 if u != v && !g.row_contains(u, v) {
@@ -502,20 +521,50 @@ impl EliminationGraph {
         g
     }
 
-    /// Fill the adjacency rows from an edge list already in the form
-    /// [`crate::Graph::edges`] guarantees.
+    /// Build from an edge list that holds each undirected edge once and no
+    /// self-loop, in any order.
     ///
-    /// Every production caller passes such a list, and there the membership
-    /// test the general path runs per edge answers "no" every time: with the
-    /// list sorted and deduplicated, no edge can already be in a row. Counting
-    /// the degrees first also lets each row be allocated once and each map be
-    /// built once, instead of growing the row and inserting into the map edge
-    /// by edge. The rows come out in the order the general path leaves them:
-    /// a vertex sees its neighbours below it in increasing order, then those
-    /// above it, because that is the order the sorted list visits them in.
-    /// With `index_rows` false no row gets a membership map, for a caller that
-    /// is about to switch the graph to bitset mode and drop them anyway.
-    fn fill_rows_from_canonical(&mut self, edges: &[(u32, u32)], index_rows: bool) {
+    /// The graph comes out exactly as [`Self::from_edges`] leaves it. On such a
+    /// list the membership test that path runs per edge answers "no" every
+    /// time, so both paths push every edge into both rows in list order, give a
+    /// membership map to every row that reaches [`ROW_INDEX_THRESH`], end with
+    /// `num_edges == edges.len()` and take the same bitset decision from it.
+    ///
+    /// Sorting the list first would give the same graph only up to row order,
+    /// and row order reaches the bags a later min-fill emits, so the callers
+    /// that build a list vertex by vertex come here instead.
+    pub(super) fn from_unique_edges(n: u32, edges: &[(u32, u32)]) -> Self {
+        let n = n as usize;
+        let mut g = EliminationGraph::new(n);
+        for &(u, v) in edges {
+            assert!(
+                (u as usize) < n && (v as usize) < n,
+                "elimination edge ({u}, {v}) has an endpoint outside 0..{n}"
+            );
+            debug_assert_ne!(u, v, "from_unique_edges was given the self-loop ({u}, {u})");
+        }
+        debug_assert!(holds_each_edge_once(edges), "an edge was given twice");
+        g.fill_rows(edges, !bitset_mode(n, edges.len()));
+        if bitset_mode(n, g.num_edges) {
+            g.build_bitset(false);
+        }
+        g
+    }
+
+    /// Fill the adjacency rows from an edge list that holds each undirected
+    /// edge once and no self-loop — what [`crate::Graph::edges`] guarantees,
+    /// and what [`Self::from_unique_edges`]'s callers promise.
+    ///
+    /// The membership test the general path in [`Self::from_edges`] runs per
+    /// edge answers "no" every time on such a list, so there is nothing to
+    /// drop. Counting the degrees first also lets each row be allocated once
+    /// and each map be built once, instead of growing the row and inserting
+    /// into the map edge by edge. Each row ends in the order the list visits
+    /// it, which for a sorted list means a vertex sees its neighbours below it
+    /// in increasing order and then those above it. With `index_rows` false no
+    /// row gets a membership map, for a caller that is about to switch the
+    /// graph to bitset mode and drop them anyway.
+    fn fill_rows(&mut self, edges: &[(u32, u32)], index_rows: bool) {
         let mut degree = vec![0u32; self.adj.len()];
         for &(u, v) in edges {
             degree[u as usize] += 1;

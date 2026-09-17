@@ -21,6 +21,7 @@ use super::graph::EliminationGraph;
 use super::greedy::eliminate_min_fill;
 use super::vertex_cover_separator;
 use crate::deadline::expired;
+use crate::graph::{LocalIds, NOT_IN_SET};
 use crate::partition::{GraphBisectionConfig, multilevel_graph_bisect_until};
 
 /// Default cutoff: once the induced subgraph has ≤ this many vertices, fall
@@ -222,7 +223,7 @@ fn base_min_fill_order(
     let salt = params.salt;
     let n = active.len();
     let local_edges = local_edges_for(active, edges, local);
-    let mut local_graph = EliminationGraph::from_edges(n as u32, &local_edges);
+    let mut local_graph = EliminationGraph::from_unique_edges(n as u32, &local_edges);
     let local_salt: Vec<u32> = active.iter().map(|&v| salt[v as usize]).collect();
     let mut steps = ElimSteps::default();
     let exit = eliminate_min_fill::<false>(
@@ -250,53 +251,17 @@ fn base_min_fill_order(
     order
 }
 
-/// The entry for a vertex that is not in the set currently marked.
-const NOT_IN_SET: u32 = u32::MAX;
-
-/// One array over all of the graph's vertices, holding each vertex's position
-/// in the set a level is working on.
-///
-/// A level renumbers the same edge list three times — once for the bisector and
-/// once for each side it recurses on — and the recursion does that at every
-/// level, so each lookup is one array read rather than a hash. Marking a set
-/// and clearing it again are both linear in the set, so the array itself is
-/// never scanned.
-pub(super) struct LocalIds {
-    position: Vec<u32>,
-}
-
-impl LocalIds {
-    /// Room for the vertex ids `0..vertices`, nothing marked.
-    pub(super) fn new(vertices: usize) -> Self {
-        Self {
-            position: vec![NOT_IN_SET; vertices],
-        }
-    }
-
-    /// Run `body` with `set[i]` marked at `i` and every other vertex left at
-    /// [`NOT_IN_SET`], then clear the marks again. `set` holds each vertex once.
-    fn marking<T>(&mut self, set: &[u32], body: impl FnOnce(&[u32]) -> T) -> T {
-        for (position, &vertex) in set.iter().enumerate() {
-            self.position[vertex as usize] = position as u32;
-        }
-        let result = body(&self.position);
-        for &vertex in set {
-            self.position[vertex as usize] = NOT_IN_SET;
-        }
-        result
-    }
-}
-
 /// Translate `edges` (global IDs) into dense 0..n local IDs where position `i`
 /// in `active` becomes local ID `i`. Every endpoint must be in `active`.
 ///
 /// Deliberately NOT
-/// [`induced_edges`](crate::graph::induced_edges), which
-/// renumbers the same way but hands back a sorted edge list. The order and
-/// orientation of what comes out here reach [`EliminationGraph::from_edges`], which fills
-/// each adjacency list in the order it is handed, and the base case's min-fill
-/// emits each bag in adjacency order — so sorting this list would change the
-/// elimination orders this function exists to produce.
+/// [`induced_edges`](crate::graph::induced_edges), which renumbers through the
+/// same scratch index but hands back a sorted edge list. The order and
+/// orientation of what comes out here reach
+/// [`EliminationGraph::from_unique_edges`], which fills each adjacency list in
+/// the order it is handed, and the base case's min-fill emits each bag in
+/// adjacency order — so sorting this list would change the elimination orders
+/// this function exists to produce.
 fn local_edges_for(active: &[u32], edges: &[(u32, u32)], local: &mut LocalIds) -> Vec<(u32, u32)> {
     local.marking(active, |position| {
         edges

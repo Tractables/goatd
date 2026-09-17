@@ -501,7 +501,12 @@ fn run_order_per_component(
                     local_of[v as usize] = i as u32;
                 }
                 // Extract component edges in local indexing (bitset-aware: adj
-                // may be stale after preprocess).
+                // may be stale after preprocess). The `u > v` test emits each
+                // edge from its lower endpoint alone, so the list holds every
+                // edge once and no self-loop — but the vertices come out in
+                // component order, not local-id order, so the list is not
+                // sorted and `from_edges` would test each edge against the
+                // growing row.
                 let mut comp_edges: Vec<(u32, u32)> = Vec::new();
                 for &v in comp {
                     nbrs_buf.clear();
@@ -512,7 +517,7 @@ fn run_order_per_component(
                         }
                     }
                 }
-                let built = EliminationGraph::from_edges(comp.len() as u32, &comp_edges);
+                let built = EliminationGraph::from_unique_edges(comp.len() as u32, &comp_edges);
                 let units = crate::meter::units_spent().saturating_sub(spent_before);
                 &slot.insert((built, units)).0
             }
