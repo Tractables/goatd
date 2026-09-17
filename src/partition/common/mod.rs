@@ -67,7 +67,9 @@ pub(super) fn max_vcycles(num_vertices: usize) -> usize {
 /// answer is sticky: the first loop to see the cutoff reached sets it, and
 /// every enclosing loop reads it and stops too, without another clock read.
 ///
-/// With no cutoff nothing here reads a clock, which is what lets
+/// With no cutoff nothing here reads a clock — a caller's stop flag and an
+/// enclosing wall cutoff are still read, and neither of those is a clock read
+/// until one is set — which is what lets
 /// [`multilevel_graph_bisect`](crate::partition::multilevel_graph_bisect) say
 /// that one seed gives one bisection.
 pub(super) struct BisectionStop {
@@ -88,7 +90,7 @@ impl BisectionStop {
     /// Count one iteration and report whether the bisection should stop,
     /// reading the clock as often as the rest of the library does.
     pub(super) fn reached(&mut self) -> bool {
-        if !self.stopped && self.deadline.is_some() && self.pacer.due() && expired(self.deadline) {
+        if !self.stopped && self.pacer.due() && expired(self.deadline) {
             self.stopped = true;
         }
         self.stopped

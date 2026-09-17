@@ -6,6 +6,7 @@
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use goatd::partition::{GraphBisectionConfig, multilevel_graph_bisect};
 use goatd::portfolio::{PortfolioConfig, decompose};
 use goatd::{Graph, stop_flag};
 
@@ -37,7 +38,16 @@ fn a_set_stop_flag_returns_the_decomposition_found_so_far() {
     let started = Instant::now();
     let result = decompose(&graph, &weights, 0, config);
     let elapsed = started.elapsed();
+    // The bisection reads the flag too, and the public entry point answers a
+    // stopped bisection with the index split rather than a panic.
+    let bisection = multilevel_graph_bisect(&graph, GraphBisectionConfig::new(0.1, 7));
     stop_flag().store(false, Ordering::Relaxed);
+
+    let bisection = bisection.expect("a stopped bisection is not an error");
+    assert!(
+        bisection.parts().contains(&0) && bisection.parts().contains(&1),
+        "a stopped bisection still names both sides",
+    );
 
     let td = result.expect("the portfolio still returns a decomposition");
     td.validate(&graph)
