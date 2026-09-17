@@ -23,14 +23,16 @@ and the decomposition, each lighting up the other under the pointer:
 `index.html`, `styles.css`, `app.js`, `worker.js`, `logo.png` and one graph
 file, `mcc2025-track1-093.gr`, beside the Emscripten build of the crate. The
 solver runs in a worker, so the page stays live during a run and a run can be
-cancelled. A row of example graphs runs from a 6×6 grid through the primal
-graph of a Model Counting Competition CNF to a grid of 10,000 vertices, a
-`.gr` file can be opened with a button or dropped on the page, the `.td`
-text can be copied or saved, and the address bar carries the example and the
-settings, so a result can be linked to. There is no framework, no
-bundler and nothing fetched from anywhere else. It is served at
-<https://tractables.github.io/goatd/> and follows `main`, so it may be ahead
-of the latest release.
+cancelled. For the elimination orders and the portfolio the budget in the
+settings is a soft one and a hard cutoff at twice it ends the construction, so
+such a solve can take about twice the budget. A row of example graphs runs from
+a 6×6 grid through the primal graph of a Model Counting Competition CNF to a
+grid of 10,000 vertices, a `.gr` file can be opened with a button or dropped on
+the page, the `.td` text can be copied or saved, and the address bar carries
+the example and the settings, so a result can be linked to. There is no
+framework, no bundler and nothing fetched from anywhere else. It is served at
+<https://tractables.github.io/goatd/> and follows `main`, so it may be ahead of
+the latest release.
 
 ## Build locally
 

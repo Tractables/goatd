@@ -41,8 +41,8 @@ graph = goatd.Graph(4, [(0, 1), (1, 2), (2, 3), (3, 0), (0, 2)])
 td = goatd.decompose(graph, order="portfolio", budget_ms=100)
 
 td.treewidth        # 2
-td.bags             # [[0, 1, 2], [0, 2, 3], [0, 3], [3]]
-td.edges            # [(0, 1), (1, 2), (2, 3)] — pairs of positions in td.bags
+td.bags             # lists of graph vertices, one per bag
+td.edges            # pairs of positions in td.bags
 td.validate(graph)  # raises goatd.Error if td does not decompose graph
 print(td.to_td())   # PACE .td text
 ```
@@ -56,7 +56,9 @@ the two greedy orders; `steps` gives flowcutter a repeatable step budget in
 place of a clock; `refine=True` re-cuts the result along FlowCutter separators.
 An argument the chosen order cannot act on raises `ValueError` naming both.
 Budgets are milliseconds, so the name is `budget_ms` rather than the command
-line's `--budget`.
+line's `--budget`. For the elimination orders and the portfolio `budget_ms` is
+a soft budget and a hard cutoff at twice it ends the construction, so such a
+call can take about `2 * budget_ms`.
 
 `goatd.Graph.from_gr` and `TreeDecomposition.from_td` read the PACE formats;
 `to_gr` and `to_td` write them.

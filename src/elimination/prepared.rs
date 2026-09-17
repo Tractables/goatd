@@ -51,7 +51,9 @@ impl RunConfig {
         self
     }
 
-    /// Abort when an elimination bag exceeds `bound`; `None` disables pruning.
+    /// Abort as soon as an elimination bag would give a width greater than
+    /// `bound`; a candidate of width exactly `bound` still completes. `None`
+    /// disables pruning.
     pub const fn with_width_bound(mut self, bound: Option<u32>) -> Self {
         self.width_bound = bound;
         self
@@ -77,6 +79,7 @@ pub enum Cutoff {
 }
 
 /// A completed original-graph decomposition or the reason no candidate exists.
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RunOutcome {
     /// The elimination order finished.

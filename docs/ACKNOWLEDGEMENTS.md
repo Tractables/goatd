@@ -51,6 +51,27 @@ Vendored under `vendor/treedecomp/upstream/`:
   Networks](https://doi.org/10.1111/j.1467-8640.2005.00274.x).* Computational
   Intelligence 21(3):286–305, 2005. The shared elimination preprocessor applies
   the islet, twig, series, simplicial, and almost-simplicial rules.
+- Vincent Bouchitté, Ioan Todinca. *[Treewidth and Minimum Fill-in: Grouping
+  the Minimal Separators](https://doi.org/10.1137/S0097539799359683).* SIAM
+  Journal on Computing 31(1):212–232, 2001. The recombination and merge stages
+  run their dynamic programme for treewidth.
+- Hisao Tamaki. *[Computing Treewidth via Exact and Heuristic Lists of Minimal
+  Separators](https://doi.org/10.1007/978-3-030-34029-2_15).* SEA 2019. Those
+  stages run the restricted form of that programme, over a list of candidate
+  bags rather than every potential maximal clique of the graph.
+- Hisao Tamaki. *[Heuristic Computation of Exact
+  Treewidth](https://doi.org/10.4230/LIPIcs.SEA.2022.17).* SEA 2022 (LIPIcs
+  233:17). `PortfolioConfig::with_merge_loop` runs this improvement loop, which
+  merges the current list of bags with an independently built one.
+- Anne Berry, Jean R. S. Blair, Pinar Heggernes, Barry W. Peyton. *[Maximum
+  Cardinality Search for Computing Minimal Triangulations of
+  Graphs](https://doi.org/10.1007/s00453-004-1084-3).* Algorithmica
+  39(4):287–298, 2004. MCS-M is the candidate order
+  `PortfolioConfig::with_minimal_triangulation` adds.
+- Donald J. Rose, Robert E. Tarjan, George S. Lueker. *[Algorithmic Aspects of
+  Vertex Elimination on Graphs](https://doi.org/10.1137/0205021).* SIAM Journal
+  on Computing 5(2):266–283, 1976. The fill-dropping pass uses their criterion
+  for when removing an added edge leaves the graph chordal.
 
 The [**PACE Implementation Challenge**](https://pacechallenge.org/2017/treewidth/)
 treewidth tracks supplied the `.gr` and `.td` formats this crate reads and
