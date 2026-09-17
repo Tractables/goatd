@@ -476,3 +476,43 @@ fn neighbour_fill_updates_match_recounts_on_a_large_graph() {
     assert_updates_match_recounts(17_000, &edges, false, 9, 300, 100);
     assert_updates_match_recounts(17_000, &edges, true, 9, 300, 100);
 }
+
+#[test]
+fn the_initial_fill_pass_leaves_no_cache_when_it_is_abortable_and_the_clock_has_passed() {
+    use std::time::{Duration, Instant};
+
+    use crate::elimination::graph::EliminationGraph;
+
+    let graph = EliminationGraph::from_edges(4, &[(0, 1), (1, 2), (2, 3), (0, 2)]);
+    let past = Instant::now() - Duration::from_secs(1);
+    let counted = |_vertex| 1;
+
+    assert_eq!(
+        super::initial_fill(&graph, None, true, counted),
+        Some(vec![1, 1, 1, 1]),
+        "no deadline and no stop is a pass that finishes",
+    );
+    assert_eq!(
+        super::initial_fill(&graph, Some(past), true, counted),
+        None,
+        "an abortable pass stops at its deadline",
+    );
+    assert_eq!(
+        super::initial_fill(&graph, Some(past), false, counted),
+        Some(vec![1, 1, 1, 1]),
+        "a pass that has to leave a complete decomposition runs to the end",
+    );
+}
+
+#[test]
+fn the_initial_fill_pass_counts_nothing_for_an_eliminated_vertex() {
+    use crate::elimination::graph::EliminationGraph;
+
+    let mut graph = EliminationGraph::from_edges(4, &[(0, 1), (1, 2), (2, 3), (0, 2)]);
+    graph.active[1] = false;
+
+    assert_eq!(
+        super::initial_fill(&graph, None, true, |_| 7),
+        Some(vec![7, 0, 7, 7]),
+    );
+}

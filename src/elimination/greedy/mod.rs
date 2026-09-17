@@ -1324,20 +1324,35 @@ impl<'a> BucketMap<'a> {
     }
 }
 
-/// Fill counts for every active vertex via adj-based `FillScratch`, so the
-/// O(n·d²) computation can be cached once and reused across multiple seeds.
-pub(super) fn compute_initial_fill(graph: &EliminationGraph) -> Vec<u64> {
-    let n = graph.len();
-    let mut scratch = FillScratch::new(n);
-    (0..n)
-        .map(|v| {
-            if graph.active[v] {
-                scratch.fill_count_of(graph, v as u32)
-            } else {
-                0
-            }
-        })
-        .collect()
+/// Fill counts for every active vertex, cached once and reused across seeds.
+///
+/// The count is quadratic in a vertex's degree, so on a graph of a million
+/// edges the pass takes seconds. An abortable run reads the clock between
+/// vertices: it stops at `deadline`, and it stops on a caller's stop flag
+/// whether or not it was given one, which is what makes a long pass answer
+/// `SIGTERM`. A run that has to leave a complete decomposition behind is not
+/// abortable and the pass runs to the end.
+///
+/// `None` when the pass stopped, so it leaves no cache behind.
+pub(super) fn initial_fill(
+    graph: &EliminationGraph,
+    deadline: Option<Instant>,
+    abortable: bool,
+    mut count: impl FnMut(u32) -> u64,
+) -> Option<Vec<u64>> {
+    let mut pacer = DeadlinePacer::new();
+    let mut counts = Vec::with_capacity(graph.len());
+    for vertex in 0..graph.len() {
+        if !graph.active[vertex] {
+            counts.push(0);
+            continue;
+        }
+        if abortable && pacer.due() && crate::deadline::expired(deadline) {
+            return None;
+        }
+        counts.push(count(vertex as u32));
+    }
+    Some(counts)
 }
 
 /// Sampling mass for a public, earlier-first weight. Adding one after the
