@@ -244,19 +244,21 @@ impl TreeDecomposition {
                     num_bags = parse_count("bag count", tokens[2])?;
                     declared_max_bag_size = parse_count("maximum bag size", tokens[3])?;
                     declared_vertices = parse_count("vertex count", tokens[4])?;
-                    // Every declared bag needs its own "b" line and every
-                    // declared vertex has to appear in one of them, so a count
-                    // wider than the input cannot be met. Rejecting it here
-                    // keeps the allocations below sized by the file rather
-                    // than by a number an ill-formed header asked for.
-                    if num_bags > text.len() {
+                    // Every declared bag needs its own "b" line, which is
+                    // four bytes at least, and every declared vertex has to
+                    // appear in one of them, which is two, so a count wider
+                    // than that cannot be met. Rejecting it here keeps the
+                    // allocations below sized by the file rather than by a
+                    // number an ill-formed header asked for: `adj` alone is 24
+                    // bytes a bag.
+                    if num_bags > text.len().div_ceil(4) {
                         return Err(Error::Parse(format!(
                             "the solution line declares {num_bags} bags, more than the {} bytes \
                              of input can define",
                             text.len()
                         )));
                     }
-                    if declared_vertices as usize > text.len() {
+                    if declared_vertices as usize > text.len().div_ceil(2) {
                         return Err(Error::Parse(format!(
                             "the solution line declares {declared_vertices} vertices, more than \
                              the {} bytes of input can list",
