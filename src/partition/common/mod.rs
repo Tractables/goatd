@@ -19,6 +19,11 @@
 //!   that ranks candidates but is not the cut reduction; the hypergraph side
 //!   recomputes the exact gain each step, paying a scan of every unplaced
 //!   vertex's incidences for it.
+//! - **What a stopped sweep hands back.** Both read the cutoff in the loops
+//!   they spend their time in, so both answer a caller's stop flag. The graph
+//!   side has one sweep to lose and gives the index split. The hypergraph side
+//!   ranks restarts, so it keeps the best restart that finished and falls back
+//!   to the index split only when none did.
 
 #[cfg(test)]
 mod tests;

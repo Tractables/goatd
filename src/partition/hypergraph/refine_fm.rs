@@ -16,7 +16,7 @@ use std::collections::VecDeque;
 
 use super::model::Hypergraph;
 use crate::partition::common::{
-    FmBalance, GainBuckets, Stall, commit_best_prefix, fm_balance, select_move,
+    BisectionStop, FmBalance, GainBuckets, Stall, commit_best_prefix, fm_balance, select_move,
 };
 
 pub(super) struct FmScratch {
@@ -110,6 +110,7 @@ pub(super) fn fm_refine_pass(
     part: &mut [u8],
     max_imbalance: f64,
     scratch: &mut FmScratch,
+    stop: &mut BisectionStop,
 ) -> bool {
     let n = hg.num_vertices;
     let Some(mut balance) = fm_balance(n, &hg.vertex_weights, part, max_imbalance) else {
@@ -158,6 +159,9 @@ pub(super) fn fm_refine_pass(
     let mut stall = Stall::new((n / 2).max(20));
 
     for _ in 0..n {
+        if stop.reached() {
+            break;
+        }
         let Some((v, from, best_gain)) =
             select_move(bq, gain, locked, &hg.vertex_weights, &balance)
         else {
@@ -283,6 +287,7 @@ pub(super) fn localized_fm_pass(
     seed: usize,
     max_imbalance: f64,
     scratch: &mut RegionScratch,
+    stop: &mut BisectionStop,
 ) -> bool {
     let n = hg.num_vertices;
     let Some(FmBalance {
@@ -364,6 +369,9 @@ pub(super) fn localized_fm_pass(
 
     // O(region²), not O(region·n): region_list, not 0..n, is scanned per move.
     for _ in 0..region_list.len() {
+        if stop.reached() {
+            break;
+        }
         let mut best_v = None;
         let mut best_gain = i64::MIN;
         for &v in region_list.iter() {
@@ -461,10 +469,11 @@ pub(super) fn refine_level(
     part: &mut [u8],
     imbalance: f64,
     scratch: &mut FmScratch,
+    stop: &mut BisectionStop,
 ) {
     let max_passes = 10;
     for _ in 0..max_passes {
-        if !fm_refine_pass(hg, part, imbalance, scratch) {
+        if !fm_refine_pass(hg, part, imbalance, scratch, stop) || stop.stopped() {
             break;
         }
     }

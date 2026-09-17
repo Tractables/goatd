@@ -4,6 +4,7 @@ use super::coarsen::coarsen_one_level;
 use super::initial::{greedy_growing, hyperedge_cut};
 use super::model::Hypergraph;
 use super::refine_flow::{FlowNetwork, flow_refine};
+use crate::partition::common::BisectionStop;
 use crate::rng::Xorshift64;
 
 #[test]
@@ -38,7 +39,7 @@ fn a_weighted_hyperedge_is_charged_once_when_cut() {
 fn greedy_growing_uses_the_seed_and_stops_at_half_the_vertex_weight() {
     let hg = Hypergraph::from_hyperedges(5, &[vec![0, 1, 2], vec![2, 3, 4]], None);
 
-    let part = greedy_growing(&hg, 3);
+    let part = greedy_growing(&hg, 3, &mut BisectionStop::new(None));
     assert_eq!(part[3], 0);
     assert_eq!(part.iter().filter(|&&side| side == 0).count(), 2);
     assert!(part.contains(&0) && part.contains(&1));
@@ -85,7 +86,10 @@ fn a_flow_network_returns_the_maximum_flow_and_residual_source_side() {
     network.add_edge(2, 3, 1);
     let mut source_side = vec![false; 4];
 
-    assert_eq!(network.max_flow(0, 3, &mut source_side), 3);
+    assert_eq!(
+        network.max_flow(0, 3, &mut source_side, &mut BisectionStop::new(None)),
+        3
+    );
     assert_eq!(source_side, vec![true, false, false, false]);
 }
 
@@ -94,6 +98,11 @@ fn flow_refinement_declines_tiny_hypergraphs_without_changing_them() {
     let hg = Hypergraph::from_hyperedges(4, &[vec![0, 1, 2], vec![1, 3]], None);
     let mut part = vec![0, 0, 1, 1];
 
-    assert!(!flow_refine(&hg, &mut part, 0.25));
+    assert!(!flow_refine(
+        &hg,
+        &mut part,
+        0.25,
+        &mut BisectionStop::new(None)
+    ));
     assert_eq!(part, vec![0, 0, 1, 1]);
 }
