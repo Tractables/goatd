@@ -195,6 +195,26 @@ fn a_budget_bounds_the_pass_and_still_returns_a_decomposition() {
     }
 }
 
+/// The shared completion keeps its bag mask from one call to the next, so a
+/// second decomposition has to complete to what a fresh holder would give it.
+#[test]
+fn completing_a_second_decomposition_starts_from_an_empty_completion() {
+    let graph = Graph::new(6, [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 0)]);
+    let wide = TreeDecomposition::new(&graph, [(0..6).collect::<Vec<u32>>()], [])
+        .expect("one bag holding every vertex is a decomposition of any graph");
+    let narrow = decompose(&graph, Order::MinDegree, 0, None)
+        .expect("a deterministic order takes no weights");
+
+    let mut reused = super::SharedCompletion::new(&graph);
+    reused.complete(&wide);
+    reused.complete(&narrow);
+
+    let mut fresh = super::SharedCompletion::new(&graph);
+    fresh.complete(&narrow);
+
+    assert_eq!(reused.completion.rows, fresh.completion.rows);
+}
+
 #[test]
 fn a_decomposition_of_another_graph_is_refused() {
     let graph = Graph::new(4, [(0, 1), (1, 2), (2, 3)]);

@@ -656,9 +656,9 @@ fn decompose_completion(
 /// they had already dropped. So a run out of budget returns a decomposition
 /// either way, and never later than the budget.
 ///
-/// The pass holds two bitsets over the graph's vertices, so its memory grows
-/// with the square of the vertex count. A caller running it under a deadline
-/// should keep that in mind on a large graph.
+/// The pass holds two `n × n` bit matrices, one row per vertex, so it costs
+/// about `n²/4` bytes. A caller running it under a deadline should keep that
+/// in mind on a large graph.
 ///
 /// # Errors
 ///
@@ -779,6 +779,10 @@ pub(super) struct SharedCompletion {
     original: RowSet,
     completion: RowSet,
     witnesses: FillWitnesses,
+    /// The bag mask the completion is written through, kept from one call to
+    /// the next rather than allocated per call. `insert_clique` leaves it
+    /// zeroed.
+    mask: Vec<u64>,
     /// Where each rebuild minimalizes, kept from one rebuild to the next.
     work: Workspace,
 }
@@ -786,9 +790,11 @@ pub(super) struct SharedCompletion {
 impl SharedCompletion {
     pub(super) fn new(graph: &Graph) -> Self {
         let vertices = graph.num_vertices() as usize;
+        let completion = RowSet::new(vertices);
         Self {
             original: original_edges(graph),
-            completion: RowSet::new(vertices),
+            mask: vec![0u64; completion.words],
+            completion,
             witnesses: FillWitnesses::default(),
             work: Workspace::default(),
         }
@@ -798,9 +804,10 @@ impl SharedCompletion {
     /// from, in place of whatever was completed before.
     pub(super) fn complete(&mut self, decomposition: &TreeDecomposition) {
         self.completion.rows.fill(0);
-        let mut mask = vec![0u64; self.completion.words];
+        self.mask.fill(0);
         for bag in decomposition.bags() {
-            self.completion.insert_clique(bag.vertices(), &mut mask);
+            self.completion
+                .insert_clique(bag.vertices(), &mut self.mask);
         }
         self.witnesses.rebuild(&self.completion, &self.original);
     }
@@ -833,6 +840,8 @@ pub(super) fn rebuild_candidate(
         completion,
         witnesses,
         work,
+        // The bag mask belongs to `complete`, which has already run.
+        mask: _,
     } = shared;
     completion.write_without_vertex(vertex as usize, &mut work.completion);
     let raise = |v: usize| v + usize::from(v >= vertex as usize);
