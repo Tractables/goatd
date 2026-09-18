@@ -27,7 +27,7 @@ decomposition to stdout, or to --out.
 
 options:
   --out <file.td>       write the decomposition here instead of stdout
-  --order <name>        which construction runs (default: minfill)
+  --order <name>        which construction runs (default: portfolio)
                           minfill             greedy min-fill order
                           mindegree           greedy min-degree order
                           nested-dissection   multilevel nested dissection
@@ -478,7 +478,7 @@ fn parse_args(argv: &[String]) -> Args {
     let Some(input) = input else {
         usage_error("no input graph given");
     };
-    let order = order.unwrap_or(Method::MinFill);
+    let order = order.unwrap_or(Method::Portfolio);
 
     // Validate order-specific flags after the order and all flags are known.
     let needs = |flag: &str, ok: bool, orders: &str| {
