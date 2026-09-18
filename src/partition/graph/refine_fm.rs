@@ -239,6 +239,10 @@ pub(super) fn localized_fm_pass(
     scratch: &mut RegionScratch,
     stop: &mut BisectionStop,
 ) -> bool {
+    // Charged as a pass: the scratch reset is over the whole graph and the
+    // region walk reads the arcs of up to a quarter of it. See
+    // [`CsrGraph::pass_units`].
+    crate::meter::charge(graph.pass_units());
     let n = graph.num_vertices();
     let Some(mut balance) = fm_balance(n, &graph.vertex_weights, part, max_imbalance) else {
         return false;
@@ -425,6 +429,9 @@ pub(super) fn refine_finest_level(
     if n < 20 {
         return;
     }
+    // The boundary scan reads every vertex and every arc, like any other pass
+    // over the graph. See [`CsrGraph::pass_units`].
+    crate::meter::charge(graph.pass_units());
     let num_tries = 4;
     let mut boundary: Vec<usize> = Vec::new();
     for v in 0..n {
