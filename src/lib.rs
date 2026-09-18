@@ -10,8 +10,8 @@
 //! FlowCutter decomposer and a Rust separator search. [`portfolio`] combines
 //! constructions, and [`decomposition`] contains the result type and its
 //! separator-based refinement. [`partition`] holds the multilevel bisectors:
-//! nested dissection runs on the graph one, and there is a hypergraph one
-//! beside it that nothing in the crate calls.
+//! nested dissection runs on the graph one, and the hypergraph one is for a
+//! caller cutting a hypergraph, such as a formula with clauses as hyperedges.
 //!
 //! [`Graph::from_gr`] and [`TreeDecomposition::to_td`] handle the PACE formats.
 //! [`TreeDecomposition::validate`] checks a result against its graph. Beside
