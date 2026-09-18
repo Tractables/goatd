@@ -147,6 +147,19 @@ static void check_errors(void) {
           status);
   REQUIRE(strstr(goatd_last_error_message(), "steps") != NULL,
           "steps with min-fill gave: %s", goatd_last_error_message());
+
+  /* The budgeted portfolio ends on a FlowCutter candidate of its own, so a
+     refinement pass after it has nothing left to re-cut. */
+  options = goatd_options_default();
+  options.order = GOATD_ORDER_PORTFOLIO;
+  options.budget_ms = 200;
+  options.refine = true;
+  status = goatd_decompose(NUM_VERTICES, EDGES, NUM_EDGES, &options, &td);
+  REQUIRE(status == GOATD_ERROR_INVALID_INPUT,
+          "refine with the budgeted portfolio gave %d", status);
+  REQUIRE(strstr(goatd_last_error_message(), "refine") != NULL,
+          "refine with the budgeted portfolio gave: %s",
+          goatd_last_error_message());
 }
 
 int main(void) {
@@ -175,8 +188,7 @@ int main(void) {
   options = goatd_options_default();
   options.order = GOATD_ORDER_PORTFOLIO;
   options.budget_ms = 200;
-  options.refine = true;
-  td = run(options, "portfolio, refined");
+  td = run(options, "portfolio");
   REQUIRE(td.treewidth >= CLIQUE - 1, "portfolio: width %u below the clique",
           td.treewidth);
   goatd_decomposition_free(&td);

@@ -17,7 +17,7 @@ use std::time::Duration;
 use goatd::decomposition::refine_with_flowcutter;
 use goatd::elimination::{Order, decompose as eliminate};
 use goatd::flowcutter::{Budget, decompose as flowcutter};
-use goatd::portfolio::{PortfolioConfig, decompose as portfolio};
+use goatd::portfolio::{PortfolioConfig, decompose_standard as portfolio};
 use goatd::{Error, Graph, TreeDecomposition};
 
 /// What a goatd call returned: `GOATD_OK`, or one of the `GOATD_ERROR_`
@@ -58,6 +58,10 @@ pub const GOATD_ORDER_PORTFOLIO: u32 = 4;
 /// How a decomposition is constructed. Start from `goatd_options_default` and
 /// change what you need: a field the chosen order cannot act on is an error,
 /// not a silently ignored value.
+///
+/// The struct cannot leave a field out, so `0` stands for unset: `budget_ms`
+/// of 0 is no limit, `steps` of 0 is no step budget, and `seed` of 0 is the
+/// seed zero, which is also the default.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GoatdOptions {
@@ -88,10 +92,12 @@ pub struct GoatdOptions {
     /// count.
     pub tie_weights_len: usize,
     /// Re-cut the decomposition along FlowCutter separators before returning
-    /// it. Accepted with every order. With `budget_ms` set the pass is bounded
-    /// and skips subgraphs over 100 000 vertices; with 0 it runs to completion,
-    /// ungated, and one uninterruptible separator search on a large graph can
-    /// take minutes.
+    /// it. With `budget_ms` set the pass is bounded and skips subgraphs over
+    /// 100 000 vertices; with 0 it runs to completion, ungated, and one
+    /// uninterruptible separator search on a large graph can take minutes.
+    ///
+    /// Not accepted by a budgeted `GOATD_ORDER_PORTFOLIO`, which ends on a
+    /// FlowCutter candidate of its own and has nothing left to re-cut.
     pub refine: bool,
 }
 
@@ -103,9 +109,11 @@ pub struct GoatdOptions {
 /// `tree_edges` holds `2 * num_tree_edges` bag indices, one undirected edge
 /// per pair.
 ///
-/// `goatd_decompose` fills the struct the caller supplies and takes ownership
-/// of nothing; the three arrays inside belong to the caller and are released
-/// together by `goatd_decomposition_free`.
+/// `goatd_decompose` fills the struct the caller supplies; `bag_offsets`,
+/// `bag_vertices` and `tree_edges` are then goatd's allocations, handed over
+/// to the caller and released together by `goatd_decomposition_free`. Only a
+/// struct `goatd_decompose` filled in may be freed that way: arrays the caller
+/// built itself, as `goatd_validate` reads, stay the caller's to release.
 ///
 /// `treewidth`, `max_separator` and `bag_mass` describe the decomposition that
 /// was built. They are written, never read: a struct the caller filled in for
@@ -122,7 +130,8 @@ pub struct GoatdDecomposition {
     pub bag_vertices: *const u32,
     /// Number of edges between bags.
     pub num_tree_edges: usize,
-    /// `2 * num_tree_edges` bag indices.
+    /// `2 * num_tree_edges` bag indices: each edge with the smaller bag first,
+    /// the edges in ascending order.
     pub tree_edges: *const usize,
     /// Vertices in the largest bag, less one. An upper bound on the graph's
     /// treewidth.
@@ -229,7 +238,7 @@ pub unsafe extern "C" fn goatd_decompose(
         }
         let options = unsafe { &*options };
         let graph = unsafe { graph_from_edges(num_vertices, edges, num_edges) }?;
-        check_options(options, &graph)?;
+        check_options(options)?;
         let weights = unsafe { tie_weights(options) };
         let td = construct(&graph, options, weights)?;
         unsafe { out.write(flatten(&td)) };
@@ -272,7 +281,9 @@ pub unsafe extern "C" fn goatd_decomposition_free(decomposition: *mut GoatdDecom
 /// intersection property.
 ///
 /// Returns `GOATD_OK` when it holds and `GOATD_ERROR_INVALID_DECOMPOSITION`
-/// with a message naming the first violation when it does not. The
+/// with a message naming the first violation when it does not. Arrays that do
+/// not describe a decomposition at all — offsets that do not increase, a null
+/// array the counts ask for — are `GOATD_ERROR_INVALID_INPUT`. The
 /// decomposition need not have come from `goatd_decompose`.
 ///
 /// # Safety
@@ -386,9 +397,14 @@ unsafe fn tie_weights(options: &GoatdOptions) -> Option<&[u32]> {
     Some(unsafe { slice::from_raw_parts(options.tie_weights, options.tie_weights_len) })
 }
 
+/// The construction's budget, which the struct leaves unset as 0.
+fn construction_budget(options: &GoatdOptions) -> Option<Duration> {
+    (options.budget_ms != 0).then(|| Duration::from_millis(options.budget_ms))
+}
+
 /// Reject the option combinations that cannot mean anything for the chosen
 /// order, naming the field and the orders that accept it.
-fn check_options(options: &GoatdOptions, graph: &Graph) -> Result<(), Error> {
+fn check_options(options: &GoatdOptions) -> Result<(), Error> {
     let order = match options.order {
         GOATD_ORDER_MIN_FILL => "GOATD_ORDER_MIN_FILL",
         GOATD_ORDER_MIN_DEGREE => "GOATD_ORDER_MIN_DEGREE",
@@ -420,15 +436,6 @@ fn check_options(options: &GoatdOptions, graph: &Graph) -> Result<(), Error> {
         if !options.sample_ties {
             return Err(invalid("tie_weights is only read with sample_ties"));
         }
-        // The sampled orders check the count against the graph themselves;
-        // this only rules out reading past the array the caller described.
-        if options.tie_weights_len != graph.num_vertices() as usize {
-            return Err(Error::InvalidInput(format!(
-                "tie_weights_len is {} for a graph of {} vertices",
-                options.tie_weights_len,
-                graph.num_vertices()
-            )));
-        }
     }
     if options.seed != 0 && options.order == GOATD_ORDER_FLOWCUTTER {
         return inert(
@@ -447,6 +454,19 @@ fn check_options(options: &GoatdOptions, graph: &Graph) -> Result<(), Error> {
             ));
         }
     }
+    if options.refine && options.order == GOATD_ORDER_PORTFOLIO {
+        // What settles it is whether the portfolio's schedule ends on its own
+        // FlowCutter candidate, so ask the configuration that will run rather
+        // than read the budget a second time here.
+        let config = PortfolioConfig::standalone(construction_budget(options));
+        if config.runs_flowcutter_candidate() {
+            return Err(invalid(
+                "refine is not valid with GOATD_ORDER_PORTFOLIO and a budget_ms: the \
+                 portfolio ends on a FlowCutter candidate of its own, so the pass would \
+                 spend another budget_ms without narrowing the result",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -455,7 +475,7 @@ fn construct(
     options: &GoatdOptions,
     weights: Option<&[u32]>,
 ) -> Result<TreeDecomposition, Error> {
-    let budget = (options.budget_ms != 0).then(|| Duration::from_millis(options.budget_ms));
+    let budget = construction_budget(options);
     let td = match options.order {
         GOATD_ORDER_MIN_FILL | GOATD_ORDER_MIN_DEGREE => {
             // Sampling without caller weights gives every vertex the same one.
@@ -482,14 +502,7 @@ fn construct(
             let steps = (options.steps != 0).then_some(options.steps);
             flowcutter(graph, Budget::standalone(budget, steps))?
         }
-        GOATD_ORDER_PORTFOLIO => {
-            let weights = vec![1; graph.num_vertices() as usize];
-            let config = budget.map_or_else(
-                PortfolioConfig::standard,
-                PortfolioConfig::standard_with_budget,
-            );
-            portfolio(graph, &weights, options.seed, config)?
-        }
+        GOATD_ORDER_PORTFOLIO => portfolio(graph, options.seed, budget)?,
         unknown => return Err(unknown_order(unknown)),
     };
     if !options.refine {
@@ -512,13 +525,9 @@ fn flatten(td: &TreeDecomposition) -> GoatdDecomposition {
         offsets.push(vertices.len());
     }
     let mut tree_edges = Vec::new();
-    for (bag, neighbours) in td.adjacency().iter().enumerate() {
-        for &neighbour in neighbours {
-            if bag < neighbour {
-                tree_edges.push(bag);
-                tree_edges.push(neighbour);
-            }
-        }
+    for (bag, neighbour) in td.tree_edges() {
+        tree_edges.push(bag);
+        tree_edges.push(neighbour);
     }
     GoatdDecomposition {
         num_vertices: td.num_vertices(),
@@ -609,11 +618,14 @@ unsafe fn reclaim<T>(ptr: *const T, len: usize) {
 mod tests {
     use super::*;
 
-    /// A path on four vertices: enough graph for the option checks, which
-    /// only read its vertex count, and small enough to decompose in a test.
+    /// A path on four vertices, small enough to decompose in a test.
     fn graph() -> Graph {
         Graph::try_new(4, [(0, 1), (1, 2), (2, 3)]).expect("a path is a graph")
     }
+
+    /// The same path as an edge array, for the calls that go through
+    /// `goatd_decompose`.
+    const PATH_EDGES: [u32; 6] = [0, 1, 1, 2, 2, 3];
 
     fn options(order: u32) -> GoatdOptions {
         GoatdOptions {
@@ -624,7 +636,7 @@ mod tests {
 
     /// `check_options` refused these options, with a message naming `what`.
     fn refused(options: &GoatdOptions, what: &str) {
-        let error = check_options(options, &graph()).expect_err("these options are inert");
+        let error = check_options(options).expect_err("these options are inert");
         let message = error.to_string();
         assert!(
             matches!(error, Error::InvalidInput(_)),
@@ -635,7 +647,7 @@ mod tests {
 
     #[test]
     fn the_defaults_are_accepted() {
-        check_options(&goatd_options_default(), &graph()).expect("the defaults are min-fill");
+        check_options(&goatd_options_default()).expect("the defaults are min-fill");
     }
 
     #[test]
@@ -667,12 +679,23 @@ mod tests {
 
     #[test]
     fn tie_weights_are_counted_against_the_graph() {
+        // The count is the sampled elimination's own check, so the refusal
+        // comes back from the construction rather than from `check_options`.
         let weights = [1u32; 3];
         let mut short = options(GOATD_ORDER_MIN_FILL);
         short.sample_ties = true;
         short.tie_weights = weights.as_ptr();
         short.tie_weights_len = weights.len();
-        refused(&short, "tie_weights_len is 3 for a graph of 4 vertices");
+        let edges = PATH_EDGES;
+        let mut td = GoatdDecomposition::empty();
+        let status =
+            unsafe { goatd_decompose(4, edges.as_ptr(), 3, &raw const short, &raw mut td) };
+        assert_eq!(status, GOATD_ERROR_INVALID_INPUT);
+        assert!(
+            last_error().contains("3 weights for 4 vertices"),
+            "{}",
+            last_error()
+        );
     }
 
     #[test]
@@ -705,12 +728,12 @@ mod tests {
         refused(&both, "give one");
         // With neither, FlowCutter runs on its own default, as it does from
         // the command line and from the other two bindings.
-        check_options(&options(GOATD_ORDER_FLOWCUTTER), &graph())
+        check_options(&options(GOATD_ORDER_FLOWCUTTER))
             .expect("FlowCutter has a default of its own");
     }
 
     #[test]
-    fn every_order_accepts_refinement() {
+    fn refinement_runs_after_every_order_but_the_budgeted_portfolio() {
         for order in [
             GOATD_ORDER_MIN_FILL,
             GOATD_ORDER_MIN_DEGREE,
@@ -720,7 +743,14 @@ mod tests {
         ] {
             let mut refined = options(order);
             refined.refine = true;
-            check_options(&refined, &graph()).expect("refinement runs after every order");
+            check_options(&refined).expect("an unbudgeted construction leaves cuts to find");
+
+            refined.budget_ms = 200;
+            if order == GOATD_ORDER_PORTFOLIO {
+                refused(&refined, "refine");
+            } else {
+                check_options(&refined).expect("refinement runs after a budgeted construction");
+            }
         }
     }
 
@@ -837,7 +867,7 @@ mod tests {
 
     #[test]
     fn a_run_that_succeeded_leaves_no_message_behind() {
-        let edges = [0u32, 1, 1, 2, 2, 3];
+        let edges = PATH_EDGES;
         let mut td = GoatdDecomposition::empty();
         let defaults = goatd_options_default();
         let status =
@@ -866,7 +896,7 @@ mod tests {
         // A path of four: whatever order wins, the bags are small enough to
         // re-derive all three numbers from the arrays directly, which is what
         // a consumer would otherwise have to write for itself.
-        let edges = [0u32, 1, 1, 2, 2, 3];
+        let edges = PATH_EDGES;
         let mut td = GoatdDecomposition::empty();
         let defaults = goatd_options_default();
         let status =
@@ -888,9 +918,13 @@ mod tests {
         );
 
         let tree_edges = unsafe { slice::from_raw_parts(td.tree_edges, 2 * td.num_tree_edges) };
-        let shared = tree_edges
-            .as_chunks::<2>()
-            .0
+        let pairs = tree_edges.as_chunks::<2>().0;
+        // The header promises the smaller bag first and the pairs in
+        // ascending order, which a consumer may index on.
+        assert!(pairs.iter().all(|pair| pair[0] < pair[1]));
+        assert!(pairs.windows(2).all(|two| two[0] < two[1]));
+
+        let shared = pairs
             .iter()
             .map(|pair| {
                 bag(pair[0])
