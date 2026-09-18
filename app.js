@@ -1421,8 +1421,12 @@ if (typeof document !== "undefined") {
           run();
         }
       } else if (event.data.error !== undefined) {
-        settle();
-        element("status").textContent = `the solver failed: ${event.data.error}`;
+        // A call that threw may have left the module aborted, and an aborted
+        // module fails every call after it, so replace the worker as Cancel
+        // does instead of running again in this one.
+        stop();
+        element("status").textContent =
+          `the solver failed: ${event.data.error}; loading the solver`;
       } else {
         finish(event.data.td, event.data.elapsed);
       }
