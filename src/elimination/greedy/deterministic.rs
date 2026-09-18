@@ -320,9 +320,7 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
             AfterElim::Continue => {}
             AfterElim::EnterCheapMode => {
                 debug_assert!(P::CHEAP_MODE, "core without cheap mode asked to enter it");
-                if P::CHEAP_MODE {
-                    cheap_mode = true;
-                }
+                cheap_mode = true;
             }
             // The residual is too large to finish even in cheap mode, and it
             // is the soft cutoff that has passed: the engine completes what is

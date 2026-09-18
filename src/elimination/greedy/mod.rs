@@ -7,7 +7,9 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, btree_map::Entry};
 use std::time::Instant;
 
-use super::execution::{Cutoff, DeadlinePacer, ElimExit, ElimSink, ElimStop, exceeds_width_bound};
+use super::execution::{
+    Cutoff, DeadlinePacer, ElimExit, ElimSink, ElimStop, exceeds_width_bound, take_bag,
+};
 use super::graph::{EliminationGraph, PREFETCH_DISTANCE, PreparedFill};
 use crate::prefetch::{prefetch, prefetching};
 use crate::rng::Xorshift64;
@@ -50,7 +52,7 @@ pub(super) use sampling::{
 /// Above this many active vertices, a single cheap-mode eliminate on a dense
 /// residual can overshoot the deadline by seconds. Emergency-bail immediately
 /// on deadline rather than attempting cheap-mode elimination at this scale.
-pub(super) const CHEAP_MODE_MAX_ACTIVE: usize = 512;
+const CHEAP_MODE_MAX_ACTIVE: usize = 512;
 
 /// The graph-sized buffers one sampled elimination works in.
 ///
@@ -790,17 +792,6 @@ impl FillAffected {
     }
 }
 
-/// Snapshot `v`'s live neighbours into `nbrs_buf` and build the bag its
-/// elimination emits: `v` first, then those neighbours.
-fn take_bag(graph: &EliminationGraph, v: u32, nbrs_buf: &mut Vec<u32>) -> Vec<u32> {
-    nbrs_buf.clear();
-    graph.collect_live_nbrs_into(v, nbrs_buf);
-    let mut bag = Vec::with_capacity(nbrs_buf.len() + 1);
-    bag.push(v);
-    bag.extend_from_slice(nbrs_buf);
-    bag
-}
-
 /// What every elimination heap entry can be asked, whatever its ordering key:
 /// which vertex it stands for, and the score it recorded when it was pushed.
 trait ElimEntry {
@@ -1036,7 +1027,7 @@ impl BucketPosition {
 /// It is the caller's, not the map's, so that a portfolio's restarts refill
 /// one set of buckets rather than allocating a position array and a bucket
 /// per key on every run.
-pub(super) struct BucketStorage {
+struct BucketStorage {
     buckets: PriorityBuckets,
     spare_vertices: Vec<SpareBucket>,
     position: Vec<BucketPosition>,
@@ -1044,7 +1035,7 @@ pub(super) struct BucketStorage {
 
 impl BucketStorage {
     /// Storage for no graph at all: [`Self::reset`] sizes it to each run's.
-    pub(super) fn new() -> Self {
+    fn new() -> Self {
         Self {
             buckets: PriorityBuckets::new(0),
             spare_vertices: Vec::new(),
@@ -1095,7 +1086,7 @@ impl BucketStorage {
     }
 }
 
-pub(super) struct BucketMap<'a> {
+struct BucketMap<'a> {
     buckets: &'a mut PriorityBuckets,
     /// Exact while `minimum_dirty` is false. Removing the current minimum
     /// marks it dirty; the next read scans the live priority keys once.

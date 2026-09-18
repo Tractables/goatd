@@ -191,16 +191,12 @@ impl<'g> Prepared<'g> {
                 },
             },
         );
-        let cutoff = |value| match value {
-            execution::Cutoff::Soft => Cutoff::Soft,
-            execution::Cutoff::Hard => Cutoff::Hard,
-        };
         Ok(match result {
             engine::OrderRun::Completed(tree) => RunOutcome::Completed(tree),
             engine::OrderRun::CompletedAtDeadline(end, tree) => {
-                RunOutcome::CompletedAtDeadline(cutoff(end), tree)
+                RunOutcome::CompletedAtDeadline(end, tree)
             }
-            engine::OrderRun::DeadlineAborted(end) => RunOutcome::DeadlineAborted(cutoff(end)),
+            engine::OrderRun::DeadlineAborted(end) => RunOutcome::DeadlineAborted(end),
             engine::OrderRun::WidthAborted => RunOutcome::WidthAborted,
         })
     }
