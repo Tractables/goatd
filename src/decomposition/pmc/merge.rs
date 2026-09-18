@@ -54,7 +54,7 @@ use rustc_hash::FxHashSet;
 use super::sets::{Adjacency, Scratch, VertexSet};
 use super::{Limits, search};
 use crate::deadline::{expired, remaining};
-use crate::rng::{SEED_OFFSET, Xorshift64};
+use crate::rng::{Xorshift64, search_stream};
 use crate::{Graph, TreeDecomposition};
 
 /// Draws the initial answer is built from, and the focuses tried per merge.
@@ -175,7 +175,7 @@ impl<'a> Loop<'a> {
             graph,
             adjacency,
             limits,
-            rng: Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET)),
+            rng: search_stream(seed),
         }
     }
 }
@@ -307,7 +307,7 @@ impl Loop<'_> {
     ///
     /// `C` is the largest component of `G − chosen`; a partner has to lie
     /// inside `N[C]` and hold at most `width` vertices.
-    pub(super) fn focuses_from(
+    fn focuses_from(
         &self,
         chosen: &VertexSet,
         partners: &[VertexSet],

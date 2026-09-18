@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crate::decomposition::minimalize_triangulation;
 use crate::elimination::minimal_triangulation::{Reach, cardinality_search};
 use crate::elimination::{Order, decompose};
-use crate::rng::{SEED_OFFSET, Xorshift64};
+use crate::rng::search_stream;
 use crate::{Graph, TreeDecomposition};
 
 /// One adjacency list per vertex, built by completing every bag to a clique.
@@ -80,7 +80,7 @@ fn remove_edge(adjacency: &[Vec<u32>], left: u32, right: u32) -> Vec<Vec<u32>> {
 /// A random graph on `vertices` vertices where each pair is an edge with
 /// probability `numerator / 16`.
 fn random_graph(vertices: u32, numerator: u32, seed: u64) -> Graph {
-    let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
+    let mut rng = search_stream(seed);
     let mut edges = Vec::new();
     for left in 0..vertices {
         for right in left + 1..vertices {

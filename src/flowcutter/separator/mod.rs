@@ -15,7 +15,7 @@
 use std::time::{Duration, Instant};
 
 use super::duration_ms;
-use crate::rng::{SEED_OFFSET, Xorshift64};
+use crate::rng::search_stream;
 use crate::{Error, Graph};
 
 mod cutter;
@@ -175,31 +175,31 @@ fn compute_vertices(
 
 /// Recover the original-space vertex separator (not expanded-space) from the
 /// current cut.
-fn extract_original_separator(g: &OrigGraph, a_orig: u32, multi: &MultiCutter) -> Vec<u32> {
+fn extract_original_separator(g: &OrigGraph, cutter: &Cutter) -> Vec<u32> {
     let mut sep: Vec<u32> = Vec::new();
-    let cur_cut = multi.current_cut();
+    let cur_cut = cutter.current_cut();
 
     for &xy in cur_cut {
-        if is_intra(xy, a_orig) {
-            sep.push(intra_to_orig_node(xy, a_orig));
+        if is_intra(xy, g.arc_count) {
+            sep.push(intra_to_orig_node(xy, g.arc_count));
         }
     }
 
     let n_orig = g.n as usize;
     // Expanded-space smaller-side count double-counts each vertex (in + out);
     // `sep` here is single-counted, hence -sep.len() then /2 for vertex count.
-    let cur_small = multi.current_smaller_size() as i64;
+    let cur_small = cutter.current_smaller_size() as i64;
     let mut left_size = (cur_small - sep.len() as i64) / 2;
     let mut right_size = n_orig as i64 - sep.len() as i64 - left_size;
 
     let is_orig_left = |x: u32| -> bool {
         // Tests via the OUT node: the expanded graph's "left" (smaller) side
         // holds u_out for u in the original left set, not u_in.
-        multi.is_on_smaller_side(orig_node_to_exp(x, true))
+        cutter.is_on_smaller_side(orig_node_to_exp(x, true))
     };
 
     for &xy in cur_cut {
-        if !is_intra(xy, a_orig) {
+        if !is_intra(xy, g.arc_count) {
             let lr = inter_to_orig_arc(xy);
             let mut l = g.tail[lr as usize];
             let mut r = g.head[lr as usize];
@@ -221,32 +221,26 @@ fn extract_original_separator(g: &OrigGraph, a_orig: u32, multi: &MultiCutter) -
     sep
 }
 
-/// The source and sink pairs the cutter runs between, drawn from the crate's
-/// own generator like every other seeded search here.
+/// The source and sink the cutter runs between, drawn from the crate's own
+/// generator like every other seeded search here. `None` for a graph with
+/// fewer than two vertices, which has no pair to draw.
 ///
 /// `rand`'s documentation says its algorithms may change in any release,
 /// which would move this pass's answer between two versions of the crate that
 /// are otherwise the same. A separator is documented as a function of the
 /// graph and the seed, so the stream has to be one the crate owns.
-fn select_random_st_pairs(n: u32, count: u32, seed: u64) -> Vec<(u32, u32)> {
-    let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
-    let mut out = Vec::with_capacity(count as usize);
+fn select_random_st_pair(n: u32, seed: u64) -> Option<(u32, u32)> {
     if n < 2 {
-        return out;
+        return None;
     }
-    for _ in 0..count {
-        let mut s;
-        let mut t;
-        loop {
-            s = rng.below(n as usize) as u32;
-            t = rng.below(n as usize) as u32;
-            if s != t {
-                break;
-            }
+    let mut rng = search_stream(seed);
+    loop {
+        let s = rng.below(n as usize) as u32;
+        let t = rng.below(n as usize) as u32;
+        if s != t {
+            return Some((s, t));
         }
-        out.push((s, t));
     }
-    out
 }
 
 /// LCG params (a=48271, m=2^31-1) match C++ std::minstd_rand.
@@ -255,11 +249,11 @@ struct MinstdRand {
 }
 
 impl MinstdRand {
-    fn new(seed: u32) -> Self {
-        // libstdc++'s linear_congruential_engine treats seed 0 as seed 1;
-        // match that so the sequence lines up with minstd_rand.
-        let s = if seed == 0 { 1 } else { seed };
-        MinstdRand { state: s as u64 }
+    /// The search always seeds this stream with 0, and libstdc++'s
+    /// linear_congruential_engine turns a zero seed into 1, so starting at 1
+    /// is what lines the sequence up with minstd_rand.
+    fn new() -> Self {
+        MinstdRand { state: 1 }
     }
     fn next(&mut self) -> u32 {
         self.state = (self.state * 48271) % ((1u64 << 31) - 1);
