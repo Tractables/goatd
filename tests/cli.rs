@@ -496,6 +496,36 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
     }
 }
 
+/// A gate wider than the vertex counts the library takes is a usage error,
+/// not a value quietly cut down to the largest it holds.
+#[test]
+fn a_vertex_gate_past_the_range_is_refused() {
+    for flag in [
+        "--mcs-up-to",
+        "--mcsm-up-to",
+        "--drop-fill-up-to",
+        "--recombine-up-to",
+        "--merge-up-to",
+        "--local-merge-up-to",
+    ] {
+        let out = goatd(
+            &["-", "--order", "portfolio", flag, "5000000000"],
+            Some(&grid_gr()),
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{flag} must be a usage error; stderr: {}",
+            stderr_of(&out)
+        );
+        let err = stderr_of(&out);
+        assert!(
+            err.contains(flag) && err.contains("vertex count"),
+            "{flag}: must name the flag and the range, got: {err}"
+        );
+    }
+}
+
 /// The library's own band is not zero, so alternating without `--sample-band`
 /// alternates between the minimum and that band and is a run, not a usage
 /// error.
