@@ -1,5 +1,7 @@
+use std::time::Duration;
+
 use goatd::Graph;
-use goatd::elimination::{Order, decompose};
+use goatd::portfolio::decompose_standard;
 
 fn main() {
     let graph = Graph::new(
@@ -20,7 +22,8 @@ fn main() {
             (6, 7),
         ],
     );
-    let td = decompose(&graph, Order::MinFill, 0, None).expect("valid order");
+    let td = decompose_standard(&graph, 0, Some(Duration::from_millis(500)))
+        .expect("a valid configuration");
 
     td.validate(&graph).expect("a valid decomposition");
     print!("{}", td.to_td());

@@ -19,44 +19,32 @@
      src="https://docs.rs/goatd/badge.svg" alt="docs.rs"></a>
 </p>
 
-Tree decompositions of graphs, as a Rust library and command-line solver. The
-portfolio runs several constructions and keeps the narrowest result:
-
-- **portfolio search** — safe reductions, several seeds and construction
-  methods, then optional separator refinement;
-- **greedy elimination** — min-fill and min-degree, with deterministic or
-  weighted-sampling tie breaking;
-- **nested dissection** — recursive multilevel bisection, with each separator
-  eliminated after its two sides;
-- **flow-based separation** — balanced cuts for constructing and refining
-  decompositions. goatd includes a Rust FlowCutter separator search and the
-  vendored PACE 2017 FlowCutter decomposer.
-
-See [Algorithms](docs/algorithms.md) for the details and the differences from
-the upstream methods.
+Tree decompositions of graphs: a Rust library and command-line solver, with
+Python, C and browser bindings. A graph goes in and a tree decomposition comes
+out. The portfolio runs greedy elimination, nested dissection and flow-based
+separation under one time budget and keeps the narrowest result;
+[Algorithms](docs/algorithms.md) describes each construction and where it
+departs from the published method.
 
 ## Solver
 
 ```sh
 cargo install goatd
-goatd graph.gr > graph.td
+goatd graph.gr --order portfolio --budget 5000 > graph.td
 ```
 
-`goatd` reads and writes the PACE `.gr` and `.td` formats. Choose `--order
-minfill`, `mindegree`, `nested-dissection`, `flowcutter`, `merge-loop`, or
-`portfolio`; run `goatd --help` for budgets, seeds, weighted ties, and
-refinement. The same solver runs
+`goatd` reads and writes the PACE `.gr` and `.td` formats. The budget is a
+soft limit in milliseconds and the run ends at twice it. Without options
+goatd runs a single min-fill order with no time limit; `goatd --help` lists
+the other orders, seeds, weighted ties and refinement. The same solver runs
 [in the browser](https://tractables.github.io/goatd/).
 
 ## Library
 
 Add `goatd = "0.2"` as a dependency. The [`basic` example](examples/basic.rs)
-constructs a graph, computes a decomposition, validates it, and writes it in
-PACE format; `cargo run --example basic` runs it.
-
-The public API also exposes graph and hypergraph bisection, the Rust separator
-search, the C++ FlowCutter decomposer, and decomposition projection and
-refinement. Rustdoc documents each entry point.
+constructs a graph, runs the portfolio, validates the decomposition and writes
+it in PACE format; `cargo run --example basic` runs it. The rest of the API is
+on [docs.rs](https://docs.rs/goatd).
 
 ## Bindings
 
@@ -85,15 +73,12 @@ seconds on one CPU.
 | Arboretum heuristic | 5,549 (59.0%) | 25 (0.3%) | 57 (0.6%) | 623 (6.6%) |
 
 Each solver runs at the setting its own documentation recommends for the
-smallest width inside a fixed time limit, which for HTD is
-`--opt width --iterations 0 --strategy challenge`. The anytime solvers keep
-searching until the ten seconds are up and report whatever decomposition they
-hold when the harness stops them. goatd stops itself at its own hard cutoff
-just under ten seconds and writes what it has. Every decomposition is checked
-by the same validator. The default selection omits graphs where pinned
-NetworkX min-degree returns a validated width below 30. “Nontrivial” means a
-validated decomposition narrower than `|V| - 1`. “Exact best” is the smallest
-width observed among the displayed solvers, not a proven optimum.
+smallest width in a fixed time (for HTD, `--opt width --iterations 0
+--strategy challenge`), and every decomposition is checked by the same
+validator. Graphs where a pinned NetworkX min-degree run returns a width below
+30 are left out. “Nontrivial” is a validated decomposition narrower than
+`|V| - 1`; “exact best” is the smallest width among the displayed solvers, not
+a proven optimum.
 
 ## Building and contributing
 
