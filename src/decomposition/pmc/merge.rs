@@ -133,12 +133,16 @@ pub(crate) fn merge_loop(
             break;
         };
         answer = next;
+        let added = answer.bags.len() > held;
         // At width k the list drops every bag of more than k + 2 vertices: no
         // tree of width k or less has one, and this is what keeps it from
-        // growing without bound as the merges accumulate.
+        // growing without bound as the merges accumulate. The round is judged
+        // on what it added, before this runs: a round that lowered the width
+        // lowers `room` with it, so counting afterwards reads the round that
+        // did the most as the round that did nothing.
         let room = answer.width() as usize + 2;
         answer.bags.retain(|bag| bag.len() <= room);
-        if answer.bags.len() <= held {
+        if !added {
             break;
         }
     }
