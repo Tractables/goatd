@@ -15,8 +15,9 @@
 use std::fmt;
 
 use crate::Graph;
+use crate::adjacency::Adjacency;
 use crate::prefetch::{prefetch, prefetching};
-use crate::rng::{SEED_OFFSET, Xorshift64};
+use crate::rng::{Xorshift64, search_stream};
 
 #[cfg(test)]
 mod tests;
@@ -158,7 +159,7 @@ impl Embedding {
         stop: &mut dyn FnMut() -> bool,
     ) -> Self {
         let dim = dim.clamp(1, MAX_DIM);
-        let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
+        let mut rng = search_stream(seed);
         let mut coords = vec![0.0f32; adjacency.vertex_count() * dim];
         for slot in &mut coords {
             *slot = unit_interval(&mut rng);
@@ -308,7 +309,7 @@ fn run_rounds_dim<const D: usize>(
     budget: Budget,
     stop: &mut dyn FnMut() -> bool,
 ) {
-    let Adjacency { starts, targets } = adjacency;
+    let (starts, targets) = adjacency.rows();
     let vertex_count = adjacency.vertex_count();
     // Building the adjacency, charged here whether this run built it or was
     // handed one, so that an embedding costs the meter the same either way.
@@ -377,8 +378,7 @@ fn run_rounds_dim<const D: usize>(
 
         // The leading axis settles long before the whole cloud does, so a
         // consumer that reads only one axis can stop much earlier than this.
-        // `D` is a constant here, so the dispatch inside folds away.
-        if is_settled(coords, &next, D, starts, targets, budget.tolerance) {
+        if is_settled_dim::<D>(coords, &next, starts, targets, budget.tolerance) {
             settled += 1;
             if settled >= patience {
                 break;
@@ -422,46 +422,6 @@ fn for_moving_rows<const D: usize>(
     }
 }
 
-/// Compressed adjacency: `targets[starts[v]..starts[v + 1]]` are `v`'s
-/// neighbours.
-///
-/// Building it is a pass over the edges and about as much memory as the
-/// coordinates take, so a caller placing several embeddings of one graph
-/// builds it once and hands it to each of them.
-pub(crate) struct Adjacency {
-    starts: Vec<usize>,
-    targets: Vec<u32>,
-}
-
-impl Adjacency {
-    /// The adjacency of `graph`.
-    pub(crate) fn of(graph: &Graph) -> Self {
-        let vertex_count = graph.num_vertices() as usize;
-        let mut starts = vec![0usize; vertex_count + 1];
-        for &(left, right) in graph.edges() {
-            starts[left as usize + 1] += 1;
-            starts[right as usize + 1] += 1;
-        }
-        for vertex in 0..vertex_count {
-            starts[vertex + 1] += starts[vertex];
-        }
-        let mut cursor = starts[..vertex_count].to_vec();
-        let mut targets = vec![0u32; graph.edges().len() * 2];
-        for &(left, right) in graph.edges() {
-            targets[cursor[left as usize]] = right;
-            cursor[left as usize] += 1;
-            targets[cursor[right as usize]] = left;
-            cursor[right as usize] += 1;
-        }
-        Adjacency { starts, targets }
-    }
-
-    /// How many vertices the graph has.
-    fn vertex_count(&self) -> usize {
-        self.starts.len() - 1
-    }
-}
-
 /// Whether two whitened clouds agree to `tolerance` in the quantities read
 /// back out of one: the squared distance of a vertex from the centre, and the
 /// squared length of an edge.
@@ -473,28 +433,8 @@ impl Adjacency {
 ///
 /// The comparison is strict, so a change that is not a number counts as no
 /// change, which is what taking the maximum over the changes did.
-fn is_settled(
-    coords: &[f32],
-    previous: &[f32],
-    dim: usize,
-    starts: &[usize],
-    targets: &[u32],
-    tolerance: f32,
-) -> bool {
-    match dim {
-        1 => is_settled_dim::<1>(coords, previous, starts, targets, tolerance),
-        2 => is_settled_dim::<2>(coords, previous, starts, targets, tolerance),
-        3 => is_settled_dim::<3>(coords, previous, starts, targets, tolerance),
-        4 => is_settled_dim::<4>(coords, previous, starts, targets, tolerance),
-        5 => is_settled_dim::<5>(coords, previous, starts, targets, tolerance),
-        6 => is_settled_dim::<6>(coords, previous, starts, targets, tolerance),
-        7 => is_settled_dim::<7>(coords, previous, starts, targets, tolerance),
-        8 => is_settled_dim::<8>(coords, previous, starts, targets, tolerance),
-        _ => unreachable!("the dimension is clamped to 1..=MAX_DIM"),
-    }
-}
-
-/// [`is_settled`] at a known dimension.
+///
+/// `D` is the dimension, known at the one call site.
 fn is_settled_dim<const D: usize>(
     coords: &[f32],
     previous: &[f32],

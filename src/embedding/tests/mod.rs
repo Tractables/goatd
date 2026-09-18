@@ -212,7 +212,7 @@ fn the_settling_test_ignores_a_rotated_frame() {
     let targets: [u32; 6] = [1, 0, 2, 1, 3, 2];
 
     assert!(
-        super::is_settled(&coords, &turned, 2, &starts, &targets, 0.0),
+        super::is_settled_dim::<2>(&coords, &turned, &starts, &targets, 0.0),
         "eccentricities and edge lengths do not turn with the frame",
     );
     // The same cloud with one vertex moved is not settled, so the test above
@@ -220,7 +220,7 @@ fn the_settling_test_ignores_a_rotated_frame() {
     let mut moved = turned.clone();
     moved[0] += 1.0;
     assert!(
-        !super::is_settled(&coords, &moved, 2, &starts, &targets, 0.0),
+        !super::is_settled_dim::<2>(&coords, &moved, &starts, &targets, 0.0),
         "a vertex that moved is a change in both quantities",
     );
 }

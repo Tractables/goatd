@@ -39,6 +39,7 @@
 
 #![deny(missing_docs)]
 
+mod adjacency;
 mod deadline;
 pub mod decomposition;
 pub mod elimination;

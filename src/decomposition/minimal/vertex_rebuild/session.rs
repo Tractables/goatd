@@ -162,7 +162,10 @@ impl<'g> Session<'g> {
                 }
                 let start = Instant::now();
                 let (_, shared) = self.shared.get_or_insert_with(|| {
-                    (adjacency(self.graph), SharedCompletion::new(self.graph))
+                    (
+                        crate::adjacency::lists(self.graph),
+                        SharedCompletion::new(self.graph),
+                    )
                 });
                 shared.complete(&self.best);
                 if !self.custom_order {

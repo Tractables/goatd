@@ -10,10 +10,10 @@ use super::{EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig, Res
 use super::{FLOWCUTTER_RESERVE, restart_admitted, restart_deadline};
 use super::{Sample, SampleBand, SamplingPatience};
 use super::{Stage, elimination_stop, extra_sample, hedge_random_seed, sample_seed};
+use crate::adjacency::Adjacency;
 use crate::elimination::Order;
 use crate::elimination::engine::OrderRun;
 use crate::elimination::execution::Cutoff;
-use crate::embedding::Adjacency;
 use crate::{Graph, TreeDecomposition};
 
 /// An unhedged schedule: the caller's weights on every candidate, one diverse

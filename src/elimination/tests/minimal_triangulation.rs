@@ -49,15 +49,6 @@ fn k_tree(n: u32, k: u32) -> Graph {
     Graph::new(n, edges)
 }
 
-fn adjacency_of(graph: &Graph) -> Vec<Vec<u32>> {
-    let mut adjacency = vec![Vec::new(); graph.num_vertices as usize];
-    for &(a, b) in &graph.edges {
-        adjacency[a as usize].push(b);
-        adjacency[b as usize].push(a);
-    }
-    adjacency
-}
-
 fn decomposed_by(graph: &Graph, order: Order<'_>) -> TreeDecomposition {
     let td = decompose(graph, order, 0, None).expect("a deterministic order takes no weights");
     td.validate(graph)
@@ -141,7 +132,7 @@ fn maximum_cardinality_search_orders_a_chordal_graph_perfectly() {
     // a clique, so eliminating it adds no edge.
     for (n, k) in [(12, 3), (20, 4), (9, 1)] {
         let graph = k_tree(n, k);
-        let adjacency = adjacency_of(&graph);
+        let adjacency = crate::adjacency::lists(&graph);
         let selected = cardinality_search(&adjacency, Reach::Neighbours, None)
             .expect("no deadline stops the search");
         assert_eq!(selected.len(), n as usize);
@@ -217,7 +208,7 @@ fn the_maximum_cardinality_order_repeats() {
 #[test]
 fn a_deadline_stops_either_reach_of_the_search() {
     let graph = grid(160, 160);
-    let adjacency = adjacency_of(&graph);
+    let adjacency = crate::adjacency::lists(&graph);
     for (name, reach) in [
         ("maximum cardinality search", Reach::Neighbours),
         ("MCS-M", Reach::LowerPaths),
@@ -250,7 +241,7 @@ fn a_deadline_stops_either_reach_of_the_search() {
     // Neither reach gives up on a graph it has the time for, so it is the
     // budget that stopped them above. A smaller grid, since MCS-M with no
     // deadline costs a walk of the graph per vertex.
-    let small = adjacency_of(&grid(12, 12));
+    let small = crate::adjacency::lists(&grid(12, 12));
     for reach in [Reach::Neighbours, Reach::LowerPaths] {
         let selected = cardinality_search(
             &small,

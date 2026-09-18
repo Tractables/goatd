@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use super::TreeDecomposition;
 use super::ops::{disjoint_union, glue_at_separator, project_td_keeping_global_ids};
+use crate::adjacency::Adjacency;
 use crate::deadline::expired;
 use crate::flowcutter::separator;
 use crate::{Error, Graph};
@@ -129,25 +130,7 @@ fn largest_component_split(graph: &Graph) -> Option<(Vec<u32>, Vec<u32>)> {
         return None;
     }
 
-    // One flat adjacency rather than a `Vec` per vertex: a region can be the
-    // whole graph, and the per-vertex headers alone would cost more than the
-    // flood fill that follows.
-    let mut offsets = vec![0usize; num_vertices + 1];
-    for &(u, v) in graph.edges() {
-        offsets[u as usize + 1] += 1;
-        offsets[v as usize + 1] += 1;
-    }
-    for vertex in 0..num_vertices {
-        offsets[vertex + 1] += offsets[vertex];
-    }
-    let mut neighbours = vec![0u32; offsets[num_vertices]];
-    let mut cursor = offsets[..num_vertices].to_vec();
-    for &(u, v) in graph.edges() {
-        neighbours[cursor[u as usize]] = v;
-        cursor[u as usize] += 1;
-        neighbours[cursor[v as usize]] = u;
-        cursor[v as usize] += 1;
-    }
+    let adjacency = Adjacency::of(graph);
 
     const UNASSIGNED: u32 = u32::MAX;
     let mut component_of = vec![UNASSIGNED; num_vertices];
@@ -166,8 +149,7 @@ fn largest_component_split(graph: &Graph) -> Option<(Vec<u32>, Vec<u32>)> {
         stack.push(start as u32);
         while let Some(vertex) = stack.pop() {
             size += 1;
-            let row = offsets[vertex as usize]..offsets[vertex as usize + 1];
-            for &neighbour in &neighbours[row] {
+            for &neighbour in adjacency.neighbours(vertex as usize) {
                 if component_of[neighbour as usize] == UNASSIGNED {
                     component_of[neighbour as usize] = component;
                     stack.push(neighbour);

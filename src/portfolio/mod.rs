@@ -16,6 +16,7 @@ mod trace;
 #[cfg(test)]
 mod tests;
 
+use crate::adjacency::Adjacency;
 use crate::deadline::{expired, remaining};
 use crate::decomposition;
 use crate::elimination::Order;
@@ -302,7 +303,7 @@ enum ModifiedWeights<'a> {
         graph: &'a Graph,
         /// The graph's adjacency, built by whichever stage places first and
         /// read by the rest: every stage builds the same one.
-        adjacency: &'a OnceCell<embedding::Adjacency>,
+        adjacency: &'a OnceCell<Adjacency>,
         dim: usize,
         rounds: usize,
         seed: u64,
@@ -329,7 +330,7 @@ impl<'a> ModifiedWeights<'a> {
                 deadline,
             } => cell.get_or_init(|| {
                 Embedding::compute_on(
-                    adjacency.get_or_init(|| embedding::Adjacency::of(graph)),
+                    adjacency.get_or_init(|| Adjacency::of(graph)),
                     dim,
                     seed,
                     rounds,
@@ -1615,7 +1616,7 @@ fn run_portfolio(
     let cells: [OnceCell<Vec<u32>>; MAX_HEDGE_PASSES] = std::array::from_fn(|_| OnceCell::new());
     // The adjacency every eccentricity stage places its cloud on. The stages
     // differ in dimension, not in the graph, so they share one.
-    let placement_adjacency: OnceCell<embedding::Adjacency> = OnceCell::new();
+    let placement_adjacency: OnceCell<Adjacency> = OnceCell::new();
     // The builder is needed again for the fixed orders the hedge repeats.
     let order_builder = initial_orders;
     let initial_orders = initial_orders(seed, weights);

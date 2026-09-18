@@ -30,7 +30,7 @@ fn every_vertex_of_every_five_vertex_graph_can_be_rebuilt() {
                 let candidate = std::panic::catch_unwind(|| {
                     rebuild(
                         &graph,
-                        &adjacency(&graph)[vertex as usize],
+                        &crate::adjacency::lists(&graph)[vertex as usize],
                         &mut completed(&graph, &seed),
                         &seed,
                         vertex,
@@ -87,7 +87,7 @@ fn an_articulation_vertex_joins_the_residual_forest_on_reinsertion() {
     let tree = TreeDecomposition::new(&graph, [vec![0, 1, 2]], []).unwrap();
     let rebuilt = rebuild(
         &graph,
-        &adjacency(&graph)[1],
+        &crate::adjacency::lists(&graph)[1],
         &mut completed(&graph, &tree),
         &tree,
         1,
@@ -137,7 +137,7 @@ fn connecting_bags_avoid_private_vertices_of_a_large_bag() {
     let seed = TreeDecomposition::new(&graph, [vec![0, 1, 2, 3, 4]], []).unwrap();
     let direct = rebuild(
         &graph,
-        &adjacency(&graph)[0],
+        &crate::adjacency::lists(&graph)[0],
         &mut completed(&graph, &seed),
         &seed,
         0,
@@ -164,7 +164,7 @@ fn connecting_bags_join_the_needed_components_of_a_residual_forest() {
     let seed = TreeDecomposition::new(&graph, [vec![0, 1, 2], vec![3]], []).unwrap();
     let direct = rebuild(
         &graph,
-        &adjacency(&graph)[1],
+        &crate::adjacency::lists(&graph)[1],
         &mut completed(&graph, &seed),
         &seed,
         1,
