@@ -96,11 +96,7 @@ pub(super) fn greedy_graph_growing(
                 // not the cut reduction the textbook version tracks. See "Where
                 // the two bisectors differ" in the shared partition bookkeeping.
                 gain[nb] += 2 * w as i64;
-                if w > 0 {
-                    // A zero-weight edge leaves the gain where it was, so the
-                    // entry already in the heap still matches it.
-                    heap.push((gain[nb], Reverse(nb)));
-                }
+                heap.push((gain[nb], Reverse(nb)));
             }
         }
     }

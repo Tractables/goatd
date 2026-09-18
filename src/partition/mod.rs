@@ -23,7 +23,7 @@ pub struct Bisection {
 }
 
 impl Bisection {
-    pub(super) fn new(parts: Vec<u8>) -> Self {
+    pub(in crate::partition) fn new(parts: Vec<u8>) -> Self {
         Self { parts }
     }
 

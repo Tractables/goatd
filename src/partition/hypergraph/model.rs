@@ -11,7 +11,7 @@ use crate::Error;
 /// A hypergraph with optional hyperedge weights.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hypergraph {
-    pub(super) num_vertices: usize,
+    pub(super) vertex_count: usize,
     /// Fine vertices collapsed into this one. Balance is measured in these
     /// units and cut cost in hyperedge-weight units; the two are not
     /// commensurate, which matters wherever a single quantity has to price both
@@ -21,11 +21,11 @@ pub struct Hypergraph {
     pub(super) hyperedge_weights: Vec<u32>,
     /// `pins[hyperedge_offsets[e]..hyperedge_offsets[e + 1]]` is hyperedge
     /// `e`'s pin set.
-    pub(super) hyperedge_offsets: Vec<u32>,
+    hyperedge_offsets: Vec<u32>,
     pins: Vec<u32>,
     /// `incident_hyperedges[vertex_hyperedge_offsets[v]..
     /// vertex_hyperedge_offsets[v + 1]]` is vertex `v`'s incidence list.
-    pub(super) vertex_hyperedge_offsets: Vec<u32>,
+    vertex_hyperedge_offsets: Vec<u32>,
     incident_hyperedges: Vec<u32>,
 }
 
@@ -145,7 +145,7 @@ impl Hypergraph {
 
     /// Number of vertices in the hypergraph.
     pub fn num_vertices(&self) -> u32 {
-        self.num_vertices as u32
+        self.vertex_count as u32
     }
 
     /// Number of distinct non-singleton hyperedges after canonicalization.
@@ -204,7 +204,7 @@ impl Hypergraph {
         }
 
         Hypergraph {
-            num_vertices,
+            vertex_count: num_vertices,
             vertex_weights: vec![1; num_vertices],
             hyperedge_weights,
             hyperedge_offsets,
@@ -236,6 +236,16 @@ impl Hypergraph {
         &self.pins[start..end]
     }
 
+    /// How many pins hyperedge `hei` has.
+    ///
+    /// A length is a subtraction on the offset array rather than a walk of the
+    /// pins, so unlike [`Hypergraph::charged_hyperedge_pins`] it costs the
+    /// meter nothing.
+    #[inline]
+    pub(super) fn hyperedge_size(&self, hei: usize) -> u32 {
+        self.hyperedge_offsets[hei + 1] - self.hyperedge_offsets[hei]
+    }
+
     /// How many pins each hyperedge has on each side of `part`.
     ///
     /// The whole hypergraph gain model is a statement about these two numbers
@@ -259,5 +269,12 @@ impl Hypergraph {
         let end = self.vertex_hyperedge_offsets[v + 1] as usize;
         crate::meter::charge((end - start) as u64);
         &self.incident_hyperedges[start..end]
+    }
+
+    /// How many hyperedges vertex `v` is a pin of. Uncharged for the reason
+    /// [`Hypergraph::hyperedge_size`] gives.
+    #[inline]
+    pub(super) fn vertex_degree(&self, v: usize) -> u32 {
+        self.vertex_hyperedge_offsets[v + 1] - self.vertex_hyperedge_offsets[v]
     }
 }

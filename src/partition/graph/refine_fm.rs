@@ -12,16 +12,14 @@ use std::collections::VecDeque;
 
 use super::csr::CsrGraph;
 use crate::partition::common::{
-    BisectionStop, GainBuckets, Stall, commit_best_prefix, fm_balance, select_move,
-    select_region_move,
+    BisectionStop, GainBuckets, MoveLog, fm_balance, select_move, select_region_move,
 };
 
 pub(super) struct FmScratch {
     gain: Vec<i64>,
     cut_edges: Vec<i64>,
     locked: Vec<bool>,
-    moves: Vec<usize>,
-    cumulative_gain: Vec<i64>,
+    log: MoveLog,
     bq: [GainBuckets; 2],
     region: RegionScratch,
 }
@@ -32,8 +30,7 @@ impl FmScratch {
             gain: Vec::new(),
             cut_edges: Vec::new(),
             locked: Vec::new(),
-            moves: Vec::new(),
-            cumulative_gain: Vec::new(),
+            log: MoveLog::empty(),
             bq: [GainBuckets::empty(), GainBuckets::empty()],
             region: RegionScratch::new(),
         }
@@ -46,8 +43,6 @@ impl FmScratch {
         self.cut_edges.resize(n, 0);
         self.locked.clear();
         self.locked.resize(n, false);
-        self.moves.clear();
-        self.cumulative_gain.clear();
         self.bq[0].reset(n);
         self.bq[1].reset(n);
     }
@@ -74,8 +69,7 @@ pub(super) struct RegionScratch {
     /// `region_list` and shrinks as the pass moves vertices.
     active: Vec<usize>,
     queue: VecDeque<usize>,
-    moves: Vec<usize>,
-    cumulative_gain: Vec<i64>,
+    log: MoveLog,
 }
 
 impl RegionScratch {
@@ -89,8 +83,7 @@ impl RegionScratch {
             region_list: Vec::new(),
             active: Vec::new(),
             queue: VecDeque::new(),
-            moves: Vec::new(),
-            cumulative_gain: Vec::new(),
+            log: MoveLog::empty(),
         }
     }
 
@@ -112,8 +105,6 @@ impl RegionScratch {
         self.region_list.clear();
         self.active.clear();
         self.queue.clear();
-        self.moves.clear();
-        self.cumulative_gain.clear();
     }
 }
 
@@ -170,10 +161,8 @@ pub(super) fn fm_refine_pass(
     }
 
     let locked = scratch.locked.as_mut_slice();
-    let moves = &mut scratch.moves;
-    let cumulative_gain = &mut scratch.cumulative_gain;
-    let mut running_gain: i64 = 0;
-    let mut stall = Stall::new((n / 2).max(20));
+    let log = &mut scratch.log;
+    log.begin((n / 2).max(20));
 
     for _ in 0..n {
         if stop.reached() {
@@ -192,11 +181,7 @@ pub(super) fn fm_refine_pass(
         part[v] = to as u8;
         locked[v] = true;
 
-        running_gain += best_gain;
-        moves.push(v);
-        cumulative_gain.push(running_gain);
-
-        if stall.record(running_gain) {
+        if log.record(v, best_gain) {
             break;
         }
 
@@ -236,7 +221,7 @@ pub(super) fn fm_refine_pass(
         }
     }
 
-    commit_best_prefix(moves, cumulative_gain, part)
+    log.commit(part)
 }
 
 /// FM confined to a region grown around `seed`, run at the finest level after
@@ -343,10 +328,8 @@ pub(super) fn localized_fm_pass(
     }
 
     let locked = scratch.locked.as_mut_slice();
-    let moves = &mut scratch.moves;
-    let cumulative_gain = &mut scratch.cumulative_gain;
-    let mut running_gain: i64 = 0;
-    let mut stall = Stall::new(region_list.len() / 2);
+    let log = &mut scratch.log;
+    log.begin(region_list.len() / 2);
 
     // O(region²), not O(n × region): only the region is scanned per move, and
     // the selection drops each vertex it locks. Ties go to whichever vertex BFS
@@ -369,11 +352,7 @@ pub(super) fn localized_fm_pass(
         part[v] = to as u8;
         locked[v] = true;
 
-        running_gain += best_g;
-        moves.push(v);
-        cumulative_gain.push(running_gain);
-
-        if stall.record(running_gain) {
+        if log.record(v, best_g) {
             break;
         }
 
@@ -395,7 +374,7 @@ pub(super) fn localized_fm_pass(
         }
     }
 
-    let improved = commit_best_prefix(moves, cumulative_gain, part);
+    let improved = log.commit(part);
 
     // Hand the arrays back the way they were found. Only region vertices are
     // marked in `in_region` and `locked`, and `boundary_touched` names every
@@ -446,7 +425,7 @@ pub(super) fn refine_finest_level(
     if n < 20 {
         return;
     }
-    let num_tries = 4.min(n);
+    let num_tries = 4;
     let mut boundary: Vec<usize> = Vec::new();
     for v in 0..n {
         let my_part = part[v];

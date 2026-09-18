@@ -421,47 +421,6 @@ pub(super) fn random_bisection(vertex_weights: &[u32], rng: &mut Xorshift64) -> 
     part
 }
 
-/// Keep the best prefix of a finished move sequence and undo everything after
-/// it, reporting whether anything survived.
-///
-/// `moves` is the sequence in the order it was applied to `part`, and
-/// `cumulative_gain[i]` is the running gain after move `i`. A strictly positive
-/// best prefix gain is required, so a pass that only matched the starting cut
-/// reports no improvement and unwinds completely rather than handing back an
-/// equal-cut partition the caller would loop on. On `false` — an empty sequence
-/// included — `part` comes back exactly as the pass found it.
-pub(super) fn commit_best_prefix(
-    moves: &[usize],
-    cumulative_gain: &[i64],
-    part: &mut [u8],
-) -> bool {
-    if moves.is_empty() {
-        return false;
-    }
-
-    let mut best_index = None;
-    let mut best_prefix_gain = 0i64;
-    for (index, &gain) in cumulative_gain.iter().enumerate() {
-        if gain > best_prefix_gain {
-            best_prefix_gain = gain;
-            best_index = Some(index);
-        }
-    }
-
-    let Some(best_index) = best_index else {
-        for &v in moves.iter().rev() {
-            part[v] = 1 - part[v];
-        }
-        return false;
-    };
-
-    for &v in moves[(best_index + 1)..].iter().rev() {
-        part[v] = 1 - part[v];
-    }
-
-    true
-}
-
 /// Vertices bucketed by gain. Each bucket is a stack, so the most recently
 /// inserted or updated vertex wins a gain tie.
 pub(super) struct GainBuckets {
@@ -576,38 +535,96 @@ impl GainBuckets {
     }
 }
 
-/// How long a pass has gone without bettering the best running gain it has
-/// seen, and how long it is allowed to.
+/// The move sequence of one FM pass: the vertices it moved, the running gain
+/// after each of them, and how long it has gone without bettering that gain.
 ///
 /// Both refiners stop short of the textbook pass, which moves every vertex
 /// before rolling back to the best prefix. Losing moves can escape a local
 /// minimum, but a long non-improving suffix is likely to be rolled back.
-pub(super) struct Stall {
+pub(super) struct MoveLog {
+    moves: Vec<usize>,
+    /// `cumulative_gain[i]` is the running gain after move `i`.
+    cumulative_gain: Vec<i64>,
+    running_gain: i64,
     limit: usize,
-    since_improvement: usize,
     best_gain: i64,
+    since_improvement: usize,
 }
 
-impl Stall {
-    /// `limit` consecutive moves without an improvement end the pass.
-    pub(super) fn new(limit: usize) -> Self {
-        Stall {
-            limit,
-            since_improvement: 0,
+impl MoveLog {
+    pub(super) fn empty() -> Self {
+        MoveLog {
+            moves: Vec::new(),
+            cumulative_gain: Vec::new(),
+            running_gain: 0,
+            limit: 0,
             best_gain: 0,
+            since_improvement: 0,
         }
     }
 
-    /// Record the running gain after a move, reporting whether the pass has
+    /// Start a pass that ends after `limit` consecutive moves without an
+    /// improvement. The sequence keeps its allocation from the pass before.
+    pub(super) fn begin(&mut self, limit: usize) {
+        self.moves.clear();
+        self.cumulative_gain.clear();
+        self.running_gain = 0;
+        self.limit = limit;
+        self.best_gain = 0;
+        self.since_improvement = 0;
+    }
+
+    /// Record a move of `v` worth `gain`, reporting whether the pass has
     /// stalled.
-    pub(super) fn record(&mut self, running_gain: i64) -> bool {
-        if running_gain > self.best_gain {
-            self.best_gain = running_gain;
+    pub(super) fn record(&mut self, v: usize, gain: i64) -> bool {
+        self.running_gain += gain;
+        self.moves.push(v);
+        self.cumulative_gain.push(self.running_gain);
+
+        if self.running_gain > self.best_gain {
+            self.best_gain = self.running_gain;
             self.since_improvement = 0;
             false
         } else {
             self.since_improvement += 1;
             self.since_improvement >= self.limit
         }
+    }
+
+    /// Keep the best prefix of the recorded sequence and undo everything after
+    /// it, reporting whether anything survived.
+    ///
+    /// `part` holds the moves in the order they were recorded. A strictly
+    /// positive best prefix gain is required, so a pass that only matched the
+    /// starting cut reports no improvement and unwinds completely rather than
+    /// handing back an equal-cut partition the caller would loop on. On
+    /// `false` — an empty sequence included — `part` comes back exactly as the
+    /// pass found it.
+    pub(super) fn commit(&mut self, part: &mut [u8]) -> bool {
+        if self.moves.is_empty() {
+            return false;
+        }
+
+        let mut best_index = None;
+        let mut best_prefix_gain = 0i64;
+        for (index, &gain) in self.cumulative_gain.iter().enumerate() {
+            if gain > best_prefix_gain {
+                best_prefix_gain = gain;
+                best_index = Some(index);
+            }
+        }
+
+        let Some(best_index) = best_index else {
+            for &v in self.moves.iter().rev() {
+                part[v] = 1 - part[v];
+            }
+            return false;
+        };
+
+        for &v in self.moves[(best_index + 1)..].iter().rev() {
+            part[v] = 1 - part[v];
+        }
+
+        true
     }
 }

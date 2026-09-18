@@ -78,8 +78,8 @@ impl HypergraphBisectionConfig {
 /// stream, with the best hyperedge cut kept.
 ///
 /// The effort budget enters as a square root, and the V-cycle count in
-/// `multilevel_hypergraph_bisect_once` takes the same square root, so raising the
-/// budget splits between more restarts and more refinement of each rather than
+/// `multilevel_bisect_once` takes the same square root, so raising the budget
+/// splits between more restarts and more refinement of each rather than
 /// multiplying into either.
 fn num_hg_restarts(n: usize, effort_scale: f64) -> usize {
     let base = if n >= 400 {
@@ -104,11 +104,11 @@ fn multilevel_pass(
     hg: &Hypergraph,
     existing_part: Option<&[u8]>,
     rng: &mut Xorshift64,
-    imbalance: f64,
+    max_imbalance: f64,
     scratch: &mut FmScratch,
     stop: &mut BisectionStop,
 ) -> Vec<u8> {
-    let n = hg.num_vertices;
+    let n = hg.vertex_count;
 
     let mut levels: Vec<CoarseningLevel> = Vec::new();
     let mut current = hg;
@@ -127,7 +127,7 @@ fn multilevel_pass(
         let coarse_part_ref = projected_part.as_deref();
         if let Some(level) = coarsen_one_level(current, MIN_COARSEN_SIZE, rng, coarse_part_ref) {
             if let Some(ref mut pp) = projected_part {
-                let nc = level.hg.num_vertices;
+                let nc = level.hg.vertex_count;
                 project_to_coarse(
                     pp,
                     &level.mapping,
@@ -150,12 +150,12 @@ fn multilevel_pass(
     let mut part = if let Some(pp) = projected_part {
         pp
     } else {
-        initial_partition(current, rng, imbalance, scratch, stop)
+        initial_partition(current, rng, max_imbalance, scratch, stop)
     };
 
     // Coarse hyperedges carry the summed weight of every fine hyperedge merged
     // into them, so a move here can be worth many fine hyperedges.
-    refine_level(current, &mut part, imbalance, scratch, stop);
+    refine_level(current, &mut part, max_imbalance, scratch, stop);
 
     // Uncoarsening. Each step hands every fine vertex its coarse vertex's side,
     // then refines with the freedom the finer hypergraph exposes; only the
@@ -169,35 +169,35 @@ fn multilevel_pass(
 
         let fine_hg = if li > 0 { &levels[li - 1].hg } else { hg };
         if li == 0 {
-            refine_finest_level(fine_hg, &mut part, imbalance, scratch, stop);
+            refine_finest_level(fine_hg, &mut part, max_imbalance, scratch, stop);
         } else {
-            refine_level(fine_hg, &mut part, imbalance, scratch, stop);
+            refine_level(fine_hg, &mut part, max_imbalance, scratch, stop);
         }
     }
 
-    repair_bisection(part, imbalance)
+    repair_bisection(part, max_imbalance)
 }
 
 fn multilevel_bisect_once(
     hg: &Hypergraph,
     rng: &mut Xorshift64,
-    imbalance: f64,
+    max_imbalance: f64,
     effort_scale: f64,
     scratch: &mut FmScratch,
     stop: &mut BisectionStop,
 ) -> Option<Vec<u8>> {
-    let mut part = multilevel_pass(hg, None, rng, imbalance, scratch, stop);
+    let mut part = multilevel_pass(hg, None, rng, max_imbalance, scratch, stop);
     if stop.stopped() {
         return None;
     }
 
-    let vc_base = max_vcycles(hg.num_vertices);
+    let vc_base = max_vcycles(hg.vertex_count);
     let num_vcycles = (vc_base as f64 * effort_scale.sqrt()).round() as usize;
     // The first cycle that fails to improve ends the loop, so `num_vcycles` is
     // a ceiling rather than a count.
     for _ in 0..num_vcycles {
         let old_cut = hyperedge_cut(hg, &part);
-        let new_part = multilevel_pass(hg, Some(&part), rng, imbalance, scratch, stop);
+        let new_part = multilevel_pass(hg, Some(&part), rng, max_imbalance, scratch, stop);
         if stop.stopped() {
             return None;
         }
@@ -240,7 +240,7 @@ pub fn multilevel_hypergraph_bisect(
             config.effort,
         )));
     }
-    let num_vertices = hg.num_vertices;
+    let num_vertices = hg.vertex_count;
     if let Some(part) = tiny_bisection(num_vertices) {
         return Ok(Bisection::new(part));
     }

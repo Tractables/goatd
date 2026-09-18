@@ -19,7 +19,7 @@ use crate::rng::Xorshift64;
 /// incidences per step but keeps the score exact. See "Where the two bisectors
 /// differ" in the shared partition bookkeeping.
 pub(super) fn greedy_growing(hg: &Hypergraph, seed: usize, stop: &mut BisectionStop) -> Vec<u8> {
-    let n = hg.num_vertices;
+    let n = hg.vertex_count;
     let total_weight: u32 = hg.vertex_weights.iter().sum();
     let target = total_weight / 2;
 
@@ -57,8 +57,7 @@ pub(super) fn greedy_growing(hg: &Hypergraph, seed: usize, stop: &mut BisectionS
             for &hyperedge in hg.vertex_hyperedges(v) {
                 let hyperedge = hyperedge as usize;
                 let weight = i64::from(hg.hyperedge_weights[hyperedge]);
-                let total_pins =
-                    hg.hyperedge_offsets[hyperedge + 1] - hg.hyperedge_offsets[hyperedge];
+                let total_pins = hg.hyperedge_size(hyperedge);
                 let count0 = pins_on_zero[hyperedge];
                 if count0 == 0 {
                     gain -= weight;
@@ -108,11 +107,11 @@ pub(super) fn hyperedge_cut(hg: &Hypergraph, part: &[u8]) -> u32 {
 pub(super) fn initial_partition(
     hg: &Hypergraph,
     rng: &mut Xorshift64,
-    imbalance: f64,
+    max_imbalance: f64,
     scratch: &mut FmScratch,
     stop: &mut BisectionStop,
 ) -> Vec<u8> {
-    let n = hg.num_vertices;
+    let n = hg.vertex_count;
     if n == 0 {
         return Vec::new();
     }
@@ -148,7 +147,7 @@ pub(super) fn initial_partition(
     // as produced.
     for _ in 0..num_rand.min(n) {
         let mut part = random_bisection(&hg.vertex_weights, rng);
-        refine_level(hg, &mut part, imbalance, scratch, stop);
+        refine_level(hg, &mut part, max_imbalance, scratch, stop);
         if stop.stopped() {
             return part;
         }

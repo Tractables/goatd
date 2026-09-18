@@ -1,7 +1,7 @@
 use crate::partition::common::{
-    FmBalance, GainBuckets, Stall, balance_bounds, commit_best_prefix, fm_balance, index_split,
-    lift_to_fine, matching_order, max_vcycles, project_to_coarse, random_bisection,
-    repair_bisection, select_move, select_region_move, shrank_enough, tiny_bisection,
+    FmBalance, GainBuckets, MoveLog, balance_bounds, fm_balance, index_split, lift_to_fine,
+    matching_order, max_vcycles, project_to_coarse, random_bisection, repair_bisection,
+    select_move, select_region_move, shrank_enough, tiny_bisection,
 };
 use crate::rng::Xorshift64;
 
@@ -198,18 +198,27 @@ fn the_coarsening_floor_and_vcycle_counts_are_read_from_here() {
 
 #[test]
 fn committing_moves_keeps_only_the_best_positive_prefix() {
-    let moves = [0, 1, 2];
+    // Running gains -1, 2, 1: the second move is the best prefix and the third
+    // is rolled back.
+    let mut log = MoveLog::empty();
+    log.begin(usize::MAX);
+    log.record(0, -1);
+    log.record(1, 3);
+    log.record(2, -1);
     let mut part = vec![1, 1, 1];
-
-    assert!(commit_best_prefix(&moves, &[-1, 2, 1], &mut part));
+    assert!(log.commit(&mut part));
     assert_eq!(part, vec![1, 1, 0]);
 
+    log.begin(usize::MAX);
+    log.record(0, -1);
+    log.record(1, 1);
     let mut non_improving = vec![1, 1];
-    assert!(!commit_best_prefix(&[0, 1], &[-1, 0], &mut non_improving,));
+    assert!(!log.commit(&mut non_improving));
     assert_eq!(non_improving, vec![0, 0]);
 
+    log.begin(usize::MAX);
     let mut untouched = vec![0, 1];
-    assert!(!commit_best_prefix(&[], &[], &mut untouched));
+    assert!(!log.commit(&mut untouched));
     assert_eq!(untouched, vec![0, 1]);
 }
 
@@ -285,16 +294,19 @@ fn gain_buckets_skip_an_ineligible_vertex_without_removing_it() {
 }
 
 #[test]
-fn a_stall_resets_only_for_a_strictly_better_running_gain() {
-    let mut stall = Stall::new(2);
+fn a_pass_stalls_only_after_a_run_without_a_better_running_gain() {
+    // Running gains 1, 1, 0: the first move improves, the two after it do not.
+    let mut log = MoveLog::empty();
+    log.begin(2);
+    assert!(!log.record(0, 1));
+    assert!(!log.record(1, 0));
+    assert!(log.record(2, -1));
 
-    assert!(!stall.record(1));
-    assert!(!stall.record(1));
-    assert!(stall.record(0));
-
-    let mut reset = Stall::new(2);
-    assert!(!reset.record(0));
-    assert!(!reset.record(1));
-    assert!(!reset.record(1));
-    assert!(reset.record(1));
+    // Running gains 0, 1, 1, 1: the improvement in the middle puts the count
+    // back to zero, and `begin` leaves nothing of the pass above.
+    log.begin(2);
+    assert!(!log.record(0, 0));
+    assert!(!log.record(1, 1));
+    assert!(!log.record(2, 0));
+    assert!(log.record(3, 0));
 }

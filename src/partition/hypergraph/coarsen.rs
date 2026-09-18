@@ -23,18 +23,13 @@ pub(super) fn coarsen_one_level(
     rng: &mut Xorshift64,
     part: Option<&[u8]>,
 ) -> Option<CoarseningLevel> {
-    let n = hg.num_vertices;
+    let n = hg.vertex_count;
     if n <= min_vertices {
         return None;
     }
 
     // A vertex's degree here is the number of hyperedges it is a pin of.
-    let perm = matching_order(
-        n,
-        |v| hg.vertex_hyperedge_offsets[v + 1] - hg.vertex_hyperedge_offsets[v],
-        &hg.vertex_weights,
-        rng,
-    );
+    let perm = matching_order(n, |v| hg.vertex_degree(v), &hg.vertex_weights, rng);
 
     let mut match_of = vec![None; n];
     let mut coarse_id: Vec<u32> = vec![0; n];
