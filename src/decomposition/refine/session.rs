@@ -270,14 +270,16 @@ impl<'g> Session<'g> {
         if let Some(tree) = self.current.take() {
             return tree;
         }
-        if matches!(self.node(0).kind, Kind::Leaf(_)) {
-            let node = self.nodes[0].take().expect("the root remains live");
-            if let Kind::Leaf(tree) = node.kind {
-                return tree;
-            }
-            unreachable!();
+        // A root that was never split holds the whole answer, and moving it out
+        // beats the clone the general walk would make of it.
+        let leaf = self.nodes[0].take_if(|root| matches!(root.kind, Kind::Leaf(_)));
+        match leaf {
+            Some(Node {
+                kind: Kind::Leaf(tree),
+                ..
+            }) => tree,
+            _ => self.materialize(0, None),
         }
-        self.materialize(0, None)
     }
 
     pub(super) fn advance_legacy(&mut self, deadline: Option<Instant>) -> Advance<'_> {

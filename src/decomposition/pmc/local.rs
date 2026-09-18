@@ -27,11 +27,9 @@
 
 use std::time::Instant;
 
-use rustc_hash::FxHashSet;
-
 use super::merge::{Loop, bags_of};
 use super::sets::{Adjacency, Scratch, VertexSet};
-use super::{BagPool, search};
+use super::{BagPool, List, search};
 use crate::deadline::expired;
 use crate::{Graph, TreeDecomposition};
 
@@ -176,48 +174,4 @@ fn anchors(answer: &TreeDecomposition, adjacency: &Adjacency) -> Vec<VertexSet> 
         .into_iter()
         .map(|index| adjacency.set_of(answer.bags()[index].vertices()))
         .collect()
-}
-
-/// The list the programme reads, under the pool's caps and without repeats.
-struct List {
-    bags: Vec<VertexSet>,
-    held: FxHashSet<VertexSet>,
-    stored: usize,
-    limits: super::Limits,
-}
-
-impl List {
-    fn new(bags: Vec<VertexSet>, limits: super::Limits) -> Self {
-        let held: FxHashSet<VertexSet> = bags.iter().cloned().collect();
-        let stored = bags.iter().map(VertexSet::len).sum();
-        Self {
-            bags,
-            held,
-            stored,
-            limits,
-        }
-    }
-
-    /// Whether either cap is reached.
-    fn full(&self) -> bool {
-        self.bags.len() >= self.limits.bags || self.stored >= self.limits.pool_vertices
-    }
-
-    /// Take `bag` unless it is already there or a cap is reached. Returns
-    /// whether the list grew.
-    fn add(&mut self, bag: VertexSet) -> bool {
-        if self.full() || !self.held.insert(bag.clone()) {
-            return false;
-        }
-        self.stored += bag.len();
-        self.bags.push(bag);
-        true
-    }
-
-    /// Drop every bag of more than `room` vertices.
-    fn trim(&mut self, room: usize) {
-        self.bags.retain(|bag| bag.len() <= room);
-        self.held = self.bags.iter().cloned().collect();
-        self.stored = self.bags.iter().map(VertexSet::len).sum();
-    }
 }

@@ -168,6 +168,51 @@ impl Limits {
     }
 }
 
+/// A list of bags under the pool's caps and without repeats: what the growth
+/// step and the local stage both build up before the programme reads it.
+struct List {
+    bags: Vec<VertexSet>,
+    held: FxHashSet<VertexSet>,
+    stored: usize,
+    limits: Limits,
+}
+
+impl List {
+    fn new(bags: Vec<VertexSet>, limits: Limits) -> Self {
+        let held: FxHashSet<VertexSet> = bags.iter().cloned().collect();
+        let stored = bags.iter().map(VertexSet::len).sum();
+        Self {
+            bags,
+            held,
+            stored,
+            limits,
+        }
+    }
+
+    /// Whether either cap is reached.
+    fn full(&self) -> bool {
+        self.bags.len() >= self.limits.bags || self.stored >= self.limits.pool_vertices
+    }
+
+    /// Take `bag` unless it is already there or a cap is reached. Returns
+    /// whether the list grew.
+    fn add(&mut self, bag: VertexSet) -> bool {
+        if self.full() || !self.held.insert(bag.clone()) {
+            return false;
+        }
+        self.stored += bag.len();
+        self.bags.push(bag);
+        true
+    }
+
+    /// Drop every bag of more than `room` vertices.
+    fn trim(&mut self, room: usize) {
+        self.bags.retain(|bag| bag.len() <= room);
+        self.held = self.bags.iter().cloned().collect();
+        self.stored = self.bags.iter().map(VertexSet::len).sum();
+    }
+}
+
 /// The best decomposition each stage of a run produced, kept whole so their
 /// bags can be pooled together.
 ///
@@ -312,12 +357,11 @@ impl BagPool {
                     }
                     let bag = adjacency.set_of(source.bags()[index].vertices());
                     taken += 1;
-                    if seen.contains(&bag) {
+                    if !seen.insert(bag.clone()) {
                         continue;
                     }
                     stored += bag.len();
                     taken_in_all += 1;
-                    seen.insert(bag.clone());
                     bags[rank].push(bag);
                 }
                 widest[rank] = left;
@@ -441,15 +485,13 @@ fn grow(
         .collect();
     widest.sort_by_key(|&index| std::cmp::Reverse(answer.bags()[index].vertices().len()));
     widest.truncate(GROWTH_PIECES);
-    let known: FxHashSet<&VertexSet> = bags.iter().collect();
-    let mut fresh: Vec<VertexSet> = Vec::new();
-    // The bags added earlier in this call, so a later piece tests membership
-    // instead of comparing its bag against every row added so far.
-    let mut added: FxHashSet<VertexSet> = FxHashSet::default();
+    let mut list = List::new(std::mem::take(bags), limits);
+    let mut grew = false;
     let mut done: Vec<VertexSet> = Vec::new();
-    let mut stored: usize = bags.iter().map(VertexSet::len).sum();
     for index in widest {
-        if expired(deadline) || bags.len() + fresh.len() >= limits.bags {
+        // The bag cap alone: reaching the vertex cap stops bags going in, not
+        // pieces being decomposed, and decomposing a piece is charged work.
+        if expired(deadline) || list.bags.len() >= limits.bags {
             break;
         }
         let mut piece = adjacency.set_of(answer.bags()[index].vertices());
@@ -463,20 +505,14 @@ fn grow(
         }
         done.push(piece.clone());
         for bag in decompose_piece(&piece, adjacency, deadline) {
-            if known.contains(&bag) || added.contains(&bag) {
-                continue;
-            }
-            if bags.len() + fresh.len() >= limits.bags || stored >= limits.pool_vertices {
+            if list.full() {
                 break;
             }
-            stored += bag.len();
-            added.insert(bag.clone());
-            fresh.push(bag);
+            grew |= list.add(bag);
         }
     }
-    let added = !fresh.is_empty();
-    bags.append(&mut fresh);
-    added
+    *bags = list.bags;
+    grew
 }
 
 /// The bags of a minimal triangulation of the subgraph `piece` induces, in the
@@ -716,9 +752,10 @@ impl Search<'_> {
             if !inside.contains(other.representative) {
                 continue;
             }
-            if other.width == u32::MAX {
-                return None;
-            }
+            // A cap holds a vertex of the component, so a sub-block inside it
+            // is strictly smaller than this block and was settled earlier in
+            // the evaluation order.
+            debug_assert!(other.width != u32::MAX, "a sub-block inside is settled");
             width = width.max(other.width);
         }
         Some(width)
@@ -735,17 +772,14 @@ impl Search<'_> {
             return None;
         }
         let mut best: Option<(u32, usize)> = None;
+        // `evaluate` settled every block before this runs, so no width here is
+        // still the sentinel it was registered with.
         for index in 0..bags_pool.len().min(self.collected) {
             let mut width = self.bag_sizes[index].saturating_sub(1) as u32;
-            let mut usable = true;
             for &sub in &self.subblocks[index] {
-                if self.blocks[sub].width == u32::MAX {
-                    usable = false;
-                    break;
-                }
                 width = width.max(self.blocks[sub].width);
             }
-            if usable && best.is_none_or(|(best_width, _)| width < best_width) {
+            if best.is_none_or(|(best_width, _)| width < best_width) {
                 best = Some((width, index));
             }
         }
