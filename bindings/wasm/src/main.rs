@@ -6,12 +6,13 @@
 //! module's `ccall`.
 
 use std::ffi::{CStr, CString, c_char};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Duration;
 
 use goatd::Graph;
 use goatd::elimination::{Order, decompose as eliminate};
 use goatd::flowcutter::{Budget, decompose as flowcutter};
-use goatd::portfolio::{PortfolioConfig, decompose as portfolio};
+use goatd::portfolio::decompose_standard as portfolio;
 
 /// Greedy min-fill elimination.
 const ORDER_MIN_FILL: u32 = 0;
@@ -37,6 +38,10 @@ fn main() {}
 /// `budget_ms`. Both are `u32` so that every argument crosses the boundary as
 /// a JavaScript number.
 ///
+/// `seed` breaks ties for every order but `ORDER_FLOWCUTTER`, which does not
+/// break ties this way and is given a non-zero seed as an error rather than
+/// ignoring it.
+///
 /// # Safety
 ///
 /// `gr` must point to a NUL-terminated string.
@@ -54,7 +59,13 @@ pub unsafe extern "C" fn goatd_decompose(
     // "string" argument type produces one.
     let text = unsafe { CStr::from_ptr(gr) };
     let result = match text.to_str() {
-        Ok(text) => run(text, order, u64::from(seed), u64::from(budget_ms)),
+        // A panic reaching Emscripten aborts the module, and every later call
+        // on it fails; the panic hook has already written the details to the
+        // browser console by the time this reports it.
+        Ok(text) => catch_unwind(AssertUnwindSafe(|| {
+            run(text, order, u64::from(seed), u64::from(budget_ms))
+        }))
+        .unwrap_or_else(|_| Err("goatd panicked; please report it as a bug".to_owned())),
         Err(_) => Err("the graph is not UTF-8".to_owned()),
     };
     into_c_string(result)
@@ -76,6 +87,11 @@ pub unsafe extern "C" fn goatd_string_free(text: *mut c_char) {
 }
 
 fn run(gr: &str, order: u32, seed: u64, budget_ms: u64) -> Result<String, String> {
+    if seed != 0 && order == ORDER_FLOWCUTTER {
+        return Err(
+            "seed is not valid with flowcutter, which does not break ties this way".to_owned(),
+        );
+    }
     let graph = Graph::from_gr(gr).map_err(|e| e.to_string())?;
     let budget = (budget_ms != 0).then(|| Duration::from_millis(budget_ms));
     let td = match order {
@@ -83,14 +99,7 @@ fn run(gr: &str, order: u32, seed: u64, budget_ms: u64) -> Result<String, String
         ORDER_MIN_DEGREE => eliminate(&graph, Order::MinDegree, seed, budget),
         ORDER_NESTED_DISSECTION => eliminate(&graph, Order::NestedDissection, seed, budget),
         ORDER_FLOWCUTTER => flowcutter(&graph, Budget::standalone(budget, None)),
-        ORDER_PORTFOLIO => {
-            let weights = vec![1; graph.num_vertices() as usize];
-            let config = budget.map_or_else(
-                PortfolioConfig::standard,
-                PortfolioConfig::standard_with_budget,
-            );
-            portfolio(&graph, &weights, seed, config)
-        }
+        ORDER_PORTFOLIO => portfolio(&graph, seed, budget),
         unknown => return Err(format!("unknown order {unknown}")),
     };
     td.map(|td| td.to_td()).map_err(|e| e.to_string())

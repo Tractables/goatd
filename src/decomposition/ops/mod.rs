@@ -260,87 +260,23 @@ fn project_bags_where(
     ))
 }
 
-/// Project a tree decomposition onto a vertex subset and renumber the result
-/// into a local id space.
-///
-/// [`project_td_keeping_global_ids`] does the bag filtering, empty-bag
-/// contraction and tree rebuild. This function also relabels `keep` in sorted
-/// order to local ids `0..k`, so
-/// the returned decomposition numbers its vertices `0..k` and
-/// [`Projection::local_to_original`] maps them back.
-fn project(td: &TreeDecomposition, keep: &[u32]) -> Result<Projection, Error> {
-    let mut sorted: Vec<u32> = keep.to_vec();
-    sorted.sort_unstable();
-    sorted.dedup();
-    if let Some(&vertex) = sorted.iter().find(|&&vertex| vertex >= td.num_vertices) {
-        return Err(Error::InvalidInput(format!(
-            "projected vertex {vertex} is outside 0..{}",
-            td.num_vertices
-        )));
-    }
-    let global_to_local = index_by_vertex(&sorted);
-
-    if sorted.is_empty() {
-        return Ok(Projection {
-            decomposition: TreeDecomposition::from_parts(0, Vec::new(), Vec::new()),
-            local_to_original: Vec::new(),
-        });
-    }
-
-    let Some(mut projected) = project_td_keeping_global_ids(td, &sorted) else {
-        return Err(Error::InvalidDecomposition(
-            "none of the projected vertices occurs in a bag".into(),
-        ));
-    };
-
-    let represented: FxHashSet<u32> = projected
-        .bags
-        .iter()
-        .flat_map(|bag| bag.vertices.iter().copied())
-        .collect();
-    if let Some(&missing) = sorted
-        .iter()
-        .find(|&&vertex| !represented.contains(&vertex))
-    {
-        return Err(Error::InvalidDecomposition(format!(
-            "projected vertex {missing} occurs in no bag"
-        )));
-    }
-
-    // Relabelling is order-preserving (a local id is the rank of its global id
-    // in `sorted`), so bags that came back sorted by global id stay sorted.
-    for bag in &mut projected.bags {
-        bag.relabel_ascending(|v| global_to_local[&v]);
-    }
-    projected.num_vertices = sorted.len() as u32;
-
-    Ok(Projection {
-        decomposition: projected,
-        local_to_original: sorted,
-    })
-}
-
 /// Whether every vertex of `left` is also in `right`, reading each bag's
 /// recorded order to pick how to look them up.
 fn bag_is_subset(left: &TdBag, right: &TdBag) -> bool {
     if left.vertices.len() > right.vertices.len() {
         return false;
     }
-    let right_sorted = right.is_sorted();
-    if !left.is_sorted() {
-        return left.vertices.iter().all(|vertex| {
-            if right_sorted {
-                right.vertices.binary_search(vertex).is_ok()
-            } else {
-                right.vertices.contains(vertex)
-            }
-        });
-    }
-    if !right_sorted {
+    if !right.is_sorted() {
         return left
             .vertices
             .iter()
             .all(|vertex| right.vertices.contains(vertex));
+    }
+    if !left.is_sorted() {
+        return left
+            .vertices
+            .iter()
+            .all(|vertex| right.vertices.binary_search(vertex).is_ok());
     }
 
     // Both sides are non-decreasing, so the smallest and the largest vertex of
@@ -525,14 +461,65 @@ impl TreeDecomposition {
     }
 
     /// Project onto `keep`, renumbering its sorted unique vertex ids to `0..k`.
-    /// Projecting onto an empty set returns an empty decomposition.
+    /// Projecting onto an empty set returns an empty decomposition. The result
+    /// numbers its vertices `0..k` and [`Projection::local_to_original`] maps
+    /// them back.
     ///
     /// # Errors
     ///
     /// Returns an error when a requested vertex is outside this
     /// decomposition's vertex range or occurs in no bag.
     pub fn project(&self, keep: &[u32]) -> Result<Projection, Error> {
-        project(self, keep)
+        let mut sorted: Vec<u32> = keep.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        if let Some(&vertex) = sorted.iter().find(|&&vertex| vertex >= self.num_vertices) {
+            return Err(Error::InvalidInput(format!(
+                "projected vertex {vertex} is outside 0..{}",
+                self.num_vertices
+            )));
+        }
+        let global_to_local = index_by_vertex(&sorted);
+
+        if sorted.is_empty() {
+            return Ok(Projection {
+                decomposition: TreeDecomposition::from_parts(0, Vec::new(), Vec::new()),
+                local_to_original: Vec::new(),
+            });
+        }
+
+        let Some(mut projected) = project_td_keeping_global_ids(self, &sorted) else {
+            return Err(Error::InvalidDecomposition(
+                "none of the projected vertices occurs in a bag".into(),
+            ));
+        };
+
+        let represented: FxHashSet<u32> = projected
+            .bags
+            .iter()
+            .flat_map(|bag| bag.vertices.iter().copied())
+            .collect();
+        if let Some(&missing) = sorted
+            .iter()
+            .find(|&&vertex| !represented.contains(&vertex))
+        {
+            return Err(Error::InvalidDecomposition(format!(
+                "projected vertex {missing} occurs in no bag"
+            )));
+        }
+
+        // Relabelling is order-preserving (a local id is the rank of its global
+        // id in `sorted`), so bags that came back sorted by global id stay
+        // sorted.
+        for bag in &mut projected.bags {
+            bag.relabel_ascending(|v| global_to_local[&v]);
+        }
+        projected.num_vertices = sorted.len() as u32;
+
+        Ok(Projection {
+            decomposition: projected,
+            local_to_original: sorted,
+        })
     }
 }
 

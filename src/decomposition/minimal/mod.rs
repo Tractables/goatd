@@ -456,20 +456,20 @@ fn completion(
     vertices: usize,
     deadline: Option<Instant>,
 ) -> Option<RowSet> {
+    charge_completion(decomposition, deadline)?;
     let mut completion = RowSet::new(vertices);
     let mut mask = vec![0u64; completion.words];
-    let mut pacer = DeadlinePacer::new();
-    for bag in decomposition.bags() {
-        let bag = bag.vertices();
-        // Charged before the bag runs, since one wide bag is millions of
-        // inserts and the pacer has to see it coming rather than afterwards.
-        crate::meter::charge((bag.len().saturating_mul(bag.len())) as u64);
-        if pacer.due() && expired(deadline) {
-            return None;
-        }
-        completion.insert_clique(bag, &mut mask);
-    }
+    insert_bags(&mut completion, decomposition, &mut mask);
     Some(completion)
+}
+
+/// Make a clique of every bag of `decomposition` in `completion`. `mask` is
+/// the scratch [`RowSet::insert_clique`] reads: one word per 64 vertices, zero
+/// on entry and zero again on return.
+fn insert_bags(completion: &mut RowSet, decomposition: &TreeDecomposition, mask: &mut [u64]) {
+    for bag in decomposition.bags() {
+        completion.insert_clique(bag.vertices(), mask);
+    }
 }
 
 /// Take fill edges out of `completion` until none is removable, and report how
@@ -710,10 +710,7 @@ pub(crate) fn minimalize_fits(
     graph: &Graph,
     deadline: Option<Instant>,
 ) -> bool {
-    fits(decomposition, graph.num_vertices() as usize, deadline)
-}
-
-fn fits(decomposition: &TreeDecomposition, vertices: usize, deadline: Option<Instant>) -> bool {
+    let vertices = graph.num_vertices() as usize;
     if !completion_fits(vertices) {
         return false;
     }
@@ -746,7 +743,7 @@ fn minimalization_candidate(
     deadline: Option<Instant>,
 ) -> Option<TreeDecomposition> {
     let vertices = graph.num_vertices() as usize;
-    if vertices == 0 || !fits(decomposition, vertices, deadline) {
+    if vertices == 0 || !minimalize_fits(decomposition, graph, deadline) {
         return None;
     }
     let mut work = Workspace {
@@ -829,10 +826,7 @@ impl SharedCompletion {
     pub(super) fn complete(&mut self, decomposition: &TreeDecomposition) {
         self.completion.rows.fill(0);
         self.mask.fill(0);
-        for bag in decomposition.bags() {
-            self.completion
-                .insert_clique(bag.vertices(), &mut self.mask);
-        }
+        insert_bags(&mut self.completion, decomposition, &mut self.mask);
         self.witnesses.rebuild(&self.completion, &self.original);
     }
 }
@@ -889,7 +883,14 @@ pub(super) fn rebuild_candidate(
     )
 }
 
-/// The charges and deadline reads of [`completion`], without the inserts.
+/// Charge what completing the bags of `decomposition` costs and read the
+/// deadline on the pacer's stride. `None` where the deadline passed partway.
+///
+/// A bag is charged before it would go in, since one wide bag is millions of
+/// inserts and the pacer has to see it coming rather than afterwards.
+/// [`rebuild_candidate`] derives its completion from the shared one instead of
+/// building it, and charges here so that the two passes agree on every
+/// deadline they read.
 fn charge_completion(decomposition: &TreeDecomposition, deadline: Option<Instant>) -> Option<()> {
     let mut pacer = DeadlinePacer::new();
     for bag in decomposition.bags() {

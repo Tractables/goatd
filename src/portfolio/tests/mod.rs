@@ -5,15 +5,15 @@ use super::Schedule;
 use super::candidates::{CandidateSet, ScheduleStop};
 use super::config::{MAX_DIVERSE_SAMPLING_RUNS, validate};
 use super::trace::CandidateOrigin;
-use super::{CandidateOutcome, DEFAULT_HEDGE_DIMS, HedgeSeries, HedgeWeights, StageBudget};
+use super::{CandidateOutcome, DEFAULT_HEDGE_DIMS, HedgeSeries, HedgeWeights, Spent, StageBudget};
 use super::{EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig, Residual};
 use super::{FLOWCUTTER_RESERVE, restart_admitted, restart_deadline};
 use super::{Sample, SampleBand, SamplingPatience};
 use super::{Stage, elimination_stop, extra_sample, hedge_random_seed, sample_seed};
+use crate::adjacency::Adjacency;
 use crate::elimination::Order;
 use crate::elimination::engine::OrderRun;
 use crate::elimination::execution::Cutoff;
-use crate::embedding::Adjacency;
 use crate::{Graph, TreeDecomposition};
 
 /// An unhedged schedule: the caller's weights on every candidate, one diverse
@@ -60,15 +60,9 @@ fn hedged<'a>(
     fixed_runs: u64,
 ) -> Schedule<'a> {
     Schedule {
-        base_seed,
-        min_degree_restarts: false,
-        ordinary_runs: 1_000,
-        diverse_runs: 46,
         modified,
         fixed_runs,
-        initial_orders: super::standard_orders,
-        weights,
-        band: SampleBand::default(),
+        ..schedule(base_seed, false, weights)
     }
 }
 
@@ -1337,12 +1331,6 @@ fn ring_with_chords(vertices: u32) -> Graph {
     Graph::new(vertices, edges)
 }
 
-/// A run that has charged nothing has no rate to read, so estimates stand at
-/// the model's own rate.
-fn unmeasured() -> super::Spent {
-    super::Spent::unmeasured()
-}
-
 #[test]
 fn the_flowcutter_slot_declines_a_graph_it_could_not_stop_on() {
     // A 20x20 grid needs a few milliseconds of setup and a restart, so even a
@@ -1352,7 +1340,7 @@ fn the_flowcutter_slot_declines_a_graph_it_could_not_stop_on() {
         &small,
         Duration::from_millis(200),
         None,
-        unmeasured(),
+        Spent::unmeasured(),
         SamplingPatience::Off,
     )
     .unwrap();
@@ -1365,7 +1353,7 @@ fn the_flowcutter_slot_declines_a_graph_it_could_not_stop_on() {
         &large,
         Duration::from_millis(4_750),
         None,
-        unmeasured(),
+        Spent::unmeasured(),
         SamplingPatience::Off,
     )
     .unwrap();
@@ -1632,7 +1620,7 @@ fn a_long_second_stage_goes_back_to_the_candidate_the_whole_reserve_would_declin
     // plus first restart at 13.5, so the whole reserve declines it on any
     // window shorter than 30.9 seconds.
     let graph = ring_with_chords(82_000);
-    let reserve = super::flowcutter_reserve(&graph, unmeasured());
+    let reserve = super::flowcutter_reserve(&graph, Spent::unmeasured());
     assert!(
         !super::flowcutter_runs_in(&graph, secs(30) - reserve),
         "the whole reserve leaves too little of a 30-second stage to start in",
@@ -1952,7 +1940,7 @@ fn the_flowcutter_candidate_limits_hold_only_up_to_the_base_window() {
 #[test]
 fn an_estimate_grows_with_the_rate_the_run_is_actually_going_at() {
     let estimate = Duration::from_millis(340);
-    let spent = |elapsed_ms, charged_ms: u64| super::Spent {
+    let spent = |elapsed_ms, charged_ms: u64| Spent {
         elapsed: Duration::from_millis(elapsed_ms),
         charged_units: charged_ms * crate::meter::UNITS_PER_MS,
     };

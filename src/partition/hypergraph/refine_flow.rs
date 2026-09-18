@@ -221,7 +221,7 @@ pub(super) fn flow_refine(
     scratch: &mut FmScratch,
     stop: &mut BisectionStop,
 ) -> bool {
-    let n = hg.num_vertices;
+    let n = hg.vertex_count;
     if n < 10 {
         return false;
     }
@@ -386,20 +386,20 @@ pub(super) fn flow_refine(
 pub(super) fn refine_finest_level(
     hg: &Hypergraph,
     part: &mut [u8],
-    imbalance: f64,
+    max_imbalance: f64,
     scratch: &mut FmScratch,
     stop: &mut BisectionStop,
 ) {
-    refine_level(hg, part, imbalance, scratch, stop);
+    refine_level(hg, part, max_imbalance, scratch, stop);
 
-    let n = hg.num_vertices;
+    let n = hg.vertex_count;
     if n < 20 || stop.stopped() {
         return;
     }
 
     // 7919 below is prime, so successive tries land in unrelated stretches of
     // the boundary list rather than in one region's worth of adjacent vertices.
-    let num_tries = 4.min(n);
+    let num_tries = 4;
     hg.fill_pin_counts(part, &mut scratch.pin_counts);
     {
         let pin_counts = scratch.pin_counts.as_slice();
@@ -421,9 +421,9 @@ pub(super) fn refine_finest_level(
             }
             let boundary = &scratch.finest.boundary;
             let seed = boundary[(i * 7919) % boundary.len()];
-            localized_fm_pass(hg, part, seed, imbalance, &mut scratch.region, stop);
+            localized_fm_pass(hg, part, seed, max_imbalance, &mut scratch.region, stop);
         }
     }
 
-    flow_refine(hg, part, imbalance, scratch, stop);
+    flow_refine(hg, part, max_imbalance, scratch, stop);
 }

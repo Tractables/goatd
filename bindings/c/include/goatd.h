@@ -86,6 +86,10 @@
  * How a decomposition is constructed. Start from `goatd_options_default` and
  * change what you need: a field the chosen order cannot act on is an error,
  * not a silently ignored value.
+ *
+ * The struct cannot leave a field out, so `0` stands for unset: `budget_ms`
+ * of 0 is no limit, `steps` of 0 is no step budget, and `seed` of 0 is the
+ * seed zero, which is also the default.
  */
 typedef struct GoatdOptions {
   /**
@@ -130,10 +134,12 @@ typedef struct GoatdOptions {
   size_t tie_weights_len;
   /**
    * Re-cut the decomposition along FlowCutter separators before returning
-   * it. Accepted with every order. With `budget_ms` set the pass is bounded
-   * and skips subgraphs over 100 000 vertices; with 0 it runs to completion,
-   * ungated, and one uninterruptible separator search on a large graph can
-   * take minutes.
+   * it. With `budget_ms` set the pass is bounded and skips subgraphs over
+   * 100 000 vertices; with 0 it runs to completion, ungated, and one
+   * uninterruptible separator search on a large graph can take minutes.
+   *
+   * Not accepted by a budgeted `GOATD_ORDER_PORTFOLIO`, which ends on a
+   * FlowCutter candidate of its own and has nothing left to re-cut.
    */
   bool refine;
 } GoatdOptions;
@@ -153,9 +159,11 @@ typedef int32_t GoatdStatus;
  * `tree_edges` holds `2 * num_tree_edges` bag indices, one undirected edge
  * per pair.
  *
- * `goatd_decompose` fills the struct the caller supplies and takes ownership
- * of nothing; the three arrays inside belong to the caller and are released
- * together by `goatd_decomposition_free`.
+ * `goatd_decompose` fills the struct the caller supplies; `bag_offsets`,
+ * `bag_vertices` and `tree_edges` are then goatd's allocations, handed over
+ * to the caller and released together by `goatd_decomposition_free`. Only a
+ * struct `goatd_decompose` filled in may be freed that way: arrays the caller
+ * built itself, as `goatd_validate` reads, stay the caller's to release.
  *
  * `treewidth`, `max_separator` and `bag_mass` describe the decomposition that
  * was built. They are written, never read: a struct the caller filled in for
@@ -183,7 +191,8 @@ typedef struct GoatdDecomposition {
    */
   size_t num_tree_edges;
   /**
-   * `2 * num_tree_edges` bag indices.
+   * `2 * num_tree_edges` bag indices: each edge with the smaller bag first,
+   * the edges in ascending order.
    */
   const size_t *tree_edges;
   /**
@@ -274,7 +283,9 @@ void goatd_decomposition_free(struct GoatdDecomposition *decomposition);
  * intersection property.
  *
  * Returns `GOATD_OK` when it holds and `GOATD_ERROR_INVALID_DECOMPOSITION`
- * with a message naming the first violation when it does not. The
+ * with a message naming the first violation when it does not. Arrays that do
+ * not describe a decomposition at all — offsets that do not increase, a null
+ * array the counts ask for — are `GOATD_ERROR_INVALID_INPUT`. The
  * decomposition need not have come from `goatd_decompose`.
  *
  * # Safety

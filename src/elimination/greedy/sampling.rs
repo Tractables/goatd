@@ -21,7 +21,7 @@
 
 use super::*;
 use crate::deadline::expired;
-use crate::rng::{SEED_OFFSET, Xorshift64};
+use crate::rng::search_stream;
 
 /// How a sampled core draws: the weights that bias the tie set, how far above
 /// the minimum score the tie set reaches, and which stream the draws come
@@ -126,6 +126,27 @@ fn seed_bucket(
         fills[v as usize] = f;
     }
     buckets.insert(v, priority.key(f, graph.degree(v) as u64));
+}
+
+/// The vertices a seeding scan visits, in the order it visits them: the
+/// caller's list of active vertices where it has one, and otherwise every
+/// active vertex in index order, which is the order that list is in. Both
+/// halves are concrete iterators, so the loops driven by this still
+/// monomorphize.
+fn seeding_order<'a>(
+    graph: &'a EliminationGraph,
+    active: Option<&'a [u32]>,
+) -> impl Iterator<Item = u32> + 'a {
+    let scan_to = if active.is_some() {
+        0
+    } else {
+        graph.len() as u32
+    };
+    active
+        .unwrap_or(&[])
+        .iter()
+        .copied()
+        .chain((0..scan_to).filter(move |&v| graph.active[v as usize]))
 }
 
 /// htd-style min-fill elimination: priority = fill only (no secondary degree
@@ -234,43 +255,20 @@ fn eliminate_sampled_fill_based(
         None
     };
     let mut buckets = BucketMap::with_weights(bucket_storage, weights, uniform_mass);
-    match active {
-        // The caller's list of active vertices in index order, which is the
-        // order the scan below reaches them in.
-        Some(active) => {
-            for &v in active {
-                debug_assert!(graph.active[v as usize]);
-                seed_bucket(
-                    graph,
-                    v,
-                    initial_fill,
-                    fill_scratch,
-                    &mut fills,
-                    &mut buckets,
-                    priority,
-                );
-            }
-        }
-        None => {
-            for v in 0..n as u32 {
-                if graph.active[v as usize] {
-                    seed_bucket(
-                        graph,
-                        v,
-                        initial_fill,
-                        fill_scratch,
-                        &mut fills,
-                        &mut buckets,
-                        priority,
-                    );
-                }
-            }
-        }
+    for v in seeding_order(graph, active) {
+        debug_assert!(graph.active[v as usize]);
+        seed_bucket(
+            graph,
+            v,
+            initial_fill,
+            fill_scratch,
+            &mut fills,
+            &mut buckets,
+            priority,
+        );
     }
 
-    // `+ SEED_OFFSET` keeps a seed of 0 off xorshift64's zero fixed point, and
-    // is part of the tie-break stream this sampler has always drawn.
-    let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
+    let mut rng = search_stream(seed);
     let mut pacer = DeadlinePacer::new();
 
     while buckets.minimum().is_some() {
@@ -408,27 +406,12 @@ pub(crate) fn eliminate_sampled_min_degree(
         ..
     } = scratch;
     let mut buckets = BucketMap::with_weights(bucket_storage, weights, uniform_mass);
-    match active {
-        // The caller's list of active vertices in index order, which is the
-        // order the scan below reaches them in.
-        Some(active) => {
-            for &v in active {
-                debug_assert!(graph.active[v as usize]);
-                buckets.insert(v, graph.degree(v) as u64);
-            }
-        }
-        None => {
-            for v in 0..n as u32 {
-                if graph.active[v as usize] {
-                    buckets.insert(v, graph.degree(v) as u64);
-                }
-            }
-        }
+    for v in seeding_order(graph, active) {
+        debug_assert!(graph.active[v as usize]);
+        buckets.insert(v, graph.degree(v) as u64);
     }
 
-    // `+ SEED_OFFSET` keeps a seed of 0 off xorshift64's zero fixed point, and
-    // is part of the tie-break stream this sampler has always drawn.
-    let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
+    let mut rng = search_stream(seed);
     let mut pacer = DeadlinePacer::new();
     let mut clique_residual = false;
     // Lazy degree tracking — defer bucket update to sample time. The flags are

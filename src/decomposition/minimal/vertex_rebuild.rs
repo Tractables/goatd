@@ -127,16 +127,6 @@ fn support(tree: &TreeDecomposition, required: &[bool]) -> Vec<bool> {
     kept
 }
 
-/// The neighbours of every vertex, each row ascending.
-fn adjacency(graph: &Graph) -> Vec<Vec<u32>> {
-    let mut adjacency = vec![Vec::new(); graph.num_vertices() as usize];
-    for &(a, b) in graph.edges() {
-        adjacency[a as usize].push(b);
-        adjacency[b as usize].push(a);
-    }
-    adjacency
-}
-
 /// Remove `vertex` from `tree`, whose bags `shared` has completed, and put
 /// it back through connecting bags.
 fn rebuild(

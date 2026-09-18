@@ -249,6 +249,28 @@ impl TreeDecomposition {
         &self.adj
     }
 
+    /// Every bag edge once, smaller bag index first, in ascending order.
+    ///
+    /// [`Self::adjacency`] is the same edges as one row per bag, in whatever
+    /// order the construction left them. This is the flat, ordered form a
+    /// consumer writing the tree out wants: one pass over the rows and a sort
+    /// of the resulting bags-minus-one pairs.
+    pub fn tree_edges(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        let mut edges: Vec<(usize, usize)> = self
+            .adj
+            .iter()
+            .enumerate()
+            .flat_map(|(bag, neighbours)| {
+                neighbours
+                    .iter()
+                    .filter(move |&&neighbour| bag < neighbour)
+                    .map(move |&neighbour| (bag, neighbour))
+            })
+            .collect();
+        edges.sort_unstable();
+        edges.into_iter()
+    }
+
     /// This decomposition's width: the vertices in its largest bag, less one.
     /// `0` where there is nothing to separate — no bags, one empty bag and one
     /// single-vertex bag alike.

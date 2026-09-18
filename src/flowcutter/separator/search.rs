@@ -4,7 +4,7 @@ use super::*;
 pub(crate) struct Search {
     graph: OrigGraph,
     random: MinstdRand,
-    cutter: MultiCutter,
+    cutter: Cutter,
     round: Option<Round>,
     best: Option<Vec<u32>>,
     iteration: i32,
@@ -26,8 +26,8 @@ impl Search {
         let step_cost = (((n as f64).sqrt() * (arcs as f64).sqrt()) / 50.0).max(1.0) as i64;
         Some(Self {
             graph,
-            random: MinstdRand::new(0),
-            cutter: MultiCutter::new(),
+            random: MinstdRand::new(),
+            cutter: Cutter::new(),
             round: None,
             best: None,
             iteration: 0,
@@ -118,23 +118,11 @@ struct Round {
 }
 
 impl Round {
-    fn new(graph: &OrigGraph, cutter: &mut MultiCutter, seed: u64, balance: f32) -> Option<Self> {
-        let pairs = select_random_st_pairs(graph.n, 1, seed);
-        if pairs.is_empty() {
-            return None;
-        }
-        let pairs: Vec<_> = pairs
-            .into_iter()
-            .map(|(s, t)| (orig_node_to_exp(s, false), orig_node_to_exp(t, true)))
-            .collect();
-        let arcs = graph.tail.len() as u32;
+    fn new(graph: &OrigGraph, cutter: &mut Cutter, seed: u64, balance: f32) -> Option<Self> {
+        let (s, t) = select_random_st_pair(graph.n, seed)?;
         cutter.init(
-            &Exp {
-                g: graph,
-                a_orig: arcs,
-            },
-            arcs,
-            &pairs,
+            graph,
+            (orig_node_to_exp(s, false), orig_node_to_exp(t, true)),
         );
         Some(Self {
             best: None,
@@ -144,24 +132,21 @@ impl Round {
         })
     }
 
-    fn step(&mut self, graph: &OrigGraph, cutter: &mut MultiCutter) -> bool {
+    fn step(&mut self, graph: &OrigGraph, cutter: &mut Cutter) -> bool {
         self.iterations += 1;
         if self.iterations > 10_000_000 {
             return true;
         }
         let cut_size = cutter.current_cut_size() as f64;
+        // At least one node: `init` seeds both sides before the first read.
         let small_side = cutter.current_smaller_size() as f64;
-        let mut score = if small_side > 0.0 {
-            cut_size / small_side
-        } else {
-            f64::INFINITY
-        };
+        let mut score = cut_size / small_side;
         if cutter.current_smaller_size() < self.min_balance as u32 {
             score += 1_000_000.0;
         }
         if score < self.best_score {
             self.best_score = score;
-            let separator = extract_original_separator(graph, graph.tail.len() as u32, cutter);
+            let separator = extract_original_separator(graph, cutter);
             let too_large = separator.len() > 10_000;
             self.best = Some(separator);
             if too_large {
@@ -172,13 +157,6 @@ impl Round {
         if potential >= self.best_score {
             return true;
         }
-        let arcs = graph.tail.len() as u32;
-        !cutter.advance(
-            &Exp {
-                g: graph,
-                a_orig: arcs,
-            },
-            arcs,
-        )
+        !cutter.advance(graph)
     }
 }

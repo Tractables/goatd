@@ -170,25 +170,10 @@ impl TreeDecomposition {
                 }
             }
         }
-        let mut seen = vec![false; self.bags.len()];
-        let mut component_roots = Vec::new();
-        for start in 0..self.bags.len() {
-            if seen[start] {
-                continue;
-            }
-            component_roots.push(start);
-            seen[start] = true;
-            let mut stack = vec![start];
-            while let Some(bag) = stack.pop() {
-                for &neighbour in &self.adj[bag] {
-                    if !seen[neighbour] {
-                        seen[neighbour] = true;
-                        stack.push(neighbour);
-                    }
-                }
-            }
-        }
-        for roots in component_roots.windows(2) {
+        let forest = self
+            .rooted_forest([])
+            .expect("an empty root list names no bag out of range");
+        for roots in forest.component_roots().windows(2) {
             push_decimal(&mut line, roots[0] + 1);
             line.push(b' ');
             push_decimal(&mut line, roots[1] + 1);

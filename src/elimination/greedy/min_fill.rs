@@ -272,7 +272,11 @@ impl<const RELATIVE: bool> ElimPolicy for MinFill<'_, RELATIVE> {
             let mut pacer = DeadlinePacer::new();
             while let Some((vertex, delta)) = self.affected.pop_delta(graph) {
                 if pacer.due() && expired(deadline) {
+                    // The neighbour terms this prepare left are never read now.
+                    // The scratch is a fresh one per run today, but the sampled
+                    // core pools its own, so they go back to zero here.
                     self.affected.clear();
+                    self.affected.clear_neighbours(graph, nbrs);
                     return self.deadline_outcome(graph);
                 }
                 debug_assert!(delta <= self.score[vertex as usize]);

@@ -184,11 +184,13 @@ fn eliminate_simplicial_vertices(
 ) -> bool {
     let mut fired = false;
     for vertex in 0..graph.len() as u32 {
-        if graph.active[vertex as usize] && graph.degree(vertex) >= 2 && stop.reached() {
+        if !graph.active[vertex as usize] || graph.degree(vertex) < 2 {
+            continue;
+        }
+        if stop.reached() {
             return fired;
         }
-        if graph.active[vertex as usize] && graph.degree(vertex) >= 2 && graph.is_simplicial(vertex)
-        {
+        if graph.is_simplicial(vertex) {
             // `is_simplicial` has just established that the neighbourhood is a
             // clique, so there is no fill edge to add.
             let degree = eliminate_and_record(graph, prefix, vertex, false);
@@ -245,17 +247,14 @@ fn peel_low_degree(graph: &mut EliminationGraph, prefix: &mut ElimSteps) -> bool
             }
             match graph.degree(v as u32) {
                 0 => {
-                    graph.active[v] = false;
-                    graph.num_active -= 1;
+                    graph.deactivate_isolated(v as u32);
                     prefix.sink().record(v as u32, vec![v as u32]);
                     fired = true;
                 }
                 1 => {
-                    let mut bag = Vec::with_capacity(2);
-                    bag.push(v as u32);
-                    graph.collect_live_nbrs_into(v as u32, &mut bag);
-                    graph.remove_without_fill_nbrs(v as u32, &bag[1..]);
-                    prefix.sink().record(v as u32, bag);
+                    // A degree-one vertex has a one-vertex neighbourhood, so
+                    // there is no fill edge to add.
+                    eliminate_and_record(graph, prefix, v as u32, false);
                     fired = true;
                 }
                 _ => {}

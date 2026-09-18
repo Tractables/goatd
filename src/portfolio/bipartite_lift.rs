@@ -45,12 +45,7 @@ use crate::{Error, Graph, TreeDecomposition};
 /// read several times.
 pub(super) fn adjacency(graph: &Graph) -> Vec<Vec<u32>> {
     crate::meter::charge(graph.edges().len() as u64);
-    let mut adjacency = vec![Vec::new(); graph.num_vertices() as usize];
-    for &(left, right) in graph.edges() {
-        adjacency[left as usize].push(right);
-        adjacency[right as usize].push(left);
-    }
-    adjacency
+    crate::adjacency::lists(graph)
 }
 
 /// The two sides of a 2-colouring, or `None` when the graph has an odd cycle.

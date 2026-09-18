@@ -5,6 +5,14 @@ use std::time::Instant;
 use super::graph::EliminationGraph;
 use crate::deadline::expired;
 
+// The cutoff a core reports is the one the public run outcome carries, so
+// there is one enum for both. The distinction is the caller's, not the core's:
+// a core that stops at the soft cutoff has spent the construction budget it
+// was given, while the portfolio around it still has hard-deadline time for
+// another candidate. A core that stops at the hard cutoff leaves no time for
+// anything.
+pub(crate) use super::prepared::Cutoff;
+
 /// Ceiling on the number of loop iterations between deadline reads, for a loop
 /// whose work the meter is not charged for.
 const DEADLINE_CHECK_STRIDE: u32 = 64;
@@ -70,18 +78,6 @@ pub(crate) struct ElimStop {
     pub(crate) soft_deadline: Option<Instant>,
     pub(crate) hard_deadline: Option<Instant>,
     pub(crate) width_bound: Option<u32>,
-}
-
-/// Which of the two cutoffs stopped a run.
-///
-/// The distinction is the caller's, not the core's: a core that stops at the
-/// soft cutoff has spent the construction budget it was given, while the
-/// portfolio around it still has hard-deadline time for another candidate. A
-/// core that stops at the hard cutoff leaves no time for anything.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Cutoff {
-    Soft,
-    Hard,
 }
 
 /// How an elimination run ended.
@@ -219,6 +215,17 @@ pub(super) fn residual_edges(graph: &EliminationGraph) -> (Vec<u32>, Vec<Vec<u32
     (active, adjacency)
 }
 
+/// Snapshot `v`'s live neighbours into `nbrs_buf` and build the bag its
+/// elimination emits: `v` first, then those neighbours.
+pub(super) fn take_bag(graph: &EliminationGraph, v: u32, nbrs_buf: &mut Vec<u32>) -> Vec<u32> {
+    nbrs_buf.clear();
+    graph.collect_live_nbrs_into(v, nbrs_buf);
+    let mut bag = Vec::with_capacity(nbrs_buf.len() + 1);
+    bag.push(v);
+    bag.extend_from_slice(nbrs_buf);
+    bag
+}
+
 /// Eliminate the active vertices in the given order, recording one bag per
 /// step. Vertices already gone are skipped, so a caller may hand over an order
 /// covering more than the residual.
@@ -237,11 +244,7 @@ pub(super) fn eliminate_in_order(
         if pacer.due() && expired(stop.hard_deadline) {
             return ElimExit::DeadlineReached(Cutoff::Hard);
         }
-        neighbours.clear();
-        graph.collect_live_nbrs_into(vertex, &mut neighbours);
-        let mut bag = Vec::with_capacity(neighbours.len() + 1);
-        bag.push(vertex);
-        bag.extend_from_slice(&neighbours);
+        let bag = take_bag(graph, vertex, &mut neighbours);
         let bag_len = bag.len();
         graph.eliminate_with_nbrs(vertex, &neighbours);
         sink.record(vertex, bag);

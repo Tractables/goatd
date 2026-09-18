@@ -141,6 +141,10 @@ def test_refinement():
     check(td, graph)
     again = goatd.refine_with_flowcutter(td, graph, budget_ms=500)
     check(again, graph)
+    # A portfolio without a budget runs no FlowCutter candidate of its own,
+    # so the pass still has cuts to look for after it.
+    small = goatd.Graph(*CHORDED_CYCLE)
+    check(goatd.decompose(small, order="portfolio", refine=True), small)
 
 
 def test_weighted_ties():
@@ -206,6 +210,10 @@ def test_library_errors_raise_goatd_error():
         ({"order": "minfill", "ties": "salt"}, ("ties", "sample")),
         ({"order": "chordal"}, ("order", "minfill")),
         ({"budget_ms": 0}, ("budget_ms",)),
+        (
+            {"order": "portfolio", "budget_ms": 100, "refine": True},
+            ("refine", "portfolio"),
+        ),
     ],
 )
 def test_arguments_the_order_cannot_act_on(arguments, expected):

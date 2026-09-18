@@ -59,10 +59,10 @@ pub(super) fn inter_to_orig_arc(arc: u32) -> u32 {
     arc / 2
 }
 
-pub(super) fn exp_tail(g: &OrigGraph, a_orig: u32, arc: u32) -> u32 {
+pub(super) fn exp_tail(g: &OrigGraph, arc: u32) -> u32 {
     let flag = arc_tail_out_flag(arc);
-    if is_intra(arc, a_orig) {
-        let v = intra_to_orig_node(arc, a_orig);
+    if is_intra(arc, g.arc_count) {
+        let v = intra_to_orig_node(arc, g.arc_count);
         2 * v + flag
     } else {
         let oa = inter_to_orig_arc(arc) as usize;
@@ -70,11 +70,11 @@ pub(super) fn exp_tail(g: &OrigGraph, a_orig: u32, arc: u32) -> u32 {
     }
 }
 
-pub(super) fn exp_head(g: &OrigGraph, a_orig: u32, arc: u32) -> u32 {
+pub(super) fn exp_head(g: &OrigGraph, arc: u32) -> u32 {
     let flag = arc_tail_out_flag(arc);
     let head_flag = 1 - flag;
-    if is_intra(arc, a_orig) {
-        let v = intra_to_orig_node(arc, a_orig);
+    if is_intra(arc, g.arc_count) {
+        let v = intra_to_orig_node(arc, g.arc_count);
         2 * v + head_flag
     } else {
         let oa = inter_to_orig_arc(arc) as usize;
@@ -82,8 +82,8 @@ pub(super) fn exp_head(g: &OrigGraph, a_orig: u32, arc: u32) -> u32 {
     }
 }
 
-pub(super) fn exp_back(g: &OrigGraph, a_orig: u32, arc: u32) -> u32 {
-    if is_intra(arc, a_orig) {
+pub(super) fn exp_back(g: &OrigGraph, arc: u32) -> u32 {
+    if is_intra(arc, g.arc_count) {
         arc ^ 1
     } else {
         let oa = inter_to_orig_arc(arc) as usize;
@@ -102,10 +102,10 @@ pub(super) fn exp_capacity(a_orig: u32, arc: u32) -> i8 {
 
 /// Iterate the expanded out-arcs of node `x` (intra arc first, then inter
 /// arcs in the order of `out_arcs(orig)`).
-pub(super) fn exp_out_arcs<F: FnMut(u32)>(g: &OrigGraph, a_orig: u32, x: u32, mut f: F) {
+pub(super) fn exp_out_arcs<F: FnMut(u32)>(g: &OrigGraph, x: u32, mut f: F) {
     let v = exp_node_to_orig(x);
     let flag = exp_node_out_flag(x);
-    let intra = 2 * (a_orig + v) + flag;
+    let intra = 2 * (g.arc_count + v) + flag;
     f(intra);
     for oa in g.out_arcs(v) {
         f(2 * oa + flag);

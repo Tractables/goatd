@@ -13,7 +13,7 @@ fn hypergraph_storage_indexes_pins_in_both_directions() {
     let hyperedges = vec![vec![0, 2], vec![1, 2, 3], vec![0, 3]];
     let hg = Hypergraph::from_hyperedges(5, &hyperedges, Some(&[2, 3, 5]));
 
-    assert_eq!(hg.num_vertices, 5);
+    assert_eq!(hg.vertex_count, 5);
     assert_eq!(hg.num_hyperedges(), 3);
     assert_eq!(hg.hyperedge_weights, vec![2, 3, 5]);
     assert_eq!(hg.charged_hyperedge_pins(0), &[0, 2]);
@@ -52,7 +52,7 @@ fn coarsening_contracts_connected_pairs_and_sums_vertex_weight() {
     let level = coarsen_one_level(&hg, 0, &mut rng, None)
         .expect("two disjoint pairs contract to two vertices");
 
-    assert_eq!(level.hg.num_vertices, 2);
+    assert_eq!(level.hg.vertex_count, 2);
     assert_eq!(level.mapping[0], level.mapping[1]);
     assert_eq!(level.mapping[2], level.mapping[3]);
     assert_ne!(level.mapping[0], level.mapping[2]);
@@ -200,7 +200,7 @@ fn a_used_scratch_decides_what_a_fresh_one_does() {
 
     let mut held = FmScratch::new();
     for hg in [&wide, &narrow, &wide, &narrow] {
-        let start: Vec<u8> = (0..hg.num_vertices).map(|v| (v % 2) as u8).collect();
+        let start: Vec<u8> = (0..hg.vertex_count).map(|v| (v % 2) as u8).collect();
 
         let mut fresh_part = start.clone();
         let fresh = flow_refine(
@@ -220,7 +220,7 @@ fn a_used_scratch_decides_what_a_fresh_one_does() {
             &mut BisectionStop::new(None),
         );
 
-        assert_eq!(again, fresh, "{} vertices", hg.num_vertices);
-        assert_eq!(held_part, fresh_part, "{} vertices", hg.num_vertices);
+        assert_eq!(again, fresh, "{} vertices", hg.vertex_count);
+        assert_eq!(held_part, fresh_part, "{} vertices", hg.vertex_count);
     }
 }

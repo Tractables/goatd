@@ -597,26 +597,11 @@ impl PortfolioConfig {
     pub fn sampled_min_fill() -> Self {
         Self {
             soft_budget: Some(Duration::from_millis(SAMPLED_MIN_FILL_TIMEOUT_MS)),
-            hard_budget: None,
-            sampling_runs: MAX_SAMPLING_RUNS,
-            diverse_sampling_runs: 0,
-            flowcutter_budget: None,
             hedge: Hedge::Off,
-            hedge_reserve: DEFAULT_HEDGE_RESERVE,
-            restarts_to_deadline: false,
-            sample_band: DEFAULT_SAMPLE_BAND,
-            sample_band_alternate: false,
-            sampling_patience: DEFAULT_SAMPLING_PATIENCE,
-            expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
             maximum_cardinality: None,
             minimal_triangulation: None,
             triangulation_refinement: None,
-            vertex_reinsertion: true,
-            recombination: None,
-            merge_loop: None,
-            local_merge: None,
-            bipartite_lift: None,
-            bipartite_lift_rate: DEFAULT_BIPARTITE_LIFT_RATE,
+            ..Self::standard()
         }
     }
 
@@ -788,27 +773,30 @@ impl PortfolioConfig {
     pub fn standard_with_budget(budget: Duration) -> Self {
         Self {
             soft_budget: Some(budget),
-            hard_budget: None,
-            sampling_runs: MAX_SAMPLING_RUNS,
             diverse_sampling_runs: MAX_DIVERSE_SAMPLING_RUNS,
             flowcutter_budget: Some(budget),
-            hedge: DEFAULT_HEDGE,
-            hedge_reserve: DEFAULT_HEDGE_RESERVE,
             restarts_to_deadline: true,
-            sample_band: DEFAULT_SAMPLE_BAND,
-            sample_band_alternate: false,
-            sampling_patience: DEFAULT_SAMPLING_PATIENCE,
-            expensive_orders_up_to: DEFAULT_MAX_RESIDUAL_FOR_EXPENSIVE_ORDERS,
-            maximum_cardinality: Some(DEFAULT_MAXIMUM_CARDINALITY_VERTICES),
-            minimal_triangulation: Some(DEFAULT_MINIMAL_TRIANGULATION_VERTICES),
-            triangulation_refinement: Some(DEFAULT_TRIANGULATION_REFINEMENT_VERTICES),
-            vertex_reinsertion: true,
             recombination: Some(DEFAULT_RECOMBINATION_VERTICES),
             merge_loop: Some(DEFAULT_MERGE_LOOP_VERTICES),
             local_merge: Some(DEFAULT_LOCAL_MERGE_VERTICES),
             bipartite_lift: Some(DEFAULT_BIPARTITE_LIFT_EDGE_FACTOR),
-            bipartite_lift_rate: DEFAULT_BIPARTITE_LIFT_RATE,
+            ..Self::standard()
         }
+    }
+
+    /// The configuration for a caller holding nothing but a graph and an
+    /// optional budget: [`Self::standard_with_budget`] when there is one and
+    /// [`Self::standard`] when there is not.
+    pub fn standalone(budget: Option<Duration>) -> Self {
+        budget.map_or_else(Self::standard, Self::standard_with_budget)
+    }
+
+    /// Whether the schedule ends on a trailing FlowCutter candidate. A caller
+    /// that would follow the portfolio with its own FlowCutter refinement has
+    /// nothing to add when this is true — the candidate has already spent that
+    /// search inside the budget.
+    pub fn runs_flowcutter_candidate(&self) -> bool {
+        self.flowcutter_budget.is_some()
     }
 
     /// Run the candidates that read sampling weights a second time on weights

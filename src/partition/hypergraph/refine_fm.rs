@@ -17,15 +17,13 @@ use std::collections::VecDeque;
 use super::model::Hypergraph;
 use super::refine_flow::FinestScratch;
 use crate::partition::common::{
-    BisectionStop, GainBuckets, Stall, commit_best_prefix, fm_balance, select_move,
-    select_region_move,
+    BisectionStop, GainBuckets, MoveLog, fm_balance, select_move, select_region_move,
 };
 
 pub(super) struct FmScratch {
     gain: Vec<i64>,
     locked: Vec<bool>,
-    moves: Vec<usize>,
-    cumulative_gain: Vec<i64>,
+    log: MoveLog,
     /// Rebuilt by every pass that reads it, and by the finest level's boundary
     /// scan and flow pass, which run between passes rather than inside one.
     pub(super) pin_counts: Vec<[u32; 2]>,
@@ -39,8 +37,7 @@ impl FmScratch {
         FmScratch {
             gain: Vec::new(),
             locked: Vec::new(),
-            moves: Vec::new(),
-            cumulative_gain: Vec::new(),
+            log: MoveLog::empty(),
             pin_counts: Vec::new(),
             bq: [GainBuckets::empty(), GainBuckets::empty()],
             region: RegionScratch::new(),
@@ -53,8 +50,6 @@ impl FmScratch {
         self.gain.resize(n, 0);
         self.locked.clear();
         self.locked.resize(n, false);
-        self.moves.clear();
-        self.cumulative_gain.clear();
         self.bq[0].reset(n);
         self.bq[1].reset(n);
     }
@@ -76,8 +71,7 @@ pub(super) struct RegionScratch {
     /// `region_list` and shrinks as the pass moves vertices.
     active: Vec<usize>,
     queue: VecDeque<usize>,
-    moves: Vec<usize>,
-    cumulative_gain: Vec<i64>,
+    log: MoveLog,
     pin_counts: Vec<[u32; 2]>,
 }
 
@@ -90,8 +84,7 @@ impl RegionScratch {
             region_list: Vec::new(),
             active: Vec::new(),
             queue: VecDeque::new(),
-            moves: Vec::new(),
-            cumulative_gain: Vec::new(),
+            log: MoveLog::empty(),
             pin_counts: Vec::new(),
         }
     }
@@ -111,8 +104,6 @@ impl RegionScratch {
         self.region_list.clear();
         self.active.clear();
         self.queue.clear();
-        self.moves.clear();
-        self.cumulative_gain.clear();
     }
 }
 
@@ -123,7 +114,7 @@ pub(super) fn fm_refine_pass(
     scratch: &mut FmScratch,
     stop: &mut BisectionStop,
 ) -> bool {
-    let n = hg.num_vertices;
+    let n = hg.vertex_count;
     let Some(mut balance) = fm_balance(n, &hg.vertex_weights, part, max_imbalance) else {
         return false;
     };
@@ -164,10 +155,8 @@ pub(super) fn fm_refine_pass(
     }
 
     let locked = scratch.locked.as_mut_slice();
-    let moves = &mut scratch.moves;
-    let cumulative_gain = &mut scratch.cumulative_gain;
-    let mut running_gain: i64 = 0;
-    let mut stall = Stall::new((n / 2).max(20));
+    let log = &mut scratch.log;
+    log.begin((n / 2).max(20));
 
     for _ in 0..n {
         if stop.reached() {
@@ -186,11 +175,7 @@ pub(super) fn fm_refine_pass(
         part[v] = to as u8;
         locked[v] = true;
 
-        running_gain += best_gain;
-        moves.push(v);
-        cumulative_gain.push(running_gain);
-
-        if stall.record(running_gain) {
+        if log.record(v, best_gain) {
             break;
         }
 
@@ -205,7 +190,6 @@ pub(super) fn fm_refine_pass(
             pin_counts[hei][to] += 1;
 
             let new_from = old_from - 1;
-            let _new_to = old_to + 1;
 
             for &u in hg.charged_hyperedge_pins(hei) {
                 let u = u as usize;
@@ -281,7 +265,7 @@ pub(super) fn fm_refine_pass(
         }
     }
 
-    commit_best_prefix(moves, cumulative_gain, part)
+    log.commit(part)
 }
 
 /// Returns true if the partition was improved.
@@ -300,7 +284,7 @@ pub(super) fn localized_fm_pass(
     scratch: &mut RegionScratch,
     stop: &mut BisectionStop,
 ) -> bool {
-    let n = hg.num_vertices;
+    let n = hg.vertex_count;
     let Some(mut balance) = fm_balance(n, &hg.vertex_weights, part, max_imbalance) else {
         return false;
     };
@@ -369,10 +353,8 @@ pub(super) fn localized_fm_pass(
     }
 
     let locked = scratch.locked.as_mut_slice();
-    let moves = &mut scratch.moves;
-    let cumulative_gain = &mut scratch.cumulative_gain;
-    let mut running_gain: i64 = 0;
-    let mut stall = Stall::new(region_list.len() / 2);
+    let log = &mut scratch.log;
+    log.begin(region_list.len() / 2);
 
     // O(region²), not O(region·n): the region, not 0..n, is scanned per move,
     // and the selection drops each vertex it locks.
@@ -394,11 +376,7 @@ pub(super) fn localized_fm_pass(
         part[v] = to as u8;
         locked[v] = true;
 
-        running_gain += best_gain;
-        moves.push(v);
-        cumulative_gain.push(running_gain);
-
-        if stall.record(running_gain) {
+        if log.record(v, best_gain) {
             break;
         }
 
@@ -442,7 +420,7 @@ pub(super) fn localized_fm_pass(
         }
     }
 
-    let improved = commit_best_prefix(moves, cumulative_gain, part);
+    let improved = log.commit(part);
 
     // Hand the arrays back the way they were found. Only region vertices are
     // marked in `in_region`, and only region vertices are ever locked.
@@ -460,13 +438,13 @@ pub(super) fn localized_fm_pass(
 pub(super) fn refine_level(
     hg: &Hypergraph,
     part: &mut [u8],
-    imbalance: f64,
+    max_imbalance: f64,
     scratch: &mut FmScratch,
     stop: &mut BisectionStop,
 ) {
     let max_passes = 10;
     for _ in 0..max_passes {
-        if !fm_refine_pass(hg, part, imbalance, scratch, stop) || stop.stopped() {
+        if !fm_refine_pass(hg, part, max_imbalance, scratch, stop) || stop.stopped() {
             break;
         }
     }

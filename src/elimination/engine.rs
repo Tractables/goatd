@@ -15,7 +15,7 @@ use super::minimal_triangulation::{Reach, eliminate_cardinality_search};
 use super::nested_dissection::eliminate_nested_dissection;
 use super::preprocess::{Reduced, preprocess};
 use crate::TreeDecomposition;
-use crate::rng::{SEED_OFFSET, Xorshift64};
+use crate::rng::search_stream;
 
 use super::execution::ElimStop;
 
@@ -240,15 +240,14 @@ pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> 
 /// drawing a salt the size of the graph for each of its restarts was a pass
 /// over the graph for nothing.
 ///
-/// `+ SEED_OFFSET` avoids xorshift64's zero fixed point. The update-order
-/// min-degree variant does not read the salt, but keeping it here avoids
-/// another representation in component remapping.
+/// The update-order min-degree variant does not read the salt, but keeping it
+/// here avoids another representation in component remapping.
 fn draw_salt(salt: &mut Vec<u32>, n: usize, order: Order<'_>, seed: u64) {
     salt.clear();
     if !order.uses_salt() {
         return;
     }
-    let mut rng = Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET));
+    let mut rng = search_stream(seed);
     salt.extend((0..n).map(|_| rng.next_u32()));
 }
 

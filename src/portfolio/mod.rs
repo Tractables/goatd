@@ -16,6 +16,7 @@ mod trace;
 #[cfg(test)]
 mod tests;
 
+use crate::adjacency::Adjacency;
 use crate::deadline::{expired, remaining};
 use crate::decomposition;
 use crate::elimination::Order;
@@ -302,7 +303,7 @@ enum ModifiedWeights<'a> {
         graph: &'a Graph,
         /// The graph's adjacency, built by whichever stage places first and
         /// read by the rest: every stage builds the same one.
-        adjacency: &'a OnceCell<embedding::Adjacency>,
+        adjacency: &'a OnceCell<Adjacency>,
         dim: usize,
         rounds: usize,
         seed: u64,
@@ -329,7 +330,7 @@ impl<'a> ModifiedWeights<'a> {
                 deadline,
             } => cell.get_or_init(|| {
                 Embedding::compute_on(
-                    adjacency.get_or_init(|| embedding::Adjacency::of(graph)),
+                    adjacency.get_or_init(|| Adjacency::of(graph)),
                     dim,
                     seed,
                     rounds,
@@ -448,9 +449,10 @@ impl<'a> Schedule<'a> {
             .saturating_add(self.stage_length().saturating_mul(self.modified_stages()))
     }
 
-    /// Candidates the sampling phase has to offer.
+    /// Candidates the sampling phase has to offer: whatever runs before the
+    /// ordinary restarts, and the restarts themselves.
     fn total(self) -> u64 {
-        self.passes_total().saturating_add(self.ordinary_runs)
+        self.ordinary_start().saturating_add(self.ordinary_runs)
     }
 
     /// Which pass a candidate belongs to, `stage` counting the weighted stages
@@ -475,7 +477,7 @@ impl<'a> Schedule<'a> {
 
     /// The `index`-th candidate of one diverse pass, on the caller's weights
     /// when `plain` and on the `stage`-th weighted stage's otherwise.
-    fn diverse_sample(self, index: u64, plain: bool, stage: u64) -> Option<Sample<'a>> {
+    fn diverse_sample(self, index: u64, plain: bool, stage: u64) -> Sample<'a> {
         let (degree_coefficient, seed_index) = Self::diverse_candidate(index);
         let weights = if plain {
             self.weights
@@ -602,19 +604,14 @@ struct Sample<'a> {
 }
 
 /// One sample, labelled as `phase` labels its order.
-fn sample_at(
-    order: Order<'_>,
-    seed: u64,
-    pass: Pass,
-    phase: EliminationPhase,
-) -> Option<Sample<'_>> {
-    Some(Sample {
+fn sample_at(order: Order<'_>, seed: u64, pass: Pass, phase: EliminationPhase) -> Sample<'_> {
+    Sample {
         order,
         seed,
         pass,
         stage: stage_of(order, phase),
         band: 0,
-    })
+    }
 }
 
 fn extra_sample(schedule: Schedule<'_>, index: u64) -> Option<Sample<'_>> {
@@ -626,21 +623,21 @@ fn extra_sample(schedule: Schedule<'_>, index: u64) -> Option<Sample<'_>> {
         if index >= schedule.ordinary_runs {
             return None;
         }
-        return sample_at(
+        return Some(sample_at(
             Order::MinDegreeSampled {
                 weights: schedule.weights,
             },
             sample_seed(base_seed, index),
             Pass::Only,
             EliminationPhase::ExtraSampling,
-        );
+        ));
     }
 
     debug_assert!(schedule.diverse_runs <= config::MAX_DIVERSE_SAMPLING_RUNS);
     // The first diverse pass is the one a portfolio without the hedge runs:
     // the caller's weights and the same seeds.
     if index < schedule.diverse_runs {
-        return schedule.diverse_sample(index, true, 0);
+        return Some(schedule.diverse_sample(index, true, 0));
     }
     let stage_length = schedule.stage_length();
     if schedule.hedged() && stage_length > 0 {
@@ -653,14 +650,14 @@ fn extra_sample(schedule: Schedule<'_>, index: u64) -> Option<Sample<'_>> {
             let within = after_plain % stage_length;
             if within < schedule.fixed_runs {
                 let (order, seed) = schedule.weighted_fixed(within, stage_index)?;
-                return sample_at(
+                return Some(sample_at(
                     order,
                     seed,
                     schedule.pass(false, stage_index),
                     EliminationPhase::Initial,
-                );
+                ));
             }
-            return schedule.diverse_sample(within - schedule.fixed_runs, false, stage_index);
+            return Some(schedule.diverse_sample(within - schedule.fixed_runs, false, stage_index));
         }
     }
 
@@ -677,7 +674,7 @@ fn extra_sample(schedule: Schedule<'_>, index: u64) -> Option<Sample<'_>> {
         sample_seed(base_seed, ordinary_index),
         schedule.pass(true, 0),
         EliminationPhase::ExtraSampling,
-    )?;
+    );
     restart.band = schedule.band.at(ordinary_index);
     Some(restart)
 }
@@ -1361,13 +1358,7 @@ fn run_bipartite_lift(
         pass: Pass::Only,
     };
     let give_up = |trace: &mut dyn FnMut(CandidateTrace)| {
-        trace(CandidateTrace {
-            stage: Stage::BipartiteLift,
-            seed,
-            pass: Pass::Only,
-            outcome: CandidateOutcome::NotStarted,
-            elapsed: crate::meter::now().saturating_duration_since(started),
-        });
+        report(trace, started, origin, CandidateOutcome::NotStarted);
     };
 
     // The stage needs a budget to take a share of, and a graph to colour.
@@ -1383,6 +1374,12 @@ fn run_bipartite_lift(
     let Some([first, second]) = bipartite_lift::sides(&adjacency) else {
         return Ok(());
     };
+    // A side to keep and a side to eliminate, whichever way round they are
+    // taken: an empty one leaves nothing to project either way.
+    if first.is_empty() || second.is_empty() {
+        give_up(trace);
+        return Ok(());
+    }
 
     // Both sides are measured before either is built: a side whose
     // eliminations would add too much is not a smaller search, and building it
@@ -1393,7 +1390,6 @@ fn run_bipartite_lift(
     let mut sides: Vec<(&Vec<u32>, &Vec<u32>, bipartite_lift::Price)> =
         [(&first, &second), (&second, &first)]
             .into_iter()
-            .filter(|(keep, drop)| !keep.is_empty() && !drop.is_empty())
             .filter_map(|(keep, drop)| {
                 bipartite_lift::price(&adjacency, drop, u32::MAX, limit)
                     .map(|priced| (keep, drop, priced))
@@ -1421,9 +1417,7 @@ fn run_bipartite_lift(
     // refused here, and the share stays with the rest of the schedule; the same
     // graph under a longer window is not.
     let affordable = config.bipartite_lift_rate * share.as_millis() as f64;
-    let cheapest = sides.first().map_or(0.0, |&(_, _, priced)| {
-        (graph.edges().len() + priced.work()) as f64
-    });
+    let cheapest = (graph.edges().len() + sides[0].2.work()) as f64;
     if cheapest > affordable {
         give_up(trace);
         return Ok(());
@@ -1523,13 +1517,7 @@ fn run_bipartite_lift(
             // incumbent has run, and spent its share doing it; only a stage
             // the gates refused before any work reports as unstarted.
             let outcome = reported.unwrap_or(CandidateOutcome::WidthAborted);
-            trace(CandidateTrace {
-                stage: Stage::BipartiteLift,
-                seed,
-                pass: Pass::Only,
-                outcome,
-                elapsed: crate::meter::now().saturating_duration_since(started),
-            });
+            report(trace, started, origin, outcome);
             return Ok(());
         }
     }
@@ -1584,18 +1572,21 @@ fn run_portfolio(
     // reads the answer of the two before it, so its share comes off that end
     // first; the merge loop takes its share from what is left, and the
     // recombination stage from what that leaves.
-    let local_share = stage_gate(graph, config.local_merge, pooled_end)
-        .then(|| stage_reserve(graph, started, pooled_end))
-        .flatten();
-    let (merge_end, local_merge) = less_reserve(pooled_end, local_share, soft_deadline);
-    let merge_share = stage_gate(graph, config.merge_loop, merge_end)
-        .then(|| stage_reserve(graph, started, merge_end))
-        .flatten();
-    let (recombine_end, merge) = less_reserve(merge_end, merge_share, soft_deadline);
-    let reserve = stage_gate(graph, config.recombination, recombine_end)
-        .then(|| stage_reserve(graph, started, recombine_end))
-        .flatten();
-    let (hard_deadline, recombine) = less_reserve(recombine_end, reserve, soft_deadline);
+    let (merge_end, local_merge) = carve(
+        graph,
+        started,
+        config.local_merge,
+        pooled_end,
+        soft_deadline,
+    );
+    let (recombine_end, merge) = carve(graph, started, config.merge_loop, merge_end, soft_deadline);
+    let (hard_deadline, recombine) = carve(
+        graph,
+        started,
+        config.recombination,
+        recombine_end,
+        soft_deadline,
+    );
     let mut prebuilt = engine::prebuild(graph, soft_deadline);
     let active = prebuilt.num_active();
     // The class where the sizes settle it on their own. In the band between
@@ -1615,7 +1606,7 @@ fn run_portfolio(
     let cells: [OnceCell<Vec<u32>>; MAX_HEDGE_PASSES] = std::array::from_fn(|_| OnceCell::new());
     // The adjacency every eccentricity stage places its cloud on. The stages
     // differ in dimension, not in the graph, so they share one.
-    let placement_adjacency: OnceCell<embedding::Adjacency> = OnceCell::new();
+    let placement_adjacency: OnceCell<Adjacency> = OnceCell::new();
     // The builder is needed again for the fixed orders the hedge repeats.
     let order_builder = initial_orders;
     let initial_orders = initial_orders(seed, weights);
@@ -1704,13 +1695,16 @@ fn run_portfolio(
         // residual does not run it; the slot is traced so a reader can see it
         // was given up.
         if residual == Some(Residual::Admitted) && matches!(order, Order::NestedDissection) {
-            trace(CandidateTrace {
-                stage: Stage::NestedDissection,
-                seed: candidate.seed,
-                pass: Pass::Only,
-                outcome: CandidateOutcome::NotStarted,
-                elapsed: crate::meter::now().saturating_duration_since(started),
-            });
+            report(
+                trace,
+                started,
+                CandidateOrigin {
+                    stage: Stage::NestedDissection,
+                    seed: candidate.seed,
+                    pass: Pass::Only,
+                },
+                CandidateOutcome::NotStarted,
+            );
             continue;
         }
         // An admitted residual gives each expensive order half the time the
@@ -1813,40 +1807,35 @@ fn run_portfolio(
             min_fill_finished = true;
             fill_pass_cost.get_or_insert(cost);
         }
-        trace(CandidateTrace {
-            stage: stage_of(order, phase),
-            seed: candidate.seed,
-            pass: Pass::Only,
-            outcome,
-            elapsed: crate::meter::now().saturating_duration_since(started),
-        });
+        report(trace, started, origin, outcome);
         // An expensive order on an admitted residual runs to a cutoff of its
         // own, and the engine reports reaching that the same way it reports the
         // portfolio's hard deadline. Reaching it says nothing about how much of
         // the portfolio's budget is left, so read the clock instead of taking
         // the candidate's word and stopping the run.
         let own_cutoff = matches!(phase, EliminationPhase::AdmittedInitial(_));
-        hard_deadline_tripped = match stop {
-            ScheduleStop::HardDeadline if !own_cutoff => true,
+        hard_deadline_tripped = match (stop, outcome) {
+            (ScheduleStop::HardDeadline, _) if !own_cutoff => true,
             // Either the candidate finished inside its budget, or it was
             // stopped by a cutoff that was not the portfolio's. Either way the
             // portfolio still holds whatever is left of the hard deadline, so
             // only the clock decides.
-            ScheduleStop::HardDeadline | ScheduleStop::Continue => match outcome {
-                // Nothing usable from this candidate, but the portfolio is
-                // still inside its budget.
-                CandidateOutcome::WidthAborted => false,
-                // Only the sampling phase has stages to skip and restarts to
-                // stop, and only the trailing FlowCutter slot reports an
-                // unstarted candidate.
-                CandidateOutcome::StageSkipped { .. }
+            (_, CandidateOutcome::Produced { .. } | CandidateOutcome::DeadlineReached) => {
+                expired(hard_deadline)
+            }
+            // A width-aborted candidate left nothing usable, but the portfolio
+            // is still inside its budget. The rest never come back from an
+            // elimination: only the sampling phase has stages to skip and
+            // restarts to stop, and only the trailing FlowCutter slot reports
+            // an unstarted candidate.
+            (
+                _,
+                CandidateOutcome::WidthAborted
+                | CandidateOutcome::StageSkipped { .. }
                 | CandidateOutcome::NotStarted
                 | CandidateOutcome::SamplingStopped { .. }
-                | CandidateOutcome::TailBounded { .. } => false,
-                CandidateOutcome::Produced { .. } | CandidateOutcome::DeadlineReached => {
-                    expired(hard_deadline)
-                }
-            },
+                | CandidateOutcome::TailBounded { .. },
+            ) => false,
         };
         if hard_deadline_tripped {
             break;
@@ -1918,10 +1907,7 @@ fn run_portfolio(
         // search runs on, so the schedule's residual classification does not
         // gate them as well.
         let Some(gate) = gate else { continue };
-        if hard_deadline_tripped
-            || prebuilt.num_active() > gate as usize
-            || expired(soft_deadline)
-            || expired(hard_deadline)
+        if hard_deadline_tripped || prebuilt.num_active() > gate as usize || expired(soft_deadline)
         {
             continue;
         }
@@ -2044,14 +2030,9 @@ fn run_portfolio(
     // not restarts and are not counted.
     let ordinary_start = schedule.ordinary_start();
     let mut last_improvement: Option<u64> = None;
-    // Normally the restart deadline fires first; the portfolio hard-deadline
-    // check also prevents another sample after an initial candidate used the
-    // complete two-stage window.
-    while sample_index < total_samples
-        && !hard_deadline_tripped
-        && !expired(restart_deadline)
-        && !expired(hard_deadline)
-    {
+    // The restarts' own deadline never falls after the hard one, so it is the
+    // only deadline tested here.
+    while sample_index < total_samples && !hard_deadline_tripped && !expired(restart_deadline) {
         // The restarts stop once they have stalled: past the first few of
         // them, a run whose last improvement lies in the first half of the
         // restarts it has done is not finding anything in the rest of the
@@ -2063,17 +2044,20 @@ fn run_portfolio(
                 .sampling_patience
                 .stalled(restarts, last_improvement, schedule.ordinary_runs)
             {
-                trace(CandidateTrace {
-                    stage: Stage::SampledRestarts,
-                    seed,
-                    pass: Pass::Only,
-                    outcome: CandidateOutcome::SamplingStopped {
+                report(
+                    trace,
+                    started,
+                    CandidateOrigin {
+                        stage: Stage::SampledRestarts,
+                        seed,
+                        pass: Pass::Only,
+                    },
+                    CandidateOutcome::SamplingStopped {
                         restarts,
                         last_improvement,
                         left: restart_deadline.map(remaining),
                     },
-                    elapsed: crate::meter::now().saturating_duration_since(started),
-                });
+                );
                 break;
             }
         }
@@ -2386,13 +2370,7 @@ fn run_portfolio(
             pass: Pass::Only,
         };
         let (outcome, _) = candidates.record_elimination(run, origin);
-        trace(CandidateTrace {
-            stage: origin.stage,
-            seed,
-            pass: Pass::Only,
-            outcome,
-            elapsed: crate::meter::now().saturating_duration_since(started),
-        });
+        report(trace, started, origin, outcome);
     }
     Ok(candidates)
 }
@@ -2401,6 +2379,22 @@ fn relative_fill_fits(cost: Duration, deadline: Option<Instant>) -> bool {
     deadline.is_some_and(|end| {
         !expired(Some(end)) && cost <= end.saturating_duration_since(crate::meter::now()) / 8
     })
+}
+
+/// Report one candidate to the trace sink, timed from the start of the run.
+fn report(
+    trace: &mut dyn FnMut(CandidateTrace),
+    started: Instant,
+    origin: CandidateOrigin,
+    outcome: CandidateOutcome,
+) {
+    trace(CandidateTrace {
+        stage: origin.stage,
+        seed: origin.seed,
+        pass: origin.pass,
+        outcome,
+        elapsed: crate::meter::now().saturating_duration_since(started),
+    });
 }
 
 /// Record what a closing stage produced and trace the pass. The set keeps the
@@ -2417,13 +2411,32 @@ fn close_stage(
     produced: Option<TreeDecomposition>,
 ) {
     let outcome = candidates.record_stage(stage, seed, before, produced);
-    trace(CandidateTrace {
-        stage,
-        seed,
-        pass: Pass::Only,
+    report(
+        trace,
+        started,
+        CandidateOrigin {
+            stage,
+            seed,
+            pass: Pass::Only,
+        },
         outcome,
-        elapsed: crate::meter::now().saturating_duration_since(started),
-    });
+    );
+}
+
+/// One stage's share taken off `end`: the deadline every stage before it sees,
+/// and whether this one runs. A stage its gate refuses, or whose search does
+/// not fit a share of the window, takes nothing and does not run.
+fn carve(
+    graph: &Graph,
+    started: Instant,
+    gate: Option<u32>,
+    end: Option<Instant>,
+    soft: Option<Instant>,
+) -> (Option<Instant>, bool) {
+    let share = stage_gate(graph, gate, end)
+        .then(|| stage_reserve(graph, started, end))
+        .flatten();
+    less_reserve(end, share, soft)
 }
 
 /// `end` less `reserve`, and whether the subtraction happened.
@@ -2629,25 +2642,17 @@ fn reinsert_at_end(
     };
     let best = candidates.best().expect("the portfolio produced a tree");
     let (found, stats) = decomposition::vertex_rebuild::improve_trusted(graph, best, deadline);
-    let outcome = if stats.improved > 0 {
-        candidates.push(
-            found,
-            CandidateOrigin {
-                stage: Stage::Reinserted,
-                seed,
-                pass: Pass::Only,
-            },
-        )
-    } else {
-        candidates.report_unchanged(&found)
-    };
-    trace(CandidateTrace {
+    let origin = CandidateOrigin {
         stage: Stage::Reinserted,
         seed,
         pass: Pass::Only,
-        outcome,
-        elapsed: crate::meter::now().saturating_duration_since(started),
-    });
+    };
+    let outcome = if stats.improved > 0 {
+        candidates.push(found, origin)
+    } else {
+        candidates.report_unchanged(&found)
+    };
+    report(trace, started, origin, outcome);
 }
 
 /// Run the standard portfolio and return every distinct decomposition it
@@ -2724,6 +2729,22 @@ pub fn decompose(
     config: PortfolioConfig,
 ) -> Result<TreeDecomposition, crate::Error> {
     best_candidate(graph, weights, seed, config, false, &mut |_| {})
+}
+
+/// [`decompose`] for a caller with only a graph, a seed and an optional
+/// budget: [`PortfolioConfig::standalone`] at that budget, and equal weights,
+/// which is what a caller with no ranking of the vertices supplies.
+///
+/// # Errors
+///
+/// Returns the same configuration errors as [`decompose`].
+pub fn decompose_standard(
+    graph: &Graph,
+    seed: u64,
+    budget: Option<Duration>,
+) -> Result<TreeDecomposition, crate::Error> {
+    let weights = vec![1; graph.num_vertices() as usize];
+    decompose(graph, &weights, seed, PortfolioConfig::standalone(budget))
 }
 
 /// [`decompose`], reporting every candidate to `trace` as it finishes.

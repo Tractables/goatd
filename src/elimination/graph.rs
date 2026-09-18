@@ -57,6 +57,21 @@ fn is_canonical(edges: &[(u32, u32)]) -> bool {
     true
 }
 
+/// The next stamp for an elimination marker, wiping the marker on the wrap so
+/// that a stale entry cannot pass for the new stamp.
+///
+/// It takes the two fields rather than the graph, since a caller may be
+/// holding a row of the adjacency while it stamps.
+#[inline]
+fn bump_stamp(stamp: &mut u16, marker: &mut [u16]) -> u16 {
+    *stamp = stamp.wrapping_add(1);
+    if *stamp == 0 {
+        marker.fill(0);
+        *stamp = 1;
+    }
+    *stamp
+}
+
 /// Whether an edge list holds each undirected edge at most once, which is the
 /// contract [`EliminationGraph::from_unique_edges`] builds on. It sorts a copy
 /// of the list, so it is only called from a `debug_assert!`, and only up to a
@@ -492,6 +507,12 @@ impl EliminationGraph {
     }
 
     pub(super) fn from_edges(n: u32, edges: &[(u32, u32)]) -> Self {
+        // A canonical list holds each undirected edge once with u < v, which
+        // is the contract the unique path is built on, and the membership test
+        // below would answer "no" on every edge of such a list.
+        if is_canonical(edges) {
+            return Self::from_unique_edges(n, edges);
+        }
         let n = n as usize;
         let mut g = EliminationGraph::new(n);
         for &(u, v) in edges {
@@ -500,19 +521,11 @@ impl EliminationGraph {
                 "elimination edge ({u}, {v}) has an endpoint outside 0..{n}"
             );
         }
-        if is_canonical(edges) {
-            // The edge count is known before a row is filled, so whether the
-            // graph goes to bitset mode is too, and the row maps that mode
-            // drops are not built in the first place.
-            let index_rows = !bitset_mode(n, edges.len());
-            g.fill_rows(edges, index_rows);
-        } else {
-            for &(u, v) in edges {
-                if u != v && !g.row_contains(u, v) {
-                    g.row_push(u, v);
-                    g.row_push(v, u);
-                    g.num_edges += 1;
-                }
+        for &(u, v) in edges {
+            if u != v && !g.row_contains(u, v) {
+                g.row_push(u, v);
+                g.row_push(v, u);
+                g.num_edges += 1;
             }
         }
         if bitset_mode(n, g.num_edges) {
@@ -524,11 +537,12 @@ impl EliminationGraph {
     /// Build from an edge list that holds each undirected edge once and no
     /// self-loop, in any order.
     ///
-    /// The graph comes out exactly as [`Self::from_edges`] leaves it. On such a
-    /// list the membership test that path runs per edge answers "no" every
-    /// time, so both paths push every edge into both rows in list order, give a
-    /// membership map to every row that reaches [`ROW_INDEX_THRESH`], end with
-    /// `num_edges == edges.len()` and take the same bitset decision from it.
+    /// [`Self::from_edges`] sends a canonical list straight here: the
+    /// membership test its general path runs per edge answers "no" every time
+    /// on such a list, so the two build the same graph — every edge pushed
+    /// into both rows in list order, a membership map on every row that
+    /// reaches [`ROW_INDEX_THRESH`], `num_edges == edges.len()`, and the same
+    /// bitset decision taken from it.
     ///
     /// Sorting the list first would give the same graph only up to row order,
     /// and row order reaches the bags a later min-fill emits, so the callers
@@ -544,6 +558,9 @@ impl EliminationGraph {
             debug_assert_ne!(u, v, "from_unique_edges was given the self-loop ({u}, {u})");
         }
         debug_assert!(holds_each_edge_once(edges), "an edge was given twice");
+        // The edge count is known before a row is filled, so whether the graph
+        // goes to bitset mode is too, and the row maps that mode drops are not
+        // built in the first place.
         g.fill_rows(edges, !bitset_mode(n, edges.len()));
         if bitset_mode(n, g.num_edges) {
             g.build_bitset(false);
@@ -1004,12 +1021,7 @@ impl EliminationGraph {
                 }
                 continue;
             }
-            self.elim_stamp = self.elim_stamp.wrapping_add(1);
-            if self.elim_stamp == 0 {
-                self.elim_marker.fill(0);
-                self.elim_stamp = 1;
-            }
-            let s = self.elim_stamp;
+            let s = bump_stamp(&mut self.elim_stamp, &mut self.elim_marker);
             let marker = self.elim_marker.as_mut_slice();
             let ahead_of_walk = prefetching(marker.len());
             let mut v_pos = None;
@@ -1076,6 +1088,14 @@ impl EliminationGraph {
         }
         self.num_edges -= degree;
         self.num_edges += pushes / 2;
+    }
+
+    /// Take an isolated vertex out of the graph. It has no row to clear and no
+    /// edge to account for, so only the active flag and its count move.
+    pub(super) fn deactivate_isolated(&mut self, v: u32) {
+        debug_assert_eq!(self.degree(v), 0, "vertex {v} still has a neighbour");
+        self.active[v as usize] = false;
+        self.num_active -= 1;
     }
 
     /// [`eliminate_with_nbrs`](Self::eliminate_with_nbrs) with the fill
@@ -1193,7 +1213,6 @@ impl EliminationGraph {
         } else {
             self.nbr_scan_units(nbrs)
         });
-        let vi = v as usize;
         if self.bitset_words > 0 {
             let w = self.bitset_words;
             let vs = self.slot(v);
@@ -1213,11 +1232,7 @@ impl EliminationGraph {
             }
             self.clear_row(v);
         }
-        if self.active[vi] {
-            self.active[vi] = false;
-            self.num_active -= 1;
-        }
-        self.num_edges -= nbrs.len();
+        self.finish_elimination(v, nbrs.len(), 0);
     }
 
     /// Units the sparse elimination paths pay to find `v` in each row of
@@ -1304,12 +1319,7 @@ impl EliminationGraph {
             let u = self.adj[v as usize][i] as usize;
             let units = self.row_lookup_units(u as u32);
             if self.row_index[u].is_none() {
-                self.elim_stamp = self.elim_stamp.wrapping_add(1);
-                if self.elim_stamp == 0 {
-                    self.elim_marker.fill(0);
-                    self.elim_stamp = 1;
-                }
-                let stamp = self.elim_stamp;
+                let stamp = bump_stamp(&mut self.elim_stamp, &mut self.elim_marker);
                 let marker = self.elim_marker.as_mut_slice();
                 for &w in &self.adj[u] {
                     marker[w as usize] = stamp;
@@ -1382,10 +1392,10 @@ impl EliminationGraph {
                     return None;
                 }
                 if missing_at_u == 1 {
-                    if found == 2 {
-                        crate::meter::charge(neighbours_scanned * w as u64);
-                        return None;
-                    }
+                    // `found` only rises together with `total`, so a third
+                    // neighbour missing one would need `total == 3`, and the
+                    // check above has already returned on that.
+                    debug_assert!(found < 2, "a third almost-simplicial endpoint");
                     endpoints[found] = u;
                     found += 1;
                 }

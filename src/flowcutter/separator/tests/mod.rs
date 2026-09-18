@@ -4,7 +4,7 @@
 mod cutter;
 mod separator;
 
-use super::{MAX_EXPANDED_BASE, select_random_st_pairs, validate_graph_size};
+use super::{MAX_EXPANDED_BASE, select_random_st_pair, validate_graph_size};
 
 #[test]
 fn expanded_graph_size_guard_checks_its_exact_boundary() {
@@ -20,11 +20,11 @@ fn expanded_graph_size_guard_checks_its_exact_boundary() {
 /// moves every separator a stored seed produces.
 #[test]
 fn the_source_and_sink_draw_is_pinned_to_one_stream() {
-    let pairs = select_random_st_pairs(64, 4, 7);
-    assert_eq!(pairs, [(36, 59), (23, 25), (3, 55), (48, 13)]);
+    let (s, t) = select_random_st_pair(64, 7).expect("64 vertices leave a pair to draw");
+    assert_eq!((s, t), (36, 59));
 
-    // No pair repeats a vertex, and a graph with one vertex has no pair to
-    // draw at all.
-    assert!(pairs.iter().all(|&(s, t)| s != t));
-    assert!(select_random_st_pairs(1, 4, 7).is_empty());
+    // The pair never repeats a vertex, and a graph with one vertex has no pair
+    // to draw at all.
+    assert_ne!(s, t);
+    assert!(select_random_st_pair(1, 7).is_none());
 }

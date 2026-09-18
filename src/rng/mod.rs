@@ -4,18 +4,26 @@
 ///
 /// State 0 is the recurrence's fixed point and yields an endless run of zeros,
 /// so a caller starting from a caller-supplied seed has to move it off zero
-/// first — `SEED_OFFSET` is one of the two offsets in use for that.
+/// first — [`search_stream`] and [`bisector_stream`] are two of the three
+/// offsets in use for that.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Xorshift64(u64);
 
-/// Odd constant one group of callers adds to its seed before starting a stream
-/// to move seed 0 off the fixed point and send nearby seeds to unrelated
-/// streams. The golden ratio scaled to 2^64, the same constant SplitMix64 steps
-/// its state by.
+/// Odd constant [`search_stream`] adds to its seed to move seed 0 off the fixed
+/// point and send nearby seeds to unrelated streams. The golden ratio scaled to
+/// 2^64, the same constant SplitMix64 steps its state by.
 ///
 /// The bisectors add 1 instead, through [`bisector_stream`] — changing either
 /// offset changes the stream it feeds.
-pub(crate) const SEED_OFFSET: u64 = 0x9E37_79B9_7F4A_7C15;
+const SEED_OFFSET: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// Starts the stream a seeded search draws its tie-breaks and salts from:
+/// `+ SEED_OFFSET` keeps a seed of 0 off the recurrence's zero fixed point.
+/// This offset is part of the stream every existing seed has always drawn
+/// from — changing it reshuffles all of them.
+pub(crate) fn search_stream(seed: u64) -> Xorshift64 {
+    Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET))
+}
 
 /// Starts a bisector's stream: `+ 1` keeps a seed of 0 off the recurrence's
 /// zero fixed point. This offset is part of the stream every existing seed has

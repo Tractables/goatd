@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use goatd::elimination::{Order, decompose as eliminate};
 use goatd::flowcutter::{Budget, decompose as flowcutter};
-use goatd::portfolio::{PortfolioConfig, decompose as portfolio};
+use goatd::portfolio::{PortfolioConfig, decompose_standard as portfolio};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
@@ -131,19 +131,10 @@ impl TreeDecomposition {
     }
 
     /// The edges between bags, as pairs of positions in `bags` with the
-    /// smaller position first.
+    /// smaller position first, in ascending order.
     #[getter]
     fn edges(&self) -> Vec<(usize, usize)> {
-        let mut edges = Vec::new();
-        for (bag, neighbours) in self.inner.adjacency().iter().enumerate() {
-            for &neighbour in neighbours {
-                if bag < neighbour {
-                    edges.push((bag, neighbour));
-                }
-            }
-        }
-        edges.sort_unstable();
-        edges
+        self.inner.tree_edges().collect()
     }
 
     /// The vertices in the largest bag, less one: an upper bound on the
@@ -335,15 +326,27 @@ fn construct(
             eliminate(graph, Order::NestedDissection, knobs.seed, knobs.budget)
         }
         Method::FlowCutter => flowcutter(graph, Budget::standalone(knobs.budget, knobs.steps)),
-        Method::Portfolio => {
-            let weights = vec![1; graph.num_vertices() as usize];
-            let config = knobs.budget.map_or_else(
-                PortfolioConfig::standard,
-                PortfolioConfig::standard_with_budget,
-            );
-            portfolio(graph, &weights, knobs.seed, config)
-        }
+        Method::Portfolio => portfolio(graph, knobs.seed, knobs.budget),
     }
+}
+
+/// Reject `refine` after a portfolio that ends on its own FlowCutter
+/// candidate, which is the same cut the refinement pass looks for.
+fn check_refinement(knobs: &Knobs, refine: bool) -> PyResult<()> {
+    if !refine || knobs.order != Method::Portfolio {
+        return Ok(());
+    }
+    // What settles it is whether the portfolio's schedule ends on that
+    // candidate, so ask the configuration that will run rather than read the
+    // budget a second time here.
+    if PortfolioConfig::standalone(knobs.budget).runs_flowcutter_candidate() {
+        return Err(PyValueError::new_err(
+            "refine is not valid with order=\"portfolio\" and budget_ms: the portfolio ends \
+             on a FlowCutter candidate of its own, so the pass would spend another budget_ms \
+             without narrowing the result",
+        ));
+    }
+    Ok(())
 }
 
 /// Decompose `graph` and return the result.
@@ -361,7 +364,12 @@ fn construct(
 /// about `2 * budget_ms`, or `3 * budget_ms` with `refine=True`. `steps`
 /// replaces flowcutter's clock with a step count, for a run that repeats
 /// exactly. `refine=True` re-cuts the result along FlowCutter separators
-/// before returning it.
+/// before returning it; a portfolio with a `budget_ms` ends on a FlowCutter
+/// candidate of its own and refuses it.
+///
+/// An argument left out is unset, so `budget_ms=0` and `steps=0` are errors
+/// rather than another way of saying no budget. `seed=0` is the seed zero,
+/// which is what a call without a seed uses.
 ///
 /// An argument the chosen order cannot act on raises `ValueError` naming both.
 /// The interpreter lock is released for the whole construction.
@@ -399,6 +407,7 @@ fn decompose(
         budget_ms,
         steps,
     )?;
+    check_refinement(&knobs, refine)?;
     let inner = py
         .detach(|| -> Result<goatd::TreeDecomposition, goatd::Error> {
             let td = construct(graph, &knobs)?;

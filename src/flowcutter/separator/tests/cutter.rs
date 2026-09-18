@@ -18,7 +18,7 @@ fn grid() -> (u32, Vec<(u32, u32)>) {
     (side * side, edges)
 }
 
-fn assert_same_state(left: &MultiCutter, right: &MultiCutter, n: u32, step: usize) {
+fn assert_same_state(left: &Cutter, right: &Cutter, n: u32, step: usize) {
     assert_eq!(
         left.current_cut(),
         right.current_cut(),
@@ -45,27 +45,25 @@ fn assert_same_state(left: &MultiCutter, right: &MultiCutter, n: u32, step: usiz
 fn a_reused_cutter_searches_exactly_as_a_fresh_one_does() {
     let (n, edges) = grid();
     let g = OrigGraph::build(n, &edges).expect("the grid has edges");
-    let a_orig = g.tail.len() as u32;
-    let exp = Exp { g: &g, a_orig };
 
-    let first = [(orig_node_to_exp(0, false), orig_node_to_exp(15, true))];
-    let second = [(orig_node_to_exp(3, false), orig_node_to_exp(12, true))];
+    let first = (orig_node_to_exp(0, false), orig_node_to_exp(15, true));
+    let second = (orig_node_to_exp(3, false), orig_node_to_exp(12, true));
 
     // Run a whole search on `first`, so a reused cutter has state to carry.
-    let mut reused = MultiCutter::new();
-    reused.init(&exp, a_orig, &first);
-    while reused.advance(&exp, a_orig) {}
-    reused.init(&exp, a_orig, &second);
+    let mut reused = Cutter::new();
+    reused.init(&g, first);
+    while reused.advance(&g) {}
+    reused.init(&g, second);
 
-    let mut fresh = MultiCutter::new();
-    fresh.init(&exp, a_orig, &second);
+    let mut fresh = Cutter::new();
+    fresh.init(&g, second);
 
     // Compare the search on `second` step by step: state that init failed to
     // clear need not show up at once.
     for step in 0.. {
         assert_same_state(&reused, &fresh, n, step);
-        let reused_advanced = reused.advance(&exp, a_orig);
-        let fresh_advanced = fresh.advance(&exp, a_orig);
+        let reused_advanced = reused.advance(&g);
+        let fresh_advanced = fresh.advance(&g);
         assert_eq!(reused_advanced, fresh_advanced, "advance at step {step}");
         if !fresh_advanced {
             break;

@@ -54,7 +54,7 @@ use rustc_hash::FxHashSet;
 use super::sets::{Adjacency, Scratch, VertexSet};
 use super::{Limits, search};
 use crate::deadline::{expired, remaining};
-use crate::rng::{SEED_OFFSET, Xorshift64};
+use crate::rng::{Xorshift64, search_stream};
 use crate::{Graph, TreeDecomposition};
 
 /// Draws the initial answer is built from, and the focuses tried per merge.
@@ -133,12 +133,16 @@ pub(crate) fn merge_loop(
             break;
         };
         answer = next;
+        let added = answer.bags.len() > held;
         // At width k the list drops every bag of more than k + 2 vertices: no
         // tree of width k or less has one, and this is what keeps it from
-        // growing without bound as the merges accumulate.
+        // growing without bound as the merges accumulate. The round is judged
+        // on what it added, before this runs: a round that lowered the width
+        // lowers `room` with it, so counting afterwards reads the round that
+        // did the most as the round that did nothing.
         let room = answer.width() as usize + 2;
         answer.bags.retain(|bag| bag.len() <= room);
-        if answer.bags.len() <= held {
+        if !added {
             break;
         }
     }
@@ -175,7 +179,7 @@ impl<'a> Loop<'a> {
             graph,
             adjacency,
             limits,
-            rng: Xorshift64::from_state(seed.wrapping_add(SEED_OFFSET)),
+            rng: search_stream(seed),
         }
     }
 }
@@ -307,7 +311,7 @@ impl Loop<'_> {
     ///
     /// `C` is the largest component of `G − chosen`; a partner has to lie
     /// inside `N[C]` and hold at most `width` vertices.
-    pub(super) fn focuses_from(
+    fn focuses_from(
         &self,
         chosen: &VertexSet,
         partners: &[VertexSet],
