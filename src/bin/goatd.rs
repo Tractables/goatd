@@ -14,7 +14,8 @@ use goatd::embedding::MAX_DIM;
 use goatd::flowcutter::{Budget, decompose as flowcutter};
 use goatd::portfolio::{
     CandidateOutcome, CandidateTrace, DEFAULT_HEDGE_DIMS, Hedge, HedgeSeries, MAX_HEDGE_PASSES,
-    Pass, PortfolioConfig, SamplingPatience, decompose_traced as portfolio,
+    Pass, PortfolioConfig, SamplingPatience, decompose as portfolio,
+    decompose_traced as portfolio_traced,
 };
 use goatd::{Graph, TreeDecomposition, stop_flag};
 
@@ -903,22 +904,26 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
             .unwrap_or_else(|e| fail(&e.to_string())),
         Method::MergeLoop => goatd::decomposition::decompose_by_merging(graph, seed, budget)
             .unwrap_or_else(|error| fail(&error.to_string())),
+        // A traced run computes each candidate's shape numbers, which is a pass
+        // over its bags. Without --trace there is nowhere to report them, so
+        // the untraced run does not ask for them.
+        Method::Portfolio if !args.trace => {
+            let weights = vec![1; graph.num_vertices() as usize];
+            portfolio(graph, &weights, seed, args.portfolio)
+                .unwrap_or_else(|error| fail(&error.to_string()))
+        }
         Method::Portfolio => {
             let weights = vec![1; graph.num_vertices() as usize];
             let mut winner = None;
             let mut report = |candidate: CandidateTrace| {
-                if args.trace {
-                    print_candidate(&candidate);
-                }
+                print_candidate(&candidate);
                 if let CandidateOutcome::Produced { best: true, .. } = candidate.outcome {
                     winner = Some((candidate.stage, candidate.seed));
                 }
             };
-            let td = portfolio(graph, &weights, seed, args.portfolio, &mut report)
+            let td = portfolio_traced(graph, &weights, seed, args.portfolio, &mut report)
                 .unwrap_or_else(|error| fail(&error.to_string()));
-            if args.trace
-                && let Some((stage, seed)) = winner
-            {
+            if let Some((stage, seed)) = winner {
                 eprintln!("c trace winner candidate={stage} seed={seed}");
             }
             td
