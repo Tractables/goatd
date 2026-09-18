@@ -19,15 +19,6 @@ pub(crate) fn checked(start: Instant, budget: Duration, operation: &str) -> Resu
         .ok_or_else(|| Error::InvalidInput(format!("{operation} budget is too large")))
 }
 
-/// Build the soft cutoff at `budget` and the hard cutoff at twice `budget`.
-pub(crate) fn two_stage(
-    start: Instant,
-    budget: Option<Duration>,
-    operation: &str,
-) -> Result<TwoStage, Error> {
-    staged(start, budget, None, operation)
-}
-
 /// Build soft and hard cutoffs, using twice the soft budget when no separate
 /// hard budget is given.
 pub(crate) fn staged(
@@ -77,6 +68,7 @@ thread_local! {
 /// A cooperative wall cutoff independent of the construction meter. A nested
 /// operation cannot extend an enclosing cutoff, and returning a proposal drops
 /// the guard before the caller begins scoring it.
+#[must_use = "the cutoff lasts as long as the guard is held"]
 pub(crate) struct WallGuard(Option<Instant>);
 
 impl WallGuard {

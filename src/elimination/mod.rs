@@ -71,7 +71,7 @@ pub fn decompose(
     soft_budget: Option<Duration>,
 ) -> Result<crate::TreeDecomposition, crate::Error> {
     prepared::validate_order(graph, order)?;
-    let deadlines = crate::deadline::two_stage(crate::meter::now(), soft_budget, "elimination")?;
+    let deadlines = crate::deadline::staged(crate::meter::now(), soft_budget, None, "elimination")?;
     let mut prepared = Prepared::at_deadline(graph, deadlines.soft);
     match prepared.run_at(order, seed, RunConfig::default(), deadlines)? {
         RunOutcome::Completed(tree) | RunOutcome::CompletedAtDeadline(_, tree) => Ok(tree),
