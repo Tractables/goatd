@@ -72,9 +72,8 @@ solve, so a caller can decompose several graphs at once from Python threads.
 The extension builds the goatd sources in the repository, so it needs a Rust
 toolchain, a C++20 compiler for the vendored FlowCutter, and maturin.
 
-PEP 639 resolves `license-files` against the directory holding
-`pyproject.toml` and forbids `..`, so the two notice files are copied in from
-the repository root first rather than kept here in a second copy:
+The two notice files are copied in from the repository root first, since
+`pyproject.toml` cannot reference files above its own directory:
 
 ```sh
 mkdir -p bindings/python/notices

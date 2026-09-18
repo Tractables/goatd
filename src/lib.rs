@@ -24,12 +24,14 @@
 //! the whole process.
 //!
 //! ```
+//! use std::time::Duration;
+//!
 //! use goatd::Graph;
-//! use goatd::elimination::{Order, decompose};
+//! use goatd::portfolio::decompose_standard;
 //!
 //! // The 4-cycle with one chord: treewidth 2.
 //! let graph = Graph::new(4, [(0, 1), (1, 2), (2, 3), (3, 0), (0, 2)]);
-//! let td = decompose(&graph, Order::MinFill, 0, None)?;
+//! let td = decompose_standard(&graph, 0, Some(Duration::from_millis(100)))?;
 //! assert_eq!(td.treewidth(), 2);
 //!
 //! let text = td.to_td();

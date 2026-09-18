@@ -4,14 +4,6 @@ goatd provides several tree-decomposition constructions and a portfolio that
 combines them. This page describes what differs from a textbook implementation
 or from the vendored upstream code.
 
-`elimination::Prepared` shares graph reductions and scratch across
-caller-selected orders, seeds and per-run budgets, with optional width
-pruning.
-
-`decomposition::vertex_rebuild::Session` and `decomposition::FlowCutterSession`
-resume refinement under operation and real-time limits and let the caller
-accept complete original-graph decomposition proposals.
-
 ## The portfolio
 
 `PortfolioConfig::without_vertex_reinsertion` disables final vertex reinsertion.

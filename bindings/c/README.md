@@ -132,9 +132,8 @@ only writes into. Nothing else the API returns is owned by the caller:
 `goatd_last_error_message()` belongs to goatd and lives until the next call on
 that thread.
 
-An option that means nothing for the chosen order — a step budget with an
-elimination order, say — is an error naming both, not a value that is quietly
-dropped.
+An option the chosen order cannot act on, such as a step budget with an
+elimination order, is an error naming both.
 
 For the elimination orders and the portfolio `budget_ms` is a soft budget and a
 hard cutoff at twice it ends the construction, so such a call can take about
