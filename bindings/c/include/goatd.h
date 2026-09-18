@@ -239,7 +239,7 @@ const char *goatd_version(void);
 const char *goatd_last_error_message(void);
 
 /**
- * The defaults: min-fill, seed 0, no budget, no sampling, no refinement.
+ * The defaults: the portfolio, seed 0, no budget, no sampling, no refinement.
  */
 struct GoatdOptions goatd_options_default(void);
 

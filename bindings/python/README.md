@@ -38,7 +38,7 @@ Rust toolchain and a C++20 compiler.
 import goatd
 
 graph = goatd.Graph(4, [(0, 1), (1, 2), (2, 3), (3, 0), (0, 2)])
-td = goatd.decompose(graph, order="portfolio", budget_ms=100)
+td = goatd.decompose(graph, budget_ms=100)
 
 td.treewidth        # 2
 td.bags             # lists of graph vertices, one per bag
@@ -50,7 +50,8 @@ print(td.to_td())   # PACE .td text
 ## Options and formats
 
 `decompose` takes the solver's knobs under the solver's names: `order` is one
-of `minfill`, `mindegree`, `nested-dissection`, `flowcutter` and `portfolio`;
+of `minfill`, `mindegree`, `nested-dissection`, `flowcutter` and `portfolio`,
+the default;
 `seed` breaks ties; `ties="sample"` and `weights` control weighted sampling for
 the two greedy orders; `steps` gives flowcutter a repeatable step budget in
 place of a clock; `refine=True` re-cuts the result along FlowCutter separators.

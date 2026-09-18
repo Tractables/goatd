@@ -34,9 +34,9 @@ goatd graph.gr --order portfolio --budget 5000 > graph.td
 ```
 
 `goatd` reads and writes the PACE `.gr` and `.td` formats. The budget is a
-soft limit in milliseconds and the run ends at twice it. Without options
-goatd runs a single min-fill order with no time limit; `goatd --help` lists
-the other orders, seeds, weighted ties and refinement. The same solver runs
+soft limit in milliseconds and the run ends at twice it; without one the
+portfolio runs a schedule bounded by count instead. `goatd --help` lists the
+other orders, seeds, weighted ties and refinement. The same solver runs
 [in the browser](https://tractables.github.io/goatd/).
 
 ## Library

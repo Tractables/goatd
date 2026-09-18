@@ -154,7 +154,10 @@ fn disconnected_and_empty_graphs_are_written_as_one_pace_bag_tree() {
 #[test]
 fn a_seeded_sampling_run_repeats_itself() {
     let run = |seed: &str| {
-        let out = goatd(&["-", "--ties", "sample", "--seed", seed], Some(&grid_gr()));
+        let args = [
+            "-", "--order", "minfill", "--ties", "sample", "--seed", seed,
+        ];
+        let out = goatd(&args, Some(&grid_gr()));
         assert!(out.status.success(), "{}", stderr_of(&out));
         out.stdout
     };
@@ -169,6 +172,8 @@ fn a_weights_file_biases_the_sample_and_is_checked_against_the_graph() {
     let out = goatd(
         &[
             "-",
+            "--order",
+            "minfill",
             "--ties",
             "sample",
             "--weights",
@@ -182,6 +187,8 @@ fn a_weights_file_biases_the_sample_and_is_checked_against_the_graph() {
     let out = goatd(
         &[
             "-",
+            "--order",
+            "minfill",
             "--ties",
             "sample",
             "--weights",
@@ -202,7 +209,10 @@ fn a_weights_file_biases_the_sample_and_is_checked_against_the_graph() {
 #[test]
 fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
     let cases: &[(&[&str], &[&str])] = &[
-        (&["--steps", "10"], &["--steps", "minfill", "flowcutter"]),
+        (
+            &["--order", "minfill", "--steps", "10"],
+            &["--steps", "minfill", "flowcutter"],
+        ),
         (
             &["--order", "flowcutter", "--seed", "3"],
             &["--seed", "flowcutter"],
@@ -215,7 +225,10 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--order", "portfolio", "--ties", "sample"],
             &["--ties sample", "portfolio"],
         ),
-        (&["--weights", "w.txt"], &["--weights", "--ties sample"]),
+        (
+            &["--order", "minfill", "--weights", "w.txt"],
+            &["--weights", "--ties sample"],
+        ),
         (
             &["--order", "flowcutter", "--weights", "w.txt"],
             &["--weights", "flowcutter", "minfill or mindegree"],
@@ -225,7 +238,7 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--steps", "--budget"],
         ),
         (
-            &["--hard-budget", "10"],
+            &["--order", "minfill", "--hard-budget", "10"],
             &["--hard-budget", "minfill", "portfolio"],
         ),
         (
@@ -243,33 +256,48 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             ],
             &["--hard-budget", "--budget", "at least"],
         ),
-        (&["--no-hedge"], &["--no-hedge", "minfill", "portfolio"]),
         (
-            &["--no-bipartite-lift"],
+            &["--order", "minfill", "--no-hedge"],
+            &["--no-hedge", "minfill", "portfolio"],
+        ),
+        (
+            &["--order", "minfill", "--no-bipartite-lift"],
             &["--no-bipartite-lift", "minfill", "portfolio"],
         ),
         (
-            &["--bipartite-lift-rate", "150"],
+            &["--order", "minfill", "--bipartite-lift-rate", "150"],
             &["--bipartite-lift-rate", "minfill", "portfolio"],
         ),
-        (&["--mcs-up-to", "500"], &["--mcs-up-to", "portfolio"]),
-        (&["--no-mcs"], &["--no-mcs", "minfill", "portfolio"]),
+        (
+            &["--order", "minfill", "--mcs-up-to", "500"],
+            &["--mcs-up-to", "portfolio"],
+        ),
+        (
+            &["--order", "minfill", "--no-mcs"],
+            &["--no-mcs", "minfill", "portfolio"],
+        ),
         (
             &["--order", "portfolio", "--mcs-up-to", "500", "--no-mcs"],
             &["--mcs-up-to", "--no-mcs", "give one"],
         ),
-        (&["--mcsm-up-to", "500"], &["--mcsm-up-to", "portfolio"]),
-        (&["--no-mcsm"], &["--no-mcsm", "minfill", "portfolio"]),
+        (
+            &["--order", "minfill", "--mcsm-up-to", "500"],
+            &["--mcsm-up-to", "portfolio"],
+        ),
+        (
+            &["--order", "minfill", "--no-mcsm"],
+            &["--no-mcsm", "minfill", "portfolio"],
+        ),
         (
             &["--order", "portfolio", "--mcsm-up-to", "500", "--no-mcsm"],
             &["--mcsm-up-to", "--no-mcsm", "give one"],
         ),
         (
-            &["--drop-fill-up-to", "500"],
+            &["--order", "minfill", "--drop-fill-up-to", "500"],
             &["--drop-fill-up-to", "portfolio"],
         ),
         (
-            &["--no-drop-fill"],
+            &["--order", "minfill", "--no-drop-fill"],
             &["--no-drop-fill", "minfill", "portfolio"],
         ),
         (
@@ -282,7 +310,10 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             ],
             &["--drop-fill-up-to", "--no-drop-fill", "give one"],
         ),
-        (&["--hedge-dims", "1,2"], &["--hedge-dims", "portfolio"]),
+        (
+            &["--order", "minfill", "--hedge-dims", "1,2"],
+            &["--hedge-dims", "portfolio"],
+        ),
         (
             &["--order", "portfolio", "--hedge-dims", "1,9"],
             &["--hedge-dims", "1..=8"],
@@ -310,7 +341,10 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--order", "portfolio", "--no-hedge", "--hedge-dims", "1,2"],
             &["--hedge-dims", "--no-hedge", "give one"],
         ),
-        (&["--hedge-random", "2"], &["--hedge-random", "portfolio"]),
+        (
+            &["--order", "minfill", "--hedge-random", "2"],
+            &["--hedge-random", "portfolio"],
+        ),
         (
             &["--order", "portfolio", "--hedge-random", "9"],
             &["--hedge-random", "1..=8"],
@@ -320,7 +354,7 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--hedge-random", "--no-hedge", "give one"],
         ),
         (
-            &["--hedge-reserve", "0.5"],
+            &["--order", "minfill", "--hedge-reserve", "0.5"],
             &["--hedge-reserve", "portfolio"],
         ),
         (
@@ -379,7 +413,7 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--hedge-reserve", "such as 0.5"],
         ),
         (
-            &["--capped-restarts"],
+            &["--order", "minfill", "--capped-restarts"],
             &["--capped-restarts", "minfill", "portfolio"],
         ),
         (
@@ -387,7 +421,7 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--capped-restarts", "--budget"],
         ),
         (
-            &["--sampling-patience", "50"],
+            &["--order", "minfill", "--sampling-patience", "50"],
             &["--sampling-patience", "minfill", "portfolio"],
         ),
         (
@@ -405,7 +439,7 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--sampling-patience", "--no-sampling-patience"],
         ),
         (
-            &["--expensive-orders-up-to", "50000"],
+            &["--order", "minfill", "--expensive-orders-up-to", "50000"],
             &["--expensive-orders-up-to", "minfill", "portfolio"],
         ),
         (
@@ -471,8 +505,11 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             ],
             &["--sample-band-alternate", "--sample-band 0"],
         ),
-        (&["--ties", "salt"], &["--ties"]),
-        (&["--budget", "0"], &["--budget", "positive"]),
+        (&["--order", "minfill", "--ties", "salt"], &["--ties"]),
+        (
+            &["--order", "minfill", "--budget", "0"],
+            &["--budget", "positive"],
+        ),
         (&["--order", "treewidth"], &["--order"]),
         (&[], &["no input graph"]),
     ];

@@ -143,10 +143,10 @@ static void check_errors(void) {
   options = goatd_options_default();
   options.steps = 100;
   status = goatd_decompose(NUM_VERTICES, EDGES, NUM_EDGES, &options, &td);
-  REQUIRE(status == GOATD_ERROR_INVALID_INPUT, "steps with min-fill gave %d",
-          status);
+  REQUIRE(status == GOATD_ERROR_INVALID_INPUT,
+          "steps with the portfolio gave %d", status);
   REQUIRE(strstr(goatd_last_error_message(), "steps") != NULL,
-          "steps with min-fill gave: %s", goatd_last_error_message());
+          "steps with the portfolio gave: %s", goatd_last_error_message());
 
   /* The budgeted portfolio ends on a FlowCutter candidate of its own, so a
      refinement pass after it has nothing left to re-cut. */
@@ -170,8 +170,8 @@ int main(void) {
   printf("goatd %s\n", goatd_version());
 
   options = goatd_options_default();
-  td = run(options, "min-fill");
-  REQUIRE(td.treewidth == CLIQUE - 1, "min-fill: width %u on a chordal graph",
+  td = run(options, "defaults");
+  REQUIRE(td.treewidth == CLIQUE - 1, "defaults: width %u on a chordal graph",
           td.treewidth);
   goatd_decomposition_free(&td);
   /* Freeing leaves the struct empty, so a second call is harmless. */

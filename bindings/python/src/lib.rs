@@ -352,7 +352,7 @@ fn check_refinement(knobs: &Knobs, refine: bool) -> PyResult<()> {
 /// Decompose `graph` and return the result.
 ///
 /// `order` is one of `"minfill"`, `"mindegree"`, `"nested-dissection"`,
-/// `"flowcutter"` and `"portfolio"`. `seed` breaks ties for every order but
+/// `"flowcutter"` and `"portfolio"`, the default. `seed` breaks ties for every order but
 /// flowcutter. `ties="sample"` makes minfill and mindegree draw from the whole
 /// tie set instead of breaking ties by salt, and `weights` then gives one
 /// integer per vertex, a smaller weight being eliminated earlier.
@@ -377,7 +377,7 @@ fn check_refinement(knobs: &Knobs, refine: bool) -> PyResult<()> {
 #[pyo3(signature = (
     graph,
     *,
-    order = "minfill",
+    order = "portfolio",
     seed = None,
     ties = None,
     weights = None,

@@ -192,11 +192,11 @@ pub extern "C" fn goatd_last_error_message() -> *const c_char {
         .unwrap_or_else(|_| EMPTY.as_ptr().cast())
 }
 
-/// The defaults: min-fill, seed 0, no budget, no sampling, no refinement.
+/// The defaults: the portfolio, seed 0, no budget, no sampling, no refinement.
 #[unsafe(no_mangle)]
 pub extern "C" fn goatd_options_default() -> GoatdOptions {
     GoatdOptions {
-        order: GOATD_ORDER_MIN_FILL,
+        order: GOATD_ORDER_PORTFOLIO,
         seed: 0,
         budget_ms: 0,
         steps: 0,
