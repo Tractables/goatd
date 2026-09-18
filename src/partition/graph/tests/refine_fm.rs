@@ -1,6 +1,8 @@
 use crate::partition::common::BisectionStop;
 use crate::partition::graph::csr::build_csr;
-use crate::partition::graph::refine_fm::{RegionScratch, localized_fm_pass};
+use crate::partition::graph::refine_fm::{
+    FmScratch, RegionScratch, localized_fm_pass, refine_finest_level, refine_level,
+};
 
 /// A path of `n` vertices, split down the middle with the two vertices either
 /// side of the cut swapped onto the wrong sides.
@@ -63,4 +65,44 @@ fn a_localized_pass_on_used_scratch_matches_one_on_fresh_scratch() {
     let third_improved = localized_fm_pass(&graph, &mut third, 9, 0.2, &mut fresh, &mut stop);
     assert_eq!(first_improved, third_improved);
     assert_eq!(first, third);
+}
+
+/// The finest level runs a boundary scan over the whole graph and four
+/// localized passes on top of what `refine_level` does, and a metered run has
+/// to see them: the hypergraph sibling's identical phase reaches its data
+/// through charged accessors, so an uncharged graph side made the two
+/// bisectors cost different amounts for the same work.
+#[test]
+fn the_finest_level_charges_for_the_work_refine_level_does_not_do() {
+    let (edges, start) = misplaced_path(40);
+    let graph = build_csr(40, &edges);
+
+    let mut level_part = start.clone();
+    let guard = crate::meter::arm(std::time::Instant::now());
+    let before_level = crate::meter::units_spent();
+    refine_level(
+        &graph,
+        &mut level_part,
+        0.2,
+        &mut FmScratch::new(),
+        &mut BisectionStop::new(None),
+    );
+    let level = crate::meter::units_spent() - before_level;
+
+    let mut finest_part = start;
+    let before_finest = crate::meter::units_spent();
+    refine_finest_level(
+        &graph,
+        &mut finest_part,
+        0.2,
+        &mut FmScratch::new(),
+        &mut BisectionStop::new(None),
+    );
+    let finest = crate::meter::units_spent() - before_finest;
+    drop(guard);
+
+    assert!(
+        finest > level,
+        "the finest level charged {finest} and refine_level alone {level}"
+    );
 }
