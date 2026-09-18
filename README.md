@@ -52,17 +52,9 @@ refinement. The same solver runs
 
 ## Library
 
-```toml
-[dependencies]
-goatd = "0.2"
-```
-
-The [`basic` example](examples/basic.rs) constructs a graph, computes a
-decomposition, validates it, and writes it in PACE format:
-
-```sh
-cargo run --example basic
-```
+Add `goatd = "0.2"` as a dependency. The [`basic` example](examples/basic.rs)
+constructs a graph, computes a decomposition, validates it, and writes it in
+PACE format; `cargo run --example basic` runs it.
 
 The public API also exposes graph and hypergraph bisection, the Rust separator
 search, the C++ FlowCutter decomposer, and decomposition projection and
