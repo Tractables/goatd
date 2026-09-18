@@ -2,11 +2,10 @@
 //! flow whenever one reaches the other, then pierce the current cut at the
 //! frontier node scoring best on hop distance, and repeat.
 //!
-//! `BasicCutter` is one source-target pair. `MultiCutter` runs several and
-//! advances whichever currently has the smallest cut, committing to a new
-//! current cut only once the smaller side has grown as well — the Pareto rule
-//! that makes the search anytime, so `super`'s outer loop can stop at any
-//! point and still hold a usable separator.
+//! `BasicCutter` is one source-target pair. `Cutter` drives one of those and
+//! commits to a new current cut only once the smaller side has grown as well
+//! — the Pareto rule that makes the search anytime, so `super`'s outer loop
+//! can stop at any point and still hold a usable separator.
 //!
 //! Everything here is in the vertex-split index space `expanded` defines: nodes
 //! and arcs are the split graph's, so a cut is an edge cut that only becomes a
@@ -16,13 +15,13 @@
 
 use super::*;
 
-pub(super) const SOURCE_SIDE: usize = 0;
+const SOURCE_SIDE: usize = 0;
 
-pub(super) const TARGET_SIDE: usize = 1;
+const TARGET_SIDE: usize = 1;
 
 /// Per-arc flow value, stored offset by 1 to fit in u8 for compactness.
 /// Actual flow = stored - 1, so 0/1/2 ↔ flow -1/0/1.
-pub(super) struct Flow {
+struct Flow {
     f: Vec<u8>,
 }
 
@@ -51,7 +50,7 @@ impl Flow {
     }
 }
 
-pub(super) struct NodeSet {
+struct NodeSet {
     inside: Vec<bool>,
     count: u32,
     extra: Option<u32>,
@@ -79,7 +78,7 @@ impl NodeSet {
     }
 }
 
-pub(super) fn bfs_hop_distance(g: &Exp<'_>, source: u32, dist: &mut [i32], queue: &mut Vec<u32>) {
+fn bfs_hop_distance(g: &OrigGraph, source: u32, dist: &mut [i32], queue: &mut Vec<u32>) {
     for d in dist.iter_mut() {
         *d = i32::MAX;
     }
@@ -91,8 +90,8 @@ pub(super) fn bfs_hop_distance(g: &Exp<'_>, source: u32, dist: &mut [i32], queue
         let x = queue[head];
         head += 1;
         let dx = dist[x as usize];
-        g.for_out_arc(x, |xy| {
-            let y = g.head(xy);
+        exp_out_arcs(g, x, |xy| {
+            let y = exp_head(g, xy);
             if dist[y as usize] > dx + 1 {
                 dist[y as usize] = dx + 1;
                 queue.push(y);
@@ -101,23 +100,7 @@ pub(super) fn bfs_hop_distance(g: &Exp<'_>, source: u32, dist: &mut [i32], queue
     }
 }
 
-pub(super) struct Exp<'a> {
-    pub(super) g: &'a OrigGraph,
-    pub(super) a_orig: u32,
-}
-
-impl Exp<'_> {
-    #[inline]
-    fn head(&self, arc: u32) -> u32 {
-        exp_head(self.g, self.a_orig, arc)
-    }
-    #[inline]
-    fn for_out_arc<F: FnMut(u32)>(&self, x: u32, f: F) {
-        exp_out_arcs(self.g, self.a_orig, x, f);
-    }
-}
-
-pub(super) struct BasicCutter {
+struct BasicCutter {
     assim: [NodeSet; 2],
     /// Arc IDs, not node IDs: arcs leaving `assim[side]` that carry flow.
     front: [Vec<u32>; 2],
@@ -140,7 +123,7 @@ pub(super) struct BasicCutter {
     cut_available: bool,
 }
 
-pub(super) const NO_PRED: u32 = u32::MAX;
+const NO_PRED: u32 = u32::MAX;
 
 impl BasicCutter {
     fn new(n_exp: u32, a_exp: u32) -> Self {
@@ -167,7 +150,7 @@ impl BasicCutter {
     /// This is a complete reset: every field a search reads is either cleared
     /// here or overwritten before it is read, so a cutter that has already run
     /// behaves like a new one.
-    fn init(&mut self, exp: &Exp, a_orig: u32, p: (u32, u32)) {
+    fn init(&mut self, g: &OrigGraph, p: (u32, u32)) {
         for s in 0..2 {
             self.assim[s].clear();
             self.reach[s].clear();
@@ -185,31 +168,31 @@ impl BasicCutter {
         self.reach[TARGET_SIDE].set_extra(p.1);
 
         bfs_hop_distance(
-            exp,
+            g,
             p.0,
             &mut self.node_dist[SOURCE_SIDE],
             &mut self.bfs_queue,
         );
         bfs_hop_distance(
-            exp,
+            g,
             p.1,
             &mut self.node_dist[TARGET_SIDE],
             &mut self.bfs_queue,
         );
 
-        self.grow_reachable_sets(exp, a_orig, SOURCE_SIDE);
-        self.grow_assimilated_sets(exp, a_orig);
+        self.grow_reachable_sets(g, SOURCE_SIDE);
+        self.grow_assimilated_sets(g);
 
         self.cut_available = true;
     }
 
-    fn is_saturated(&self, exp: &Exp, a_orig: u32, direction: usize, arc: u32) -> bool {
+    fn is_saturated(&self, g: &OrigGraph, direction: usize, arc: u32) -> bool {
         let arc = if direction == TARGET_SIDE {
-            exp_back(exp.g, a_orig, arc)
+            exp_back(g, arc)
         } else {
             arc
         };
-        let cap = exp_capacity(a_orig, arc);
+        let cap = exp_capacity(g.arc_count, arc);
         let flow = self.flow.get(arc);
         cap == flow
     }
@@ -217,7 +200,7 @@ impl BasicCutter {
     /// Grows `reach[pierced_side]`; on hitting the opposite assimilated set it
     /// augments `flow` and continues, then conditionally regrows the other
     /// side once no augmenting path remains.
-    fn grow_reachable_sets(&mut self, exp: &Exp, a_orig: u32, pierced_side: usize) {
+    fn grow_reachable_sets(&mut self, g: &OrigGraph, pierced_side: usize) {
         let my_src = pierced_side;
         let my_tgt = 1 - pierced_side;
 
@@ -236,15 +219,15 @@ impl BasicCutter {
             'dfs: while let Some(x) = self.tmp_dfs.pop() {
                 let mut found_in_iter = None;
                 let mut stop = false;
-                exp_out_arcs(exp.g, a_orig, x, |xy| {
+                exp_out_arcs(g, x, |xy| {
                     if stop {
                         return;
                     }
-                    let y = exp_head(exp.g, a_orig, xy);
+                    let y = exp_head(g, xy);
                     if self.reach[my_src].inside[y as usize] {
                         return;
                     }
-                    if self.is_saturated(exp, a_orig, my_src, xy) {
+                    if self.is_saturated(g, my_src, xy) {
                         return;
                     }
                     self.predecessor[my_src][y as usize] = xy;
@@ -265,7 +248,7 @@ impl BasicCutter {
             }
 
             if let Some(target) = target_hit {
-                self.augment_along_path(exp, a_orig, my_src, target, pierced_side == SOURCE_SIDE);
+                self.augment_along_path(g, my_src, target, pierced_side == SOURCE_SIDE);
                 self.reset_reachable(my_src);
                 was_flow_augmented = true;
             } else {
@@ -284,12 +267,12 @@ impl BasicCutter {
             self.tmp_dfs.clear();
             self.tmp_dfs.push(extra);
             while let Some(x) = self.tmp_dfs.pop() {
-                exp_out_arcs(exp.g, a_orig, x, |xy| {
-                    let y = exp_head(exp.g, a_orig, xy);
+                exp_out_arcs(g, x, |xy| {
+                    let y = exp_head(g, xy);
                     if self.reach[my_tgt].inside[y as usize] {
                         return;
                     }
-                    if self.is_saturated(exp, a_orig, my_tgt, xy) {
+                    if self.is_saturated(g, my_tgt, xy) {
                         return;
                     }
                     self.predecessor[my_tgt][y as usize] = xy;
@@ -304,8 +287,7 @@ impl BasicCutter {
 
     fn augment_along_path(
         &mut self,
-        exp: &Exp,
-        a_orig: u32,
+        g: &OrigGraph,
         my_src: usize,
         target: u32,
         pierced_from_source: bool,
@@ -314,13 +296,13 @@ impl BasicCutter {
         while !self.assim[my_src].inside[x as usize] {
             let xy = self.predecessor[my_src][x as usize];
             debug_assert!(xy != NO_PRED, "predecessor chain broken");
-            let back = exp_back(exp.g, a_orig, xy);
+            let back = exp_back(g, xy);
             if pierced_from_source {
                 self.flow.increase(xy, back);
             } else {
                 self.flow.decrease(xy, back);
             }
-            x = exp_tail(exp.g, a_orig, xy);
+            x = exp_tail(g, xy);
         }
     }
 
@@ -349,7 +331,7 @@ impl BasicCutter {
         self.reach[side].extra = self.assim[side].extra;
     }
 
-    fn grow_assimilated_sets(&mut self, exp: &Exp, a_orig: u32) {
+    fn grow_assimilated_sets(&mut self, g: &OrigGraph) {
         let smaller = if self.reach[SOURCE_SIDE].count <= self.reach[TARGET_SIDE].count {
             SOURCE_SIDE
         } else {
@@ -364,8 +346,8 @@ impl BasicCutter {
         self.tmp_dfs.clear();
         self.tmp_dfs.push(extra);
         while let Some(x) = self.tmp_dfs.pop() {
-            exp_out_arcs(exp.g, a_orig, x, |xy| {
-                let y = exp_head(exp.g, a_orig, xy);
+            exp_out_arcs(g, x, |xy| {
+                let y = exp_head(g, xy);
                 let f = self.flow.get(xy);
                 if f != 0 {
                     self.front[smaller].push(xy);
@@ -373,7 +355,7 @@ impl BasicCutter {
                 if self.assim[smaller].inside[y as usize] {
                     return;
                 }
-                if self.is_saturated(exp, a_orig, smaller, xy) {
+                if self.is_saturated(g, smaller, xy) {
                     return;
                 }
                 self.assim[smaller].inside[y as usize] = true;
@@ -383,7 +365,7 @@ impl BasicCutter {
         }
 
         let inside_ref = &self.assim[smaller].inside;
-        self.front[smaller].retain(|&xy| !inside_ref[exp_head(exp.g, a_orig, xy) as usize]);
+        self.front[smaller].retain(|&xy| !inside_ref[exp_head(g, xy) as usize]);
     }
 
     fn current_cut_side(&self) -> usize {
@@ -419,11 +401,11 @@ impl BasicCutter {
         score
     }
 
-    fn select_pierce_node(&self, exp: &Exp, a_orig: u32, side: usize) -> Option<u32> {
+    fn select_pierce_node(&self, g: &OrigGraph, side: usize) -> Option<u32> {
         let mut best = i64::MIN;
         let mut chosen: Option<u32> = None;
         for &xy in &self.front[side] {
-            let y = exp_head(exp.g, a_orig, xy);
+            let y = exp_head(g, xy);
             if self.assim[1 - side].inside[y as usize] {
                 continue;
             }
@@ -438,14 +420,14 @@ impl BasicCutter {
     }
 
     /// Returns false once no further cut is reachable.
-    fn advance(&mut self, exp: &Exp, a_orig: u32) -> bool {
+    fn advance(&mut self, g: &OrigGraph) -> bool {
         debug_assert!(self.cut_available);
         let side = self.current_cut_side();
-        if self.assim[side].count >= n_exp(exp.g.n) / 2 {
+        if self.assim[side].count >= n_exp(g.n) / 2 {
             self.cut_available = false;
             return false;
         }
-        let py = self.select_pierce_node(exp, a_orig, side);
+        let py = self.select_pierce_node(g, side);
         let pierce = match py {
             Some(y) => y,
             None => {
@@ -455,8 +437,8 @@ impl BasicCutter {
         };
         self.assim[side].set_extra(pierce);
         self.reach[side].set_extra(pierce);
-        self.grow_reachable_sets(exp, a_orig, side);
-        self.grow_assimilated_sets(exp, a_orig);
+        self.grow_reachable_sets(g, side);
+        self.grow_assimilated_sets(g);
         self.cut_available = true;
         true
     }
@@ -464,15 +446,15 @@ impl BasicCutter {
     /// Advances while the next step would leave the cut the size it is, which
     /// is what the reference implementation does by default: it skips the
     /// sides that are not the maximum.
-    fn advance_while_cut_holds(&mut self, exp: &Exp, a_orig: u32) {
+    fn advance_while_cut_holds(&mut self, g: &OrigGraph) {
         debug_assert!(self.cut_available);
         let mut guard = 0u32;
         loop {
             let side = self.current_cut_side();
-            if self.assim[side].count >= n_exp(exp.g.n) / 2 {
+            if self.assim[side].count >= n_exp(g.n) / 2 {
                 break;
             }
-            let Some(pierce) = self.select_pierce_node(exp, a_orig, side) else {
+            let Some(pierce) = self.select_pierce_node(g, side) else {
                 break;
             };
             if self.reach[1 - side].inside[pierce as usize] {
@@ -480,8 +462,8 @@ impl BasicCutter {
             }
             self.assim[side].set_extra(pierce);
             self.reach[side].set_extra(pierce);
-            self.grow_reachable_sets(exp, a_orig, side);
-            self.grow_assimilated_sets(exp, a_orig);
+            self.grow_reachable_sets(g, side);
+            self.grow_assimilated_sets(g);
             self.cut_available = true;
             guard += 1;
             if guard > 1_000_000 {
@@ -491,134 +473,79 @@ impl BasicCutter {
     }
 }
 
-pub(super) struct MultiCutter {
-    cutters: Vec<BasicCutter>,
-    current_id: usize,
-    /// Snapshot from the last commit, not a live read of `cutters[current_id]`:
-    /// intervening `BasicCutter::advance` calls move that cutter's
-    /// smaller-side count before the next Pareto comparison runs.
+/// The Pareto commit rule over the one cutter the search runs.
+///
+/// Running a single cutter is deliberate: the C++ original starts several and
+/// raises the count every 16 iterations, so what is given up here is the
+/// best-of-several pick, not the rule below.
+pub(super) struct Cutter {
+    /// Kept between rounds so that a new round reuses these arrays instead of
+    /// allocating a fresh set; [`Cutter::init`] resets what a search reads.
+    inner: Option<BasicCutter>,
+    /// Snapshot from the last commit, not a live read of `inner`: intervening
+    /// `BasicCutter::advance` calls move that cutter's smaller-side count
+    /// before the next Pareto comparison runs.
     current_smaller: u32,
 }
 
-impl MultiCutter {
-    /// An empty cutter set. [`MultiCutter::init`] both sizes it to the pairs it
-    /// is given and resets the cutters it keeps, so one of these serves every
-    /// iteration of a search rather than one iteration.
+impl Cutter {
+    /// An empty shell. [`Cutter::init`] builds the inner cutter on first use
+    /// and resets it afterwards, so one of these serves every iteration of a
+    /// search rather than one iteration.
     pub(super) fn new() -> Self {
-        MultiCutter {
-            cutters: Vec::new(),
-            current_id: 0,
+        Cutter {
+            inner: None,
             current_smaller: 0,
         }
     }
 
-    /// Start one cutter per source-target pair in `pairs`, reusing the cutters
+    /// Start the cutter on the source-target pair `p`, reusing the cutter
     /// already held. Reuse is sound because `BasicCutter::init` is a complete
     /// reset and the graph, hence every array length, is the same.
-    pub(super) fn init(&mut self, exp: &Exp, a_orig: u32, pairs: &[(u32, u32)]) {
-        let n_exp_v = n_exp(exp.g.n);
-        let a_exp_v = a_exp(exp.g.n, a_orig);
-        while self.cutters.len() > pairs.len() {
-            self.cutters.pop();
-        }
-        while self.cutters.len() < pairs.len() {
-            self.cutters.push(BasicCutter::new(n_exp_v, a_exp_v));
-        }
+    pub(super) fn init(&mut self, g: &OrigGraph, p: (u32, u32)) {
+        let inner = self
+            .inner
+            .get_or_insert_with(|| BasicCutter::new(n_exp(g.n), a_exp(g.n, g.arc_count)));
+        inner.init(g, p);
+        inner.advance_while_cut_holds(g);
+        self.current_smaller = inner.current_smaller_size();
+    }
 
-        for (i, &p) in pairs.iter().enumerate() {
-            self.cutters[i].init(exp, a_orig, p);
-            self.cutters[i].advance_while_cut_holds(exp, a_orig);
-        }
-
-        let mut best_id = 0usize;
-        let mut best_size = i64::MAX;
-        let mut best_weight = 0u32;
-        for (i, c) in self.cutters.iter().enumerate() {
-            let s = c.current_cut().len() as i64;
-            let w = c.current_smaller_size();
-            if s < best_size || (s == best_size && w > best_weight) {
-                best_id = i;
-                best_size = s;
-                best_weight = w;
-            }
-        }
-        self.current_id = best_id;
-        self.current_smaller = self.cutters[best_id].current_smaller_size();
+    fn inner(&self) -> &BasicCutter {
+        self.inner.as_ref().expect("init precedes every read")
     }
 
     pub(super) fn current_cut_size(&self) -> usize {
-        self.cutters[self.current_id].current_cut().len()
+        self.inner().current_cut().len()
     }
     pub(super) fn current_smaller_size(&self) -> u32 {
         self.current_smaller
     }
     pub(super) fn current_cut(&self) -> &[u32] {
-        self.cutters[self.current_id].current_cut()
+        self.inner().current_cut()
     }
     pub(super) fn is_on_smaller_side(&self, x: u32) -> bool {
-        self.cutters[self.current_id].is_on_smaller_side(x)
+        self.inner().is_on_smaller_side(x)
     }
 
-    pub(super) fn advance(&mut self, exp: &Exp, a_orig: u32) -> bool {
-        if n_exp(exp.g.n) / 2 == self.current_smaller {
+    pub(super) fn advance(&mut self, g: &OrigGraph) -> bool {
+        if n_exp(g.n) / 2 == self.current_smaller {
             return false;
         }
 
-        let mut cur_size = self.current_cut_size();
-
+        let inner = self.inner.as_mut().expect("init precedes every advance");
         loop {
-            for i in 0..self.cutters.len() {
-                if !self.cutters[i].cut_available {
-                    continue;
-                }
-                if self.cutters[i].current_cut().len() != cur_size {
-                    continue;
-                }
-                let advanced = self.cutters[i].advance(exp, a_orig);
-                if !advanced {
-                    continue;
-                }
-                self.cutters[i].advance_while_cut_holds(exp, a_orig);
-            }
-
-            let Some(next_size) = self
-                .cutters
-                .iter()
-                .filter(|cutter| cutter.cut_available)
-                .map(|cutter| cutter.current_cut().len())
-                .min()
-            else {
+            if !inner.cut_available || !inner.advance(g) {
                 return false;
-            };
-
-            let mut best_id = None;
-            let mut best_weight = 0u32;
-            for (i, c) in self.cutters.iter().enumerate() {
-                if !c.cut_available {
-                    continue;
-                }
-                if c.current_cut().len() == next_size {
-                    let w = c.current_smaller_size();
-                    if best_id.is_none() || w > best_weight {
-                        best_id = Some(i);
-                        best_weight = w;
-                    }
-                }
             }
-            let Some(best_id) = best_id else {
-                return false;
-            };
-
-            cur_size = next_size;
+            inner.advance_while_cut_holds(g);
             // FlowCutter's Pareto rule: only commit once the smaller side is
             // strictly larger too, not merely once the cut size has grown.
-            if best_weight <= self.current_smaller {
-                continue;
+            let smaller = inner.current_smaller_size();
+            if smaller > self.current_smaller {
+                self.current_smaller = smaller;
+                return true;
             }
-
-            self.current_id = best_id;
-            self.current_smaller = best_weight;
-            return true;
         }
     }
 }

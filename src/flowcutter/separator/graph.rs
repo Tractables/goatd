@@ -13,6 +13,9 @@
 
 pub(super) struct OrigGraph {
     pub(super) n: u32,
+    /// `tail.len()`, which every `expanded` index computation needs. Stored
+    /// rather than recomputed so those reads stay a field load.
+    pub(super) arc_count: u32,
     /// Directed arc tails (length 2*|E_undirected|), sorted by (tail, head).
     pub(super) tail: Vec<u32>,
     /// Directed arc heads (length 2*|E_undirected|), parallel to `tail`.
@@ -69,6 +72,7 @@ impl OrigGraph {
 
         Some(OrigGraph {
             n,
+            arc_count: arc_count as u32,
             tail,
             head,
             back_arc,
