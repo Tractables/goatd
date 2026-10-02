@@ -17,6 +17,15 @@
 pub enum Order<'a> {
     /// Preprocess, then repeatedly eliminate a minimum-fill vertex.
     MinFill,
+    /// Min-fill with the ties on fill and degree broken by a rank the caller
+    /// gives each vertex, the smaller first, in place of the seeded salt: the
+    /// order is the same for every seed. A caller whose vertex numbering
+    /// carries structure, such as the order a program was written in, keeps
+    /// it through the ties.
+    MinFillRanked {
+        /// Per-vertex ranks, one entry per input graph vertex.
+        ranks: &'a [u32],
+    },
     /// Preprocess, then minimize added fill edges per removed incident edge.
     RelativeFill,
     /// Preprocess, then repeatedly eliminate a minimum-degree vertex.
@@ -60,6 +69,7 @@ impl<'a> Order<'a> {
             | Order::MinDegreeSampled { weights }
             | Order::FillDegreeSampled { weights, .. } => Some(weights),
             Order::MinFill
+            | Order::MinFillRanked { .. }
             | Order::RelativeFill
             | Order::MinDegree
             | Order::NestedDissection
@@ -71,7 +81,8 @@ impl<'a> Order<'a> {
     /// Replace the sampling weights after a graph has been reindexed.
     pub(super) fn with_tie_weights<'b>(self, weights: &'b [u32]) -> Order<'b> {
         match self {
-            Order::MinFill => Order::MinFill,
+            // A ranked order has no weights; its ranks travel as the salt.
+            Order::MinFill | Order::MinFillRanked { .. } => Order::MinFill,
             Order::RelativeFill => Order::RelativeFill,
             Order::MinDegree => Order::MinDegree,
             Order::NestedDissection => Order::NestedDissection,
@@ -89,12 +100,25 @@ impl<'a> Order<'a> {
     }
 
     /// Whether the order breaks ties with the per-vertex salt; a sampled
-    /// order draws its ties from its own stream instead.
+    /// order draws its ties from its own stream instead. A ranked order's
+    /// salt is the caller's ranks.
     pub(super) fn uses_salt(self) -> bool {
         matches!(
             self,
-            Order::MinFill | Order::RelativeFill | Order::MinDegree | Order::NestedDissection
+            Order::MinFill
+                | Order::MinFillRanked { .. }
+                | Order::RelativeFill
+                | Order::MinDegree
+                | Order::NestedDissection
         )
+    }
+
+    /// The caller's tie ranks, for a ranked order.
+    pub(crate) fn tie_ranks(self) -> Option<&'a [u32]> {
+        match self {
+            Order::MinFillRanked { ranks } => Some(ranks),
+            _ => None,
+        }
     }
 
     /// Whether repeated runs can reuse the residual's initial fill counts.

@@ -45,7 +45,9 @@ clique. Each order is a rule for which vertex goes next.
   breaking chordality. Neither reads a seed, so each runs once.
 
 The orders differ in how they break ties. A
-*deterministic* order breaks a tie by a seeded per-vertex salt. A *sampled*
+*deterministic* order breaks a tie by a seeded per-vertex salt; ranked
+min-fill takes that salt from the caller instead, one rank per vertex,
+and does not read the seed. A *sampled*
 order draws from its candidate bucket with one caller-supplied weight per vertex,
 where equal weights sample uniformly and a lower weight is likelier. The
 min-degree bucket uses lazy updates and can omit other vertices of the same

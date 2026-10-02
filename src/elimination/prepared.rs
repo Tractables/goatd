@@ -225,5 +225,14 @@ pub(super) fn validate_order(graph: &Graph, order: Order<'_>) -> Result<(), Erro
             graph.num_vertices()
         )));
     }
+    if let Some(ranks) = order.tie_ranks()
+        && ranks.len() != graph.num_vertices() as usize
+    {
+        return Err(Error::InvalidInput(format!(
+            "ranked elimination has {} ranks for {} vertices",
+            ranks.len(),
+            graph.num_vertices()
+        )));
+    }
     Ok(())
 }

@@ -254,6 +254,10 @@ fn draw_salt(salt: &mut Vec<u32>, n: usize, order: Order<'_>, seed: u64) {
     if !order.uses_salt() {
         return;
     }
+    if let Some(ranks) = order.tie_ranks() {
+        salt.extend_from_slice(ranks);
+        return;
+    }
     let mut rng = search_stream(seed);
     salt.extend((0..n).map(|_| rng.next_u32()));
 }
@@ -330,7 +334,9 @@ fn run_elimination_raw(
     let mut steps = ElimSteps::after(prefix);
 
     let exit = match spec.order {
-        Order::MinFill => eliminate_min_fill::<false>(graph, salt, steps.sink(), spec.stop),
+        Order::MinFill | Order::MinFillRanked { .. } => {
+            eliminate_min_fill::<false>(graph, salt, steps.sink(), spec.stop)
+        }
         Order::RelativeFill => eliminate_min_fill::<true>(graph, salt, steps.sink(), spec.stop),
         Order::MinDegree => {
             eliminate_min_degree(graph, salt, spec.update_order_ties, steps.sink(), spec.stop)
