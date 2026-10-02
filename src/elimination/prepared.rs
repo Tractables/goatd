@@ -119,10 +119,22 @@ impl<'g> Prepared<'g> {
         Ok(Self::at_deadline(graph, end))
     }
 
+    /// Prepare one graph without the reductions, so that every vertex is
+    /// eliminated by the order a run gives: the ranked orders
+    /// ([`Order::MinFillRanked`], [`Order::Ranked`]) then decide every step,
+    /// where the reductions would first eliminate vertices in their own order.
+    pub fn unreduced(graph: &'g Graph) -> Self {
+        Self::from_prebuilt(graph, || engine::prebuild_unreduced(graph))
+    }
+
     pub(super) fn at_deadline(graph: &'g Graph, end: Option<Instant>) -> Self {
+        Self::from_prebuilt(graph, || engine::prebuild(graph, end))
+    }
+
+    fn from_prebuilt(graph: &'g Graph, prebuild: impl FnOnce() -> engine::Prebuilt) -> Self {
         let start = Instant::now();
         let units = meter::units_spent();
-        let prebuilt = engine::prebuild(graph, end);
+        let prebuilt = prebuild();
         let preparation = Preparation {
             original_vertices: graph.num_vertices() as usize,
             residual_vertices: prebuilt.num_active(),

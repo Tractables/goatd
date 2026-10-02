@@ -705,6 +705,7 @@ fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
         (Order::MinimalTriangulation, _) => Stage::MinimalTriangulation,
         (Order::MaximumCardinality, _) => Stage::MaximumCardinality,
         (Order::RelativeFill, _) => Stage::RelativeFill,
+        (Order::Ranked { .. }, _) => unreachable!("the portfolio runs no caller-ranked order"),
     }
 }
 

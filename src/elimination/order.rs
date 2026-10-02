@@ -26,6 +26,14 @@ pub enum Order<'a> {
         /// Per-vertex ranks, one entry per input graph vertex.
         ranks: &'a [u32],
     },
+    /// Eliminate in the caller's order: by rank, the smaller first, ties by
+    /// vertex number. On a handle without the reductions
+    /// ([`Prepared::unreduced`](super::Prepared::unreduced)) every vertex
+    /// goes in that order; otherwise the reductions go first.
+    Ranked {
+        /// Per-vertex ranks, one entry per input graph vertex.
+        ranks: &'a [u32],
+    },
     /// Preprocess, then minimize added fill edges per removed incident edge.
     RelativeFill,
     /// Preprocess, then repeatedly eliminate a minimum-degree vertex.
@@ -70,6 +78,7 @@ impl<'a> Order<'a> {
             | Order::FillDegreeSampled { weights, .. } => Some(weights),
             Order::MinFill
             | Order::MinFillRanked { .. }
+            | Order::Ranked { .. }
             | Order::RelativeFill
             | Order::MinDegree
             | Order::NestedDissection
@@ -79,10 +88,15 @@ impl<'a> Order<'a> {
     }
 
     /// Replace the sampling weights after a graph has been reindexed.
-    pub(super) fn with_tie_weights<'b>(self, weights: &'b [u32]) -> Order<'b> {
+    pub(super) fn with_tie_weights<'b>(self, weights: &'b [u32]) -> Order<'b>
+    where
+        'a: 'b,
+    {
         match self {
             // A ranked order has no weights; its ranks travel as the salt.
-            Order::MinFill | Order::MinFillRanked { .. } => Order::MinFill,
+            Order::MinFill => Order::MinFill,
+            Order::MinFillRanked { ranks } => Order::MinFillRanked { ranks },
+            Order::Ranked { ranks } => Order::Ranked { ranks },
             Order::RelativeFill => Order::RelativeFill,
             Order::MinDegree => Order::MinDegree,
             Order::NestedDissection => Order::NestedDissection,
@@ -107,6 +121,7 @@ impl<'a> Order<'a> {
             self,
             Order::MinFill
                 | Order::MinFillRanked { .. }
+                | Order::Ranked { .. }
                 | Order::RelativeFill
                 | Order::MinDegree
                 | Order::NestedDissection
@@ -116,7 +131,7 @@ impl<'a> Order<'a> {
     /// The caller's tie ranks, for a ranked order.
     pub(crate) fn tie_ranks(self) -> Option<&'a [u32]> {
         match self {
-            Order::MinFillRanked { ranks } => Some(ranks),
+            Order::MinFillRanked { ranks } | Order::Ranked { ranks } => Some(ranks),
             _ => None,
         }
     }

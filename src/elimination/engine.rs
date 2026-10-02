@@ -112,7 +112,20 @@ impl RunScratch {
 /// across every order in a portfolio.
 pub(crate) fn prebuild(input: &crate::Graph, soft_deadline: Option<Instant>) -> Prebuilt {
     let graph = EliminationGraph::from_edges(input.num_vertices, &input.edges);
-    let reduced = preprocess(graph, soft_deadline);
+    prebuilt_over(preprocess(graph, soft_deadline))
+}
+
+/// Build the elimination representation without the reductions, so that the
+/// order eliminates every vertex.
+pub(crate) fn prebuild_unreduced(input: &crate::Graph) -> Prebuilt {
+    let graph = EliminationGraph::from_edges(input.num_vertices, &input.edges);
+    prebuilt_over(Reduced {
+        graph,
+        prefix: ElimSteps::default(),
+    })
+}
+
+fn prebuilt_over(reduced: Reduced) -> Prebuilt {
     let components = find_connected_components(&reduced.graph);
     let active = execution::active_vertices(&reduced.graph);
     let prefix_max_bag = reduced.prefix.bags.iter().map(Vec::len).max().unwrap_or(0);
@@ -336,6 +349,11 @@ fn run_elimination_raw(
     let exit = match spec.order {
         Order::MinFill | Order::MinFillRanked { .. } => {
             eliminate_min_fill::<false>(graph, salt, steps.sink(), spec.stop)
+        }
+        Order::Ranked { .. } => {
+            let mut order = execution::active_vertices(graph);
+            order.sort_unstable_by_key(|&v| (salt[v as usize], v));
+            execution::eliminate_in_order(graph, order, &mut steps.sink(), spec.stop)
         }
         Order::RelativeFill => eliminate_min_fill::<true>(graph, salt, steps.sink(), spec.stop),
         Order::MinDegree => {
