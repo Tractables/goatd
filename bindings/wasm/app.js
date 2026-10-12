@@ -1442,7 +1442,8 @@ if (typeof document !== "undefined") {
     runWhenReady = false;
     settle();
     element("run").disabled = true;
-    element("status").textContent = `the solver did not load: ${message}; reload the page to retry`;
+    console.error("The solver did not load", message);
+    element("status").textContent = "the solver did not load; reload the page to retry";
   }
 
   function requestRun() {
