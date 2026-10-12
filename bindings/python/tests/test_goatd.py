@@ -236,3 +236,16 @@ def test_threads_decompose_concurrently():
     for td in decompositions:
         check(td, graph)
         assert td.treewidth >= 8
+
+
+def test_decompose_stub_matches_runtime_defaults():
+    import ast
+    import inspect
+    from pathlib import Path
+
+    stub = ast.parse((Path(__file__).parents[1] / "goatd.pyi").read_text())
+    declaration = next(node for node in stub.body if isinstance(node, ast.FunctionDef)
+                       and node.name == "decompose")
+    signature = inspect.signature(goatd.decompose)
+    for argument, default in zip(declaration.args.kwonlyargs, declaration.args.kw_defaults):
+        assert signature.parameters[argument.arg].default == ast.literal_eval(default)
