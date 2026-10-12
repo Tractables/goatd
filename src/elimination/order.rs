@@ -17,6 +17,23 @@
 pub enum Order<'a> {
     /// Preprocess, then repeatedly eliminate a minimum-fill vertex.
     MinFill,
+    /// Min-fill with the ties on fill and degree broken by a rank the caller
+    /// gives each vertex, the smaller first, in place of the seeded salt: the
+    /// order is the same for every seed. A caller whose vertex numbering
+    /// carries structure, such as the order a program was written in, keeps
+    /// it through the ties.
+    MinFillRanked {
+        /// Per-vertex ranks, one entry per input graph vertex.
+        ranks: &'a [u32],
+    },
+    /// Eliminate in the caller's order: by rank, the smaller first, ties by
+    /// vertex number. On a handle without the reductions
+    /// ([`Prepared::unreduced`](super::Prepared::unreduced)) every vertex
+    /// goes in that order; otherwise the reductions go first.
+    Ranked {
+        /// Per-vertex ranks, one entry per input graph vertex.
+        ranks: &'a [u32],
+    },
     /// Preprocess, then minimize added fill edges per removed incident edge.
     RelativeFill,
     /// Preprocess, then repeatedly eliminate a minimum-degree vertex.
@@ -36,7 +53,8 @@ pub enum Order<'a> {
         /// Per-vertex weights, one entry per input graph vertex.
         weights: &'a [u32],
     },
-    /// Min-degree with weighted sampling from the full minimum-degree tie set.
+    /// Min-degree with weighted sampling from the current minimum-degree bucket.
+    /// Lazy degree updates can leave other equally good vertices outside it.
     MinDegreeSampled {
         /// Per-vertex weights, one entry per input graph vertex.
         weights: &'a [u32],
@@ -59,6 +77,8 @@ impl<'a> Order<'a> {
             | Order::MinDegreeSampled { weights }
             | Order::FillDegreeSampled { weights, .. } => Some(weights),
             Order::MinFill
+            | Order::MinFillRanked { .. }
+            | Order::Ranked { .. }
             | Order::RelativeFill
             | Order::MinDegree
             | Order::NestedDissection
@@ -68,9 +88,15 @@ impl<'a> Order<'a> {
     }
 
     /// Replace the sampling weights after a graph has been reindexed.
-    pub(super) fn with_tie_weights<'b>(self, weights: &'b [u32]) -> Order<'b> {
+    pub(super) fn with_tie_weights<'b>(self, weights: &'b [u32]) -> Order<'b>
+    where
+        'a: 'b,
+    {
         match self {
+            // A ranked order has no weights; its ranks travel as the salt.
             Order::MinFill => Order::MinFill,
+            Order::MinFillRanked { ranks } => Order::MinFillRanked { ranks },
+            Order::Ranked { ranks } => Order::Ranked { ranks },
             Order::RelativeFill => Order::RelativeFill,
             Order::MinDegree => Order::MinDegree,
             Order::NestedDissection => Order::NestedDissection,
@@ -88,12 +114,26 @@ impl<'a> Order<'a> {
     }
 
     /// Whether the order breaks ties with the per-vertex salt; a sampled
-    /// order draws its ties from its own stream instead.
+    /// order draws its ties from its own stream instead. A ranked order's
+    /// salt is the caller's ranks.
     pub(super) fn uses_salt(self) -> bool {
         matches!(
             self,
-            Order::MinFill | Order::RelativeFill | Order::MinDegree | Order::NestedDissection
+            Order::MinFill
+                | Order::MinFillRanked { .. }
+                | Order::Ranked { .. }
+                | Order::RelativeFill
+                | Order::MinDegree
+                | Order::NestedDissection
         )
+    }
+
+    /// The caller's tie ranks, for a ranked order.
+    pub(crate) fn tie_ranks(self) -> Option<&'a [u32]> {
+        match self {
+            Order::MinFillRanked { ranks } | Order::Ranked { ranks } => Some(ranks),
+            _ => None,
+        }
     }
 
     /// Whether repeated runs can reuse the residual's initial fill counts.

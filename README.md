@@ -26,6 +26,8 @@ separation under one time budget and keeps the narrowest result;
 [Algorithms](docs/algorithms.md) describes each construction and where it
 departs from the published method.
 
+Changes and migration notes are in [release notes](docs/releases.md).
+
 ## Solver
 
 ```sh

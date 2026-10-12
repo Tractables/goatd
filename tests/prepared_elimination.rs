@@ -109,3 +109,109 @@ fn failed_and_pruned_runs_do_not_poison_later_candidates() {
             .to_td()
     );
 }
+
+#[test]
+fn prepared_bound_includes_reduced_prefix() {
+    use goatd::{
+        Graph,
+        elimination::{Order, Prepared, RunConfig, RunOutcome},
+    };
+    let graph = Graph::new(3, [(0, 1), (1, 2), (0, 2)]);
+    let mut prepared = Prepared::new(&graph, None).unwrap();
+    assert_eq!(prepared.preparation().residual_vertices, 0);
+    assert!(matches!(
+        prepared
+            .run(
+                Order::MinFill,
+                0,
+                RunConfig::default().with_width_bound(Some(1))
+            )
+            .unwrap(),
+        RunOutcome::WidthAborted
+    ));
+}
+
+#[test]
+fn reduced_prefix_accepts_an_equal_bound_after_an_abort() {
+    let graph = Graph::new(3, [(0, 1), (1, 2), (0, 2)]);
+    let mut prepared = Prepared::new(&graph, None).unwrap();
+    assert!(matches!(
+        prepared
+            .run(
+                Order::MinFill,
+                0,
+                RunConfig::default().with_width_bound(Some(1))
+            )
+            .unwrap(),
+        RunOutcome::WidthAborted
+    ));
+    let tree = completed(
+        prepared
+            .run(
+                Order::MinFill,
+                0,
+                RunConfig::default().with_width_bound(Some(2)),
+            )
+            .unwrap(),
+    );
+    tree.validate(&graph).unwrap();
+    assert_eq!(tree.treewidth(), 2);
+}
+
+#[test]
+fn deadline_completion_obeys_the_width_bound() {
+    let graph = graph();
+    let mut prepared = Prepared::new(&graph, None).unwrap();
+    let config = RunConfig::default().with_budgets(Some(Duration::ZERO), None);
+    let tree = completed(prepared.run(Order::MinFill, 0, config).unwrap());
+    tree.validate(&graph).unwrap();
+    let width = tree.treewidth();
+    assert!(width > 0);
+    assert!(matches!(
+        prepared
+            .run(Order::MinFill, 0, config.with_width_bound(Some(width - 1)))
+            .unwrap(),
+        RunOutcome::WidthAborted
+    ));
+    let tree = completed(
+        prepared
+            .run(Order::MinFill, 0, config.with_width_bound(Some(width)))
+            .unwrap(),
+    );
+    tree.validate(&graph).unwrap();
+}
+
+#[test]
+fn a_reduced_prefix_is_checked_even_when_a_residual_run_cannot_start() {
+    for joined in [false, true] {
+        let mut edges = vec![(0, 1), (1, 2), (0, 2)];
+        edges.extend((0..8u32).flat_map(|v| {
+            [1, 2, 4].into_iter().filter_map(move |bit| {
+                let w = v ^ bit;
+                (v < w).then_some((v + 3, w + 3))
+            })
+        }));
+        if joined {
+            edges.push((2, 3));
+        }
+        let graph = Graph::new(11, edges);
+        let mut prepared = Prepared::new(&graph, None).unwrap();
+        assert!(prepared.preparation().residual_vertices > 0);
+        assert!(prepared.preparation().residual_vertices < 11);
+        let config = RunConfig::default()
+            .with_width_bound(Some(1))
+            .with_budgets(Some(Duration::ZERO), None)
+            .with_deadline_completion(false);
+        assert_eq!(
+            prepared.run(Order::MinFill, 0, config).unwrap(),
+            RunOutcome::WidthAborted
+        );
+        completed(
+            prepared
+                .run(Order::MinFill, 0, RunConfig::default())
+                .unwrap(),
+        )
+        .validate(&graph)
+        .unwrap();
+    }
+}

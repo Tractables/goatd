@@ -21,5 +21,5 @@ rustflags = [
   # stack is not enough for a graph of any size.
   "-Clink-arg=-sSTACK_SIZE=8388608",
   "-Clink-arg=-sEXPORTED_FUNCTIONS=_main,_malloc,_free,_goatd_decompose,_goatd_string_free",
-  "-Clink-arg=-sEXPORTED_RUNTIME_METHODS=ccall,UTF8ToString",
+  "-Clink-arg=-sEXPORTED_RUNTIME_METHODS=ccall,UTF8ToString,HEAPU8",
 ]

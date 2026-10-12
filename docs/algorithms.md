@@ -24,6 +24,8 @@ Islets and twigs are cleared first, which removes forest components whole.
 The other rules run in the order listed and start again whenever one fires.
 The recorded bags become the front of the elimination sequence, the
 construction continues on the residual graph, and vertex ids never change.
+`elimination::Prepared::unreduced` skips the reduction, so that the order
+alone eliminates every vertex.
 
 ## Elimination orders
 
@@ -32,8 +34,8 @@ leaves a bag of itself and its remaining neighbours, which are joined into a
 clique. Each order is a rule for which vertex goes next.
 
 - **Min-fill** takes the vertex whose elimination adds the fewest edges. Fill
-  counts live in a heap and only the neighbours of an eliminated vertex are
-  rescored.
+  counts live in a heap; vertices affected by removed or added edges are
+  rescored, including non-neighbours whose fill counts changed.
 - **Min-degree** takes the vertex of smallest degree, on the same machinery.
 - **Relative fill** takes the smallest fill per unit of degree, then the
   smallest degree.
@@ -43,14 +45,20 @@ clique. Each order is a rule for which vertex goes next.
   **MCS-M** is the same search with a longer reach, and eliminating along it
   gives a minimal triangulation: no added edge can be removed without
   breaking chordality. Neither reads a seed, so each runs once.
+- **Ranked** eliminates in an order the caller gives as one rank per
+  vertex, the smallest first.
 
-The scores are exact; the orders differ in how they break ties. A
-*deterministic* order breaks a tie by a seeded per-vertex salt. A *sampled*
-order draws from the tied set with one caller-supplied weight per vertex,
+The orders differ in how they break ties. A
+*deterministic* order breaks a tie by a seeded per-vertex salt; ranked
+min-fill takes that salt from the caller instead, one rank per vertex,
+and does not read the seed. A *sampled*
+order draws from its candidate bucket with one caller-supplied weight per vertex,
 where equal weights sample uniformly and a lower weight is likelier. The
-portfolio's restarts widen the tied set into a band of scores near the
+min-degree bucket uses lazy updates and can omit other vertices of the same
+degree. The portfolio's restarts widen the tied set into a band of scores near the
 minimum, so that seeds still separate on a graph where one vertex holds the
 minimum at every step.
+
 
 ## Vertex coordinates
 

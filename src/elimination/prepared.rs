@@ -53,7 +53,8 @@ impl RunConfig {
 
     /// Abort as soon as an elimination bag would give a width greater than
     /// `bound`; a candidate of width exactly `bound` still completes. `None`
-    /// disables pruning.
+    /// disables pruning. Reductions and completion after a deadline obey the
+    /// same bound.
     pub const fn with_width_bound(mut self, bound: Option<u32>) -> Self {
         self.width_bound = bound;
         self
@@ -118,10 +119,22 @@ impl<'g> Prepared<'g> {
         Ok(Self::at_deadline(graph, end))
     }
 
+    /// Prepare one graph without the reductions, so that every vertex is
+    /// eliminated by the order a run gives: the ranked orders
+    /// ([`Order::MinFillRanked`], [`Order::Ranked`]) then decide every step,
+    /// where the reductions would first eliminate vertices in their own order.
+    pub fn unreduced(graph: &'g Graph) -> Self {
+        Self::from_prebuilt(graph, || engine::prebuild_unreduced(graph))
+    }
+
     pub(super) fn at_deadline(graph: &'g Graph, end: Option<Instant>) -> Self {
+        Self::from_prebuilt(graph, || engine::prebuild(graph, end))
+    }
+
+    fn from_prebuilt(graph: &'g Graph, prebuild: impl FnOnce() -> engine::Prebuilt) -> Self {
         let start = Instant::now();
         let units = meter::units_spent();
-        let prebuilt = engine::prebuild(graph, end);
+        let prebuilt = prebuild();
         let preparation = Preparation {
             original_vertices: graph.num_vertices() as usize,
             residual_vertices: prebuilt.num_active(),
@@ -171,6 +184,9 @@ impl<'g> Prepared<'g> {
         config: RunConfig,
         deadlines: deadline::TwoStage,
     ) -> Result<RunOutcome, Error> {
+        if self.prebuilt.prefix_exceeds(config.width_bound) {
+            return Ok(RunOutcome::WidthAborted);
+        }
         let result = engine::run_order_prebuilt(
             &mut self.prebuilt,
             engine::RunSpec {
@@ -192,6 +208,15 @@ impl<'g> Prepared<'g> {
             },
         );
         Ok(match result {
+            engine::OrderRun::Completed(ref tree)
+            | engine::OrderRun::CompletedAtDeadline(_, ref tree)
+                if config
+                    .width_bound
+                    .is_some_and(|bound| tree.treewidth() > bound) =>
+            {
+                RunOutcome::WidthAborted
+            }
+
             engine::OrderRun::Completed(tree) => RunOutcome::Completed(tree),
             engine::OrderRun::CompletedAtDeadline(end, tree) => {
                 RunOutcome::CompletedAtDeadline(end, tree)
@@ -209,6 +234,15 @@ pub(super) fn validate_order(graph: &Graph, order: Order<'_>) -> Result<(), Erro
         return Err(Error::InvalidInput(format!(
             "sampled elimination has {} weights for {} vertices",
             weights.len(),
+            graph.num_vertices()
+        )));
+    }
+    if let Some(ranks) = order.tie_ranks()
+        && ranks.len() != graph.num_vertices() as usize
+    {
+        return Err(Error::InvalidInput(format!(
+            "ranked elimination has {} ranks for {} vertices",
+            ranks.len(),
             graph.num_vertices()
         )));
     }

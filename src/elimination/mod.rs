@@ -8,7 +8,7 @@
 //!   * **min-fill** and **min-degree** — the plain greedy orders, ties broken
 //!     by a seeded salt.
 //!   * **min-fill and min-degree with weighted tie-set sampling** — fill-only
-//!     (resp. degree-only) priority, the whole tie set sampled by a per-vertex
+//!     (resp. degree-only) priority, candidates sampled by a per-vertex
 //!     weight the caller supplies. These two are the orders the portfolios
 //!     run.
 //!   * **nested dissection** via

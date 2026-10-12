@@ -280,3 +280,26 @@ fn callers_can_accept_a_wider_separator_proposal() {
         accepted.expect("fixture must offer a wider valid tree")
     );
 }
+
+#[test]
+fn reinsertion_real_deadline_ignores_advanced_work_clock() {
+    use goatd::decomposition::{
+        polishing::{Advance, Budget, Pause},
+        vertex_rebuild,
+    };
+    use goatd::{Graph, TreeDecomposition, meter};
+    use std::time::{Duration, Instant};
+    let graph = Graph::new(3, [(0, 1), (1, 2)]);
+    let tree = TreeDecomposition::new(&graph, [vec![0, 1, 2]], []).unwrap();
+    let mut session = vertex_rebuild::Session::new(&graph, tree).unwrap();
+    let _clock = meter::arm(Instant::now());
+    meter::charge(meter::UNITS_PER_MS * 120_000);
+    let budget = Budget::new(1).with_deadline(Instant::now() + Duration::from_secs(60));
+    let result = session.advance(budget);
+    assert!(
+        matches!(result, Advance::Paused(Pause::Steps)),
+        "future real deadline must permit setup"
+    );
+    drop(result);
+    assert_eq!(session.progress().steps, 1);
+}

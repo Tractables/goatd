@@ -39,6 +39,7 @@ pub(crate) enum OrderRun {
 /// a portfolio can reuse this result rather than repeat that work.
 pub(crate) struct Prebuilt {
     reduced: Reduced,
+    prefix_max_bag: usize,
     /// Connected components of the preprocessed residual, reused by every
     /// portfolio candidate.
     components: Vec<Vec<u32>>,
@@ -111,11 +112,26 @@ impl RunScratch {
 /// across every order in a portfolio.
 pub(crate) fn prebuild(input: &crate::Graph, soft_deadline: Option<Instant>) -> Prebuilt {
     let graph = EliminationGraph::from_edges(input.num_vertices, &input.edges);
-    let reduced = preprocess(graph, soft_deadline);
+    prebuilt_over(preprocess(graph, soft_deadline))
+}
+
+/// Build the elimination representation without the reductions, so that the
+/// order eliminates every vertex.
+pub(crate) fn prebuild_unreduced(input: &crate::Graph) -> Prebuilt {
+    let graph = EliminationGraph::from_edges(input.num_vertices, &input.edges);
+    prebuilt_over(Reduced {
+        graph,
+        prefix: ElimSteps::default(),
+    })
+}
+
+fn prebuilt_over(reduced: Reduced) -> Prebuilt {
     let components = find_connected_components(&reduced.graph);
     let active = execution::active_vertices(&reduced.graph);
+    let prefix_max_bag = reduced.prefix.bags.iter().map(Vec::len).max().unwrap_or(0);
     Prebuilt {
         reduced,
+        prefix_max_bag,
         components,
         active,
         initial_fill: None,
@@ -125,6 +141,10 @@ pub(crate) fn prebuild(input: &crate::Graph, soft_deadline: Option<Instant>) -> 
 }
 
 impl Prebuilt {
+    pub(super) fn prefix_exceeds(&self, bound: Option<u32>) -> bool {
+        execution::exceeds_width_bound(self.prefix_max_bag, bound)
+    }
+
     /// Number of active vertices in the preprocessed residual graph.
     pub(crate) fn num_active(&self) -> usize {
         self.reduced.graph.num_active
@@ -247,6 +267,10 @@ fn draw_salt(salt: &mut Vec<u32>, n: usize, order: Order<'_>, seed: u64) {
     if !order.uses_salt() {
         return;
     }
+    if let Some(ranks) = order.tie_ranks() {
+        salt.extend_from_slice(ranks);
+        return;
+    }
     let mut rng = search_stream(seed);
     salt.extend((0..n).map(|_| rng.next_u32()));
 }
@@ -323,7 +347,14 @@ fn run_elimination_raw(
     let mut steps = ElimSteps::after(prefix);
 
     let exit = match spec.order {
-        Order::MinFill => eliminate_min_fill::<false>(graph, salt, steps.sink(), spec.stop),
+        Order::MinFill | Order::MinFillRanked { .. } => {
+            eliminate_min_fill::<false>(graph, salt, steps.sink(), spec.stop)
+        }
+        Order::Ranked { .. } => {
+            let mut order = execution::active_vertices(graph);
+            order.sort_unstable_by_key(|&v| (salt[v as usize], v));
+            execution::eliminate_in_order(graph, order, &mut steps.sink(), spec.stop)
+        }
         Order::RelativeFill => eliminate_min_fill::<true>(graph, salt, steps.sink(), spec.stop),
         Order::MinDegree => {
             eliminate_min_degree(graph, salt, spec.update_order_ties, steps.sink(), spec.stop)

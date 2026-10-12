@@ -109,7 +109,10 @@ fn is_min_degree_variant(order: Order<'_>) -> bool {
 }
 
 fn is_min_fill_variant(order: Order<'_>) -> bool {
-    matches!(order, Order::MinFill | Order::MinFillSampled { .. })
+    matches!(
+        order,
+        Order::MinFill | Order::MinFillRanked { .. } | Order::MinFillSampled { .. }
+    )
 }
 
 /// How the residual left after preprocessing stands against the schedule rule.
@@ -686,12 +689,13 @@ fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
         (Order::NestedDissection, _) => Stage::NestedDissection,
         (Order::MinDegree | Order::MinDegreeSampled { .. }, _) => Stage::MinDegree,
         (
-            Order::MinFill | Order::MinFillSampled { .. },
+            Order::MinFill | Order::MinFillRanked { .. } | Order::MinFillSampled { .. },
             EliminationPhase::Initial | EliminationPhase::AdmittedInitial(_),
         ) => Stage::MinFill,
-        (Order::MinFill | Order::MinFillSampled { .. }, EliminationPhase::ExtraSampling) => {
-            Stage::Sample
-        }
+        (
+            Order::MinFill | Order::MinFillRanked { .. } | Order::MinFillSampled { .. },
+            EliminationPhase::ExtraSampling,
+        ) => Stage::Sample,
         (
             Order::FillDegreeSampled {
                 degree_coefficient, ..
@@ -701,6 +705,7 @@ fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
         (Order::MinimalTriangulation, _) => Stage::MinimalTriangulation,
         (Order::MaximumCardinality, _) => Stage::MaximumCardinality,
         (Order::RelativeFill, _) => Stage::RelativeFill,
+        (Order::Ranked { .. }, _) => unreachable!("the portfolio runs no caller-ranked order"),
     }
 }
 

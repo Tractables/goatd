@@ -40,6 +40,10 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref_name }}
 
+      - name: Check release versions
+        shell: bash
+        run: bash .github/scripts/check-versions.sh "$TAG"
+
       # `--target` rather than the implied host triple, so the archive name
       # below states what was actually built.
       - name: Build

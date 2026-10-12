@@ -51,7 +51,7 @@ class TreeDecomposition:
 def decompose(
     graph: Graph,
     *,
-    order: str = "minfill",
+    order: str = "portfolio",
     seed: int | None = None,
     ties: str | None = None,
     weights: Sequence[int] | None = None,
