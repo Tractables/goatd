@@ -88,7 +88,8 @@ pub(crate) use merge::merge_loop;
 /// This is the portfolio's merge stage standing on its own, without a
 /// portfolio to start it off. Where the budget runs out before the programme
 /// settles anything, a single min-fill decomposition comes back instead, so
-/// the call always answers. `None` runs until the merged list stops getting
+/// the call always answers. The fallback receives only the remaining budget;
+/// valid-tree completion may finish after the cutoff. `None` runs until the merged list stops getting
 /// narrower or the search caps are reached, which on a large graph can take a
 /// long time.
 ///
@@ -107,7 +108,8 @@ pub fn decompose_by_merging(
     if let Some(found) = merge_loop(graph, None, seed, Limits::standard(), deadline) {
         return Ok(found);
     }
-    crate::elimination::decompose(graph, crate::elimination::Order::MinFill, seed, budget)
+    let remaining = deadline.map(crate::deadline::remaining);
+    crate::elimination::decompose(graph, crate::elimination::Order::MinFill, seed, remaining)
 }
 
 #[cfg(test)]

@@ -39,6 +39,7 @@ pub(crate) enum OrderRun {
 /// a portfolio can reuse this result rather than repeat that work.
 pub(crate) struct Prebuilt {
     reduced: Reduced,
+    prefix_max_bag: usize,
     /// Connected components of the preprocessed residual, reused by every
     /// portfolio candidate.
     components: Vec<Vec<u32>>,
@@ -114,8 +115,10 @@ pub(crate) fn prebuild(input: &crate::Graph, soft_deadline: Option<Instant>) -> 
     let reduced = preprocess(graph, soft_deadline);
     let components = find_connected_components(&reduced.graph);
     let active = execution::active_vertices(&reduced.graph);
+    let prefix_max_bag = reduced.prefix.bags.iter().map(Vec::len).max().unwrap_or(0);
     Prebuilt {
         reduced,
+        prefix_max_bag,
         components,
         active,
         initial_fill: None,
@@ -125,6 +128,10 @@ pub(crate) fn prebuild(input: &crate::Graph, soft_deadline: Option<Instant>) -> 
 }
 
 impl Prebuilt {
+    pub(super) fn prefix_exceeds(&self, bound: Option<u32>) -> bool {
+        execution::exceeds_width_bound(self.prefix_max_bag, bound)
+    }
+
     /// Number of active vertices in the preprocessed residual graph.
     pub(crate) fn num_active(&self) -> usize {
         self.reduced.graph.num_active

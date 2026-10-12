@@ -533,3 +533,45 @@ fn a_cap_cannot_repeat_vertices_outside_its_block() {
         .expect("every vertex's bags stay connected");
     assert_eq!(built.treewidth(), 2);
 }
+
+#[test]
+fn merge_fallback_uses_only_the_remaining_budget() {
+    let graph = square_grid(40);
+    let mut exercised = false;
+    for micros in [1, 10, 100, 1_000, 10_000] {
+        let budget = Duration::from_micros(micros);
+        let clock = crate::meter::arm(Instant::now());
+        let mark = crate::meter::units_spent();
+        let deadline = crate::meter::now() + budget;
+        let found = super::merge_loop(&graph, None, 0, Limits::standard(), Some(deadline));
+        let spent = crate::meter::units_spent() - mark;
+        let expired = crate::meter::now() >= deadline;
+        drop(clock);
+        if found.is_some() || !expired {
+            continue;
+        }
+        let clock = crate::meter::arm(Instant::now());
+        let mark = crate::meter::units_spent();
+        let fallback = crate::elimination::decompose(
+            &graph,
+            crate::elimination::Order::MinFill,
+            0,
+            Some(Duration::ZERO),
+        )
+        .unwrap();
+        fallback.validate(&graph).unwrap();
+        let completion_work = crate::meter::units_spent() - mark;
+        drop(clock);
+        let _clock = crate::meter::arm(Instant::now());
+        let mark = crate::meter::units_spent();
+        let tree = super::decompose_by_merging(&graph, 0, Some(budget)).unwrap();
+        tree.validate(&graph).unwrap();
+        let actual = crate::meter::units_spent() - mark;
+        assert!(
+            actual <= spent + completion_work,
+            "budget {micros}: merge {spent}, completion {completion_work}, actual {actual}"
+        );
+        exercised = true;
+    }
+    assert!(exercised, "fixture must reach the fallback");
+}

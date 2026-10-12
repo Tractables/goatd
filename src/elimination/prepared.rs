@@ -53,7 +53,8 @@ impl RunConfig {
 
     /// Abort as soon as an elimination bag would give a width greater than
     /// `bound`; a candidate of width exactly `bound` still completes. `None`
-    /// disables pruning.
+    /// disables pruning. Reductions and completion after a deadline obey the
+    /// same bound.
     pub const fn with_width_bound(mut self, bound: Option<u32>) -> Self {
         self.width_bound = bound;
         self
@@ -171,6 +172,9 @@ impl<'g> Prepared<'g> {
         config: RunConfig,
         deadlines: deadline::TwoStage,
     ) -> Result<RunOutcome, Error> {
+        if self.prebuilt.prefix_exceeds(config.width_bound) {
+            return Ok(RunOutcome::WidthAborted);
+        }
         let result = engine::run_order_prebuilt(
             &mut self.prebuilt,
             engine::RunSpec {
@@ -192,6 +196,15 @@ impl<'g> Prepared<'g> {
             },
         );
         Ok(match result {
+            engine::OrderRun::Completed(ref tree)
+            | engine::OrderRun::CompletedAtDeadline(_, ref tree)
+                if config
+                    .width_bound
+                    .is_some_and(|bound| tree.treewidth() > bound) =>
+            {
+                RunOutcome::WidthAborted
+            }
+
             engine::OrderRun::Completed(tree) => RunOutcome::Completed(tree),
             engine::OrderRun::CompletedAtDeadline(end, tree) => {
                 RunOutcome::CompletedAtDeadline(end, tree)

@@ -120,11 +120,6 @@ impl<'g> Session<'g> {
     fn advance_inner(&mut self, budget: Budget, deadline: Option<Instant>) -> Advance<'_> {
         let mut slice = budget.begin();
         let _wall = slice.wall_guard();
-        // The whole-pass entry points hand their deadline down; a caller
-        // driving the session itself sets one on the budget. Take whichever
-        // there is, so that a rebuild and the setup estimate are bounded the
-        // same way on both paths.
-        let deadline = deadline.or_else(|| slice.deadline());
         loop {
             if self.failed >= self.graph.num_vertices() {
                 slice.record(&mut self.progress);
@@ -146,7 +141,14 @@ impl<'g> Session<'g> {
                     slice.record(&mut self.progress);
                     return Advance::Paused(Pause::SetupEstimate);
                 }
-                if let Some(deadline) = deadline {
+                let remaining = deadline
+                    .map(|end| end.saturating_duration_since(crate::meter::now()))
+                    .or_else(|| {
+                        slice
+                            .deadline()
+                            .map(|end| end.saturating_duration_since(Instant::now()))
+                    });
+                if let Some(remaining) = remaining {
                     let n = u64::from(self.graph.num_vertices());
                     let squares = self.best.bags().iter().fold(0u64, |sum, bag| {
                         let size = bag.vertices().len() as u64;
@@ -154,7 +156,7 @@ impl<'g> Session<'g> {
                     });
                     let projected = (n.saturating_mul(n) / 64).saturating_add(squares);
                     if Duration::from_millis(crate::meter::milliseconds_for_units(projected))
-                        > deadline.saturating_duration_since(crate::meter::now()) / 8
+                        > remaining / 8
                     {
                         slice.record(&mut self.progress);
                         return Advance::Paused(Pause::SetupEstimate);
