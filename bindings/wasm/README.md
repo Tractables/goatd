@@ -29,9 +29,10 @@ opened with a button or dropped on the page, the `.td` text can be copied or
 saved, and the address bar carries the example and the settings, so a result
 can be linked to. For the elimination orders and the portfolio the budget in
 the settings is a soft one and a hard cutoff at twice it ends the
-construction, so a solve can take about twice the budget.
+construction, so a solve can take about twice the budget. Seed and budget
+accept integers from 0 to 4294967295; an empty field means zero.
 
-The page is `index.html`, `styles.css`, `app.js`, `worker.js`, `logo.png` and
+The page is `index.html`, `styles.css`, `app.js`, `worker.js`, `runtime.js`, `logo.png` and
 one graph file beside the Emscripten build of the crate: no framework, no
 bundler, nothing fetched from anywhere else. It follows `main`, so it may be
 ahead of the latest release.
@@ -50,7 +51,7 @@ AR_wasm32_unknown_emscripten=emar \
 CXXFLAGS_wasm32_unknown_emscripten=-fwasm-exceptions \
   cargo build --release
 mkdir -p site
-cp index.html styles.css app.js worker.js logo.png mcc2025-track1-093.gr \
+cp index.html styles.css app.js worker.js runtime.js logo.png mcc2025-track1-093.gr \
    target/wasm32-unknown-emscripten/release/goatd.{js,wasm} site/
 python3 -m http.server -d site
 ```

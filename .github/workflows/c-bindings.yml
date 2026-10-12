@@ -81,6 +81,14 @@ jobs:
           echo "TAG=$tag" >> "$GITHUB_ENV"
           echo "IS_RELEASE=$is_release" >> "$GITHUB_ENV"
 
+      - name: Check release versions
+        run: |
+          if [ "$IS_RELEASE" = true ]; then
+            bash .github/scripts/check-versions.sh "$TAG"
+          else
+            bash .github/scripts/check-versions.sh
+          fi
+
       # Builds the shared and the static library, and prints the system
       # libraries a static link has to name — the C++ runtime the vendored
       # FlowCutter needs among them. The example's static link uses that list

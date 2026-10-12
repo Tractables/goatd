@@ -36,7 +36,8 @@ pub enum Order<'a> {
         /// Per-vertex weights, one entry per input graph vertex.
         weights: &'a [u32],
     },
-    /// Min-degree with weighted sampling from the full minimum-degree tie set.
+    /// Min-degree with weighted sampling from the current minimum-degree bucket.
+    /// Lazy degree updates can leave other equally good vertices outside it.
     MinDegreeSampled {
         /// Per-vertex weights, one entry per input graph vertex.
         weights: &'a [u32],

@@ -1,8 +1,6 @@
 "use strict";
 
-// The page in one file: readers for the two PACE formats, a layout for the
-// graph, a layout for the decomposition, SVG for both, and the calls into the
-// Wasm module. Nothing is loaded from anywhere else.
+// PACE readers, graph and decomposition layouts, and page controls.
 
 // A drawing past these sizes is a grey smear, so the panel says so instead
 // and offers to draw it anyway.
@@ -1370,7 +1368,7 @@ if (typeof document !== "undefined") {
     if (order !== undefined) element("order").value = order.value;
     for (const id of ["seed", "budget"]) {
       const value = params.get(id);
-      if (value !== null && /^\d{1,9}$/.test(value)) element(id).value = value;
+      if (value !== null) element(id).value = value;
     }
     return EXAMPLES.findIndex(([key]) => key === params.get("graph"));
   }
@@ -1420,6 +1418,8 @@ if (typeof document !== "undefined") {
           runWhenReady = false;
           run();
         }
+      } else if (event.data.loadError !== undefined) {
+        loadFailed(event.data.loadError);
       } else if (event.data.error !== undefined) {
         // A call that threw may have left the module aborted, and an aborted
         // module fails every call after it, so replace the worker as Cancel
@@ -1432,8 +1432,17 @@ if (typeof document !== "undefined") {
       }
     };
     worker.onerror = (event) => {
-      element("status").textContent = `the solver did not load: ${event.message}`;
+      loadFailed(event.message);
     };
+  }
+
+  function loadFailed(message) {
+    worker.terminate();
+    ready = false;
+    runWhenReady = false;
+    settle();
+    element("run").disabled = true;
+    element("status").textContent = `the solver did not load: ${message}; reload the page to retry`;
   }
 
   function requestRun() {
@@ -1461,11 +1470,16 @@ if (typeof document !== "undefined") {
     element("run").hidden = false;
   }
 
-  // The other side of the call takes unsigned numbers, where a blank or
-  // negative field would arrive as something enormous.
-  const setting = (id) => Math.max(0, Math.trunc(Number(element(id).value)) || 0);
+  const setting = (id) => goatdRuntime.unsigned(element(id).value, id);
 
   function run() {
+    let settings;
+    try {
+      settings = { order: setting("order"), seed: setting("seed"), budget: setting("budget") };
+    } catch (failure) {
+      element("status").textContent = failure.message;
+      return;
+    }
     clearTimeout(pending);
     drawGraph();
     writeAddress();
@@ -1480,9 +1494,7 @@ if (typeof document !== "undefined") {
     document.body.classList.add("busy");
     worker.postMessage({
       graph: element("graph").value,
-      order: setting("order"),
-      seed: setting("seed"),
-      budget: setting("budget"),
+      ...settings,
     });
   }
 

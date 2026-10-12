@@ -71,42 +71,19 @@ jobs:
           set -eux
           out=target/wasm32-unknown-emscripten/release
           mkdir -p site
-          cp index.html styles.css app.js worker.js logo.png mcc2025-track1-093.gr "$out/goatd.js" "$out/goatd.wasm" site/
+          cp index.html styles.css app.js worker.js runtime.js logo.png mcc2025-track1-093.gr "$out/goatd.js" "$out/goatd.wasm" site/
           # Stamped with the commit, a new page never runs with an older
           # file a browser still holds (see app.js).
-          sed -i "s|href=\"styles.css\"|href=\"styles.css?v=${GITHUB_SHA::8}\"|; s|src=\"app.js\"|src=\"app.js?v=${GITHUB_SHA::8}\"|" site/index.html
-          test "$(grep -c "?v=${GITHUB_SHA::8}" site/index.html)" = 2
+          sed -i "s|href=\"styles.css\"|href=\"styles.css?v=${GITHUB_SHA::8}\"|; s|src=\"runtime.js\"|src=\"runtime.js?v=${GITHUB_SHA::8}\"|; s|src=\"app.js\"|src=\"app.js?v=${GITHUB_SHA::8}\"|" site/index.html
+          test "$(grep -c "?v=${GITHUB_SHA::8}" site/index.html)" = 3
           ls -l site
 
-      # Proves the module decomposes, not just that it linked. The graph is
-      # the 4-cycle with one chord, whose treewidth is 2.
-      - name: Decompose a graph with the built module
-        working-directory: bindings/wasm/site
-        run: |
-          cat > smoke.cjs <<'EOF'
-          const createGoatd = require("./goatd.js");
-          createGoatd().then((goatd) => {
-            const gr = "p tw 4 5\n1 2\n2 3\n3 4\n4 1\n1 3\n";
-            const pointer = goatd.ccall(
-              "goatd_decompose",
-              "number",
-              ["string", "number", "number", "number"],
-              [gr, 0, 0, 0],
-            );
-            const td = goatd.UTF8ToString(pointer);
-            goatd.ccall("goatd_string_free", null, ["number"], [pointer]);
-            console.log(td);
-            // "s td <bags> <largest bag> <vertices>"; width is one less than
-            // the largest bag.
-            const header = td.split("\n", 1)[0].split(" ");
-            if (header[0] !== "s" || header[1] !== "td" || Number(header[3]) - 1 !== 2) {
-              console.error("expected a decomposition of width 2");
-              process.exit(1);
-            }
-          });
-          EOF
-          node smoke.cjs
-          rm smoke.cjs
+      - name: Test the browser runtime
+        run: node --test bindings/wasm/tests/worker.cjs bindings/wasm/tests/settings.cjs
+
+      - name: Decompose graphs with the built module
+        working-directory: bindings/wasm
+        run: node tests/smoke.cjs site/goatd.js
 
       - name: Check formatting
         if: ${{ !cancelled() }}
@@ -151,7 +128,7 @@ jobs:
   # branch, and solve/ forwards the page's old address; both are left alone.
   deploy:
     needs: wasm
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: write

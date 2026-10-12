@@ -32,8 +32,8 @@ leaves a bag of itself and its remaining neighbours, which are joined into a
 clique. Each order is a rule for which vertex goes next.
 
 - **Min-fill** takes the vertex whose elimination adds the fewest edges. Fill
-  counts live in a heap and only the neighbours of an eliminated vertex are
-  rescored.
+  counts live in a heap; vertices affected by removed or added edges are
+  rescored, including non-neighbours whose fill counts changed.
 - **Min-degree** takes the vertex of smallest degree, on the same machinery.
 - **Relative fill** takes the smallest fill per unit of degree, then the
   smallest degree.
@@ -44,11 +44,12 @@ clique. Each order is a rule for which vertex goes next.
   gives a minimal triangulation: no added edge can be removed without
   breaking chordality. Neither reads a seed, so each runs once.
 
-The scores are exact; the orders differ in how they break ties. A
+The orders differ in how they break ties. A
 *deterministic* order breaks a tie by a seeded per-vertex salt. A *sampled*
-order draws from the tied set with one caller-supplied weight per vertex,
+order draws from its candidate bucket with one caller-supplied weight per vertex,
 where equal weights sample uniformly and a lower weight is likelier. The
-portfolio's restarts widen the tied set into a band of scores near the
+min-degree bucket uses lazy updates and can omit other vertices of the same
+degree. The portfolio's restarts widen the tied set into a band of scores near the
 minimum, so that seeds still separate on a graph where one vertex holds the
 minimum at every step.
 
