@@ -4,9 +4,10 @@
 
 ### Migrating from 0.2.1
 
-The command-line tool and Python `decompose` now default to `portfolio`;
-pass `minfill` explicitly to retain the previous default. With no budget,
-the portfolio uses its finite, count-bounded schedule.
+The CLI, Python `decompose` and C `goatd_options_default` now select
+`portfolio`. Request `minfill` explicitly, or `GOATD_ORDER_MIN_FILL` in C,
+to retain the previous default. With no budget, the portfolio uses its finite,
+count-bounded schedule.
 
 Replace `TreeDecomposition::shape` with `bag_mass` and `max_separator`.
 Invalid or inert options now return errors naming the option and the orders that accept it.

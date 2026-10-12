@@ -180,3 +180,38 @@ fn deadline_completion_obeys_the_width_bound() {
     );
     tree.validate(&graph).unwrap();
 }
+
+#[test]
+fn a_reduced_prefix_is_checked_even_when_a_residual_run_cannot_start() {
+    for joined in [false, true] {
+        let mut edges = vec![(0, 1), (1, 2), (0, 2)];
+        edges.extend((0..8u32).flat_map(|v| {
+            [1, 2, 4].into_iter().filter_map(move |bit| {
+                let w = v ^ bit;
+                (v < w).then_some((v + 3, w + 3))
+            })
+        }));
+        if joined {
+            edges.push((2, 3));
+        }
+        let graph = Graph::new(11, edges);
+        let mut prepared = Prepared::new(&graph, None).unwrap();
+        assert!(prepared.preparation().residual_vertices > 0);
+        assert!(prepared.preparation().residual_vertices < 11);
+        let config = RunConfig::default()
+            .with_width_bound(Some(1))
+            .with_budgets(Some(Duration::ZERO), None)
+            .with_deadline_completion(false);
+        assert_eq!(
+            prepared.run(Order::MinFill, 0, config).unwrap(),
+            RunOutcome::WidthAborted
+        );
+        completed(
+            prepared
+                .run(Order::MinFill, 0, RunConfig::default())
+                .unwrap(),
+        )
+        .validate(&graph)
+        .unwrap();
+    }
+}
