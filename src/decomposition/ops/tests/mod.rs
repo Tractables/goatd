@@ -325,3 +325,64 @@ fn a_disjoint_union_rejects_two_different_vertex_counts() {
 
     assert!(disjoint_union(left, right).is_none());
 }
+
+/// The subset test against a large bag, for small bags anywhere in its range
+/// and of every size up to its own, agrees with a direct lookup.
+#[test]
+fn a_bag_is_a_subset_of_a_large_bag_exactly_when_each_vertex_is_in_it() {
+    let large: Vec<u32> = (0..5_000).filter(|v| v % 3 != 1).collect();
+    let right = TdBag::already_sorted(large.clone());
+    let mut lefts: Vec<Vec<u32>> = vec![
+        vec![],
+        vec![0],
+        vec![1],
+        vec![4_998],
+        vec![4_999],
+        vec![0, 4_998],
+        vec![2, 3, 2_000, 2_001, 4_997],
+        vec![2, 3, 2_000, 2_002, 4_997],
+        vec![3, 3, 3, 6],
+        large.clone(),
+        large[1..large.len() - 1].to_vec(),
+    ];
+    for step in [1, 2, 7, 64, 999] {
+        lefts.push(large.iter().copied().step_by(step).collect());
+        lefts.push((0..5_000).step_by(step).collect());
+    }
+    for left in lefts {
+        let direct = left
+            .iter()
+            .all(|vertex| large.binary_search(vertex).is_ok());
+        let bag = TdBag::already_sorted(left.clone());
+        assert_eq!(
+            bag_is_subset(&bag, &right),
+            direct,
+            "{:?}",
+            &left[..left.len().min(8)]
+        );
+    }
+}
+
+/// A star of small bags around a large one, as an elimination stopped at its
+/// budget leaves: the bags inside the centre are contracted into it, and the
+/// others stay.
+#[test]
+fn small_bags_inside_a_large_one_are_contracted_into_it() {
+    let centre: Vec<u32> = (0..2_000).collect();
+    let mut bags = vec![centre];
+    let mut edges = Vec::new();
+    for leaf in 0..1_000u32 {
+        // Even leaves lie inside the centre, odd ones reach a vertex of their
+        // own.
+        let own = if leaf % 2 == 0 {
+            2 * leaf + 1
+        } else {
+            2_000 + leaf
+        };
+        bags.push(vec![2 * leaf, own]);
+        edges.push((0, bags.len() - 1));
+    }
+    let td = make_td(bags, edges);
+    let plan = td.subsumed_bag_compaction();
+    assert_eq!(plan.total_bag_size(), 2_000 + 500 * 2);
+}

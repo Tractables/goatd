@@ -293,15 +293,24 @@ fn bag_is_subset(left: &TdBag, right: &TdBag) -> bool {
 
     // One walk over `right` then serves every vertex of `left`. The matched
     // position is not stepped over: if `left` repeats a vertex, the repeat
-    // matches there again, and otherwise the scan below moves past it on its
-    // own. `rest` is what the walk has not passed yet, so the scan runs over a
-    // slice instead of indexing the row through a bound it has already
-    // established.
+    // matches there again, and otherwise the search below moves past it on
+    // its own. `rest` is what the walk has not passed yet. Each vertex is
+    // found by a doubling search from the walk's position, so the walk costs
+    // about `|left| log(|right| / |left|)` comparisons: as a merge where the
+    // two bags are alike in size, and not a pass over a large `right` for a
+    // small `left`, which the compaction meets once for each small bag
+    // beside a large one.
     let mut rest = right.vertices.as_slice();
     for vertex in &left.vertices {
-        let Some(at) = rest.iter().position(|candidate| candidate >= vertex) else {
+        let mut end = 1;
+        while end < rest.len() && rest[end - 1] < *vertex {
+            end *= 2;
+        }
+        let end = end.min(rest.len());
+        let at = end / 2 + rest[end / 2..end].partition_point(|candidate| candidate < vertex);
+        if at == rest.len() {
             return false;
-        };
+        }
         rest = &rest[at..];
         if rest[0] != *vertex {
             return false;
