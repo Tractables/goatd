@@ -28,7 +28,7 @@ fn the_shape_numbers_are_the_bag_mass_and_the_widest_join() {
 }
 
 /// The widest join is found wherever it sits in the tree, not only at the
-/// first edge: each edge is taken once, from its lower-numbered bag.
+/// first edge: each edge is taken once, from its larger bag.
 #[test]
 fn the_widest_join_is_found_at_the_far_end_of_the_tree() {
     // (0,1) shares one vertex, (1,2) shares three.
@@ -37,6 +37,55 @@ fn the_widest_join_is_found_at_the_far_end_of_the_tree() {
         vec![(0, 1), (1, 2)],
     );
     assert_eq!(td.max_separator(), 3);
+}
+
+/// A large bag with many small neighbours on either side of it in the
+/// numbering, as an elimination stopped at its budget leaves one: every join
+/// is counted, whichever end is numbered first, and two bags of one size are
+/// joined once.
+#[test]
+fn the_widest_join_of_a_large_bag_with_many_neighbours() {
+    let centre: Vec<u32> = (0..1_000).collect();
+    let mut bags = Vec::new();
+    let mut edges = Vec::new();
+    // Leaves 0 to 199 come before the centre (bag 200), leaves 201 and on
+    // after it; each shares two vertices with it and one of its own.
+    for leaf in 0..400u32 {
+        if leaf == 200 {
+            bags.push(centre.clone());
+        }
+        bags.push(vec![leaf, leaf + 1, 1_000 + leaf]);
+    }
+    let centre_at = 200;
+    for leaf in 0..bags.len() {
+        if leaf != centre_at {
+            edges.push((leaf.min(centre_at), leaf.max(centre_at)));
+        }
+    }
+    // One leaf before the centre shares three, and a copy of the centre
+    // hangs off it, sharing all of it.
+    bags[5] = vec![5, 6, 7];
+    bags.push(centre.clone());
+    edges.push((centre_at, bags.len() - 1));
+    let td = make_td(bags.clone(), edges.clone());
+    let direct = edges
+        .iter()
+        .map(|&(a, b)| {
+            bags[a]
+                .iter()
+                .filter(|vertex| bags[b].contains(vertex))
+                .count()
+        })
+        .max()
+        .unwrap();
+    assert_eq!(direct, 1_000);
+    assert_eq!(td.max_separator(), direct);
+    // Without the copy, the widest join is the leaf's three.
+    let (bags, edges) = (
+        bags[..bags.len() - 1].to_vec(),
+        edges[..edges.len() - 1].to_vec(),
+    );
+    assert_eq!(make_td(bags, edges).max_separator(), 3);
 }
 
 /// Nothing to compile and nothing to carry.

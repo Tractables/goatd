@@ -317,7 +317,10 @@ impl TreeDecomposition {
     /// joining two bags carries between them. No bags is `0`.
     ///
     /// One pass over the tree edges, with a stamp array over the graph's
-    /// vertices for the intersections.
+    /// vertices for the intersections. Each edge is read from its larger
+    /// bag, whose vertices are stamped once, and its smaller bag is scanned,
+    /// so the work is linear in the total bag size: a bag with many
+    /// neighbours is not scanned once for each of them.
     pub fn max_separator(&self) -> usize {
         if self.bags.is_empty() {
             return 0;
@@ -325,12 +328,21 @@ impl TreeDecomposition {
         let mut stamp = vec![usize::MAX; self.num_vertices as usize];
         let mut separator = 0;
         for (index, neighbours) in self.adj.iter().enumerate() {
+            let size = self.bags[index].vertices.len();
+            // The intersection is the same from either end, so each tree edge
+            // is taken once, from its larger bag, or on a tie its
+            // lower-numbered one.
+            let smaller = |other: usize| {
+                let other_size = self.bags[other].vertices.len();
+                other_size < size || (other_size == size && other > index)
+            };
+            if !neighbours.iter().any(|&other| smaller(other)) {
+                continue;
+            }
             for &vertex in &self.bags[index].vertices {
                 stamp[vertex as usize] = index;
             }
-            // The intersection is the same from either end, so each tree edge
-            // is taken once, from its lower-numbered bag.
-            for &neighbour in neighbours.iter().filter(|&&other| other > index) {
+            for &neighbour in neighbours.iter().filter(|&&other| smaller(other)) {
                 let shared = self.bags[neighbour]
                     .vertices
                     .iter()
