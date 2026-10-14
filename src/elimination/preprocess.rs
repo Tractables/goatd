@@ -26,7 +26,8 @@ use crate::deadline::expired;
 /// The clock preprocessing runs against.
 ///
 /// The rules run to a fixed point and the two clique tests are the
-/// expensive part of them, so on a dense residual one pass can take seconds. Reduction is optional — whatever it has not done, the
+/// expensive part of them, so on a dense residual one pass can take
+/// seconds. Reduction is optional — whatever it has not done, the
 /// elimination that follows does — so it stops when the caller's soft cutoff
 /// arrives, or when the caller asks the solve to stop, and hands the rest of
 /// the graph on.
