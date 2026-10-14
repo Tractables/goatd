@@ -300,3 +300,155 @@ fn recorded_bags_and_the_residual_match_eliminating_with_fill() {
     assert!(indexed_n < 20_000, "past BITSET_THRESH, so the rows answer");
     assert_bags_and_residual_match_fill_eliminations(20_000, &indexed);
 }
+
+/// The rules as scans of every vertex, pass after pass, which the marked
+/// passes must match bag for bag.
+fn preprocess_by_scans(mut graph: EliminationGraph) -> Vec<Vec<u32>> {
+    fn eliminate(
+        graph: &mut EliminationGraph,
+        bags: &mut Vec<Vec<u32>>,
+        vertex: u32,
+        fill: bool,
+    ) -> usize {
+        let mut bag = vec![vertex];
+        graph.collect_live_nbrs_into(vertex, &mut bag);
+        if bag.len() == 1 {
+            graph.deactivate_isolated(vertex);
+        } else if fill {
+            graph.eliminate_with_nbrs(vertex, &bag[1..]);
+        } else {
+            graph.remove_without_fill_nbrs(vertex, &bag[1..]);
+        }
+        bags.push(bag);
+        bags.last().unwrap().len() - 1
+    }
+    let mut bags = Vec::new();
+    let mut bound = 0usize;
+    loop {
+        let mut fired = false;
+        loop {
+            let mut peeled = false;
+            for v in 0..graph.len() as u32 {
+                if graph.active[v as usize] && graph.degree(v) <= 1 {
+                    eliminate(&mut graph, &mut bags, v, false);
+                    peeled = true;
+                }
+            }
+            if !peeled {
+                break;
+            }
+            fired = true;
+        }
+        for v in 0..graph.len() as u32 {
+            if graph.active[v as usize] && graph.degree(v) == 2 {
+                let n = graph.live_neighbours(v);
+                if !graph.contains_edge(n[0], n[1]) {
+                    eliminate(&mut graph, &mut bags, v, true);
+                    bound = bound.max(2);
+                    fired = true;
+                }
+            }
+        }
+        for v in 0..graph.len() as u32 {
+            if graph.active[v as usize] && graph.degree(v) >= 2 && graph.is_simplicial(v) {
+                bound = bound.max(eliminate(&mut graph, &mut bags, v, false));
+                fired = true;
+            }
+        }
+        if bound >= 2 {
+            for v in 0..graph.len() as u32 {
+                let degree = if graph.active[v as usize] {
+                    graph.degree(v)
+                } else {
+                    0
+                };
+                if degree < 2 || degree > bound {
+                    continue;
+                }
+                if let Some((left, right)) = graph.almost_simplicial_nonedge(v) {
+                    graph.add_edge(left, right);
+                    eliminate(&mut graph, &mut bags, v, false);
+                    fired = true;
+                }
+            }
+        }
+        if !fired {
+            return bags;
+        }
+    }
+}
+
+/// A chain of `links` states, each with two pendant leaves, each state tied
+/// to its successor's leaves: the shape of a hidden Markov model's graph.
+fn chain_with_leaves(links: u32) -> (u32, Vec<(u32, u32)>) {
+    let mut edges = Vec::new();
+    for i in 0..links {
+        let (state, a, b) = (3 * i, 3 * i + 1, 3 * i + 2);
+        edges.extend([(state, a), (state, b)]);
+        if i + 1 < links {
+            edges.extend([(state, 3 * i + 3), (state, 3 * i + 4), (a, 3 * i + 3)]);
+        }
+    }
+    (3 * links, edges)
+}
+
+/// A pseudo-random graph on `n` vertices with about `n * degree / 2` edges.
+fn scattered(n: u32, degree: u32, seed: u64) -> Vec<(u32, u32)> {
+    let mut state = seed;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (state >> 33) as u32
+    };
+    let mut edges = BTreeSet::new();
+    for _ in 0..n * degree / 2 {
+        let (u, v) = (next() % n, next() % n);
+        if u != v {
+            edges.insert((u.min(v), u.max(v)));
+        }
+    }
+    edges.into_iter().collect()
+}
+
+#[test]
+fn marked_passes_fire_on_the_same_vertices_as_scans_of_every_vertex() {
+    let mut graphs: Vec<(u32, Vec<(u32, u32)>)> = vec![chain_with_leaves(400)];
+    let mut gadgets = Vec::new();
+    let gadgets_n = reduction_gadgets(0, &mut gadgets);
+    graphs.push((gadgets_n, gadgets));
+    let mut ring = Vec::new();
+    chorded_ring(2_000, &mut ring);
+    let ring_n = reduction_gadgets(2_000, &mut ring);
+    graphs.push((ring_n, ring));
+    for (seed, (n, degree)) in [(60, 3), (300, 2), (300, 3), (2_000, 3), (100, 8)]
+        .into_iter()
+        .enumerate()
+    {
+        graphs.push((n, scattered(n, degree, seed as u64)));
+    }
+    for (n, edges) in graphs {
+        let want = preprocess_by_scans(EliminationGraph::from_edges(n, &edges));
+        let have = preprocess(EliminationGraph::from_edges(n, &edges), None);
+        assert_eq!(
+            have.prefix.bags, want,
+            "the bags on a graph of {n} vertices"
+        );
+    }
+}
+
+#[test]
+fn a_chain_with_leaves_reduces_in_work_proportional_to_its_length() {
+    // Each round of the rules removes a link or two of the chain, so scans
+    // of every vertex charged its length squared.
+    let (n, edges) = chain_with_leaves(20_000);
+    let _meter = crate::meter::arm(std::time::Instant::now());
+    let start = crate::meter::units_spent();
+    let reduced = preprocess(EliminationGraph::from_edges(n, &edges), None);
+    assert_eq!(reduced.graph.num_active, 0);
+    let units = crate::meter::units_spent() - start;
+    assert!(
+        units < 40 * n as u64,
+        "{units} units on a chain of {n} vertices"
+    );
+}
