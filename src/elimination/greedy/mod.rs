@@ -830,6 +830,15 @@ const MAX_DENSE_PRIORITY_KEYS: usize = 1 << 20;
 /// A dense slot holding no bucket. Any other value indexes `buckets`.
 const NO_BUCKET: u32 = u32::MAX;
 
+/// Units [`BucketMap::update`] charges for moving a vertex to another bucket:
+/// a removal that swaps the bucket's last vertex into the gap, an insertion
+/// that may take a bucket from the free list or the overflow map, and the
+/// position and mass updates of both. Measured at about 15 ns a move, which
+/// the graph work the sampled cores charge did not cover: on graphs whose
+/// residual repairs many scores per elimination the moves were a third of the
+/// run.
+const BUCKET_MOVE_UNITS: u64 = 12;
+
 /// Priority key → bucket. Keys below `dense_keys` get a slot in `slots`,
 /// which indexes bucket storage rather than holding a bucket inline so that
 /// growing the slot array costs four bytes a key. A fill count can reach
@@ -1081,6 +1090,10 @@ impl BucketStorage {
         // Every slot is free by now, so the ones a wider graph left behind
         // hold nothing and can go.
         self.buckets.slots.truncate(self.buckets.dense_keys);
+        // A position for every vertex of the graph, not of the residual: on a
+        // graph that preprocessing has mostly reduced away this refill is a
+        // large share of a restart.
+        crate::meter::charge(vertex_count as u64);
         self.position.clear();
         self.position.resize(vertex_count, BucketPosition::VACANT);
     }
@@ -1202,6 +1215,7 @@ impl<'a> BucketMap<'a> {
         if !position.is_vacant() && position.key == new_key {
             return;
         }
+        crate::meter::charge(BUCKET_MOVE_UNITS);
         if !position.is_vacant() {
             self.position[v as usize] = BucketPosition::VACANT;
             self.remove_at(v, position);

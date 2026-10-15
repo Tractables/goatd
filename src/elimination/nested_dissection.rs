@@ -150,7 +150,10 @@ pub(super) fn nested_dissection_order(
     }
 
     // Relabel active into dense 0..n so multilevel bisection and separator
-    // extraction can use vec-indexed adjacency without sparse maps.
+    // extraction can use vec-indexed adjacency without sparse maps. The level
+    // reads its edge list three times, here and for the two sides it induces
+    // below, and marks and unmarks its vertices each time.
+    crate::meter::charge((3 * n as u64).saturating_add(3 * edges.len() as u64));
     let local_edges = local_edges_for(active, edges, local);
 
     let partition_graph = crate::Graph::new(n as u32, local_edges.iter().copied());

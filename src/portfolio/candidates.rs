@@ -8,6 +8,16 @@ use crate::elimination::execution::Cutoff;
 
 use super::trace::{CandidateOrigin, CandidateOutcome, Pass, Shape, Stage};
 
+/// Units [`CandidateSet::push`] charges per bag vertex and per bag of the
+/// decomposition it is handed: reading it into the bag pool, its quality key,
+/// the compaction plan and, for a traced run, its shape, and in the end
+/// freeing it. Measured at about 7 ns a bag vertex and 10 ns a bag on
+/// decompositions of 187 to 6,621 vertices, where every candidate the
+/// sampled restarts produce passes through here.
+const PUSH_UNITS_PER_BAG_VERTEX: u64 = 6;
+/// See [`PUSH_UNITS_PER_BAG_VERTEX`].
+const PUSH_UNITS_PER_BAG: u64 = 8;
+
 /// Whether the portfolio may start another candidate after this one.
 ///
 /// A candidate that stopped at the soft cutoff has spent the construction
@@ -145,6 +155,13 @@ impl CandidateSet {
             pool.absorb(&decomposition, origin.stage.slot());
         }
         let (width, total_bag_size) = decomposition.quality_key();
+        crate::meter::charge(
+            PUSH_UNITS_PER_BAG_VERTEX
+                .saturating_mul(total_bag_size as u64)
+                .saturating_add(
+                    PUSH_UNITS_PER_BAG.saturating_mul(decomposition.bags().len() as u64),
+                ),
+        );
         let mut shape = None;
         // A candidate wider than the incumbent cannot win in either mode, and
         // a plan it will not be sorted on is not worth computing; in

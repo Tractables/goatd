@@ -23,6 +23,19 @@ use super::*;
 use crate::deadline::expired;
 use crate::rng::search_stream;
 
+/// Units the sampled fill cores charge for each vertex they eliminate, beyond
+/// the graph work and the bucket moves they charge as they go: filing the
+/// vertex at the start, the draw, taking its bag and recording it, and the
+/// queue the fill repair drains. Over the restarts on 43 graphs of 187 to
+/// 6,621 vertices that came to about 400 ns an elimination, and without it
+/// the restarts on a small residual ran up to eight times longer than they
+/// charged.
+const SAMPLED_FILL_STEP_UNITS: u64 = 300;
+
+/// The same for sampled min-degree, which has no fill to repair: about
+/// 120 ns an elimination on the same graphs.
+const SAMPLED_DEGREE_STEP_UNITS: u64 = 90;
+
 /// How a sampled core draws: the weights that bias the tie set, how far above
 /// the minimum score the tie set reaches, and which stream the draws come
 /// from.
@@ -281,6 +294,7 @@ fn eliminate_sampled_fill_based(
             }
         }
 
+        crate::meter::charge(SAMPLED_FILL_STEP_UNITS);
         let v = buckets
             .sample_min_band(band, &mut rng)
             .expect("a live minimum has a tie set");
@@ -447,6 +461,7 @@ pub(crate) fn eliminate_sampled_min_degree(
         }
 
         buckets.remove_vertex(v);
+        crate::meter::charge(SAMPLED_DEGREE_STEP_UNITS);
 
         let bag = take_bag(graph, v, nbrs_buf);
         let bag_len = bag.len();

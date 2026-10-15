@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use super::Schedule;
 use super::candidates::{CandidateSet, ScheduleStop};
-use super::config::{MAX_DIVERSE_SAMPLING_RUNS, validate};
+use super::config::{MAX_DIVERSE_SAMPLING_RUNS, MIN_FLOWCUTTER_CANDIDATE_MS, validate};
 use super::trace::CandidateOrigin;
 use super::{CandidateOutcome, DEFAULT_HEDGE_DIMS, HedgeSeries, HedgeWeights, Spent, StageBudget};
 use super::{EliminationPhase, Hedge, ModifiedWeights, Pass, PortfolioConfig, Residual};
@@ -167,7 +167,14 @@ fn a_budgeted_portfolio_asks_for_the_same_schedule_at_every_budget() {
         assert_eq!(config.sampling_runs, 100);
         assert_eq!(config.diverse_sampling_runs, MAX_DIVERSE_SAMPLING_RUNS);
         assert_eq!(config.diverse_sampling_runs, 46);
-        assert_eq!(config.flowcutter_budget, Some(budget));
+        // The trailing slot holds the least a FlowCutter candidate runs in
+        // even where the budget is shorter, so a short budget is not refused
+        // for it; the window the run leaves it is what the tail declines.
+        assert_eq!(
+            config.flowcutter_budget,
+            Some(budget.max(Duration::from_millis(MIN_FLOWCUTTER_CANDIDATE_MS)))
+        );
+        assert!(validate(config).is_ok());
         assert!(config.restarts_to_deadline);
     }
 }

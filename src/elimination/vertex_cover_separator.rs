@@ -18,6 +18,9 @@ pub(super) fn minimum_vertex_cover_separator(
     edges: &[(u32, u32)],
     part: &[u8],
 ) -> SeparatorResult {
+    // Four vertex arrays and a read of every edge before the matching, which
+    // runs on the cut alone.
+    crate::meter::charge((4 * n as u64).saturating_add(edges.len() as u64));
     let mut is_boundary_a = vec![false; n];
     let mut is_boundary_b = vec![false; n];
     let mut cross_edges: Vec<(u32, u32)> = Vec::new();

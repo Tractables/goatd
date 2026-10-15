@@ -138,6 +138,14 @@ fn scan_fill(
     Seeded::Ready
 }
 
+/// Units [`MinFill`] charges for each entry it pushes: the sift up through a
+/// heap that holds every entry not yet popped, stale ones included, and the
+/// sift down when the entry is popped, current or not. The graph work of the
+/// scores is charged where it is done. Measured at about 130 ns an entry
+/// over the min-fill runs on 43 graphs of 187 to 6,621 vertices, where the
+/// heap was more than half of a run's time and none of its charge.
+const HEAP_ENTRY_UNITS: u64 = 100;
+
 /// Greedy min-fill: rank by the number of fill edges eliminating a vertex
 /// would add, breaking ties by degree and then by salt.
 struct MinFill<'a, const RELATIVE: bool> {
@@ -175,6 +183,7 @@ impl<const RELATIVE: bool> ElimPolicy for MinFill<'_, RELATIVE> {
     }
 
     fn push(&mut self, graph: &EliminationGraph, v: u32, score: u64) {
+        crate::meter::charge(HEAP_ENTRY_UNITS);
         self.score[v as usize] = score;
         let generation = self.generation[v as usize].wrapping_add(1);
         self.generation[v as usize] = generation;
