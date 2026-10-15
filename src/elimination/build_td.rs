@@ -8,6 +8,14 @@
 
 use crate::{TdBag, TreeDecomposition};
 
+/// Units [`build_td_from_ranked_bags`] charges per bag vertex: the parent
+/// rule's rank lookups, the bag's sort, and the allocations of its row and of
+/// the copy the caller made to hand it over. Measured at about 7 ns a vertex
+/// on decompositions of 187 to 6,621 vertices; on a graph that preprocessing
+/// mostly reduces, building each candidate out of the reductions' bags costs
+/// more than the elimination that produced it.
+const BUILD_UNITS_PER_BAG_VERTEX: u64 = 6;
+
 /// Build a `TreeDecomposition` from elimination bags and their vertex ranks.
 ///
 /// An ordinary elimination bag has one vertex whose rank is the bag index and
@@ -34,6 +42,8 @@ pub(crate) fn build_td_from_ranked_bags(
     // they read them together: a second visit to a few hundred thousand bags
     // is a second pass that finds none of the lines the first brought in.
     let mut bags: Vec<TdBag> = Vec::with_capacity(n_bags);
+    let elements: usize = ranked_bags.iter().map(Vec::len).sum();
+    crate::meter::charge(BUILD_UNITS_PER_BAG_VERTEX.saturating_mul(elements as u64));
     for (step, vertices) in ranked_bags.into_iter().enumerate() {
         let mut best = u32::MAX;
         for &u in &vertices {

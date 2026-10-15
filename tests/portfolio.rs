@@ -78,6 +78,26 @@ fn portfolio_configuration_rejects_invalid_durations() {
 }
 
 #[test]
+fn a_budget_too_short_for_flowcutter_still_decomposes() {
+    // Under the meter a budget is work, not time: a few milliseconds' worth
+    // decomposes a small graph completely. The trailing FlowCutter candidate
+    // needs 50 ms and declines the shorter window, and the eliminations'
+    // answer stands.
+    let graph = grid(6);
+    for milliseconds in [1, 10, 49] {
+        let _meter = goatd::meter::arm(std::time::Instant::now());
+        let decomposition = goatd::portfolio::decompose_standard(
+            &graph,
+            0,
+            Some(Duration::from_millis(milliseconds)),
+        )
+        .unwrap();
+        decomposition.validate(&graph).unwrap();
+        assert_eq!(decomposition.treewidth(), 6, "at {milliseconds} ms");
+    }
+}
+
+#[test]
 fn zero_extra_sampling_runs_still_runs_the_initial_candidates() {
     let graph = grid(2);
     let weight = vec![1; graph.num_vertices() as usize];

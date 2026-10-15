@@ -733,7 +733,11 @@ impl PortfolioConfig {
     /// enough to seed it and long enough for the backend's setup and first
     /// restart on this graph; on a window over 4.75 seconds that window is also
     /// what ends it, and on a shorter one it stops early once it has gone half a
-    /// second without a narrower decomposition, or after 50 restarts.
+    /// second without a narrower decomposition, or after 50 restarts. Its slot
+    /// is configured with at least the 50 ms a FlowCutter candidate needs, so a
+    /// budget below that is accepted like any other: the window the hard
+    /// deadline leaves the tail is then shorter than that, and the tail
+    /// declines it.
     ///
     /// The ordinary restarts run past the soft deadline into the hard window,
     /// stopping 1.5 s before the hard deadline so the trailing FlowCutter
@@ -774,7 +778,7 @@ impl PortfolioConfig {
         Self {
             soft_budget: Some(budget),
             diverse_sampling_runs: MAX_DIVERSE_SAMPLING_RUNS,
-            flowcutter_budget: Some(budget),
+            flowcutter_budget: Some(budget.max(Duration::from_millis(MIN_FLOWCUTTER_CANDIDATE_MS))),
             restarts_to_deadline: true,
             recombination: Some(DEFAULT_RECOMBINATION_VERTICES),
             merge_loop: Some(DEFAULT_MERGE_LOOP_VERTICES),

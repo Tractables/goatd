@@ -238,6 +238,14 @@ pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> 
     let residual = &prebuilt.reduced.graph;
     let work = match &mut prebuilt.work {
         Some(work) => {
+            // The refill reads every row of the residual and every bitset word
+            // before the candidate eliminates a vertex: about a nanosecond a
+            // vertex and an edge end, and half that a word.
+            crate::meter::charge(
+                (2 * residual.len() as u64)
+                    .saturating_add(2 * residual.num_edges as u64)
+                    .saturating_add(residual.bitset.len() as u64 / 2),
+            );
             work.clone_from(residual);
             work
         }
@@ -479,6 +487,7 @@ fn run_order_per_component(
     // The decomposition is built by reading a rank for every vertex, including
     // the ones no component covers, so this one is refilled rather than left as
     // the run before it wrote it.
+    crate::meter::charge(n as u64);
     global_rank.clear();
     global_rank.resize(n, u32::MAX);
 
@@ -747,6 +756,7 @@ fn finalize(
     // The decomposition is built by reading a rank for every vertex, including
     // the ones no step covers, so this one is refilled rather than left as the
     // run before it wrote it.
+    crate::meter::charge(n as u64);
     rank.clear();
     rank.resize(n, u32::MAX);
     for &(v, r) in prefix.rank_pairs.iter().chain(&tail.rank_pairs) {
