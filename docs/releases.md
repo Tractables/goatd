@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased
+## 0.3.0
 
 ### Migrating from 0.2.1
 
