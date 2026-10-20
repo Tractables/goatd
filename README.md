@@ -107,3 +107,8 @@ Apache-2.0. Vendored code and modifications are recorded in
 [THIRD-PARTY.md](docs/THIRD-PARTY.md);
 [ACKNOWLEDGEMENTS.md](docs/ACKNOWLEDGEMENTS.md)
 credits the work behind the algorithms.
+
+## Acknowledgements
+
+This material is based upon work supported by the Defense Advanced Research
+Projects Agency (DARPA) under Agreement No. HR0011269E224.
