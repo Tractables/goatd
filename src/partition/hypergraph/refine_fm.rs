@@ -107,6 +107,67 @@ impl RegionScratch {
     }
 }
 
+/// Gain of moving `v` across the cut, and whether any of its incident
+/// hyperedges is currently cut: a hyperedge `v` is the last pin of on its own
+/// side stops being cut (`+w`), and one with no pin yet on the far side starts
+/// being cut (`-w`). A hyperedge with company on both sides is cut either way
+/// and contributes nothing.
+fn vertex_gain_and_boundary(
+    hg: &Hypergraph,
+    part: &[u8],
+    pin_counts: &[[u32; 2]],
+    v: usize,
+) -> (i64, bool) {
+    let from = part[v] as usize;
+    let to = 1 - from;
+    let mut gain = 0i64;
+    let mut on_boundary = false;
+    for &hei in hg.vertex_hyperedges(v) {
+        let hei = hei as usize;
+        let w = i64::from(hg.hyperedge_weights[hei]);
+        if pin_counts[hei][from] == 1 {
+            gain += w;
+        }
+        if pin_counts[hei][to] == 0 {
+            gain -= w;
+        }
+        if pin_counts[hei][0] > 0 && pin_counts[hei][1] > 0 {
+            on_boundary = true;
+        }
+    }
+    (gain, on_boundary)
+}
+
+/// Four transitions, each a pin count crossing a critical value when `v` moves
+/// off `from`. For `u` still on the side `v` left (`u_side == from`):
+/// `old_from == 2` means `u` is now the last pin holding the hyperedge on that
+/// side, so moving `u` would close it (`+w`); `old_to == 0` means `v` just
+/// opened the far side, so `u` following no longer opens it (`+w`). For `u` on
+/// the side `v` joined: `old_to == 1` means `u` was the lone pin there and no
+/// longer is (`-w`); `old_from == 1` means `v` was the last pin on the far
+/// side, so `u` going back would reopen it (`-w`). The mirrored tests are
+/// absent because each would require a side to hold no pins while `v` or `u` is
+/// sitting on it.
+fn pin_gain_delta(u_side: usize, from: usize, old_from: u32, old_to: u32, w: i64) -> i64 {
+    let mut delta = 0i64;
+    if u_side == from {
+        if old_from == 2 {
+            delta += w;
+        }
+        if old_to == 0 {
+            delta += w;
+        }
+    } else {
+        if old_to == 1 {
+            delta -= w;
+        }
+        if old_from == 1 {
+            delta -= w;
+        }
+    }
+    delta
+}
+
 pub(super) fn fm_refine_pass(
     hg: &Hypergraph,
     part: &mut [u8],
@@ -126,31 +187,12 @@ pub(super) fn fm_refine_pass(
     let bq = &mut scratch.bq;
 
     for v in 0..n {
-        let from = part[v] as usize;
-        let to = 1 - from;
-        // Gain of moving `v`: a hyperedge it is the last pin of on its own side
-        // stops being cut (+w), and one with no pin yet on the far side starts
-        // being cut (-w). A hyperedge with company on both sides is cut either
-        // way and contributes nothing. Only vertices on a cut hyperedge are
-        // queued — the rest can only add to the cut.
-        let mut g = 0i64;
-        let mut on_boundary = false;
-        for &hei in hg.vertex_hyperedges(v) {
-            let hei = hei as usize;
-            let w = i64::from(hg.hyperedge_weights[hei]);
-            if pin_counts[hei][from] == 1 {
-                g += w;
-            }
-            if pin_counts[hei][to] == 0 {
-                g -= w;
-            }
-            if pin_counts[hei][0] > 0 && pin_counts[hei][1] > 0 {
-                on_boundary = true;
-            }
-        }
+        let (g, on_boundary) = vertex_gain_and_boundary(hg, part, pin_counts, v);
         gain[v] = g;
+        // Only vertices on a cut hyperedge are queued — the rest can only add
+        // to the cut.
         if on_boundary {
-            bq[from].insert(v, g);
+            bq[part[v] as usize].insert(v, g);
         }
     }
 
@@ -183,13 +225,12 @@ pub(super) fn fm_refine_pass(
         // O(hyperedge_size × avg_degree) for full recomputation.
         for &hei in hg.vertex_hyperedges(v) {
             let hei = hei as usize;
+            let w = i64::from(hg.hyperedge_weights[hei]);
             let old_from = pin_counts[hei][from];
             let old_to = pin_counts[hei][to];
 
             pin_counts[hei][from] -= 1;
             pin_counts[hei][to] += 1;
-
-            let new_from = old_from - 1;
 
             for &u in hg.charged_hyperedge_pins(hei) {
                 let u = u as usize;
@@ -197,37 +238,8 @@ pub(super) fn fm_refine_pass(
                     continue;
                 }
 
-                // Four transitions, each a pin count crossing a critical
-                // value. For `u` still on the side `v` left: `old_from == 2`
-                // means `u` is now the last pin holding the hyperedge on that
-                // side, so moving `u` would close it (+w); `old_to == 0` means
-                // `v` just opened the far side, so `u` following no longer
-                // opens it (+w). For `u` on the side `v` joined: `old_to == 1`
-                // means `u` was the lone pin there and no longer is (-w);
-                // `new_from == 0` means `v` was the last pin on the far side,
-                // so `u` going back would reopen it (-w). The mirrored tests
-                // are absent because each would require a side to hold no pins
-                // while `v` or `u` is sitting on it.
                 let u_side = part[u] as usize;
-                let w = i64::from(hg.hyperedge_weights[hei]);
-                let mut delta = 0i64;
-
-                if u_side == from {
-                    if old_from == 2 {
-                        delta += w;
-                    }
-                    if old_to == 0 {
-                        delta += w;
-                    }
-                } else {
-                    if old_to == 1 {
-                        delta -= w;
-                    }
-                    if new_from == 0 {
-                        delta -= w;
-                    }
-                }
-
+                let delta = pin_gain_delta(u_side, from, old_from, old_to, w);
                 if delta != 0 {
                     gain[u] += delta;
                 }
@@ -336,19 +348,7 @@ pub(super) fn localized_fm_pass(
     // `gain` is written here and left alone rather than cleared.
     let gain = scratch.gain.as_mut_slice();
     for &v in region_list.iter() {
-        let from = part[v] as usize;
-        let to = 1 - from;
-        let mut g = 0i64;
-        for &hei in hg.vertex_hyperedges(v) {
-            let hei = hei as usize;
-            let w = i64::from(hg.hyperedge_weights[hei]);
-            if pin_counts[hei][from] == 1 {
-                g += w;
-            }
-            if pin_counts[hei][to] == 0 {
-                g -= w;
-            }
-        }
+        let (g, _) = vertex_gain_and_boundary(hg, part, pin_counts, v);
         gain[v] = g;
     }
 
@@ -387,7 +387,6 @@ pub(super) fn localized_fm_pass(
             let old_to = pin_counts[hei][to];
             pin_counts[hei][from] -= 1;
             pin_counts[hei][to] += 1;
-            let new_from = old_from - 1;
 
             // The same four transitions as `fm_refine_pass`, applied to
             // region pins only.
@@ -396,23 +395,7 @@ pub(super) fn localized_fm_pass(
                 if locked[u] || !in_region[u] {
                     continue;
                 }
-                let u_side = part[u] as usize;
-                let mut delta = 0i64;
-                if u_side == from {
-                    if old_from == 2 {
-                        delta += w;
-                    }
-                    if old_to == 0 {
-                        delta += w;
-                    }
-                } else {
-                    if old_to == 1 {
-                        delta -= w;
-                    }
-                    if new_from == 0 {
-                        delta -= w;
-                    }
-                }
+                let delta = pin_gain_delta(part[u] as usize, from, old_from, old_to, w);
                 if delta != 0 {
                     gain[u] += delta;
                 }

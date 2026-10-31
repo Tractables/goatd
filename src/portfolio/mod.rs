@@ -1335,7 +1335,7 @@ const BIPARTITE_LIFT_SHARE: f64 = 0.25;
 /// [`bipartite_lift`] for what the construction is and why there is more than
 /// one cutoff.
 ///
-/// `hard_deadline` is the run's own, read between rungs: a rung is a whole
+/// The candidate set's deadline is read between rungs: a rung is a whole
 /// sub-run with a deadline of its own, so this is where a stop request or a
 /// window the rungs before it overran ends the stage.
 ///
@@ -1344,7 +1344,6 @@ const BIPARTITE_LIFT_SHARE: f64 = 0.25;
 /// Returns an error when the sub-run does, and when a lift finds no bag to put
 /// an eliminated vertex in, which is a defect rather than a property of the
 /// graph.
-#[allow(clippy::too_many_arguments)]
 fn run_bipartite_lift(
     graph: &Graph,
     weights: &[u32],
@@ -1352,17 +1351,16 @@ fn run_bipartite_lift(
     initial_orders: InitialOrderBuilder,
     config: PortfolioConfig,
     candidates: &mut CandidateSet,
-    started: Instant,
-    hard_deadline: Option<Instant>,
-    trace: &mut dyn FnMut(CandidateTrace),
+    trace: &mut TraceSink<'_>,
 ) -> Result<(), crate::Error> {
+    let hard_deadline = candidates.deadline();
     let origin = CandidateOrigin {
         stage: Stage::BipartiteLift,
         seed,
         pass: Pass::Only,
     };
-    let give_up = |trace: &mut dyn FnMut(CandidateTrace)| {
-        report(trace, started, origin, CandidateOutcome::NotStarted);
+    let give_up = |trace: &mut TraceSink<'_>| {
+        trace.report(origin, CandidateOutcome::NotStarted);
     };
 
     // The stage needs a budget to take a share of, and a graph to colour.
@@ -1521,7 +1519,7 @@ fn run_bipartite_lift(
             // incumbent has run, and spent its share doing it; only a stage
             // the gates refused before any work reports as unstarted.
             let outcome = reported.unwrap_or(CandidateOutcome::WidthAborted);
-            report(trace, started, origin, outcome);
+            trace.report(origin, outcome);
             return Ok(());
         }
     }
@@ -1553,6 +1551,10 @@ fn run_portfolio(
 ) -> Result<CandidateSet, crate::Error> {
     config::validate(config)?;
     let started = crate::meter::now();
+    let mut trace = TraceSink {
+        started,
+        sink: trace,
+    };
     // Where the run stands on the work clock, so estimates written in work
     // units can be read at the rate this machine is actually running them.
     let started_units = crate::meter::units_spent();
@@ -1636,9 +1638,7 @@ fn run_portfolio(
         order_builder,
         config,
         &mut candidates,
-        started,
-        window_end,
-        trace,
+        &mut trace,
     )?;
 
     // Set after any candidate reaches the hard deadline, or when it expires
@@ -1699,9 +1699,7 @@ fn run_portfolio(
         // residual does not run it; the slot is traced so a reader can see it
         // was given up.
         if residual == Some(Residual::Admitted) && matches!(order, Order::NestedDissection) {
-            report(
-                trace,
-                started,
+            trace.report(
                 CandidateOrigin {
                     stage: Stage::NestedDissection,
                     seed: candidate.seed,
@@ -1811,7 +1809,7 @@ fn run_portfolio(
             min_fill_finished = true;
             fill_pass_cost.get_or_insert(cost);
         }
-        report(trace, started, origin, outcome);
+        trace.report(origin, outcome);
         // An expensive order on an admitted residual runs to a cutoff of its
         // own, and the engine reports reaching that the same way it reports the
         // portfolio's hard deadline. Reaching it says nothing about how much of
@@ -1952,13 +1950,7 @@ fn run_portfolio(
         let (outcome, _) = candidates.record_elimination(run, origin);
         let now = crate::meter::now();
         cardinality_search_cost += now.saturating_duration_since(before);
-        trace(CandidateTrace {
-            stage: stage_of(order, EliminationPhase::ExtraSampling),
-            seed,
-            pass: Pass::Only,
-            outcome,
-            elapsed: now.saturating_duration_since(started),
-        });
+        trace.report_at(now, origin, outcome);
     }
     // Sampling phase: try additional seeds of the full-tie-set sampling
     // order with any remaining budget. Measured ≥79% of min-fill pops have
@@ -2048,9 +2040,7 @@ fn run_portfolio(
                 .sampling_patience
                 .stalled(restarts, last_improvement, schedule.ordinary_runs)
             {
-                report(
-                    trace,
-                    started,
+                trace.report(
                     CandidateOrigin {
                         stage: Stage::SampledRestarts,
                         seed,
@@ -2074,7 +2064,8 @@ fn run_portfolio(
             && (stages_start..stages_end).contains(&sample_index)
             && (sample_index - stages_start).is_multiple_of(stage_length)
         {
-            let elapsed = crate::meter::now().saturating_duration_since(started);
+            let now = crate::meter::now();
+            let elapsed = now.saturating_duration_since(started);
             let stage_index = (sample_index - stages_start) / stage_length;
             let budget = stage_budget.get_or_insert_with(|| {
                 StageBudget::new(
@@ -2089,15 +2080,17 @@ fn run_portfolio(
             if !budget.fits() {
                 let outcome = budget.refusal();
                 for skipped in stage_index..stage_count {
-                    trace(CandidateTrace {
-                        stage: Stage::WeightedStage,
-                        seed,
-                        pass: Pass::Modified {
-                            index: skipped as u8,
+                    trace.report_at(
+                        now,
+                        CandidateOrigin {
+                            stage: Stage::WeightedStage,
+                            seed,
+                            pass: Pass::Modified {
+                                index: skipped as u8,
+                            },
                         },
                         outcome,
-                        elapsed,
-                    });
+                    );
                 }
                 sample_index = stages_end;
                 continue;
@@ -2150,13 +2143,7 @@ fn run_portfolio(
         {
             last_improvement = Some(sample_index - ordinary_start);
         }
-        trace(CandidateTrace {
-            stage: candidate.stage,
-            seed: candidate.seed,
-            pass: candidate.pass,
-            outcome,
-            elapsed: finished.saturating_duration_since(started),
-        });
+        trace.report_at(finished, origin, outcome);
         match outcome {
             // No time left for more sampled orders.
             CandidateOutcome::DeadlineReached => break,
@@ -2211,13 +2198,7 @@ fn run_portfolio(
         };
         let outcome = candidates.push(decomposition, origin);
         let now = crate::meter::now();
-        trace(CandidateTrace {
-            stage: Stage::FlowCutter,
-            seed,
-            pass: Pass::Only,
-            outcome,
-            elapsed: now.saturating_duration_since(started),
-        });
+        trace.report_at(now, origin, outcome);
         // What the trailing candidate was given and what it took, where the
         // caller turned the patience rule on. The backend reports no reason for
         // stopping, so a run that ends well inside its window is where the
@@ -2225,17 +2206,15 @@ fn run_portfolio(
         // included: the fixed patience short windows have always had is not
         // this rule's doing.
         if let Some(patience) = patience.filter(|_| !config.sampling_patience.is_off()) {
-            trace(CandidateTrace {
-                stage: Stage::FlowCutter,
-                seed,
-                pass: Pass::Only,
-                outcome: CandidateOutcome::TailBounded {
+            trace.report_at(
+                now,
+                origin,
+                CandidateOutcome::TailBounded {
                     window,
                     patience,
                     spent: now.saturating_duration_since(tail_started),
                 },
-                elapsed: now.saturating_duration_since(started),
-            });
+            );
         }
     }
     // Last, the fill edges the winner's bags do not need. The pass rebuilds the
@@ -2263,8 +2242,7 @@ fn run_portfolio(
         // what it cost on a graph where it changed nothing.
         close_stage(
             &mut candidates,
-            trace,
-            started,
+            &mut trace,
             seed,
             Stage::Minimalized,
             before,
@@ -2288,8 +2266,7 @@ fn run_portfolio(
         // share, or it would have held more than its cap allows.
         close_stage(
             &mut candidates,
-            trace,
-            started,
+            &mut trace,
             seed,
             Stage::Recombined,
             before,
@@ -2317,8 +2294,7 @@ fn run_portfolio(
         // cap allows.
         close_stage(
             &mut candidates,
-            trace,
-            started,
+            &mut trace,
             seed,
             Stage::Merged,
             before,
@@ -2343,8 +2319,7 @@ fn run_portfolio(
         // more than its cap allows.
         close_stage(
             &mut candidates,
-            trace,
-            started,
+            &mut trace,
             seed,
             Stage::LocallyMerged,
             before,
@@ -2374,7 +2349,7 @@ fn run_portfolio(
             pass: Pass::Only,
         };
         let (outcome, _) = candidates.record_elimination(run, origin);
-        report(trace, started, origin, outcome);
+        trace.report(origin, outcome);
     }
     Ok(candidates)
 }
@@ -2385,20 +2360,27 @@ fn relative_fill_fits(cost: Duration, deadline: Option<Instant>) -> bool {
     })
 }
 
-/// Report one candidate to the trace sink, timed from the start of the run.
-fn report(
-    trace: &mut dyn FnMut(CandidateTrace),
+/// The caller's trace callback paired with the instant the portfolio run began,
+/// so every stage reports elapsed time from the same start.
+struct TraceSink<'a> {
     started: Instant,
-    origin: CandidateOrigin,
-    outcome: CandidateOutcome,
-) {
-    trace(CandidateTrace {
-        stage: origin.stage,
-        seed: origin.seed,
-        pass: origin.pass,
-        outcome,
-        elapsed: crate::meter::now().saturating_duration_since(started),
-    });
+    sink: &'a mut dyn FnMut(CandidateTrace),
+}
+
+impl TraceSink<'_> {
+    fn report(&mut self, origin: CandidateOrigin, outcome: CandidateOutcome) {
+        self.report_at(crate::meter::now(), origin, outcome);
+    }
+
+    fn report_at(&mut self, now: Instant, origin: CandidateOrigin, outcome: CandidateOutcome) {
+        (self.sink)(CandidateTrace {
+            stage: origin.stage,
+            seed: origin.seed,
+            pass: origin.pass,
+            outcome,
+            elapsed: now.saturating_duration_since(self.started),
+        });
+    }
 }
 
 /// Record what a closing stage produced and trace the pass. The set keeps the
@@ -2407,17 +2389,14 @@ fn report(
 /// graph where it changed nothing.
 fn close_stage(
     candidates: &mut CandidateSet,
-    trace: &mut dyn FnMut(CandidateTrace),
-    started: Instant,
+    trace: &mut TraceSink<'_>,
     seed: u64,
     stage: Stage,
     before: (u32, usize),
     produced: Option<TreeDecomposition>,
 ) {
     let outcome = candidates.record_stage(stage, seed, before, produced);
-    report(
-        trace,
-        started,
+    trace.report(
         CandidateOrigin {
             stage,
             seed,
@@ -2629,7 +2608,11 @@ fn standard_candidate_set(
         trace,
     )?;
     if config.vertex_reinsertion {
-        reinsert_at_end(graph, seed, started, &mut candidates, trace);
+        let mut trace = TraceSink {
+            started,
+            sink: trace,
+        };
+        reinsert_at_end(graph, seed, &mut candidates, &mut trace);
     }
     Ok(candidates)
 }
@@ -2637,9 +2620,8 @@ fn standard_candidate_set(
 fn reinsert_at_end(
     graph: &Graph,
     seed: u64,
-    started: Instant,
     candidates: &mut CandidateSet,
-    trace: &mut dyn FnMut(CandidateTrace),
+    trace: &mut TraceSink<'_>,
 ) {
     let Some(deadline) = candidates.deadline().filter(|end| !expired(Some(*end))) else {
         return;
@@ -2656,7 +2638,7 @@ fn reinsert_at_end(
     } else {
         candidates.report_unchanged(&found)
     };
-    report(trace, started, origin, outcome);
+    trace.report(origin, outcome);
 }
 
 /// Run the standard portfolio and return every distinct decomposition it

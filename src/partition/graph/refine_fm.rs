@@ -108,6 +108,34 @@ impl RegionScratch {
     }
 }
 
+fn vertex_gain_and_cut(graph: &CsrGraph, part: &[u8], v: usize) -> (i64, i64) {
+    let my_part = part[v];
+    let start = graph.offsets[v] as usize;
+    let end = graph.offsets[v + 1] as usize;
+    let nbrs = &graph.neighbors[start..end];
+    let weights = &graph.edge_weights[start..end];
+    let mut gain = 0i64;
+    let mut cut = 0i64;
+    for (&nb, &w) in nbrs.iter().zip(weights) {
+        let w = i64::from(w);
+        if part[nb as usize] != my_part {
+            gain += w;
+            cut += w;
+        } else {
+            gain -= w;
+        }
+    }
+    (gain, cut)
+}
+
+fn has_cross_neighbor(graph: &CsrGraph, part: &[u8], v: usize) -> bool {
+    let my_part = part[v];
+    graph
+        .neighbors(v)
+        .iter()
+        .any(|&nb| part[nb as usize] != my_part)
+}
+
 /// Returns true if the partition was improved.
 ///
 /// On `false` the partition is restored to exactly what was passed in, so a
@@ -131,22 +159,7 @@ pub(super) fn fm_refine_pass(
     let gain = scratch.gain.as_mut_slice();
     let cut_edges = scratch.cut_edges.as_mut_slice();
     for v in 0..n {
-        let my_part = part[v];
-        let start = graph.offsets[v] as usize;
-        let end = graph.offsets[v + 1] as usize;
-        let nbrs = &graph.neighbors[start..end];
-        let weights = &graph.edge_weights[start..end];
-        let mut g = 0i64;
-        let mut cut = 0i64;
-        for (&nb, &w) in nbrs.iter().zip(weights) {
-            let w = i64::from(w);
-            if part[nb as usize] != my_part {
-                g += w;
-                cut += w;
-            } else {
-                g -= w;
-            }
-        }
+        let (g, cut) = vertex_gain_and_cut(graph, part, v);
         gain[v] = g;
         cut_edges[v] = cut;
     }
@@ -289,11 +302,7 @@ pub(super) fn localized_fm_pass(
                 // without the record below its adjacency is walked every time.
                 let is_boundary = match boundary[nb] {
                     0 => {
-                        let nb_part = part[nb];
-                        let on_boundary = graph
-                            .neighbors(nb)
-                            .iter()
-                            .any(|&nnb| part[nnb as usize] != nb_part);
+                        let on_boundary = has_cross_neighbor(graph, part, nb);
                         boundary[nb] = 1 + u8::from(on_boundary);
                         boundary_touched.push(nb);
                         on_boundary
@@ -314,20 +323,7 @@ pub(super) fn localized_fm_pass(
     // rather than cleared.
     let gain = scratch.gain.as_mut_slice();
     for &v in region_list.iter() {
-        let my_part = part[v];
-        let start = graph.offsets[v] as usize;
-        let end = graph.offsets[v + 1] as usize;
-        let nbrs = &graph.neighbors[start..end];
-        let weights = &graph.edge_weights[start..end];
-        let mut g = 0i64;
-        for (&nb, &w) in nbrs.iter().zip(weights) {
-            let w = i64::from(w);
-            if part[nb as usize] != my_part {
-                g += w;
-            } else {
-                g -= w;
-            }
-        }
+        let (g, _) = vertex_gain_and_cut(graph, part, v);
         gain[v] = g;
     }
 
@@ -435,12 +431,7 @@ pub(super) fn refine_finest_level(
     let num_tries = 4;
     let mut boundary: Vec<usize> = Vec::new();
     for v in 0..n {
-        let my_part = part[v];
-        if graph
-            .neighbors(v)
-            .iter()
-            .any(|&nb| part[nb as usize] != my_part)
-        {
+        if has_cross_neighbor(graph, part, v) {
             boundary.push(v);
         }
     }

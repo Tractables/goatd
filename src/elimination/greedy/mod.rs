@@ -45,7 +45,7 @@ mod tests;
 pub(super) use min_degree::eliminate_min_degree;
 pub(super) use min_fill::eliminate_min_fill;
 pub(super) use sampling::{
-    SampleDraw, eliminate_sampled_fill_degree, eliminate_sampled_min_degree,
+    SampleDraw, SampleSeed, eliminate_sampled_fill_degree, eliminate_sampled_min_degree,
     eliminate_sampled_min_fill,
 };
 
@@ -122,11 +122,7 @@ impl FillScratch {
 
     #[inline]
     fn bump_stamp(&mut self) {
-        self.stamp = self.stamp.wrapping_add(1);
-        if self.stamp == 0 {
-            self.marker.fill(0);
-            self.stamp = 1;
-        }
+        super::graph::bump_stamp(&mut self.stamp, &mut self.marker);
     }
 
     /// Count of fill edges needed to eliminate `v`. Counts edges inside N(v)
@@ -383,11 +379,7 @@ impl FillAffected {
 
     #[inline]
     fn bump_stamp(&mut self) {
-        self.stamp = self.stamp.wrapping_add(1);
-        if self.stamp == 0 {
-            self.marker.fill(0);
-            self.stamp = 1;
-        }
+        super::graph::bump_stamp(&mut self.stamp, &mut self.marker);
     }
 
     /// One more missing pair filled for the vertex at `index`, which is a

@@ -50,6 +50,14 @@ pub(crate) struct SampleDraw<'a> {
     pub(crate) seed: u64,
 }
 
+/// Cached inputs a sampled core can seed its initial buckets from instead of
+/// scanning and recounting the whole graph.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SampleSeed<'a> {
+    pub initial_fill: Option<&'a [u64]>,
+    pub active: Option<&'a [u32]>,
+}
+
 /// A vertex's bucket key, and the live vertex count a negative coefficient
 /// counts down from.
 ///
@@ -173,23 +181,20 @@ pub(crate) fn eliminate_sampled_min_fill(
     draw: SampleDraw<'_>,
     sink: ElimSink<'_>,
     stop: ElimStop,
-    initial_fill: Option<&[u64]>,
-    active: Option<&[u32]>,
+    seed: SampleSeed<'_>,
     scratch: &mut SampleScratch,
 ) -> ElimExit {
-    eliminate_sampled_fill_based(graph, draw, sink, stop, initial_fill, active, None, scratch)
+    eliminate_sampled_fill_based(graph, draw, sink, stop, seed, None, scratch)
 }
 
 /// Fill-plus-coefficient-times-degree elimination with weighted sampling from
 /// the complete minimum-score tie set, or from a `band` above it.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn eliminate_sampled_fill_degree(
     graph: &mut EliminationGraph,
     draw: SampleDraw<'_>,
     sink: ElimSink<'_>,
     stop: ElimStop,
-    initial_fill: Option<&[u64]>,
-    active: Option<&[u32]>,
+    seed: SampleSeed<'_>,
     degree_coefficient: i8,
     scratch: &mut SampleScratch,
 ) -> ElimExit {
@@ -198,24 +203,25 @@ pub(crate) fn eliminate_sampled_fill_degree(
         draw,
         sink,
         stop,
-        initial_fill,
-        active,
+        seed,
         Some(degree_coefficient),
         scratch,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn eliminate_sampled_fill_based(
     graph: &mut EliminationGraph,
     draw: SampleDraw<'_>,
     mut sink: ElimSink<'_>,
     stop: ElimStop,
-    initial_fill: Option<&[u64]>,
-    active: Option<&[u32]>,
+    seed: SampleSeed<'_>,
     degree_coefficient: Option<i8>,
     scratch: &mut SampleScratch,
 ) -> ElimExit {
+    let SampleSeed {
+        initial_fill,
+        active,
+    } = seed;
     let SampleDraw {
         weights,
         band,

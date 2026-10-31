@@ -63,7 +63,7 @@ fn is_canonical(edges: &[(u32, u32)]) -> bool {
 /// It takes the two fields rather than the graph, since a caller may be
 /// holding a row of the adjacency while it stamps.
 #[inline]
-fn bump_stamp(stamp: &mut u16, marker: &mut [u16]) -> u16 {
+pub(super) fn bump_stamp(stamp: &mut u16, marker: &mut [u16]) -> u16 {
     *stamp = stamp.wrapping_add(1);
     if *stamp == 0 {
         marker.fill(0);

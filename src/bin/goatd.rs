@@ -884,7 +884,7 @@ fn read_weights(path: &str, num_vertices: u32) -> Vec<u32> {
 fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
     let seed = args.seed.unwrap_or(0);
     let budget = args.budget;
-    match args.order {
+    let result = match args.order {
         Method::MinFill | Method::MinDegree => {
             let weights = args.sample.then(|| match &args.weights {
                 Some(path) => read_weights(path, graph.num_vertices()),
@@ -896,21 +896,17 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
                 (_, None) => Order::MinDegree,
                 (_, Some(weights)) => Order::MinDegreeSampled { weights },
             };
-            eliminate(graph, config, seed, budget).unwrap_or_else(|error| fail(&error.to_string()))
+            eliminate(graph, config, seed, budget)
         }
-        Method::NestedDissection => eliminate(graph, Order::NestedDissection, seed, budget)
-            .unwrap_or_else(|error| fail(&error.to_string())),
-        Method::FlowCutter => flowcutter(graph, Budget::standalone(budget, args.steps))
-            .unwrap_or_else(|e| fail(&e.to_string())),
-        Method::MergeLoop => goatd::decomposition::decompose_by_merging(graph, seed, budget)
-            .unwrap_or_else(|error| fail(&error.to_string())),
+        Method::NestedDissection => eliminate(graph, Order::NestedDissection, seed, budget),
+        Method::FlowCutter => flowcutter(graph, Budget::standalone(budget, args.steps)),
+        Method::MergeLoop => goatd::decomposition::decompose_by_merging(graph, seed, budget),
         // A traced run computes each candidate's shape numbers, which is a pass
         // over its bags. Without --trace there is nowhere to report them, so
         // the untraced run does not ask for them.
         Method::Portfolio if !args.trace => {
             let weights = vec![1; graph.num_vertices() as usize];
             portfolio(graph, &weights, seed, args.portfolio)
-                .unwrap_or_else(|error| fail(&error.to_string()))
         }
         Method::Portfolio => {
             let weights = vec![1; graph.num_vertices() as usize];
@@ -921,14 +917,16 @@ fn construct(args: &Args, graph: &Graph) -> TreeDecomposition {
                     winner = Some((candidate.stage, candidate.seed));
                 }
             };
-            let td = portfolio_traced(graph, &weights, seed, args.portfolio, &mut report)
-                .unwrap_or_else(|error| fail(&error.to_string()));
-            if let Some((stage, seed)) = winner {
+            let result = portfolio_traced(graph, &weights, seed, args.portfolio, &mut report);
+            if result.is_ok()
+                && let Some((stage, seed)) = winner
+            {
                 eprintln!("c trace winner candidate={stage} seed={seed}");
             }
-            td
+            result
         }
-    }
+    };
+    result.unwrap_or_else(|error| fail(&error.to_string()))
 }
 
 /// `c trace candidate=…`, on stderr so it does not touch the decomposition.

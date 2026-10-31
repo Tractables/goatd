@@ -8,8 +8,8 @@ use super::build_td::build_td_from_ranked_bags;
 use super::execution::{self, Cutoff, ElimExit, ElimSteps};
 use super::graph::EliminationGraph;
 use super::greedy::{
-    self, SampleDraw, eliminate_min_degree, eliminate_min_fill, eliminate_sampled_fill_degree,
-    eliminate_sampled_min_degree, eliminate_sampled_min_fill,
+    self, SampleDraw, SampleSeed, eliminate_min_degree, eliminate_min_fill,
+    eliminate_sampled_fill_degree, eliminate_sampled_min_degree, eliminate_sampled_min_fill,
 };
 use super::minimal_triangulation::{Reach, eliminate_cardinality_search};
 use super::nested_dissection::eliminate_nested_dissection;
@@ -331,19 +331,16 @@ pub(super) fn find_connected_components(graph: &EliminationGraph) -> Vec<Vec<u32
 /// back to originals and concatenates into the global flat list that
 /// `build_td_from_ranked_bags` consumes.
 ///
-/// `initial_fill` is the caller's cached per-vertex fill count for this exact
-/// graph; the min-fill sampling cores are the only ones that read it. A
-/// component run remaps the counts into its local numbering.
-///
-/// `active` is the caller's list of `graph`'s active vertices in index order,
-/// which the sampling cores seed their buckets from; without one they scan
-/// every index instead.
+/// `seed` carries the caller's cached per-vertex fill count for this exact
+/// graph (read by the fill-based sampling cores; a component run remaps the
+/// counts into its local numbering) and the caller's list of `graph`'s active
+/// vertices in index order (which the sampling cores seed their buckets from;
+/// without one they scan every index instead).
 fn run_elimination_raw(
     graph: &mut EliminationGraph,
     prefix: &ElimSteps,
     salt: &[u32],
-    initial_fill: Option<&[u64]>,
-    active: Option<&[u32]>,
+    seed: SampleSeed<'_>,
     spec: RunSpec<'_>,
     scratch: &mut greedy::SampleScratch,
 ) -> (ElimSteps, ElimExit, Vec<u32>) {
@@ -353,6 +350,19 @@ fn run_elimination_raw(
     // and copying a prefix of a million bags for each was most of what they
     // allocated.
     let mut steps = ElimSteps::after(prefix);
+    let sampled = |weights| {
+        (
+            SampleDraw {
+                weights,
+                band: spec.sample_band,
+                seed: spec.seed,
+            },
+            ElimStop {
+                soft_deadline: None,
+                ..spec.stop
+            },
+        )
+    };
 
     let exit = match spec.order {
         Order::MinFill | Order::MinFillRanked { .. } => {
@@ -367,57 +377,29 @@ fn run_elimination_raw(
         Order::MinDegree => {
             eliminate_min_degree(graph, salt, spec.update_order_ties, steps.sink(), spec.stop)
         }
-        Order::MinFillSampled { weights } => eliminate_sampled_min_fill(
-            graph,
-            SampleDraw {
-                weights,
-                band: spec.sample_band,
-                seed: spec.seed,
-            },
-            steps.sink(),
-            ElimStop {
-                soft_deadline: None,
-                ..spec.stop
-            },
-            initial_fill,
-            active,
-            scratch,
-        ),
-        Order::MinDegreeSampled { weights } => eliminate_sampled_min_degree(
-            graph,
-            SampleDraw {
-                weights,
-                band: spec.sample_band,
-                seed: spec.seed,
-            },
-            steps.sink(),
-            ElimStop {
-                soft_deadline: None,
-                ..spec.stop
-            },
-            active,
-            scratch,
-        ),
+        Order::MinFillSampled { weights } => {
+            let (draw, stop) = sampled(weights);
+            eliminate_sampled_min_fill(graph, draw, steps.sink(), stop, seed, scratch)
+        }
+        Order::MinDegreeSampled { weights } => {
+            let (draw, stop) = sampled(weights);
+            eliminate_sampled_min_degree(graph, draw, steps.sink(), stop, seed.active, scratch)
+        }
         Order::FillDegreeSampled {
             weights,
             degree_coefficient,
-        } => eliminate_sampled_fill_degree(
-            graph,
-            SampleDraw {
-                weights,
-                band: spec.sample_band,
-                seed: spec.seed,
-            },
-            steps.sink(),
-            ElimStop {
-                soft_deadline: None,
-                ..spec.stop
-            },
-            initial_fill,
-            active,
-            degree_coefficient,
-            scratch,
-        ),
+        } => {
+            let (draw, stop) = sampled(weights);
+            eliminate_sampled_fill_degree(
+                graph,
+                draw,
+                steps.sink(),
+                stop,
+                seed,
+                degree_coefficient,
+                scratch,
+            )
+        }
         Order::NestedDissection => {
             eliminate_nested_dissection(graph, salt, spec.seed, steps.sink(), spec.stop)
         }
@@ -596,8 +578,10 @@ fn run_order_per_component(
             sub_graph,
             &empty_prefix,
             &sub_salt,
-            sub_initial_fill,
-            None,
+            SampleSeed {
+                initial_fill: sub_initial_fill,
+                active: None,
+            },
             sub_spec,
             sample,
         );
@@ -695,8 +679,10 @@ pub(super) fn run_order_on_residual(
         graph,
         prefix,
         &scratch.salt,
-        initial_fill,
-        active,
+        SampleSeed {
+            initial_fill,
+            active,
+        },
         spec,
         &mut scratch.sample,
     );

@@ -2001,9 +2001,15 @@ fn final_reinsertion_skips_unbounded_and_expired_runs() {
                 pass: Pass::Only,
             },
         );
-        super::reinsert_at_end(&graph, 0, epoch, &mut candidates, &mut |_| {
-            panic!("expired or unbounded finisher ran")
-        });
+        super::reinsert_at_end(
+            &graph,
+            0,
+            &mut candidates,
+            &mut super::TraceSink {
+                started: epoch,
+                sink: &mut |_| panic!("expired or unbounded finisher ran"),
+            },
+        );
         assert_eq!(candidates.best().unwrap().to_td(), tree.to_td());
     }
 }
@@ -2027,9 +2033,15 @@ fn final_reinsertion_narrows_a_minimal_triangulation_and_reports_the_winner() {
         },
     );
     let mut trace = Vec::new();
-    super::reinsert_at_end(&graph, 0, epoch, &mut candidates, &mut |event| {
-        trace.push(event)
-    });
+    super::reinsert_at_end(
+        &graph,
+        0,
+        &mut candidates,
+        &mut super::TraceSink {
+            started: epoch,
+            sink: &mut |event| trace.push(event),
+        },
+    );
     candidates.best().unwrap().validate(&graph).unwrap();
     assert_eq!(candidates.best().unwrap().treewidth(), 2);
     assert_eq!(trace.len(), 1);
@@ -2064,9 +2076,15 @@ fn final_reinsertion_reports_an_unchanged_tree_without_claiming_a_deadline() {
             },
         );
         let mut trace = Vec::new();
-        super::reinsert_at_end(&graph, 0, epoch, &mut candidates, &mut |event| {
-            trace.push(event)
-        });
+        super::reinsert_at_end(
+            &graph,
+            0,
+            &mut candidates,
+            &mut super::TraceSink {
+                started: epoch,
+                sink: &mut |event| trace.push(event),
+            },
+        );
         assert_eq!(trace.len(), 1);
         assert!(
             matches!(
