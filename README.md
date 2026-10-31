@@ -43,7 +43,7 @@ other orders, seeds, weighted ties and refinement. The same solver runs
 
 ## Library
 
-Add `goatd = "0.2"` as a dependency. The [`basic` example](examples/basic.rs)
+Add `goatd = "0.3"` as a dependency. The [`basic` example](examples/basic.rs)
 constructs a graph, runs the portfolio, validates the decomposition and writes
 it in PACE format; `cargo run --example basic` runs it. The rest of the API is
 on [docs.rs](https://docs.rs/goatd).

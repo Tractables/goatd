@@ -138,8 +138,9 @@ const DEADLINE_STRIDE: usize = 64;
 /// is searched as far as the caps reach; what is settled by then still gives a
 /// valid decomposition, only a wider one. The bag count is capped as well,
 /// because the search costs one pass over the graph per bag, and it is shared
-/// out: each of the [`Limits::candidates`] decompositions the pool keeps gets
-/// the same quota, so no one of them fills the pool on its own.
+/// out across the [`Limits::slots`] decompositions the pool keeps — the
+/// narrowest decomposition gets two shares and the rest one share each — so no
+/// one of them fills the pool on its own.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Limits {
     pool_vertices: usize,

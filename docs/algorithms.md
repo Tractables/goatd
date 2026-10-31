@@ -150,7 +150,8 @@ and spend it on the answer the schedule produced. Each starts only where its
 projected work fits the time it has, and its result is kept only where it is
 narrower.
 
-**The bipartite lift** runs first rather than last, on a bipartite graph.
+**The bipartite lift** runs first rather than last, on a bipartite graph,
+taking up to 25% off the front of the window.
 One side is an independent set, so eliminating it adds no edges among the
 eliminated vertices, and what is left is a projection whose decomposition
 lifts to one of the whole graph, of width `max(projection width, largest
@@ -161,8 +162,9 @@ below each, and keeps the narrowest lift. Its width is the incumbent every
 later candidate is bounded against, and the stage runs only where the budget
 pays for the projections it would build.
 
-**Recombination** pools the bags of the best decomposition of every stage
-and searches the pool for the narrowest tree whose bags all come from it.
+**Recombination** pools the bags of the best decomposition of every stage,
+seeds the pool with up to four sampled fill-degree variety draws, and
+searches it for the narrowest tree whose bags all come from it.
 The search is the dynamic programme of Bouchitté and Todinca over a list of
 candidate bags rather than every potential maximal clique, as Tamaki (2019)
 runs it. The pool holds the winner's own bags, so the answer is never wider.
@@ -171,7 +173,7 @@ re-triangulated by MCS-M and their cliques added to the list, and the search
 repeats until a round adds nothing.
 
 **The merge loop** is Tamaki's (2022) improvement loop over the same
-programme. It builds a second list from scratch by randomised min-fill
+programme. It builds a second list from scratch by seeded relative-fill
 draws, each made minimal; picks a bag of one list and a partner from the
 other such that neither crosses the other; triangulates the piece the pair
 picks out and adds its cliques; and searches the merged list, which admits
@@ -185,13 +187,14 @@ FlowCutter, which cut the graph where a randomised elimination does not. A
 small piece is triangulated several times over and the programme run over
 all of them together.
 
-Two cheaper passes close the run. **Minimalization** removes added edges the
-answer's triangulation does not need until none can be removed, which is
+Three cheaper passes close the run. **Minimalization** removes added edges
+the answer's triangulation does not need until none can be removed, which is
 Rose, Tarjan and Lueker's characterisation of a minimal triangulation, and
-rebuilds the bags; it never widens. **Vertex reinsertion** takes a vertex
-out of the widest bags and rebuilds its attachment through neighbour and
-separator bags, keeping a strict improvement in width and then total bag
-size.
+rebuilds the bags; it never widens. A closing **relative-fill** draw runs
+when a fill pass is cheap enough for the time left. **Vertex reinsertion**
+reserves 1/16 off the end of a budgeted window, takes a vertex out of the
+widest bags, and rebuilds its attachment through neighbour and separator
+bags, keeping a strict improvement in width and then total bag size.
 
 ## Validation and reproducibility
 
