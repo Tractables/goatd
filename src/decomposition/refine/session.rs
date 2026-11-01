@@ -335,60 +335,9 @@ impl<'g> Session<'g> {
                         continue;
                     }
                     if self.active.is_none() {
-                        let start = Instant::now();
-                        // The root region is the whole vertex range in order,
-                        // and a split gives each child its own side plus the
-                        // separator while the other side is never empty, so a
-                        // region with as many vertices as the graph is the
-                        // root, and inducing on it rebuilds the graph. Charge
-                        // what that scan would have charged, so a budgeted run
-                        // stops where it stopped before.
-                        let region = &self.node(node).vertices;
-                        let graph = if region.len() == self.graph.num_vertices() as usize {
-                            debug_assert!(
-                                region.iter().copied().eq(0..self.graph.num_vertices()),
-                                "a region as large as the graph is its vertex range in order"
-                            );
-                            crate::meter::charge(self.graph.edges().len() as u64);
-                            self.graph.clone()
-                        } else {
-                            self.graph
-                                .induced_subgraph(region)
-                                .expect("regions keep unique original-graph vertices")
-                        };
-                        let steps = self
-                            .config
-                            .per_vertex
-                            .saturating_mul(graph.num_vertices() as u64)
-                            .clamp(self.config.min_steps, self.config.max_steps);
-                        let search = separator::Search::new(
-                            graph.num_vertices() as usize,
-                            graph.edges(),
-                            steps as i64,
-                            self.config.iterations as i32,
-                        );
-                        self.progress.setup_elapsed += start.elapsed();
+                        let proposal = self.prepare_visit_search(node);
                         slice.step();
-                        if let Some(search) = search {
-                            self.active = Some(Active {
-                                node,
-                                graph,
-                                search,
-                            });
-                            continue;
-                        }
-                        // The search declines a region with fewer than
-                        // three vertices and a disconnected one alike. The
-                        // second kind is not a dead end: no edge runs between
-                        // two components, so each of them is a region of its
-                        // own and both are searchable once they are apart.
-                        // Dropping the region here would leave the whole
-                        // subtree below it unrefined, and the root region is
-                        // the whole graph, so one isolated vertex would end
-                        // the pass before it found anything.
-                        if let Some((candidate, split, recommended)) =
-                            self.make_component_split(node, &graph)
-                        {
+                        if let Some((candidate, split, recommended)) = proposal {
                             self.pending = Some(Pending::Split {
                                 split,
                                 finish_on_reject: true,
@@ -397,32 +346,21 @@ impl<'g> Session<'g> {
                             slice.record(&mut self.progress);
                             return polishing::proposal(self, candidate, recommended);
                         }
-                        self.tasks.pop();
                         continue;
                     }
                     let active = self.active.as_mut().expect("search was prepared");
                     if active.search.exhausted() {
-                        let active = self
-                            .active
-                            .take()
-                            .expect("completed search remains available");
-                        let best = active.search.into_vertices();
-                        if legacy
-                            && let Some(vertices) = best
-                            && let Some((candidate, split, recommended)) =
-                                self.make_split(node, &active.graph, vertices)
-                        {
+                        let proposal = self.finish_exhausted_search(node, legacy);
+                        slice.step();
+                        if let Some((candidate, split, recommended)) = proposal {
                             self.pending = Some(Pending::Split {
                                 split,
                                 finish_on_reject: true,
                             });
                             self.progress.proposed += 1;
-                            slice.step();
                             slice.record(&mut self.progress);
                             return polishing::proposal(self, candidate, recommended);
                         }
-                        self.tasks.pop();
-                        slice.step();
                         continue;
                     }
                     let before = active.search.attempts();
@@ -449,6 +387,81 @@ impl<'g> Session<'g> {
                 }
             }
         }
+    }
+
+    fn prepare_visit_search(&mut self, node: usize) -> Option<(TreeDecomposition, Split, bool)> {
+        let start = Instant::now();
+        // The root region is the whole vertex range in order, and a split
+        // gives each child its own side plus the separator while the other
+        // side is never empty, so a region with as many vertices as the graph
+        // is the root, and inducing on it rebuilds the graph. Charge what that
+        // scan would have charged, so a budgeted run stops where it stopped
+        // before.
+        let region = &self.node(node).vertices;
+        let graph = if region.len() == self.graph.num_vertices() as usize {
+            debug_assert!(
+                region.iter().copied().eq(0..self.graph.num_vertices()),
+                "a region as large as the graph is its vertex range in order"
+            );
+            crate::meter::charge(self.graph.edges().len() as u64);
+            self.graph.clone()
+        } else {
+            self.graph
+                .induced_subgraph(region)
+                .expect("regions keep unique original-graph vertices")
+        };
+        let steps = self
+            .config
+            .per_vertex
+            .saturating_mul(graph.num_vertices() as u64)
+            .clamp(self.config.min_steps, self.config.max_steps);
+        let search = separator::Search::new(
+            graph.num_vertices() as usize,
+            graph.edges(),
+            steps as i64,
+            self.config.iterations as i32,
+        );
+        self.progress.setup_elapsed += start.elapsed();
+        if let Some(search) = search {
+            self.active = Some(Active {
+                node,
+                graph,
+                search,
+            });
+            return None;
+        }
+        // The search declines a region with fewer than three vertices and a
+        // disconnected one alike. The second kind is not a dead end: no edge
+        // runs between two components, so each of them is a region of its own
+        // and both are searchable once they are apart. Dropping the region
+        // here would leave the whole subtree below it unrefined, and the root
+        // region is the whole graph, so one isolated vertex would end the pass
+        // before it found anything.
+        if let Some(proposal) = self.make_component_split(node, &graph) {
+            return Some(proposal);
+        }
+        self.tasks.pop();
+        None
+    }
+
+    fn finish_exhausted_search(
+        &mut self,
+        node: usize,
+        legacy: bool,
+    ) -> Option<(TreeDecomposition, Split, bool)> {
+        let active = self
+            .active
+            .take()
+            .expect("completed search remains available");
+        let best = active.search.into_vertices();
+        if legacy
+            && let Some(vertices) = best
+            && let Some(proposal) = self.make_split(node, &active.graph, vertices)
+        {
+            return Some(proposal);
+        }
+        self.tasks.pop();
+        None
     }
 
     fn node(&self, id: usize) -> &Node {

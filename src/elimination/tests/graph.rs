@@ -390,27 +390,20 @@ fn wheel(n: u32) -> Vec<(u32, u32)> {
     edges
 }
 
-/// The complete graph on `0..n`, in canonical order, which `from_edges` keeps
-/// as a bitset.
-fn clique(n: u32) -> Vec<(u32, u32)> {
-    let mut edges = Vec::new();
-    for u in 0..n {
-        for v in u + 1..n {
-            edges.push((u, v));
-        }
-    }
-    edges
+type EdgeList = Vec<(u32, u32)>;
+
+fn canonical_build_cases() -> [(&'static str, u32, EdgeList); 4] {
+    [
+        ("ring 8", 8, ring(8)),
+        ("ring 600", 600, ring(600)),
+        ("wheel 600", 601, wheel(600)),
+        ("clique 40", 40, clique_edges(40)),
+    ]
 }
 
 #[test]
 fn the_canonical_build_agrees_with_the_deduplicating_one() {
-    let cases = [
-        ("ring 8", 8u32, ring(8)),
-        ("ring 600", 600, ring(600)),
-        ("wheel 600", 601, wheel(600)),
-        ("clique 40", 40, clique(40)),
-    ];
-    for (name, n, canonical) in cases {
+    for (name, n, canonical) in canonical_build_cases() {
         let repeated = with_duplicates(&canonical);
         assert_eq!(crate::graph::canonical_edges(repeated.clone()), canonical);
 
@@ -418,31 +411,10 @@ fn the_canonical_build_agrees_with_the_deduplicating_one() {
         let from_repeated = EliminationGraph::from_edges(n, &repeated);
 
         assert_eq!(from_canonical.num_edges, canonical.len(), "{name}");
-        assert_eq!(from_canonical.num_edges, from_repeated.num_edges, "{name}");
-        assert_eq!(
-            from_canonical.bitset_words, from_repeated.bitset_words,
-            "{name}"
-        );
-        assert_eq!(from_canonical.bitset, from_repeated.bitset, "{name}");
-        for v in 0..n {
-            assert_eq!(
-                from_canonical.adj[v as usize], from_repeated.adj[v as usize],
-                "{name}, row {v}"
-            );
-            assert_eq!(
-                from_canonical.row_is_indexed(v),
-                from_repeated.row_is_indexed(v),
-                "{name}, row {v}"
-            );
-            assert_eq!(
-                from_canonical.degree(v),
-                from_repeated.degree(v),
-                "{name}, row {v}"
-            );
-        }
+        assert!(from_canonical.same_state_as(&from_repeated), "{name}");
     }
     assert!(EliminationGraph::from_edges(601, &wheel(600)).row_is_indexed(600));
-    assert!(EliminationGraph::from_edges(40, &clique(40)).bitset_words > 0);
+    assert!(EliminationGraph::from_edges(40, &clique_edges(40)).bitset_words > 0);
 }
 
 /// `canonical` reversed with every other edge turned round: each edge is still
@@ -459,13 +431,7 @@ fn shuffled_unique(canonical: &[(u32, u32)]) -> Vec<(u32, u32)> {
 
 #[test]
 fn the_unique_build_agrees_with_the_deduplicating_one_on_an_unsorted_list() {
-    let cases = [
-        ("ring 8", 8u32, ring(8)),
-        ("ring 600", 600, ring(600)),
-        ("wheel 600", 601, wheel(600)),
-        ("clique 40", 40, clique(40)),
-    ];
-    for (name, n, canonical) in cases {
+    for (name, n, canonical) in canonical_build_cases() {
         let shuffled = shuffled_unique(&canonical);
         assert_eq!(
             crate::graph::canonical_edges(shuffled.clone()),
@@ -507,12 +473,7 @@ fn the_canonical_build_orders_a_hub_row_the_way_the_edge_list_does() {
 fn the_bitset_almost_simplicial_test_agrees_with_the_pairwise_scan() {
     // K5 with (1, 2) removed: vertex 0's neighbourhood misses exactly that
     // edge. Removing a second edge leaves two missing and no answer.
-    let mut edges = Vec::new();
-    for u in 0u32..5 {
-        for v in u + 1..5 {
-            edges.push((u, v));
-        }
-    }
+    let edges = clique_edges(5);
     let one_missing: Vec<(u32, u32)> = edges.iter().copied().filter(|&e| e != (1, 2)).collect();
     let graph = EliminationGraph::from_edges(5, &one_missing);
     assert!(graph.bitset_words > 0);
@@ -530,17 +491,17 @@ fn the_bitset_almost_simplicial_test_agrees_with_the_pairwise_scan() {
     assert_eq!(complete.almost_simplicial_nonedge(0), None);
 }
 
-/// A graph too large to index the bitset by vertex id, eliminated down to a
-/// dense core: the bitset arrives only when the residual is dense, is the
-/// residual's size, and reports vertex ids.
-#[test]
-fn a_large_graph_gets_a_bitset_over_its_dense_residual() {
-    let core = 200u32;
-    let n = 17_000u32;
+fn core_with_tail_edges(
+    core: u32,
+    n: u32,
+    include_core_edge: impl Fn(u32, u32) -> bool,
+) -> Vec<(u32, u32)> {
     let mut edges = Vec::new();
     for u in 0..core {
         for v in (u + 1)..core {
-            edges.push((u, v));
+            if include_core_edge(u, v) {
+                edges.push((u, v));
+            }
         }
     }
     for v in core..n - 1 {
@@ -548,6 +509,17 @@ fn a_large_graph_gets_a_bitset_over_its_dense_residual() {
     }
     edges.push((0, core));
     edges.sort_unstable();
+    edges
+}
+
+/// A graph too large to index the bitset by vertex id, eliminated down to a
+/// dense core: the bitset arrives only when the residual is dense, is the
+/// residual's size, and reports vertex ids.
+#[test]
+fn a_large_graph_gets_a_bitset_over_its_dense_residual() {
+    let core = 200u32;
+    let n = 17_000u32;
+    let edges = core_with_tail_edges(core, n, |_, _| true);
     let mut g = EliminationGraph::from_edges(n, &edges);
     assert_eq!(g.bitset_words, 0, "17,000 vertices are indexed by row");
     assert!(!g.should_promote_bitset(), "the whole graph is sparse");
@@ -612,20 +584,8 @@ fn a_large_sparse_residual_is_refused_a_bitset() {
 fn the_residual_bitset_and_the_rows_eliminate_alike() {
     let core = 200u32;
     let n = 17_000u32;
-    let mut edges = Vec::new();
-    for u in 0..core {
-        for v in (u + 1)..core {
-            // Dense but not complete, so eliminating a core vertex adds fill.
-            if (u * 7 + v * 13) % 4 != 0 {
-                edges.push((u, v));
-            }
-        }
-    }
-    for v in core..n - 1 {
-        edges.push((v, v + 1));
-    }
-    edges.push((0, core));
-    edges.sort_unstable();
+    // Dense but not complete, so eliminating a core vertex adds fill.
+    let edges = core_with_tail_edges(core, n, |u, v| (u * 7 + v * 13) % 4 != 0);
 
     let mut rows = EliminationGraph::from_edges(n, &edges);
     let mut bits = EliminationGraph::from_edges(n, &edges);

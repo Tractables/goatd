@@ -552,21 +552,14 @@ impl FillAffected {
                             // hold a bit of either part. The words left
                             // stale are never read.
                             masked = true;
-                            crate::meter::charge(w as u64);
-                            x_words.clear();
-                            let rows = u_row.iter().zip(&inside[..w]).zip(&outside[..w]);
-                            let splits = x_inside[..w].iter_mut().zip(x_outside[..w].iter_mut());
-                            for (j, (((&x_word, &in_word), &out_word), (x_in, x_out))) in
-                                rows.zip(splits).enumerate()
-                            {
-                                let split_in = x_word & in_word;
-                                let split_out = x_word & out_word;
-                                if (split_in | split_out) != 0 {
-                                    x_words.push(j as u32);
-                                    *x_in = split_in;
-                                    *x_out = split_out;
-                                }
-                            }
+                            Self::split_neighbour_row_bs(
+                                u_row,
+                                &inside[..w],
+                                &outside[..w],
+                                &mut x_inside[..w],
+                                &mut x_outside[..w],
+                                &mut x_words,
+                            );
                         }
                         self.fill_edge_bs(
                             graph,
@@ -592,6 +585,30 @@ impl FillAffected {
         self.v_words = v_words;
         self.x_words = x_words;
         done
+    }
+
+    fn split_neighbour_row_bs(
+        u_row: &[u64],
+        inside: &[u64],
+        outside: &[u64],
+        x_inside: &mut [u64],
+        x_outside: &mut [u64],
+        x_words: &mut Vec<u32>,
+    ) {
+        let w = u_row.len();
+        crate::meter::charge(w as u64);
+        x_words.clear();
+        let rows = u_row.iter().zip(inside).zip(outside);
+        let splits = x_inside.iter_mut().zip(x_outside.iter_mut());
+        for (j, (((&x_word, &in_word), &out_word), (x_in, x_out))) in rows.zip(splits).enumerate() {
+            let split_in = x_word & in_word;
+            let split_out = x_word & out_word;
+            if (split_in | split_out) != 0 {
+                x_words.push(j as u32);
+                *x_in = split_in;
+                *x_out = split_out;
+            }
+        }
     }
 
     /// One fill edge of v between the slots `x` and `y`, both in N(v), with

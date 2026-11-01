@@ -73,13 +73,23 @@ const ORIGIN: CandidateOrigin = CandidateOrigin {
     pass: Pass::Only,
 };
 
-#[test]
-fn best_only_candidate_storage_discards_losing_decompositions() {
+fn three_vertex_candidates() -> (
+    Graph,
+    TreeDecomposition,
+    TreeDecomposition,
+    TreeDecomposition,
+) {
     let graph = Graph::new(3, []);
     let wide = TreeDecomposition::new(&graph, [vec![0, 1, 2]], []).unwrap();
     let narrow =
         TreeDecomposition::new(&graph, [vec![0], vec![1], vec![2]], [(0, 1), (1, 2)]).unwrap();
     let medium = TreeDecomposition::new(&graph, [vec![0, 1], vec![1, 2]], [(0, 1)]).unwrap();
+    (graph, wide, narrow, medium)
+}
+
+#[test]
+fn best_only_candidate_storage_discards_losing_decompositions() {
+    let (_, wide, narrow, medium) = three_vertex_candidates();
     let mut candidates = CandidateSet::best_only();
 
     candidates.push(wide, ORIGIN);
@@ -97,9 +107,7 @@ fn best_only_candidate_storage_discards_losing_decompositions() {
 /// with `best` set, and the command line reads exactly that to name the winner.
 #[test]
 fn a_candidate_that_completed_at_the_hard_cutoff_is_reported_as_produced() {
-    let graph = Graph::new(3, []);
-    let only =
-        TreeDecomposition::new(&graph, [vec![0], vec![1], vec![2]], [(0, 1), (1, 2)]).unwrap();
+    let (_, _, only, _) = three_vertex_candidates();
     let mut candidates = CandidateSet::best_only();
 
     let (outcome, stop) =
@@ -117,11 +125,7 @@ fn a_candidate_that_completed_at_the_hard_cutoff_is_reported_as_produced() {
 /// candidate produced, whatever came after it.
 #[test]
 fn the_incumbent_width_stays_with_the_narrowest_candidate() {
-    let graph = Graph::new(3, []);
-    let wide = TreeDecomposition::new(&graph, [vec![0, 1, 2]], []).unwrap();
-    let narrow =
-        TreeDecomposition::new(&graph, [vec![0], vec![1], vec![2]], [(0, 1), (1, 2)]).unwrap();
-    let medium = TreeDecomposition::new(&graph, [vec![0, 1], vec![1, 2]], [(0, 1)]).unwrap();
+    let (_, wide, narrow, medium) = three_vertex_candidates();
 
     for mut candidates in [CandidateSet::all(3), CandidateSet::best_only()] {
         assert_eq!(candidates.best_width(), None);
@@ -492,27 +496,7 @@ fn diverse_samples_do_not_shift_the_ordinary_seed_stream() {
     );
 }
 
-#[test]
-fn the_hedge_leaves_every_restart_on_the_unmodified_sequence() {
-    let graph = Graph::new(3, [(0, 1), (1, 2)]);
-    let given = [1; 3];
-    let ranked = vec![7, 1, 4];
-    let base_seed = 17;
-    // The portfolio ranks the modified pass's weights itself, so the caller's
-    // are the plain pass.
-    let fixed: Vec<(Order<'_>, u64)> = super::standard_orders(base_seed, &ranked)
-        .into_iter()
-        .filter(|candidate| super::reads_weights(candidate.order))
-        .map(|candidate| (candidate.order, candidate.seed))
-        .collect();
-    assert_eq!(fixed.len(), 3, "nested dissection reads no weights");
-    let cell = OnceCell::new();
-    let adjacency = OnceCell::new();
-    let modified = [placed(&graph, &cell, &adjacency, &ranked)];
-    let plan = hedged(base_seed, &modified, &given, fixed.len() as u64);
-    let unmodified = schedule(base_seed, false, &given);
-
-    // The plain diverse pass first, candidate for candidate.
+fn assert_plain_diverse_pass(plan: Schedule<'_>, unmodified: Schedule<'_>) {
     for index in 0..46 {
         let sample = extra_sample(plan, index).unwrap();
         let main = extra_sample(unmodified, index).unwrap();
@@ -520,23 +504,35 @@ fn the_hedge_leaves_every_restart_on_the_unmodified_sequence() {
         assert_eq!(sample.seed, main.seed, "diverse candidate {index}");
         assert_eq!(sample.pass, Pass::Plain);
     }
-    // Then the fixed orders that read the weights, labelled as the fixed
-    // candidates they are and not as restarts.
+}
+
+fn assert_weighted_stage_schedule(
+    plan: Schedule<'_>,
+    unmodified: Schedule<'_>,
+    base_seed: u64,
+    stage: u64,
+    weights: &[u32],
+) {
+    let stage_start = 46 + stage * (3 + 46);
+    let fixed: Vec<(Order<'_>, u64)> = super::standard_orders(base_seed, weights)
+        .into_iter()
+        .filter(|candidate| super::reads_weights(candidate.order))
+        .map(|candidate| (candidate.order, candidate.seed))
+        .collect();
+    assert_eq!(fixed.len(), 3, "nested dissection reads no weights");
     for (offset, &(order, seed)) in fixed.iter().enumerate() {
-        let sample = extra_sample(plan, 46 + offset as u64).unwrap();
-        assert_eq!(sample.order, order, "fixed order {offset}");
-        assert_eq!(sample.seed, seed, "fixed order {offset}");
-        assert_eq!(sample.pass, Pass::Modified { index: 0 });
+        let sample = extra_sample(plan, stage_start + offset as u64).unwrap();
+        assert_eq!(sample.order, order, "stage {stage} fixed order {offset}");
+        assert_eq!(sample.seed, seed, "stage {stage} fixed order {offset}");
+        assert_eq!(sample.pass, Pass::Modified { index: stage as u8 });
         assert!(
             matches!(sample.stage, Stage::MinDegree | Stage::MinFill),
             "fixed order {offset} is not a restart: {:?}",
             sample.stage,
         );
     }
-    // Then the diverse pass again on the ranking, on the seeds the plain one
-    // used.
     for index in 0..46 {
-        let sample = extra_sample(plan, 46 + 3 + index).unwrap();
+        let sample = extra_sample(plan, stage_start + 3 + index).unwrap();
         let main = extra_sample(unmodified, index).unwrap();
         let Order::FillDegreeSampled {
             degree_coefficient, ..
@@ -547,16 +543,17 @@ fn the_hedge_leaves_every_restart_on_the_unmodified_sequence() {
         assert_eq!(
             sample.order,
             Order::FillDegreeSampled {
-                weights: &ranked,
+                weights,
                 degree_coefficient,
             },
+            "stage {stage} diverse candidate {index}",
         );
-        assert_eq!(sample.seed, main.seed);
-        assert_eq!(sample.pass, Pass::Modified { index: 0 });
+        assert_eq!(sample.seed, main.seed, "stage {stage} candidate {index}");
+        assert_eq!(sample.pass, Pass::Modified { index: stage as u8 });
     }
+}
 
-    // Every restart is the one an unhedged portfolio runs, seed for seed.
-    let first_restart = 46 + 3 + 46;
+fn assert_unmodified_restarts(plan: Schedule<'_>, unmodified: Schedule<'_>, first_restart: u64) {
     for step in 0..1_000u64 {
         let sample = extra_sample(plan, first_restart + step).unwrap();
         let main = extra_sample(unmodified, 46 + step).unwrap();
@@ -565,6 +562,23 @@ fn the_hedge_leaves_every_restart_on_the_unmodified_sequence() {
         assert_eq!(sample.pass, Pass::Plain);
     }
     assert!(extra_sample(plan, first_restart + 1_000).is_none());
+}
+
+#[test]
+fn the_hedge_leaves_every_restart_on_the_unmodified_sequence() {
+    let graph = Graph::new(3, [(0, 1), (1, 2)]);
+    let given = [1; 3];
+    let ranked = vec![7, 1, 4];
+    let base_seed = 17;
+    let cell = OnceCell::new();
+    let adjacency = OnceCell::new();
+    let modified = [placed(&graph, &cell, &adjacency, &ranked)];
+    let plan = hedged(base_seed, &modified, &given, 3);
+    let unmodified = schedule(base_seed, false, &given);
+
+    assert_plain_diverse_pass(plan, unmodified);
+    assert_weighted_stage_schedule(plan, unmodified, base_seed, 0, &ranked);
+    assert_unmodified_restarts(plan, unmodified, 46 + 3 + 46);
 }
 
 #[test]
@@ -664,63 +678,11 @@ fn a_series_hedge_runs_one_weighted_stage_per_weighting() {
     let plan = hedged(base_seed, &modified, &given, 3);
     let unmodified = schedule(base_seed, false, &given);
 
-    // The plain diverse pass first, candidate for candidate, as under a hedge
-    // of one weighting.
-    for index in 0..46 {
-        let sample = extra_sample(plan, index).unwrap();
-        let main = extra_sample(unmodified, index).unwrap();
-        assert_eq!(sample.order, main.order, "diverse candidate {index}");
-        assert_eq!(sample.seed, main.seed, "diverse candidate {index}");
-        assert_eq!(sample.pass, Pass::Plain);
-    }
-    // Then a stage per weighting: its fixed orders, then its diverse pass, on
-    // the seeds the plain pass used.
+    assert_plain_diverse_pass(plan, unmodified);
     for (stage, weights) in [(0u64, &first), (1, &second)] {
-        let stage_start = 46 + stage * (3 + 46);
-        let fixed: Vec<(Order<'_>, u64)> = super::standard_orders(base_seed, weights)
-            .into_iter()
-            .filter(|candidate| super::reads_weights(candidate.order))
-            .map(|candidate| (candidate.order, candidate.seed))
-            .collect();
-        assert_eq!(fixed.len(), 3);
-        for (offset, &(order, seed)) in fixed.iter().enumerate() {
-            let sample = extra_sample(plan, stage_start + offset as u64).unwrap();
-            assert_eq!(sample.order, order, "stage {stage} fixed order {offset}");
-            assert_eq!(sample.seed, seed, "stage {stage} fixed order {offset}");
-            assert_eq!(sample.pass, Pass::Modified { index: stage as u8 });
-        }
-        for index in 0..46 {
-            let sample = extra_sample(plan, stage_start + 3 + index).unwrap();
-            let main = extra_sample(unmodified, index).unwrap();
-            let Order::FillDegreeSampled {
-                degree_coefficient, ..
-            } = main.order
-            else {
-                panic!("diverse candidate {index} did not use a fill-degree order");
-            };
-            assert_eq!(
-                sample.order,
-                Order::FillDegreeSampled {
-                    weights,
-                    degree_coefficient,
-                },
-                "stage {stage} diverse candidate {index}",
-            );
-            assert_eq!(sample.seed, main.seed, "stage {stage} candidate {index}");
-            assert_eq!(sample.pass, Pass::Modified { index: stage as u8 });
-        }
+        assert_weighted_stage_schedule(plan, unmodified, base_seed, stage, weights);
     }
-    // Every restart is still the one an unhedged portfolio runs, seed for seed,
-    // and there are as many as ever.
-    let first_restart = 46 + 2 * (3 + 46);
-    for step in 0..1_000u64 {
-        let sample = extra_sample(plan, first_restart + step).unwrap();
-        let main = extra_sample(unmodified, 46 + step).unwrap();
-        assert_eq!(sample.order, main.order, "restart {step}");
-        assert_eq!(sample.seed, main.seed, "restart {step}");
-        assert_eq!(sample.pass, Pass::Plain);
-    }
-    assert!(extra_sample(plan, first_restart + 1_000).is_none());
+    assert_unmodified_restarts(plan, unmodified, 46 + 2 * (3 + 46));
 }
 
 #[test]

@@ -288,114 +288,146 @@ fn parse_hedge_dims(text: &str) -> Vec<usize> {
     dims
 }
 
-fn parse_args(argv: &[String]) -> Args {
-    let mut input: Option<String> = None;
-    let mut out = None;
-    let mut order = None;
-    let mut seed = None;
-    let mut sample = false;
-    let mut weights = None;
-    let mut budget = None;
-    let mut hard_budget = None;
-    let mut hedge_dims: Option<Vec<usize>> = None;
-    let mut hedge_random = None;
-    let mut hedge_reserve = None;
-    let mut mcs_up_to = None;
-    let mut no_mcs = false;
-    let mut mcsm_up_to = None;
-    let mut no_mcsm = false;
-    let mut drop_fill_up_to = None;
-    let mut no_drop_fill = false;
-    let mut recombine_up_to = None;
-    let mut no_recombine = false;
-    let mut merge_up_to = None;
-    let mut no_merge = false;
-    let mut local_merge_up_to = None;
-    let mut no_local_merge = false;
-    let mut no_hedge = false;
-    let mut no_bipartite_lift = false;
-    let mut bipartite_lift_rate = None;
-    let mut capped_restarts = false;
-    let mut sample_band = None;
-    let mut sample_band_alternate = false;
-    let mut sampling_patience = None;
-    let mut no_sampling_patience = false;
-    let mut expensive_orders_up_to = None;
-    let mut trace = false;
-    let mut steps = None;
-    let mut refine = false;
+#[derive(Default)]
+struct RawArgs {
+    input: Option<String>,
+    out: Option<String>,
+    order: Option<Method>,
+    seed: Option<u64>,
+    sample: bool,
+    weights: Option<String>,
+    budget: Option<Duration>,
+    hard_budget: Option<Duration>,
+    hedge_dims: Option<Vec<usize>>,
+    hedge_random: Option<usize>,
+    hedge_reserve: Option<f64>,
+    mcs_up_to: Option<u32>,
+    no_mcs: bool,
+    mcsm_up_to: Option<u32>,
+    no_mcsm: bool,
+    drop_fill_up_to: Option<u32>,
+    no_drop_fill: bool,
+    recombine_up_to: Option<u32>,
+    no_recombine: bool,
+    merge_up_to: Option<u32>,
+    no_merge: bool,
+    local_merge_up_to: Option<u32>,
+    no_local_merge: bool,
+    no_hedge: bool,
+    no_bipartite_lift: bool,
+    bipartite_lift_rate: Option<f64>,
+    capped_restarts: bool,
+    sample_band: Option<u64>,
+    sample_band_alternate: bool,
+    sampling_patience: Option<u64>,
+    no_sampling_patience: bool,
+    expensive_orders_up_to: Option<usize>,
+    trace: bool,
+    steps: Option<u64>,
+    refine: bool,
+}
 
-    let mut i = 0;
-    let value = |i: &mut usize, flag: &str| -> String {
-        *i += 1;
-        argv.get(*i)
-            .cloned()
-            .unwrap_or_else(|| usage_error(&format!("{flag} needs a value")))
-    };
-    let number = |i: &mut usize, flag: &str| -> u64 {
-        let v = value(i, flag);
-        v.parse().unwrap_or_else(|_| {
-            usage_error(&format!("{flag} wants a non-negative integer, got {v:?}"))
-        })
-    };
-    let vertices = |i: &mut usize, flag: &str| -> u32 {
-        u32::try_from(number(i, flag)).unwrap_or_else(|_| {
-            usage_error(&format!("{flag} wants a vertex count in 0..={}", u32::MAX))
-        })
-    };
-    while i < argv.len() {
-        let arg = argv[i].as_str();
+fn arg_value(argv: &[String], i: &mut usize, flag: &str) -> String {
+    *i += 1;
+    argv.get(*i)
+        .cloned()
+        .unwrap_or_else(|| usage_error(&format!("{flag} needs a value")))
+}
+
+fn arg_number(argv: &[String], i: &mut usize, flag: &str) -> u64 {
+    let v = arg_value(argv, i, flag);
+    v.parse()
+        .unwrap_or_else(|_| usage_error(&format!("{flag} wants a non-negative integer, got {v:?}")))
+}
+
+fn arg_vertices(argv: &[String], i: &mut usize, flag: &str) -> u32 {
+    u32::try_from(arg_number(argv, i, flag)).unwrap_or_else(|_| {
+        usage_error(&format!("{flag} wants a vertex count in 0..={}", u32::MAX))
+    })
+}
+
+impl RawArgs {
+    fn parse(argv: &[String]) -> Self {
+        let mut raw = Self::default();
+        let mut i = 0;
+        while i < argv.len() {
+            let arg = argv[i].as_str();
+            match arg {
+                "-h" | "--help" => {
+                    print!("{USAGE}");
+                    exit(0)
+                }
+                "--out" => raw.out = Some(arg_value(argv, &mut i, arg)),
+                "--order" => {
+                    let name = arg_value(argv, &mut i, arg);
+                    raw.order = Some(
+                        Method::parse(&name)
+                            .unwrap_or_else(|| usage_error(&format!("unknown --order {name:?}"))),
+                    );
+                }
+                "--seed" => raw.seed = Some(arg_number(argv, &mut i, arg)),
+                "--ties" => {
+                    let how = arg_value(argv, &mut i, arg);
+                    if how != "sample" {
+                        usage_error(&format!("--ties takes only `sample`, got {how:?}"));
+                    }
+                    raw.sample = true;
+                }
+                "--weights" => raw.weights = Some(arg_value(argv, &mut i, arg)),
+                "--budget" => {
+                    let milliseconds = arg_number(argv, &mut i, arg);
+                    if milliseconds == 0 {
+                        usage_error("--budget wants a positive millisecond count");
+                    }
+                    raw.budget = Some(Duration::from_millis(milliseconds));
+                }
+                "--hard-budget" => {
+                    let milliseconds = arg_number(argv, &mut i, arg);
+                    if milliseconds == 0 {
+                        usage_error("--hard-budget wants a positive millisecond count");
+                    }
+                    raw.hard_budget = Some(Duration::from_millis(milliseconds));
+                }
+                "--steps" => {
+                    let n = arg_number(argv, &mut i, arg);
+                    if n == 0 {
+                        usage_error("--steps wants a positive step count");
+                    }
+                    raw.steps = Some(n);
+                }
+                "--refine" => raw.refine = true,
+                _ if raw.parse_portfolio_flag(argv, &mut i, arg) => {}
+                _ if arg.starts_with('-') && arg != "-" => {
+                    usage_error(&format!("unknown option {arg:?}"))
+                }
+                _ => {
+                    if raw.input.replace(arg.to_string()).is_some() {
+                        usage_error("more than one input graph given");
+                    }
+                }
+            }
+            i += 1;
+        }
+        raw
+    }
+
+    fn parse_portfolio_flag(&mut self, argv: &[String], i: &mut usize, arg: &str) -> bool {
         match arg {
-            "-h" | "--help" => {
-                print!("{USAGE}");
-                exit(0)
-            }
-            "--out" => out = Some(value(&mut i, arg)),
-            "--order" => {
-                let name = value(&mut i, arg);
-                order = Some(
-                    Method::parse(&name)
-                        .unwrap_or_else(|| usage_error(&format!("unknown --order {name:?}"))),
-                );
-            }
-            "--seed" => seed = Some(number(&mut i, arg)),
-            "--ties" => {
-                let how = value(&mut i, arg);
-                if how != "sample" {
-                    usage_error(&format!("--ties takes only `sample`, got {how:?}"));
-                }
-                sample = true;
-            }
-            "--weights" => weights = Some(value(&mut i, arg)),
-            "--budget" => {
-                let milliseconds = number(&mut i, arg);
-                if milliseconds == 0 {
-                    usage_error("--budget wants a positive millisecond count");
-                }
-                budget = Some(Duration::from_millis(milliseconds));
-            }
-            "--hard-budget" => {
-                let milliseconds = number(&mut i, arg);
-                if milliseconds == 0 {
-                    usage_error("--hard-budget wants a positive millisecond count");
-                }
-                hard_budget = Some(Duration::from_millis(milliseconds));
-            }
             "--hedge-dims" => {
-                let list = value(&mut i, arg);
-                hedge_dims = Some(parse_hedge_dims(&list));
+                let list = arg_value(argv, i, arg);
+                self.hedge_dims = Some(parse_hedge_dims(&list));
             }
             "--hedge-random" => {
-                let stages = number(&mut i, arg);
+                let stages = arg_number(argv, i, arg);
                 if stages == 0 || stages > MAX_HEDGE_PASSES as u64 {
                     usage_error(&format!(
                         "--hedge-random wants a stage count in 1..={MAX_HEDGE_PASSES}"
                     ));
                 }
-                hedge_random = Some(stages as usize);
+                self.hedge_random = Some(stages as usize);
             }
             "--hedge-reserve" => {
-                let text = value(&mut i, arg);
+                let text = arg_value(argv, i, arg);
                 let fraction: f64 = text.parse().unwrap_or_else(|_| {
                     usage_error(&format!(
                         "--hedge-reserve wants a fraction in 0 < f <= 1, such as 0.5, not {text:?}"
@@ -404,24 +436,24 @@ fn parse_args(argv: &[String]) -> Args {
                 if !fraction.is_finite() || fraction <= 0.0 || fraction > 1.0 {
                     usage_error("--hedge-reserve wants a fraction in 0 < f <= 1");
                 }
-                hedge_reserve = Some(fraction);
+                self.hedge_reserve = Some(fraction);
             }
-            "--mcs-up-to" => mcs_up_to = Some(vertices(&mut i, arg)),
-            "--no-mcs" => no_mcs = true,
-            "--mcsm-up-to" => mcsm_up_to = Some(vertices(&mut i, arg)),
-            "--no-mcsm" => no_mcsm = true,
-            "--drop-fill-up-to" => drop_fill_up_to = Some(vertices(&mut i, arg)),
-            "--no-drop-fill" => no_drop_fill = true,
-            "--recombine-up-to" => recombine_up_to = Some(vertices(&mut i, arg)),
-            "--no-recombine" => no_recombine = true,
-            "--merge-up-to" => merge_up_to = Some(vertices(&mut i, arg)),
-            "--no-merge" => no_merge = true,
-            "--local-merge-up-to" => local_merge_up_to = Some(vertices(&mut i, arg)),
-            "--no-local-merge" => no_local_merge = true,
-            "--no-hedge" => no_hedge = true,
-            "--no-bipartite-lift" => no_bipartite_lift = true,
+            "--mcs-up-to" => self.mcs_up_to = Some(arg_vertices(argv, i, arg)),
+            "--no-mcs" => self.no_mcs = true,
+            "--mcsm-up-to" => self.mcsm_up_to = Some(arg_vertices(argv, i, arg)),
+            "--no-mcsm" => self.no_mcsm = true,
+            "--drop-fill-up-to" => self.drop_fill_up_to = Some(arg_vertices(argv, i, arg)),
+            "--no-drop-fill" => self.no_drop_fill = true,
+            "--recombine-up-to" => self.recombine_up_to = Some(arg_vertices(argv, i, arg)),
+            "--no-recombine" => self.no_recombine = true,
+            "--merge-up-to" => self.merge_up_to = Some(arg_vertices(argv, i, arg)),
+            "--no-merge" => self.no_merge = true,
+            "--local-merge-up-to" => self.local_merge_up_to = Some(arg_vertices(argv, i, arg)),
+            "--no-local-merge" => self.no_local_merge = true,
+            "--no-hedge" => self.no_hedge = true,
+            "--no-bipartite-lift" => self.no_bipartite_lift = true,
             "--bipartite-lift-rate" => {
-                let text = value(&mut i, arg);
+                let text = arg_value(argv, i, arg);
                 let rate: f64 = text.parse().unwrap_or_else(|_| {
                     usage_error(&format!(
                         "--bipartite-lift-rate wants edges per millisecond above zero, \
@@ -431,13 +463,13 @@ fn parse_args(argv: &[String]) -> Args {
                 if !rate.is_finite() || rate <= 0.0 {
                     usage_error("--bipartite-lift-rate wants edges per millisecond above zero");
                 }
-                bipartite_lift_rate = Some(rate);
+                self.bipartite_lift_rate = Some(rate);
             }
-            "--capped-restarts" => capped_restarts = true,
-            "--sample-band" => sample_band = Some(number(&mut i, arg)),
-            "--sample-band-alternate" => sample_band_alternate = true,
+            "--capped-restarts" => self.capped_restarts = true,
+            "--sample-band" => self.sample_band = Some(arg_number(argv, i, arg)),
+            "--sample-band-alternate" => self.sample_band_alternate = true,
             "--sampling-patience" => {
-                let restarts = number(&mut i, arg);
+                let restarts = arg_number(argv, i, arg);
                 if restarts == 0 {
                     usage_error(
                         "--sampling-patience wants a positive restart floor; a floor of zero \
@@ -445,405 +477,410 @@ fn parse_args(argv: &[String]) -> Args {
                          --no-sampling-patience is how the rule is turned off",
                     );
                 }
-                sampling_patience = Some(restarts);
+                self.sampling_patience = Some(restarts);
             }
-            "--no-sampling-patience" => no_sampling_patience = true,
+            "--no-sampling-patience" => self.no_sampling_patience = true,
             "--expensive-orders-up-to" => {
-                expensive_orders_up_to =
-                    Some(usize::try_from(number(&mut i, arg)).unwrap_or_else(|_| {
+                self.expensive_orders_up_to = Some(
+                    usize::try_from(arg_number(argv, i, arg)).unwrap_or_else(|_| {
                         usage_error(&format!("{arg} wants a vertex count in 0..={}", usize::MAX))
-                    }));
+                    }),
+                );
             }
-            "--trace" => trace = true,
-            "--steps" => {
-                let n = number(&mut i, arg);
-                if n == 0 {
-                    usage_error("--steps wants a positive step count");
-                }
-                steps = Some(n);
-            }
-            "--refine" => refine = true,
-            _ if arg.starts_with('-') && arg != "-" => {
-                usage_error(&format!("unknown option {arg:?}"))
-            }
-            _ => {
-                if input.replace(arg.to_string()).is_some() {
-                    usage_error("more than one input graph given");
-                }
-            }
+            "--trace" => self.trace = true,
+            _ => return false,
         }
-        i += 1;
+        true
     }
 
-    let Some(input) = input else {
-        usage_error("no input graph given");
-    };
-    let order = order.unwrap_or(Method::Portfolio);
-
-    // Validate order-specific flags after the order and all flags are known.
-    let needs = |flag: &str, ok: bool, orders: &str| {
-        if !ok {
-            usage_error(&format!(
-                "{flag} is not valid with --order {}; use --order {orders}",
-                order.name()
-            ));
-        }
-    };
-    let greedy = matches!(order, Method::MinFill | Method::MinDegree);
-    if sample {
-        needs("--ties sample", greedy, "minfill or mindegree");
-    }
-    if weights.is_some() {
-        needs("--weights", greedy, "minfill or mindegree");
-        if !sample {
-            usage_error("--weights requires --ties sample");
-        }
-    }
-    if seed.is_some() {
-        needs(
-            "--seed",
-            order != Method::FlowCutter,
-            "minfill, mindegree, nested-dissection, merge-loop or portfolio",
-        );
-    }
-    if steps.is_some() {
-        needs("--steps", order == Method::FlowCutter, "flowcutter");
-        if budget.is_some() {
-            usage_error("--steps and --budget both bound flowcutter; give one");
-        }
-    }
-    // Every flag here tunes something only the portfolio has.
-    for (flag, given) in [
-        ("--hard-budget", hard_budget.is_some()),
-        ("--hedge-dims", hedge_dims.is_some()),
-        ("--hedge-random", hedge_random.is_some()),
-        ("--hedge-reserve", hedge_reserve.is_some()),
-        ("--no-hedge", no_hedge),
-        ("--no-bipartite-lift", no_bipartite_lift),
-        ("--bipartite-lift-rate", bipartite_lift_rate.is_some()),
-        ("--mcs-up-to", mcs_up_to.is_some()),
-        ("--no-mcs", no_mcs),
-        ("--mcsm-up-to", mcsm_up_to.is_some()),
-        ("--no-mcsm", no_mcsm),
-        ("--drop-fill-up-to", drop_fill_up_to.is_some()),
-        ("--no-drop-fill", no_drop_fill),
-        ("--recombine-up-to", recombine_up_to.is_some()),
-        ("--no-recombine", no_recombine),
-        ("--merge-up-to", merge_up_to.is_some()),
-        ("--no-merge", no_merge),
-        ("--local-merge-up-to", local_merge_up_to.is_some()),
-        ("--no-local-merge", no_local_merge),
-        ("--capped-restarts", capped_restarts),
-        ("--sample-band", sample_band.is_some()),
-        ("--sample-band-alternate", sample_band_alternate),
-        ("--sampling-patience", sampling_patience.is_some()),
-        ("--no-sampling-patience", no_sampling_patience),
-        ("--expensive-orders-up-to", expensive_orders_up_to.is_some()),
-        ("--trace", trace),
-    ] {
-        if given {
-            needs(flag, order == Method::Portfolio, "portfolio");
-        }
-    }
-    if let Some(hard) = hard_budget {
-        let Some(soft) = budget else {
-            usage_error("--hard-budget requires --budget");
+    fn validate_order_and_hedge(&self, order: Method) {
+        // Validate order-specific flags after the order and all flags are known.
+        let needs = |flag: &str, ok: bool, orders: &str| {
+            if !ok {
+                usage_error(&format!(
+                    "{flag} is not valid with --order {}; use --order {orders}",
+                    order.name()
+                ));
+            }
         };
-        if hard < soft {
-            usage_error("--hard-budget must be at least --budget");
+        let greedy = matches!(order, Method::MinFill | Method::MinDegree);
+        if self.sample {
+            needs("--ties sample", greedy, "minfill or mindegree");
         }
-    }
-    // --hedge-dims and --hedge-random both say what the hedge's weighted stages
-    // run, so each is refused beside anything else that says it.
-    if let Some(flag) = hedge_dims
-        .is_some()
-        .then_some("--hedge-dims")
-        .or(hedge_random.is_some().then_some("--hedge-random"))
-    {
-        if hedge_dims.is_some() && hedge_random.is_some() {
-            usage_error(
-                "--hedge-dims and --hedge-random each say what the hedge's weighted stages \
-                 run; give one",
+        if self.weights.is_some() {
+            needs("--weights", greedy, "minfill or mindegree");
+            if !self.sample {
+                usage_error("--weights requires --ties sample");
+            }
+        }
+        if self.seed.is_some() {
+            needs(
+                "--seed",
+                order != Method::FlowCutter,
+                "minfill, mindegree, nested-dissection, merge-loop or portfolio",
             );
         }
-        if no_hedge {
-            usage_error(&format!(
-                "{flag} asks for weighted stages and --no-hedge runs none; give one"
-            ));
+        if self.steps.is_some() {
+            needs("--steps", order == Method::FlowCutter, "flowcutter");
+            if self.budget.is_some() {
+                usage_error("--steps and --budget both bound flowcutter; give one");
+            }
         }
-    }
-    // The reserve decides how many stages follow the first, so it says nothing
-    // where there is no second stage to refuse. With neither flag the series is
-    // the portfolio's own, which has more than one stage.
-    if hedge_reserve.is_some() {
-        let stages = hedge_dims
-            .as_ref()
-            .map(Vec::len)
-            .or(hedge_random)
-            .unwrap_or(DEFAULT_HEDGE_DIMS.len());
-        if stages < 2 {
-            usage_error(
-                "--hedge-reserve decides how many weighted stages run after the first, and \
-                 the first runs on any budget; give --hedge-dims or --hedge-random with two \
-                 or more stages",
-            );
-        }
-        if no_hedge {
-            usage_error(
-                "--hedge-reserve says how much of the budget the hedge's weighted stages may \
-                 spend and --no-hedge runs none; give one",
-            );
-        }
-        if budget.is_none() {
-            usage_error(
-                "--hedge-reserve requires --budget: the reserve is a fraction of the time the \
-                 restarts would otherwise take, and a run with no budget leaves every stage \
-                 unbounded",
-            );
-        }
-    }
-    // The rate decides whether the bipartite lift runs, so it says nothing
-    // where the stage is off.
-    if bipartite_lift_rate.is_some() && no_bipartite_lift {
-        usage_error(
-            "--bipartite-lift-rate says how much work the bipartite lift may do, and \
-             --no-bipartite-lift turns it off",
-        );
-    }
-    // The count is what stops the restarts of a run with no deadline, so the
-    // flag decides nothing there.
-    if capped_restarts && budget.is_none() {
-        usage_error(
-            "--capped-restarts requires --budget: with no deadline the restarts stop at \
-             their count anyway",
-        );
-    }
-    // Alternating with a band of zero is the exact minimum on every restart,
-    // so the flag would decide nothing. Without --sample-band the library's
-    // own band applies, which is not zero, so only the flag set to zero is
-    // the inert pair.
-    if sample_band_alternate && sample_band == Some(0) {
-        usage_error(
-            "--sample-band-alternate alternates between the exact minimum and the band, \
-             and --sample-band 0 is the exact minimum",
-        );
-    }
-    if sampling_patience.is_some() && no_sampling_patience {
-        usage_error(
-            "--sampling-patience and --no-sampling-patience both say when the restarts \
-             stop; give one",
-        );
-    }
-    // Each pair says whether one construction runs and how large a graph it
-    // runs on, so giving both leaves one of them with nothing to decide.
-    for (gate, gate_given, off, off_given, stage) in [
-        (
-            "--mcs-up-to",
-            mcs_up_to.is_some(),
-            "--no-mcs",
-            no_mcs,
-            "maximum cardinality search candidate",
-        ),
-        (
-            "--mcsm-up-to",
-            mcsm_up_to.is_some(),
-            "--no-mcsm",
-            no_mcsm,
-            "MCS-M candidate",
-        ),
-        (
-            "--drop-fill-up-to",
-            drop_fill_up_to.is_some(),
-            "--no-drop-fill",
-            no_drop_fill,
-            "fill-dropping pass",
-        ),
-        (
-            "--recombine-up-to",
-            recombine_up_to.is_some(),
-            "--no-recombine",
-            no_recombine,
-            "recombination stage",
-        ),
-        (
-            "--merge-up-to",
-            merge_up_to.is_some(),
-            "--no-merge",
-            no_merge,
-            "merge loop",
-        ),
-        (
-            "--local-merge-up-to",
-            local_merge_up_to.is_some(),
-            "--no-local-merge",
-            no_local_merge,
-            "local re-triangulation stage",
-        ),
-    ] {
-        if gate_given && off_given {
-            usage_error(&format!(
-                "{gate} gates the {stage} and {off} runs none; give one"
-            ));
-        }
-    }
-    // Four stages take their share off a window a run with no budget does not
-    // have. The library refuses the equivalent config.
-    if budget.is_none() {
-        for (flag, given, stage, window) in [
+        // Every flag here tunes something only the portfolio has.
+        for (flag, given) in [
+            ("--hard-budget", self.hard_budget.is_some()),
+            ("--hedge-dims", self.hedge_dims.is_some()),
+            ("--hedge-random", self.hedge_random.is_some()),
+            ("--hedge-reserve", self.hedge_reserve.is_some()),
+            ("--no-hedge", self.no_hedge),
+            ("--no-bipartite-lift", self.no_bipartite_lift),
+            ("--bipartite-lift-rate", self.bipartite_lift_rate.is_some()),
+            ("--mcs-up-to", self.mcs_up_to.is_some()),
+            ("--no-mcs", self.no_mcs),
+            ("--mcsm-up-to", self.mcsm_up_to.is_some()),
+            ("--no-mcsm", self.no_mcsm),
+            ("--drop-fill-up-to", self.drop_fill_up_to.is_some()),
+            ("--no-drop-fill", self.no_drop_fill),
+            ("--recombine-up-to", self.recombine_up_to.is_some()),
+            ("--no-recombine", self.no_recombine),
+            ("--merge-up-to", self.merge_up_to.is_some()),
+            ("--no-merge", self.no_merge),
+            ("--local-merge-up-to", self.local_merge_up_to.is_some()),
+            ("--no-local-merge", self.no_local_merge),
+            ("--capped-restarts", self.capped_restarts),
+            ("--sample-band", self.sample_band.is_some()),
+            ("--sample-band-alternate", self.sample_band_alternate),
+            ("--sampling-patience", self.sampling_patience.is_some()),
+            ("--no-sampling-patience", self.no_sampling_patience),
             (
-                "--no-bipartite-lift",
-                no_bipartite_lift,
-                "bipartite lift",
-                "soft budget",
+                "--expensive-orders-up-to",
+                self.expensive_orders_up_to.is_some(),
             ),
-            (
-                "--bipartite-lift-rate",
-                bipartite_lift_rate.is_some(),
-                "bipartite lift",
-                "soft budget",
-            ),
-            (
-                "--recombine-up-to",
-                recombine_up_to.is_some(),
-                "recombination stage",
-                "hard window",
-            ),
-            (
-                "--no-recombine",
-                no_recombine,
-                "recombination stage",
-                "hard window",
-            ),
-            (
-                "--merge-up-to",
-                merge_up_to.is_some(),
-                "merge loop",
-                "hard window",
-            ),
-            ("--no-merge", no_merge, "merge loop", "hard window"),
-            (
-                "--local-merge-up-to",
-                local_merge_up_to.is_some(),
-                "local re-triangulation stage",
-                "hard window",
-            ),
-            (
-                "--no-local-merge",
-                no_local_merge,
-                "local re-triangulation stage",
-                "hard window",
-            ),
+            ("--trace", self.trace),
         ] {
             if given {
+                needs(flag, order == Method::Portfolio, "portfolio");
+            }
+        }
+        if let Some(hard) = self.hard_budget {
+            let Some(soft) = self.budget else {
+                usage_error("--hard-budget requires --budget");
+            };
+            if hard < soft {
+                usage_error("--hard-budget must be at least --budget");
+            }
+        }
+        // --hedge-dims and --hedge-random both say what the hedge's weighted stages
+        // run, so each is refused beside anything else that says it.
+        if let Some(flag) = self
+            .hedge_dims
+            .is_some()
+            .then_some("--hedge-dims")
+            .or(self.hedge_random.is_some().then_some("--hedge-random"))
+        {
+            if self.hedge_dims.is_some() && self.hedge_random.is_some() {
+                usage_error(
+                    "--hedge-dims and --hedge-random each say what the hedge's weighted stages \
+                     run; give one",
+                );
+            }
+            if self.no_hedge {
                 usage_error(&format!(
-                    "{flag} requires --budget: the {stage} runs on a share of the {window}, \
-                     and a run with no budget does not run it at all"
+                    "{flag} asks for weighted stages and --no-hedge runs none; give one"
                 ));
             }
         }
     }
-    // The portfolio's trailing candidate is FlowCutter, so the winner has
-    // already been cut along FlowCutter separators when the run ends.
-    if refine && order == Method::Portfolio {
-        usage_error(
-            "--refine is not valid with --order portfolio: the portfolio's own trailing \
-             FlowCutter candidate runs inside the budget, and there is nothing left for a \
-             refinement pass to do afterwards",
-        );
+
+    fn validate_stage_gates_and_budgets(&self, order: Method) {
+        // The reserve decides how many stages follow the first, so it says nothing
+        // where there is no second stage to refuse. With neither flag the series is
+        // the portfolio's own, which has more than one stage.
+        if self.hedge_reserve.is_some() {
+            let stages = self
+                .hedge_dims
+                .as_ref()
+                .map(Vec::len)
+                .or(self.hedge_random)
+                .unwrap_or(DEFAULT_HEDGE_DIMS.len());
+            if stages < 2 {
+                usage_error(
+                    "--hedge-reserve decides how many weighted stages run after the first, and \
+                     the first runs on any budget; give --hedge-dims or --hedge-random with two \
+                     or more stages",
+                );
+            }
+            if self.no_hedge {
+                usage_error(
+                    "--hedge-reserve says how much of the budget the hedge's weighted stages may \
+                     spend and --no-hedge runs none; give one",
+                );
+            }
+            if self.budget.is_none() {
+                usage_error(
+                    "--hedge-reserve requires --budget: the reserve is a fraction of the time the \
+                     restarts would otherwise take, and a run with no budget leaves every stage \
+                     unbounded",
+                );
+            }
+        }
+        // The rate decides whether the bipartite lift runs, so it says nothing
+        // where the stage is off.
+        if self.bipartite_lift_rate.is_some() && self.no_bipartite_lift {
+            usage_error(
+                "--bipartite-lift-rate says how much work the bipartite lift may do, and \
+                 --no-bipartite-lift turns it off",
+            );
+        }
+        // The count is what stops the restarts of a run with no deadline, so the
+        // flag decides nothing there.
+        if self.capped_restarts && self.budget.is_none() {
+            usage_error(
+                "--capped-restarts requires --budget: with no deadline the restarts stop at \
+                 their count anyway",
+            );
+        }
+        // Alternating with a band of zero is the exact minimum on every restart,
+        // so the flag would decide nothing. Without --sample-band the library's
+        // own band applies, which is not zero, so only the flag set to zero is
+        // the inert pair.
+        if self.sample_band_alternate && self.sample_band == Some(0) {
+            usage_error(
+                "--sample-band-alternate alternates between the exact minimum and the band, \
+                 and --sample-band 0 is the exact minimum",
+            );
+        }
+        if self.sampling_patience.is_some() && self.no_sampling_patience {
+            usage_error(
+                "--sampling-patience and --no-sampling-patience both say when the restarts \
+                 stop; give one",
+            );
+        }
+        // Each pair says whether one construction runs and how large a graph it
+        // runs on, so giving both leaves one of them with nothing to decide.
+        for (gate, gate_given, off, off_given, stage) in [
+            (
+                "--mcs-up-to",
+                self.mcs_up_to.is_some(),
+                "--no-mcs",
+                self.no_mcs,
+                "maximum cardinality search candidate",
+            ),
+            (
+                "--mcsm-up-to",
+                self.mcsm_up_to.is_some(),
+                "--no-mcsm",
+                self.no_mcsm,
+                "MCS-M candidate",
+            ),
+            (
+                "--drop-fill-up-to",
+                self.drop_fill_up_to.is_some(),
+                "--no-drop-fill",
+                self.no_drop_fill,
+                "fill-dropping pass",
+            ),
+            (
+                "--recombine-up-to",
+                self.recombine_up_to.is_some(),
+                "--no-recombine",
+                self.no_recombine,
+                "recombination stage",
+            ),
+            (
+                "--merge-up-to",
+                self.merge_up_to.is_some(),
+                "--no-merge",
+                self.no_merge,
+                "merge loop",
+            ),
+            (
+                "--local-merge-up-to",
+                self.local_merge_up_to.is_some(),
+                "--no-local-merge",
+                self.no_local_merge,
+                "local re-triangulation stage",
+            ),
+        ] {
+            if gate_given && off_given {
+                usage_error(&format!(
+                    "{gate} gates the {stage} and {off} runs none; give one"
+                ));
+            }
+        }
+        // Four stages take their share off a window a run with no budget does not
+        // have. The library refuses the equivalent config.
+        if self.budget.is_none() {
+            for (flag, given, stage, window) in [
+                (
+                    "--no-bipartite-lift",
+                    self.no_bipartite_lift,
+                    "bipartite lift",
+                    "soft budget",
+                ),
+                (
+                    "--bipartite-lift-rate",
+                    self.bipartite_lift_rate.is_some(),
+                    "bipartite lift",
+                    "soft budget",
+                ),
+                (
+                    "--recombine-up-to",
+                    self.recombine_up_to.is_some(),
+                    "recombination stage",
+                    "hard window",
+                ),
+                (
+                    "--no-recombine",
+                    self.no_recombine,
+                    "recombination stage",
+                    "hard window",
+                ),
+                (
+                    "--merge-up-to",
+                    self.merge_up_to.is_some(),
+                    "merge loop",
+                    "hard window",
+                ),
+                ("--no-merge", self.no_merge, "merge loop", "hard window"),
+                (
+                    "--local-merge-up-to",
+                    self.local_merge_up_to.is_some(),
+                    "local re-triangulation stage",
+                    "hard window",
+                ),
+                (
+                    "--no-local-merge",
+                    self.no_local_merge,
+                    "local re-triangulation stage",
+                    "hard window",
+                ),
+            ] {
+                if given {
+                    usage_error(&format!(
+                        "{flag} requires --budget: the {stage} runs on a share of the {window}, \
+                         and a run with no budget does not run it at all"
+                    ));
+                }
+            }
+        }
+        // The portfolio's trailing candidate is FlowCutter, so the winner has
+        // already been cut along FlowCutter separators when the run ends.
+        if self.refine && order == Method::Portfolio {
+            usage_error(
+                "--refine is not valid with --order portfolio: the portfolio's own trailing \
+                 FlowCutter candidate runs inside the budget, and there is nothing left for a \
+                 refinement pass to do afterwards",
+            );
+        }
     }
 
-    let mut config = budget.map_or_else(
-        PortfolioConfig::standard,
-        PortfolioConfig::standard_with_budget,
-    );
-    if let Some(hard_budget) = hard_budget {
-        config = config.with_hard_budget(hard_budget);
+    fn build_portfolio_config(&self) -> PortfolioConfig {
+        let mut config = self.budget.map_or_else(
+            PortfolioConfig::standard,
+            PortfolioConfig::standard_with_budget,
+        );
+        if let Some(hard_budget) = self.hard_budget {
+            config = config.with_hard_budget(hard_budget);
+        }
+        if self.no_hedge {
+            config = config.with_hedge(Hedge::Off);
+        }
+        if let Some(rate) = self.bipartite_lift_rate {
+            config = config.with_bipartite_lift_rate(rate);
+        }
+        if self.no_bipartite_lift {
+            config = config.without_bipartite_lift();
+        }
+        if let Some(dims) = &self.hedge_dims {
+            config = config.with_hedge(Hedge::Passes(HedgeSeries::eccentricity_dims(dims)));
+        }
+        if let Some(stages) = self.hedge_random {
+            config = config.with_hedge(Hedge::Passes(HedgeSeries::random(stages)));
+        }
+        if let Some(fraction) = self.hedge_reserve {
+            config = config.with_hedge_reserve(fraction);
+        }
+        if let Some(count) = self.mcs_up_to {
+            config = config.with_maximum_cardinality(count);
+        }
+        if self.no_mcs {
+            config = config.without_maximum_cardinality();
+        }
+        if let Some(count) = self.mcsm_up_to {
+            config = config.with_minimal_triangulation(count);
+        }
+        if self.no_mcsm {
+            config = config.without_minimal_triangulation();
+        }
+        if let Some(count) = self.drop_fill_up_to {
+            config = config.with_triangulation_refinement(count);
+        }
+        if self.no_drop_fill {
+            config = config.without_triangulation_refinement();
+        }
+        if let Some(count) = self.recombine_up_to {
+            config = config.with_recombination(count);
+        }
+        if self.no_recombine {
+            config = config.without_recombination();
+        }
+        if let Some(count) = self.merge_up_to {
+            config = config.with_merge_loop(count);
+        }
+        if self.no_merge {
+            config = config.without_merge_loop();
+        }
+        if let Some(count) = self.local_merge_up_to {
+            config = config.with_local_merge(count);
+        }
+        if self.no_local_merge {
+            config = config.without_local_merge();
+        }
+        if self.capped_restarts {
+            config = config.with_restarts_to_deadline(false);
+        }
+        if let Some(band) = self.sample_band {
+            config = config.with_sample_band(band);
+        }
+        if self.sample_band_alternate {
+            config = config.with_sample_band_alternate(true);
+        }
+        if let Some(min_restarts) = self.sampling_patience {
+            config = config.with_sampling_patience(SamplingPatience::Halving { min_restarts });
+        }
+        if self.no_sampling_patience {
+            config = config.with_sampling_patience(SamplingPatience::Off);
+        }
+        if let Some(count) = self.expensive_orders_up_to {
+            config = config.with_expensive_orders_up_to(count);
+        }
+        config
     }
-    if no_hedge {
-        config = config.with_hedge(Hedge::Off);
-    }
-    if let Some(rate) = bipartite_lift_rate {
-        config = config.with_bipartite_lift_rate(rate);
-    }
-    if no_bipartite_lift {
-        config = config.without_bipartite_lift();
-    }
-    if let Some(dims) = &hedge_dims {
-        config = config.with_hedge(Hedge::Passes(HedgeSeries::eccentricity_dims(dims)));
-    }
-    if let Some(stages) = hedge_random {
-        config = config.with_hedge(Hedge::Passes(HedgeSeries::random(stages)));
-    }
-    if let Some(fraction) = hedge_reserve {
-        config = config.with_hedge_reserve(fraction);
-    }
-    if let Some(count) = mcs_up_to {
-        config = config.with_maximum_cardinality(count);
-    }
-    if no_mcs {
-        config = config.without_maximum_cardinality();
-    }
-    if let Some(count) = mcsm_up_to {
-        config = config.with_minimal_triangulation(count);
-    }
-    if no_mcsm {
-        config = config.without_minimal_triangulation();
-    }
-    if let Some(count) = drop_fill_up_to {
-        config = config.with_triangulation_refinement(count);
-    }
-    if no_drop_fill {
-        config = config.without_triangulation_refinement();
-    }
-    if let Some(count) = recombine_up_to {
-        config = config.with_recombination(count);
-    }
-    if no_recombine {
-        config = config.without_recombination();
-    }
-    if let Some(count) = merge_up_to {
-        config = config.with_merge_loop(count);
-    }
-    if no_merge {
-        config = config.without_merge_loop();
-    }
-    if let Some(count) = local_merge_up_to {
-        config = config.with_local_merge(count);
-    }
-    if no_local_merge {
-        config = config.without_local_merge();
-    }
-    if capped_restarts {
-        config = config.with_restarts_to_deadline(false);
-    }
-    if let Some(band) = sample_band {
-        config = config.with_sample_band(band);
-    }
-    if sample_band_alternate {
-        config = config.with_sample_band_alternate(true);
-    }
-    if let Some(min_restarts) = sampling_patience {
-        config = config.with_sampling_patience(SamplingPatience::Halving { min_restarts });
-    }
-    if no_sampling_patience {
-        config = config.with_sampling_patience(SamplingPatience::Off);
-    }
-    if let Some(count) = expensive_orders_up_to {
-        config = config.with_expensive_orders_up_to(count);
-    }
+}
+
+fn parse_args(argv: &[String]) -> Args {
+    let raw = RawArgs::parse(argv);
+    let Some(input) = raw.input.clone() else {
+        usage_error("no input graph given");
+    };
+    let order = raw.order.unwrap_or(Method::Portfolio);
+    raw.validate_order_and_hedge(order);
+    raw.validate_stage_gates_and_budgets(order);
+    let portfolio = raw.build_portfolio_config();
 
     Args {
         input,
-        out,
+        out: raw.out,
         order,
-        seed,
-        sample,
-        weights,
-        budget,
-        steps,
-        trace,
-        refine,
-        portfolio: config,
+        seed: raw.seed,
+        sample: raw.sample,
+        weights: raw.weights,
+        budget: raw.budget,
+        steps: raw.steps,
+        trace: raw.trace,
+        refine: raw.refine,
+        portfolio,
     }
 }
 

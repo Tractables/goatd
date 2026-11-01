@@ -204,6 +204,25 @@ fn a_weights_file_biases_the_sample_and_is_checked_against_the_graph() {
     );
 }
 
+fn assert_refused_with(flags: &[&str], expected: &[&str]) {
+    let mut args: Vec<&str> = if flags.is_empty() { vec![] } else { vec!["-"] };
+    args.extend_from_slice(flags);
+    let out = goatd(&args, Some(&grid_gr()));
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{flags:?} must be a usage error; stderr: {}",
+        stderr_of(&out)
+    );
+    let err = stderr_of(&out);
+    for want in expected {
+        assert!(
+            err.contains(want),
+            "{flags:?}: must name {want:?}, got: {err}"
+        );
+    }
+}
+
 /// An order-specific flag is refused under another order, and the message
 /// names the flag and both orders.
 #[test]
@@ -226,35 +245,12 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--ties sample", "portfolio"],
         ),
         (
-            &["--order", "minfill", "--weights", "w.txt"],
-            &["--weights", "--ties sample"],
-        ),
-        (
             &["--order", "flowcutter", "--weights", "w.txt"],
             &["--weights", "flowcutter", "minfill or mindegree"],
         ),
         (
-            &["--order", "flowcutter", "--steps", "10", "--budget", "10"],
-            &["--steps", "--budget"],
-        ),
-        (
             &["--order", "minfill", "--hard-budget", "10"],
             &["--hard-budget", "minfill", "portfolio"],
-        ),
-        (
-            &["--order", "portfolio", "--hard-budget", "10"],
-            &["--hard-budget", "--budget"],
-        ),
-        (
-            &[
-                "--order",
-                "portfolio",
-                "--budget",
-                "20",
-                "--hard-budget",
-                "10",
-            ],
-            &["--hard-budget", "--budget", "at least"],
         ),
         (
             &["--order", "minfill", "--no-hedge"],
@@ -277,20 +273,12 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--no-mcs", "minfill", "portfolio"],
         ),
         (
-            &["--order", "portfolio", "--mcs-up-to", "500", "--no-mcs"],
-            &["--mcs-up-to", "--no-mcs", "give one"],
-        ),
-        (
             &["--order", "minfill", "--mcsm-up-to", "500"],
             &["--mcsm-up-to", "portfolio"],
         ),
         (
             &["--order", "minfill", "--no-mcsm"],
             &["--no-mcsm", "minfill", "portfolio"],
-        ),
-        (
-            &["--order", "portfolio", "--mcsm-up-to", "500", "--no-mcsm"],
-            &["--mcsm-up-to", "--no-mcsm", "give one"],
         ),
         (
             &["--order", "minfill", "--drop-fill-up-to", "500"],
@@ -301,6 +289,63 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--no-drop-fill", "minfill", "portfolio"],
         ),
         (
+            &["--order", "minfill", "--hedge-dims", "1,2"],
+            &["--hedge-dims", "portfolio"],
+        ),
+        (
+            &["--order", "minfill", "--hedge-random", "2"],
+            &["--hedge-random", "portfolio"],
+        ),
+        (
+            &["--order", "minfill", "--hedge-reserve", "0.5"],
+            &["--hedge-reserve", "portfolio"],
+        ),
+        (
+            &["--order", "minfill", "--capped-restarts"],
+            &["--capped-restarts", "minfill", "portfolio"],
+        ),
+        (
+            &["--order", "minfill", "--sampling-patience", "50"],
+            &["--sampling-patience", "minfill", "portfolio"],
+        ),
+        (
+            &["--order", "flowcutter", "--no-sampling-patience"],
+            &["--no-sampling-patience", "flowcutter", "portfolio"],
+        ),
+        (
+            &["--order", "minfill", "--expensive-orders-up-to", "50000"],
+            &["--expensive-orders-up-to", "minfill", "portfolio"],
+        ),
+        (
+            &["--order", "flowcutter", "--expensive-orders-up-to", "50000"],
+            &["--expensive-orders-up-to", "flowcutter", "portfolio"],
+        ),
+        (
+            &["--order", "flowcutter", "--trace"],
+            &["--trace", "flowcutter", "portfolio"],
+        ),
+        (
+            &["--order", "portfolio", "--refine"],
+            &["--refine", "portfolio"],
+        ),
+    ];
+    for &(flags, expected) in cases {
+        assert_refused_with(flags, expected);
+    }
+}
+
+#[test]
+fn conflicting_and_out_of_range_hedge_or_stage_flags_are_refused() {
+    let cases: &[(&[&str], &[&str])] = &[
+        (
+            &["--order", "portfolio", "--mcs-up-to", "500", "--no-mcs"],
+            &["--mcs-up-to", "--no-mcs", "give one"],
+        ),
+        (
+            &["--order", "portfolio", "--mcsm-up-to", "500", "--no-mcsm"],
+            &["--mcsm-up-to", "--no-mcsm", "give one"],
+        ),
+        (
             &[
                 "--order",
                 "portfolio",
@@ -309,10 +354,6 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
                 "--no-drop-fill",
             ],
             &["--drop-fill-up-to", "--no-drop-fill", "give one"],
-        ),
-        (
-            &["--order", "minfill", "--hedge-dims", "1,2"],
-            &["--hedge-dims", "portfolio"],
         ),
         (
             &["--order", "portfolio", "--hedge-dims", "1,9"],
@@ -342,20 +383,12 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--hedge-dims", "--no-hedge", "give one"],
         ),
         (
-            &["--order", "minfill", "--hedge-random", "2"],
-            &["--hedge-random", "portfolio"],
-        ),
-        (
             &["--order", "portfolio", "--hedge-random", "9"],
             &["--hedge-random", "1..=8"],
         ),
         (
             &["--order", "portfolio", "--no-hedge", "--hedge-random", "2"],
             &["--hedge-random", "--no-hedge", "give one"],
-        ),
-        (
-            &["--order", "minfill", "--hedge-reserve", "0.5"],
-            &["--hedge-reserve", "portfolio"],
         ),
         (
             &[
@@ -413,20 +446,14 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--hedge-reserve", "such as 0.5"],
         ),
         (
-            &["--order", "minfill", "--capped-restarts"],
-            &["--capped-restarts", "minfill", "portfolio"],
-        ),
-        (
-            &["--order", "portfolio", "--capped-restarts"],
-            &["--capped-restarts", "--budget"],
-        ),
-        (
-            &["--order", "minfill", "--sampling-patience", "50"],
-            &["--sampling-patience", "minfill", "portfolio"],
-        ),
-        (
-            &["--order", "flowcutter", "--no-sampling-patience"],
-            &["--no-sampling-patience", "flowcutter", "portfolio"],
+            &[
+                "--order",
+                "portfolio",
+                "--no-hedge",
+                "--hedge-reserve",
+                "0.5",
+            ],
+            &["--hedge-reserve", "--no-hedge", "give one"],
         ),
         (
             &[
@@ -439,16 +466,50 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--sampling-patience", "--no-sampling-patience"],
         ),
         (
-            &["--order", "minfill", "--expensive-orders-up-to", "50000"],
-            &["--expensive-orders-up-to", "minfill", "portfolio"],
+            &[
+                "--order",
+                "portfolio",
+                "--sample-band",
+                "0",
+                "--sample-band-alternate",
+            ],
+            &["--sample-band-alternate", "--sample-band 0"],
         ),
         (
-            &["--order", "flowcutter", "--expensive-orders-up-to", "50000"],
-            &["--expensive-orders-up-to", "flowcutter", "portfolio"],
+            &["--order", "flowcutter", "--steps", "10", "--budget", "10"],
+            &["--steps", "--budget"],
+        ),
+    ];
+    for &(flags, expected) in cases {
+        assert_refused_with(flags, expected);
+    }
+}
+
+#[test]
+fn budget_dependent_and_malformed_cli_flags_are_refused() {
+    let cases: &[(&[&str], &[&str])] = &[
+        (
+            &["--order", "minfill", "--weights", "w.txt"],
+            &["--weights", "--ties sample"],
         ),
         (
-            &["--order", "flowcutter", "--trace"],
-            &["--trace", "flowcutter", "portfolio"],
+            &["--order", "portfolio", "--hard-budget", "10"],
+            &["--hard-budget", "--budget"],
+        ),
+        (
+            &[
+                "--order",
+                "portfolio",
+                "--budget",
+                "20",
+                "--hard-budget",
+                "10",
+            ],
+            &["--hard-budget", "--budget", "at least"],
+        ),
+        (
+            &["--order", "portfolio", "--capped-restarts"],
+            &["--capped-restarts", "--budget"],
         ),
         (
             &["--order", "portfolio", "--no-bipartite-lift"],
@@ -478,32 +539,8 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
             &["--hedge-reserve", "--budget"],
         ),
         (
-            &[
-                "--order",
-                "portfolio",
-                "--no-hedge",
-                "--hedge-reserve",
-                "0.5",
-            ],
-            &["--hedge-reserve", "--no-hedge", "give one"],
-        ),
-        (
-            &["--order", "portfolio", "--refine"],
-            &["--refine", "portfolio"],
-        ),
-        (
             &["--order", "portfolio", "--sampling-patience", "0"],
             &["--sampling-patience", "positive"],
-        ),
-        (
-            &[
-                "--order",
-                "portfolio",
-                "--sample-band",
-                "0",
-                "--sample-band-alternate",
-            ],
-            &["--sample-band-alternate", "--sample-band 0"],
         ),
         (&["--order", "minfill", "--ties", "salt"], &["--ties"]),
         (
@@ -514,22 +551,7 @@ fn an_unsupported_flag_is_refused_naming_the_flag_and_the_order() {
         (&[], &["no input graph"]),
     ];
     for &(flags, expected) in cases {
-        let mut args: Vec<&str> = if flags.is_empty() { vec![] } else { vec!["-"] };
-        args.extend_from_slice(flags);
-        let out = goatd(&args, Some(&grid_gr()));
-        assert_eq!(
-            out.status.code(),
-            Some(2),
-            "{flags:?} must be a usage error; stderr: {}",
-            stderr_of(&out)
-        );
-        let err = stderr_of(&out);
-        for want in expected {
-            assert!(
-                err.contains(want),
-                "{flags:?}: must name {want:?}, got: {err}"
-            );
-        }
+        assert_refused_with(flags, expected);
     }
 }
 
@@ -545,20 +567,9 @@ fn a_vertex_gate_past_the_range_is_refused() {
         "--merge-up-to",
         "--local-merge-up-to",
     ] {
-        let out = goatd(
-            &["-", "--order", "portfolio", flag, "5000000000"],
-            Some(&grid_gr()),
-        );
-        assert_eq!(
-            out.status.code(),
-            Some(2),
-            "{flag} must be a usage error; stderr: {}",
-            stderr_of(&out)
-        );
-        let err = stderr_of(&out);
-        assert!(
-            err.contains(flag) && err.contains("vertex count"),
-            "{flag}: must name the flag and the range, got: {err}"
+        assert_refused_with(
+            &["--order", "portfolio", flag, "5000000000"],
+            &[flag, "vertex count"],
         );
     }
 }
@@ -770,6 +781,23 @@ fn restart_seeds(out: &Output) -> Vec<String> {
         .collect()
 }
 
+/// Assert that `out` ran `stages` weighted stages with the three fixed orders
+/// each, and no stage at `stages`.
+fn assert_modified_stage_count(out: &Output, stages: usize) {
+    let err = stderr_of(out);
+    for index in 0..stages {
+        assert_eq!(
+            modified_fixed_orders(out, index),
+            ["min-degree", "min-fill", "min-degree"],
+            "stage {index}: {err}"
+        );
+    }
+    assert!(
+        modified_fixed_orders(out, stages).is_empty(),
+        "expected {stages} stages: {err}"
+    );
+}
+
 #[test]
 fn hedge_dims_spelling_the_default_series_runs_the_default_hedge() {
     // --hedge-dims replaces the series the portfolio would have run, so
@@ -798,19 +826,7 @@ fn hedge_dims_spelling_the_default_series_runs_the_default_hedge() {
     assert!(!spelled.stdout.is_empty(), "no decomposition on stdout");
     assert_eq!(default.stdout, spelled.stdout);
     assert_eq!(trace_candidates(&default), trace_candidates(&spelled));
-    for index in 0..8 {
-        assert_eq!(
-            modified_fixed_orders(&default, index),
-            ["min-degree", "min-fill", "min-degree"],
-            "stage {index} of the default series: {}",
-            stderr_of(&default)
-        );
-    }
-    assert!(
-        modified_fixed_orders(&default, 8).is_empty(),
-        "the default series is eight stages: {}",
-        stderr_of(&default)
-    );
+    assert_modified_stage_count(&default, 8);
 }
 
 #[test]
@@ -830,17 +846,7 @@ fn one_dimension_in_hedge_dims_runs_that_dimension_and_nothing_else() {
     );
 
     assert!(three.status.success(), "{}", stderr_of(&three));
-    assert_eq!(
-        modified_fixed_orders(&three, 0),
-        ["min-degree", "min-fill", "min-degree"],
-        "one dimension runs its weighted stage: {}",
-        stderr_of(&three)
-    );
-    assert!(
-        modified_fixed_orders(&three, 1).is_empty(),
-        "one dimension is one weighted stage: {}",
-        stderr_of(&three)
-    );
+    assert_modified_stage_count(&three, 1);
 }
 
 #[test]
@@ -864,17 +870,7 @@ fn hedge_dims_runs_one_weighted_stage_per_dimension() {
     let err = stderr_of(&out);
     // Every stage repeats the fixed orders that read weights, and the restarts
     // stay plain whatever the stages do.
-    for index in 0..3 {
-        assert_eq!(
-            modified_fixed_orders(&out, index),
-            ["min-degree", "min-fill", "min-degree"],
-            "stage {index} of the series: {err}"
-        );
-    }
-    assert!(
-        modified_fixed_orders(&out, 3).is_empty(),
-        "three dimensions are three stages: {err}"
-    );
+    assert_modified_stage_count(&out, 3);
     for line in err.lines() {
         let Some(rest) = line.strip_prefix("c trace candidate=sample ") else {
             continue;
@@ -922,19 +918,7 @@ fn hedge_random_runs_one_stage_per_draw_and_costs_what_the_rankings_cost() {
 
     assert!(random.status.success(), "{}", stderr_of(&random));
     assert!(ranked.status.success(), "{}", stderr_of(&ranked));
-    for index in 0..2 {
-        assert_eq!(
-            modified_fixed_orders(&random, index),
-            ["min-degree", "min-fill", "min-degree"],
-            "stage {index} of the control: {}",
-            stderr_of(&random)
-        );
-    }
-    assert!(
-        modified_fixed_orders(&random, 2).is_empty(),
-        "two draws are two stages: {}",
-        stderr_of(&random)
-    );
+    assert_modified_stage_count(&random, 2);
     assert_eq!(
         trace_candidates(&random).len(),
         trace_candidates(&ranked).len(),
@@ -1046,14 +1030,7 @@ fn the_reserve_applies_to_the_default_series_without_a_dimension_flag() {
     );
 
     assert!(reserved.status.success(), "{}", stderr_of(&reserved));
-    for index in 0..8 {
-        assert_eq!(
-            modified_fixed_orders(&reserved, index),
-            ["min-degree", "min-fill", "min-degree"],
-            "stage {index} of the default series: {}",
-            stderr_of(&reserved)
-        );
-    }
+    assert_modified_stage_count(&reserved, 8);
 }
 
 #[test]
@@ -1092,14 +1069,7 @@ fn a_reserve_that_holds_the_stages_runs_all_of_them() {
     );
 
     assert!(reserved.status.success(), "{}", stderr_of(&reserved));
-    for index in 0..3 {
-        assert_eq!(
-            modified_fixed_orders(&reserved, index),
-            ["min-degree", "min-fill", "min-degree"],
-            "stage {index} ran under the whole reserve: {}",
-            stderr_of(&reserved)
-        );
-    }
+    assert_modified_stage_count(&reserved, 3);
     assert!(
         !stderr_of(&reserved).contains("outcome=skipped"),
         "nothing was refused: {}",

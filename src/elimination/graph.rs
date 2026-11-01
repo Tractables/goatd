@@ -72,6 +72,33 @@ pub(super) fn bump_stamp(stamp: &mut u16, marker: &mut [u16]) -> u16 {
     *stamp
 }
 
+fn eliminate_neighbour_via_index(
+    v: u32,
+    u_raw: u32,
+    neighbours: &[u32],
+    row: &mut Vec<u32>,
+    index: &mut FxHashMap<u32, u32>,
+) -> usize {
+    if let Some(position) = index.remove(&v) {
+        let position = position as usize;
+        let last = row.len() - 1;
+        let moved = row[last];
+        row.swap_remove(position);
+        if position != last {
+            index.insert(moved, position as u32);
+        }
+    }
+    let mut pushes = 0;
+    for &w in neighbours {
+        if w != u_raw && !index.contains_key(&w) {
+            index.insert(w, row.len() as u32);
+            row.push(w);
+            pushes += 1;
+        }
+    }
+    pushes
+}
+
 /// Whether an edge list holds each undirected edge at most once, which is the
 /// contract [`EliminationGraph::from_unique_edges`] builds on. It sorts a copy
 /// of the list, so it is only called from a `debug_assert!`, and only up to a
@@ -988,22 +1015,7 @@ impl EliminationGraph {
             if row.len() > walk_limit
                 && let Some(index) = self.row_index[u].as_deref_mut()
             {
-                if let Some(position) = index.remove(&v) {
-                    let position = position as usize;
-                    let last = row.len() - 1;
-                    let moved = row[last];
-                    row.swap_remove(position);
-                    if position != last {
-                        index.insert(moved, position as u32);
-                    }
-                }
-                for &w in neighbours {
-                    if w != u_raw && !index.contains_key(&w) {
-                        index.insert(w, row.len() as u32);
-                        row.push(w);
-                        pushes += 1;
-                    }
-                }
+                pushes += eliminate_neighbour_via_index(v, u_raw, neighbours, row, index);
                 continue;
             }
             let s = bump_stamp(&mut self.elim_stamp, &mut self.elim_marker);
@@ -1093,52 +1105,11 @@ impl EliminationGraph {
         neighbours: &[u32],
         fill: &PreparedFill<'_>,
     ) {
-        let k = neighbours.len();
         if self.bitset_words > 0 {
-            let w = self.bitset_words;
-            let vi = self.slot(v);
-            let vb = vi * w;
-            let v_word = vi / 64;
-            let v_bit = 1u64 << (vi % 64);
-            let mut filled = 0u64;
-            let mut pushes = 0usize;
-            for &u_raw in neighbours {
-                let u = self.slot(u_raw);
-                let ub = u * w;
-                let gained = fill.gained[u_raw as usize];
-                if gained > 0 {
-                    // As in the unprepared pass: u's bit leaves v's row while
-                    // u's row takes what it lacks of it.
-                    filled += 1;
-                    let u_word = u / 64;
-                    let u_bit = 1u64 << (u % 64);
-                    self.bitset[vb + u_word] &= !u_bit;
-                    let (v_row, u_row) = rows_mut(&mut self.bitset, vb, ub, w);
-                    debug_assert_eq!(
-                        v_row
-                            .iter()
-                            .zip(u_row.iter())
-                            .map(|(&a, &b)| (a & !b).count_ones())
-                            .sum::<u32>(),
-                        gained,
-                        "prepared fill count of {u_raw} disagrees with the rows"
-                    );
-                    for (&from_v, into_u) in v_row.iter().zip(u_row.iter_mut()) {
-                        *into_u |= from_v;
-                    }
-                    self.bitset[vb + u_word] |= u_bit;
-                    self.bitset_degree[u] += gained;
-                    pushes += gained as usize;
-                }
-                self.bitset[ub + v_word] &= !v_bit;
-                self.bitset_degree[u] -= 1;
-            }
-            self.bitset[vb..vb + w].fill(0);
-            self.bitset_degree[vi] = 0;
-            crate::meter::charge((k as u64).saturating_add(filled.saturating_mul(w as u64)));
-            self.finish_elimination(v, k, pushes);
+            self.eliminate_prepared_bs(v, neighbours, fill);
             return;
         }
+        let k = neighbours.len();
         debug_assert_eq!(fill.starts.len(), k + 1);
         debug_assert_eq!(fill.v_position.len(), k);
         let mut pushes = 0usize;
@@ -1181,6 +1152,52 @@ impl EliminationGraph {
         }
         self.clear_row(v);
         crate::meter::charge((k + pushes) as u64);
+        self.finish_elimination(v, k, pushes);
+    }
+
+    fn eliminate_prepared_bs(&mut self, v: u32, neighbours: &[u32], fill: &PreparedFill<'_>) {
+        let k = neighbours.len();
+        let w = self.bitset_words;
+        let vi = self.slot(v);
+        let vb = vi * w;
+        let v_word = vi / 64;
+        let v_bit = 1u64 << (vi % 64);
+        let mut filled = 0u64;
+        let mut pushes = 0usize;
+        for &u_raw in neighbours {
+            let u = self.slot(u_raw);
+            let ub = u * w;
+            let gained = fill.gained[u_raw as usize];
+            if gained > 0 {
+                // As in the unprepared pass: u's bit leaves v's row while
+                // u's row takes what it lacks of it.
+                filled += 1;
+                let u_word = u / 64;
+                let u_bit = 1u64 << (u % 64);
+                self.bitset[vb + u_word] &= !u_bit;
+                let (v_row, u_row) = rows_mut(&mut self.bitset, vb, ub, w);
+                debug_assert_eq!(
+                    v_row
+                        .iter()
+                        .zip(u_row.iter())
+                        .map(|(&a, &b)| (a & !b).count_ones())
+                        .sum::<u32>(),
+                    gained,
+                    "prepared fill count of {u_raw} disagrees with the rows"
+                );
+                for (&from_v, into_u) in v_row.iter().zip(u_row.iter_mut()) {
+                    *into_u |= from_v;
+                }
+                self.bitset[vb + u_word] |= u_bit;
+                self.bitset_degree[u] += gained;
+                pushes += gained as usize;
+            }
+            self.bitset[ub + v_word] &= !v_bit;
+            self.bitset_degree[u] -= 1;
+        }
+        self.bitset[vb..vb + w].fill(0);
+        self.bitset_degree[vi] = 0;
+        crate::meter::charge((k as u64).saturating_add(filled.saturating_mul(w as u64)));
         self.finish_elimination(v, k, pushes);
     }
 

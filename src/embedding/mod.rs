@@ -501,6 +501,38 @@ fn is_settled_dim<const D: usize>(
 /// no spread left is jittered from `rng` so that the rescaling has something
 /// to divide by and repeated rounds cannot collapse the cloud.
 fn whiten_dim<const D: usize>(coords: &mut [f32], moving: &[u32], rng: &mut Xorshift64) {
+    let mut covariance = centre_and_covariance_dim::<D>(coords, moving);
+    rotate_by_principal_axes_dim::<D>(coords, &mut covariance);
+
+    // Every axis is measured from its own column and rescaled in it, and
+    // nothing an axis does reaches another one, so the columns are measured
+    // together and rescaled together instead of a strided pass over the whole
+    // cloud per axis. A jittered axis is remeasured where it is jittered, so
+    // the generator is still drawn from in axis order.
+    let (mut means, mut deviations) = axis_spreads_dim::<D>(coords, moving);
+    let mut scales = [1.0f64; D];
+    for axis in 0..D {
+        if deviations[axis] <= FLAT_AXIS_DEVIATION {
+            // A flat axis carries no direction to rescale. Spread it from the
+            // generator so the cloud keeps its dimension in the next round.
+            for row in coords.as_chunks_mut::<D>().0 {
+                row[axis] += unit_interval(rng) - 0.5;
+            }
+            let (jittered, spread) = axis_spreads_dim::<D>(coords, moving);
+            (means[axis], deviations[axis]) = (jittered[axis], spread[axis]);
+        }
+        if deviations[axis] > FLAT_AXIS_DEVIATION {
+            scales[axis] = 1.0 / deviations[axis];
+        }
+    }
+    for row in coords.as_chunks_mut::<D>().0 {
+        for ((value, mean), scale) in row.iter_mut().zip(&means).zip(&scales) {
+            *value = ((f64::from(*value) - mean) * scale) as f32;
+        }
+    }
+}
+
+fn centre_and_covariance_dim<const D: usize>(coords: &mut [f32], moving: &[u32]) -> [[f64; D]; D] {
     let count = moving.len() as f64;
 
     let mut centre = [0.0f64; D];
@@ -551,7 +583,13 @@ fn whiten_dim<const D: usize>(coords: &mut [f32], moving: &[u32], rng: &mut Xors
             below[i] = entry;
         }
     }
+    covariance
+}
 
+fn rotate_by_principal_axes_dim<const D: usize>(
+    coords: &mut [f32],
+    covariance: &mut [[f64; D]; D],
+) {
     let mut vectors = [[0.0f64; D]; D];
     jacobi(covariance.as_flattened_mut(), vectors.as_flattened_mut(), D);
     let mut order = [0usize; D];
@@ -584,33 +622,6 @@ fn whiten_dim<const D: usize>(coords: &mut [f32], moving: &[u32], rng: &mut Xors
         }
         for (value, projection) in row.iter_mut().zip(&rotated) {
             *value = *projection as f32;
-        }
-    }
-
-    // Every axis is measured from its own column and rescaled in it, and
-    // nothing an axis does reaches another one, so the columns are measured
-    // together and rescaled together instead of a strided pass over the whole
-    // cloud per axis. A jittered axis is remeasured where it is jittered, so
-    // the generator is still drawn from in axis order.
-    let (mut means, mut deviations) = axis_spreads_dim::<D>(coords, moving);
-    let mut scales = [1.0f64; D];
-    for axis in 0..D {
-        if deviations[axis] <= FLAT_AXIS_DEVIATION {
-            // A flat axis carries no direction to rescale. Spread it from the
-            // generator so the cloud keeps its dimension in the next round.
-            for row in coords.as_chunks_mut::<D>().0 {
-                row[axis] += unit_interval(rng) - 0.5;
-            }
-            let (jittered, spread) = axis_spreads_dim::<D>(coords, moving);
-            (means[axis], deviations[axis]) = (jittered[axis], spread[axis]);
-        }
-        if deviations[axis] > FLAT_AXIS_DEVIATION {
-            scales[axis] = 1.0 / deviations[axis];
-        }
-    }
-    for row in coords.as_chunks_mut::<D>().0 {
-        for ((value, mean), scale) in row.iter_mut().zip(&means).zip(&scales) {
-            *value = ((f64::from(*value) - mean) * scale) as f32;
         }
     }
 }
