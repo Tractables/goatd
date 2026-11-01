@@ -568,46 +568,22 @@ fn run_order_per_component(
         component_work,
         component_fill,
     } = scratch;
-    // Each component's slice of the residual's fill counts, built on the first
-    // candidate that has counts to slice and read by every later one.
-    let component_fill: Option<&[Vec<u64>]> = initial_fill.map(|fill| {
-        component_fill
-            .get_or_insert_with(|| {
-                components
-                    .iter()
-                    .map(|comp| comp.iter().map(|&vertex| fill[vertex as usize]).collect())
-                    .collect()
-            })
-            .as_slice()
-    });
     let n = graph.len();
+    let component_fill = prepare_per_component_scratch(
+        n,
+        prefix,
+        components,
+        initial_fill,
+        component_fill,
+        global_rank,
+        local_of,
+        component_graphs,
+    );
     // The bags after the prefix's; the prefix is put in front of them once
     // there is a decomposition to build.
     let base = prefix.next_step();
     let mut all_bags: Vec<Vec<u32>> = Vec::new();
-    // The decomposition is built by reading a rank for every vertex, including
-    // the ones no component covers, so this one is refilled rather than left as
-    // the run before it wrote it.
-    crate::meter::charge(n as u64);
-    global_rank.clear();
-    global_rank.resize(n, u32::MAX);
-
-    // Prefix ranks: (vertex, step) where step == bag index.
-    for &(v, s) in &prefix.rank_pairs {
-        global_rank[v as usize] = s as u32;
-    }
-
     let mut nbrs_buf: Vec<u32> = Vec::new();
-    // Written for every vertex of a component before that component's subgraph
-    // is built, and read only at vertices of the same component, so whatever an
-    // earlier run left in it is never read.
-    if local_of.len() < n {
-        local_of.resize(n, u32::MAX);
-    }
-    if component_graphs.len() != components.len() {
-        component_graphs.clear();
-        component_graphs.resize_with(components.len(), || None);
-    }
     // Components after a soft-cutoff stop run against the hard deadline alone,
     // so this changes once and applies to every later component.
     let mut stop = spec.stop;
@@ -632,43 +608,21 @@ fn run_order_per_component(
             component_work,
             sample,
         );
-        match comp_exit {
-            ElimExit::WidthLimitExceeded => return OrderRun::WidthAborted,
-            ElimExit::DeadlineReached(cutoff) if !spec.complete_on_deadline => {
-                return OrderRun::DeadlineAborted(cutoff);
-            }
-            ElimExit::Complete | ElimExit::DeadlineReached(_) => {
-                comp_steps.append_reindexed(comp, base, &mut all_bags, global_rank);
-            }
-        }
-
-        if matches!(comp_exit, ElimExit::DeadlineReached(_)) {
-            append_residual_bag(
-                comp_residual
-                    .into_iter()
-                    .map(|vertex| comp[vertex as usize]),
-                base,
-                &mut all_bags,
-                global_rank,
-            );
-            // The soft cutoff is the construction budget, not the end of the
-            // run: the components after this one still have the hard deadline
-            // to be decomposed in, and one bag each is what they fall back to
-            // when it passes. Their orders run against the hard deadline
-            // alone, since the soft one has gone.
-            if comp_exit == ElimExit::DeadlineReached(Cutoff::Soft) {
-                soft_cutoff_passed = true;
-                stop = ElimStop {
-                    soft_deadline: None,
-                    ..stop
-                };
-                continue;
-            }
-            // After the hard cutoff there is no time to start another order.
-            for remaining in &components[(comp_idx + 1)..] {
-                append_residual_bag(remaining.iter().copied(), base, &mut all_bags, global_rank);
-            }
-            return finish_after(prefix, all_bags, global_rank, comp_exit, true);
+        if let Some(early) = record_component_result(
+            prefix,
+            comp,
+            &components[(comp_idx + 1)..],
+            comp_steps,
+            comp_exit,
+            comp_residual,
+            base,
+            spec.complete_on_deadline,
+            &mut all_bags,
+            global_rank,
+            &mut stop,
+            &mut soft_cutoff_passed,
+        ) {
+            return early;
         }
     }
 
@@ -686,6 +640,142 @@ fn run_order_per_component(
         exit,
         spec.complete_on_deadline,
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_component_result(
+    prefix: &ElimSteps,
+    comp: &[u32],
+    remaining_components: &[Vec<u32>],
+    comp_steps: ElimSteps,
+    comp_exit: ElimExit,
+    comp_residual: Vec<u32>,
+    base: usize,
+    complete_on_deadline: bool,
+    all_bags: &mut Vec<Vec<u32>>,
+    global_rank: &mut [u32],
+    stop: &mut ElimStop,
+    soft_cutoff_passed: &mut bool,
+) -> Option<OrderRun> {
+    match comp_exit {
+        ElimExit::WidthLimitExceeded => return Some(OrderRun::WidthAborted),
+        ElimExit::DeadlineReached(cutoff) if !complete_on_deadline => {
+            return Some(OrderRun::DeadlineAborted(cutoff));
+        }
+        ElimExit::Complete | ElimExit::DeadlineReached(_) => {
+            comp_steps.append_reindexed(comp, base, all_bags, global_rank);
+        }
+    }
+    if matches!(comp_exit, ElimExit::DeadlineReached(_))
+        && !handle_component_deadline(
+            comp,
+            comp_residual,
+            remaining_components,
+            comp_exit,
+            base,
+            all_bags,
+            global_rank,
+            stop,
+            soft_cutoff_passed,
+        )
+    {
+        return Some(finish_after(
+            prefix,
+            std::mem::take(all_bags),
+            global_rank,
+            comp_exit,
+            true,
+        ));
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_component_deadline(
+    comp: &[u32],
+    comp_residual: Vec<u32>,
+    remaining_components: &[Vec<u32>],
+    comp_exit: ElimExit,
+    base: usize,
+    all_bags: &mut Vec<Vec<u32>>,
+    global_rank: &mut [u32],
+    stop: &mut ElimStop,
+    soft_cutoff_passed: &mut bool,
+) -> bool {
+    append_residual_bag(
+        comp_residual
+            .into_iter()
+            .map(|vertex| comp[vertex as usize]),
+        base,
+        all_bags,
+        global_rank,
+    );
+    // The soft cutoff is the construction budget, not the end of the
+    // run: the components after this one still have the hard deadline
+    // to be decomposed in, and one bag each is what they fall back to
+    // when it passes. Their orders run against the hard deadline
+    // alone, since the soft one has gone.
+    if comp_exit == ElimExit::DeadlineReached(Cutoff::Soft) {
+        *soft_cutoff_passed = true;
+        *stop = ElimStop {
+            soft_deadline: None,
+            ..*stop
+        };
+        return true;
+    }
+    // After the hard cutoff there is no time to start another order.
+    for remaining in remaining_components {
+        append_residual_bag(remaining.iter().copied(), base, all_bags, global_rank);
+    }
+    false
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_per_component_scratch<'a>(
+    n: usize,
+    prefix: &ElimSteps,
+    components: &[Vec<u32>],
+    initial_fill: Option<&[u64]>,
+    component_fill: &'a mut Option<Vec<Vec<u64>>>,
+    global_rank: &mut Vec<u32>,
+    local_of: &mut Vec<u32>,
+    component_graphs: &mut Vec<Option<(EliminationGraph, u64)>>,
+) -> Option<&'a [Vec<u64>]> {
+    // Each component's slice of the residual's fill counts, built on the first
+    // candidate that has counts to slice and read by every later one.
+    let component_fill = initial_fill.map(|fill| {
+        component_fill
+            .get_or_insert_with(|| {
+                components
+                    .iter()
+                    .map(|comp| comp.iter().map(|&vertex| fill[vertex as usize]).collect())
+                    .collect()
+            })
+            .as_slice()
+    });
+    // The decomposition is built by reading a rank for every vertex, including
+    // the ones no component covers, so this one is refilled rather than left as
+    // the run before it wrote it.
+    crate::meter::charge(n as u64);
+    global_rank.clear();
+    global_rank.resize(n, u32::MAX);
+
+    // Prefix ranks: (vertex, step) where step == bag index.
+    for &(v, s) in &prefix.rank_pairs {
+        global_rank[v as usize] = s as u32;
+    }
+
+    // Written for every vertex of a component before that component's subgraph
+    // is built, and read only at vertices of the same component, so whatever an
+    // earlier run left in it is never read.
+    if local_of.len() < n {
+        local_of.resize(n, u32::MAX);
+    }
+    if component_graphs.len() != components.len() {
+        component_graphs.clear();
+        component_graphs.resize_with(components.len(), || None);
+    }
+    component_fill
 }
 
 /// Run one order over a preprocessed residual the caller owns.

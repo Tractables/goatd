@@ -516,67 +516,23 @@ impl FillAffected {
         // Slots run in vertex-id order, so the slots say which is smaller.
         let mut done = true;
         let mut pacer = DeadlinePacer::new();
-        'neighbours: for &u_raw in nbrs {
-            let u = graph.bitset_slot_of(u_raw);
-            let ub = u * w;
-            crate::meter::charge(v_words.len() as u64);
-            // u's fill edges are v's other neighbours that u's row lacks:
-            // u's own bit leaves v's row while they are read, and is put
-            // back after. u is never a common neighbour of its own fill
-            // edge, so the pass over each edge does not see the difference.
-            inside[u / 64] &= !(1u64 << (u % 64));
-            let u_row = &graph.bitset[ub..ub + w];
-            let mut gained = 0u32;
-            let mut masked = false;
-            // u's own word may have gone empty above; walking it is harmless.
-            for &j in &v_words {
-                let j = j as usize;
-                debug_assert!(j < w);
-                // SAFETY: `v_words` holds indices below `w`, and `inside`
-                // and u's row both hold `w` words.
-                let (inside_word, u_word) =
-                    unsafe { (*inside.get_unchecked(j), *u_row.get_unchecked(j)) };
-                let mut mask = inside_word & !u_word;
-                while mask != 0 {
-                    let other = j * 64 + mask.trailing_zeros() as usize;
-                    mask &= mask - 1;
-                    gained += 1;
-                    if u < other {
-                        if pacer.due() && crate::deadline::expired(deadline) {
-                            done = false;
-                            break 'neighbours;
-                        }
-                        if !masked {
-                            // u's row split by v's, once for all the fill
-                            // edges read from u, keeping the words that
-                            // hold a bit of either part. The words left
-                            // stale are never read.
-                            masked = true;
-                            Self::split_neighbour_row_bs(
-                                u_row,
-                                &inside[..w],
-                                &outside[..w],
-                                &mut x_inside[..w],
-                                &mut x_outside[..w],
-                                &mut x_words,
-                            );
-                        }
-                        self.fill_edge_bs(
-                            graph,
-                            &x_words,
-                            &x_inside[..w],
-                            &x_outside[..w],
-                            u,
-                            other,
-                        );
-                    }
-                }
+        for &u_raw in nbrs {
+            if !self.prepare_neighbour_bs(
+                graph,
+                u_raw,
+                k,
+                &v_words,
+                &mut inside[..w],
+                &outside[..w],
+                &mut x_inside[..w],
+                &mut x_outside[..w],
+                &mut x_words,
+                &mut pacer,
+                deadline,
+            ) {
+                done = false;
+                break;
             }
-            inside[u / 64] |= 1u64 << (u % 64);
-            // The fill edges at u are B \ A. A ∩ B is the rest of B, and
-            // A \ B the rest of A, whose size is u's degree less v.
-            self.gained[u_raw as usize] = gained;
-            self.kept[u_raw as usize] = (graph.degree(u_raw) + gained as usize - k) as u32;
         }
         self.inside = inside;
         self.outside = outside;
@@ -585,6 +541,73 @@ impl FillAffected {
         self.v_words = v_words;
         self.x_words = x_words;
         done
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_neighbour_bs(
+        &mut self,
+        graph: &EliminationGraph,
+        u_raw: u32,
+        k: usize,
+        v_words: &[u32],
+        inside: &mut [u64],
+        outside: &[u64],
+        x_inside: &mut [u64],
+        x_outside: &mut [u64],
+        x_words: &mut Vec<u32>,
+        pacer: &mut DeadlinePacer,
+        deadline: Option<Instant>,
+    ) -> bool {
+        let w = graph.bitset_words;
+        let u = graph.bitset_slot_of(u_raw);
+        let ub = u * w;
+        crate::meter::charge(v_words.len() as u64);
+        // u's fill edges are v's other neighbours that u's row lacks:
+        // u's own bit leaves v's row while they are read, and is put
+        // back after. u is never a common neighbour of its own fill
+        // edge, so the pass over each edge does not see the difference.
+        inside[u / 64] &= !(1u64 << (u % 64));
+        let u_row = &graph.bitset[ub..ub + w];
+        let mut gained = 0u32;
+        let mut masked = false;
+        // u's own word may have gone empty above; walking it is harmless.
+        for &j in v_words {
+            let j = j as usize;
+            debug_assert!(j < w);
+            // SAFETY: `v_words` holds indices below `w`, and `inside`
+            // and u's row both hold `w` words.
+            let (inside_word, u_word) =
+                unsafe { (*inside.get_unchecked(j), *u_row.get_unchecked(j)) };
+            let mut mask = inside_word & !u_word;
+            while mask != 0 {
+                let other = j * 64 + mask.trailing_zeros() as usize;
+                mask &= mask - 1;
+                gained += 1;
+                if u < other {
+                    if pacer.due() && crate::deadline::expired(deadline) {
+                        inside[u / 64] |= 1u64 << (u % 64);
+                        return false;
+                    }
+                    if !masked {
+                        // u's row split by v's, once for all the fill
+                        // edges read from u, keeping the words that
+                        // hold a bit of either part. The words left
+                        // stale are never read.
+                        masked = true;
+                        Self::split_neighbour_row_bs(
+                            u_row, inside, outside, x_inside, x_outside, x_words,
+                        );
+                    }
+                    self.fill_edge_bs(graph, x_words, x_inside, x_outside, u, other);
+                }
+            }
+        }
+        inside[u / 64] |= 1u64 << (u % 64);
+        // The fill edges at u are B \ A. A ∩ B is the rest of B, and
+        // A \ B the rest of A, whose size is u's degree less v.
+        self.gained[u_raw as usize] = gained;
+        self.kept[u_raw as usize] = (graph.degree(u_raw) + gained as usize - k) as u32;
+        true
     }
 
     fn split_neighbour_row_bs(

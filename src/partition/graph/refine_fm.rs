@@ -198,43 +198,57 @@ pub(super) fn fm_refine_pass(
             break;
         }
 
-        let v_start = graph.offsets[v] as usize;
-        let v_end = graph.offsets[v + 1] as usize;
-        let v_nbrs = &graph.neighbors[v_start..v_end];
-        let v_weights = &graph.edge_weights[v_start..v_end];
-        for (&nb_raw, &w_raw) in v_nbrs.iter().zip(v_weights) {
-            let nb = nb_raw as usize;
-            if locked[nb] {
-                continue;
-            }
-            let w = i64::from(w_raw);
-            let nb_part = part[nb] as usize;
-            let was_in_queue = bq[nb_part].contains(nb);
-            // `2 * w`, not `w`: `gain` is external weight minus internal
-            // weight, and this edge crossed from one of those sums to the
-            // other, so their difference moves by twice the edge's weight.
-            // `cut_edges` is the external sum on its own, so it moves by `w`.
-            if nb_part == to {
-                gain[nb] -= 2 * w;
-                cut_edges[nb] -= w;
-            } else {
-                gain[nb] += 2 * w;
-                cut_edges[nb] += w;
-            }
-            let on_boundary = cut_edges[nb] > 0;
-            if on_boundary {
-                if was_in_queue {
-                    bq[nb_part].update(nb, gain[nb]);
-                } else {
-                    bq[nb_part].insert(nb, gain[nb]);
-                }
-            } else if was_in_queue {
-                bq[nb_part].remove(nb);
-            }
-        }
+        update_neighbor_gains_after_move(graph, v, to, part, locked, gain, cut_edges, bq);
     }
 
     log.commit(part)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_neighbor_gains_after_move(
+    graph: &CsrGraph,
+    v: usize,
+    to: usize,
+    part: &[u8],
+    locked: &[bool],
+    gain: &mut [i64],
+    cut_edges: &mut [i64],
+    bq: &mut [GainBuckets; 2],
+) {
+    let v_start = graph.offsets[v] as usize;
+    let v_end = graph.offsets[v + 1] as usize;
+    let v_nbrs = &graph.neighbors[v_start..v_end];
+    let v_weights = &graph.edge_weights[v_start..v_end];
+    for (&nb_raw, &w_raw) in v_nbrs.iter().zip(v_weights) {
+        let nb = nb_raw as usize;
+        if locked[nb] {
+            continue;
+        }
+        let w = i64::from(w_raw);
+        let nb_part = part[nb] as usize;
+        let was_in_queue = bq[nb_part].contains(nb);
+        // `2 * w`, not `w`: `gain` is external weight minus internal
+        // weight, and this edge crossed from one of those sums to the
+        // other, so their difference moves by twice the edge's weight.
+        // `cut_edges` is the external sum on its own, so it moves by `w`.
+        if nb_part == to {
+            gain[nb] -= 2 * w;
+            cut_edges[nb] -= w;
+        } else {
+            gain[nb] += 2 * w;
+            cut_edges[nb] += w;
+        }
+        let on_boundary = cut_edges[nb] > 0;
+        if on_boundary {
+            if was_in_queue {
+                bq[nb_part].update(nb, gain[nb]);
+            } else {
+                bq[nb_part].insert(nb, gain[nb]);
+            }
+        } else if was_in_queue {
+            bq[nb_part].remove(nb);
+        }
+    }
 }
 
 /// FM confined to a region grown around `seed`, run at the finest level after
@@ -320,37 +334,58 @@ pub(super) fn localized_fm_pass(
             break;
         }
 
-        let v_start = graph.offsets[v] as usize;
-        let v_end = graph.offsets[v + 1] as usize;
-        let v_nbrs = &graph.neighbors[v_start..v_end];
-        let v_weights = &graph.edge_weights[v_start..v_end];
-        for (&nb_raw, &w_raw) in v_nbrs.iter().zip(v_weights) {
-            let nb = nb_raw as usize;
-            if locked[nb] || !in_region[nb] {
-                continue;
-            }
-            let w = i64::from(w_raw);
-            if part[nb] == to as u8 {
-                gain[nb] -= 2 * w;
-            } else {
-                gain[nb] += 2 * w;
-            }
-        }
+        update_region_neighbor_gains(graph, v, to, part, locked, in_region, gain);
     }
 
     let improved = log.commit(part);
+    reset_graph_region_marks(region_list, boundary_touched, in_region, locked, boundary);
+    improved
+}
 
-    // Hand the arrays back the way they were found. Only region vertices are
-    // marked in `in_region` and `locked`, and `boundary_touched` names every
-    // vertex whose `boundary` entry was written.
-    for &v in region_list.iter() {
+/// Hand the arrays back the way they were found. Only region vertices are
+/// marked in `in_region` and `locked`, and `boundary_touched` names every
+/// vertex whose `boundary` entry was written.
+fn reset_graph_region_marks(
+    region_list: &[usize],
+    boundary_touched: &[usize],
+    in_region: &mut [bool],
+    locked: &mut [bool],
+    boundary: &mut [u8],
+) {
+    for &v in region_list {
         in_region[v] = false;
         locked[v] = false;
     }
-    for &v in boundary_touched.iter() {
+    for &v in boundary_touched {
         boundary[v] = 0;
     }
-    improved
+}
+
+fn update_region_neighbor_gains(
+    graph: &CsrGraph,
+    v: usize,
+    to: usize,
+    part: &[u8],
+    locked: &[bool],
+    in_region: &[bool],
+    gain: &mut [i64],
+) {
+    let v_start = graph.offsets[v] as usize;
+    let v_end = graph.offsets[v + 1] as usize;
+    let v_nbrs = &graph.neighbors[v_start..v_end];
+    let v_weights = &graph.edge_weights[v_start..v_end];
+    for (&nb_raw, &w_raw) in v_nbrs.iter().zip(v_weights) {
+        let nb = nb_raw as usize;
+        if locked[nb] || !in_region[nb] {
+            continue;
+        }
+        let w = i64::from(w_raw);
+        if part[nb] == to as u8 {
+            gain[nb] -= 2 * w;
+        } else {
+            gain[nb] += 2 * w;
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

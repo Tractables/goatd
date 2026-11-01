@@ -19,21 +19,77 @@ fn path(n: u32) -> Graph {
     Graph::new(n, (0..n.saturating_sub(1)).map(|v| (v, v + 1)))
 }
 
-/// The 3 × 3 grid, vertex `3 * row + column`. Its treewidth is 3.
-fn grid() -> Graph {
+fn path_with_td(n: u32) -> (Graph, TreeDecomposition) {
+    let graph = path(n);
+    let td = TreeDecomposition::new(
+        &graph,
+        (0..n.saturating_sub(1))
+            .map(|v| vec![v, v + 1])
+            .collect::<Vec<_>>(),
+        (0..n.saturating_sub(2) as usize).map(|edge| (edge, edge + 1)),
+    )
+    .unwrap();
+    (graph, td)
+}
+
+/// The `n × n` grid, vertex `n * row + column`.
+fn square_grid(n: u32) -> Graph {
     let mut edges = Vec::new();
-    for row in 0..3u32 {
-        for column in 0..3u32 {
-            let vertex = row * 3 + column;
-            if column + 1 < 3 {
+    for row in 0..n {
+        for column in 0..n {
+            let vertex = row * n + column;
+            if column + 1 < n {
                 edges.push((vertex, vertex + 1));
             }
-            if row + 1 < 3 {
-                edges.push((vertex, vertex + 3));
+            if row + 1 < n {
+                edges.push((vertex, vertex + n));
             }
         }
     }
-    Graph::new(9, edges)
+    Graph::new(n * n, edges)
+}
+
+/// The 3 × 3 grid, vertex `3 * row + column`. Its treewidth is 3.
+fn grid() -> Graph {
+    square_grid(3)
+}
+
+/// Two four-cycles with a chord each, joined at cut vertex 3.
+fn two_chorded_four_cycles() -> Graph {
+    Graph::new(
+        7,
+        [
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (3, 0),
+            (0, 2),
+            (3, 4),
+            (4, 5),
+            (5, 6),
+            (6, 3),
+            (3, 5),
+        ],
+    )
+}
+
+fn four_cycle() -> Graph {
+    Graph::new(4, [(0, 1), (1, 2), (2, 3), (3, 0)])
+}
+
+fn recombine_and_validate(pool: &BagPool, graph: &Graph) -> TreeDecomposition {
+    let built = recombine(pool, graph, None).expect("the pool holds a decomposition");
+    built.validate(graph).expect("valid");
+    built
+}
+
+fn search_and_validate(graph: &Graph, bags: &[Vec<u32>]) -> TreeDecomposition {
+    let adjacency = Adjacency::of(graph).expect("the rows fit");
+    let sets: Vec<_> = bags.iter().map(|bag| adjacency.set_of(bag)).collect();
+    let built = super::search(&sets, graph, &adjacency, Limits::standard(), None)
+        .expect("the bags hold a whole decomposition");
+    built.validate(graph).expect("valid");
+    built
 }
 
 #[test]
@@ -45,13 +101,7 @@ fn an_empty_pool_gives_nothing() {
 
 #[test]
 fn the_pool_keeps_the_best_few_decompositions() {
-    let graph = path(4);
-    let narrow = TreeDecomposition::new(
-        &graph,
-        [vec![0, 1], vec![1, 2], vec![2, 3]],
-        [(0, 1), (1, 2)],
-    )
-    .unwrap();
+    let (graph, narrow) = path_with_td(4);
     let wide = TreeDecomposition::new(&graph, [vec![0, 1, 2, 3]], []).unwrap();
     let mut pool = BagPool::new(Limits::standard());
     for slot in 0..8 {
@@ -61,7 +111,7 @@ fn the_pool_keeps_the_best_few_decompositions() {
     // One decomposition per slot, and each slot kept the narrower of the two
     // offered to it.
     assert_eq!(pool.len(), 8);
-    let built = recombine(&pool, &graph, None).expect("the pool holds a decomposition");
+    let built = recombine_and_validate(&pool, &graph);
     assert_eq!(built.treewidth(), 1);
 }
 
@@ -69,14 +119,7 @@ fn the_pool_keeps_the_best_few_decompositions() {
 /// not all fit, each still gives up bags rather than being dropped.
 #[test]
 fn a_full_pool_shares_its_bags_out() {
-    let graph = path(9);
-    let path_bags: Vec<Vec<u32>> = (0..8).map(|v| vec![v, v + 1]).collect();
-    let along = TreeDecomposition::new(
-        &graph,
-        path_bags.clone(),
-        (0usize..7).map(|edge| (edge, edge + 1)),
-    )
-    .unwrap();
+    let (graph, along) = path_with_td(9);
     let mut pool = BagPool::new(Limits {
         bags: 4,
         ..Limits::standard()
@@ -85,22 +128,14 @@ fn a_full_pool_shares_its_bags_out() {
         pool.absorb(&along, slot);
     }
     assert_eq!(pool.len(), 4);
-    let built = recombine(&pool, &graph, None).expect("the pool holds a decomposition");
-    built.validate(&graph).expect("valid");
+    recombine_and_validate(&pool, &graph);
 }
 
 #[test]
 fn a_pool_from_one_decomposition_rebuilds_it() {
-    let graph = path(6);
-    let td = TreeDecomposition::new(
-        &graph,
-        [vec![0, 1], vec![1, 2], vec![2, 3], vec![3, 4], vec![4, 5]],
-        [(0, 1), (1, 2), (2, 3), (3, 4)],
-    )
-    .unwrap();
+    let (graph, td) = path_with_td(6);
     let pool = pool_of(&[&td]);
-    let built = recombine(&pool, &graph, None).expect("the pool holds a whole decomposition");
-    built.validate(&graph).expect("valid");
+    let built = recombine_and_validate(&pool, &graph);
     assert_eq!(built.treewidth(), 1);
 }
 
@@ -117,8 +152,7 @@ fn the_search_never_comes_back_wider_than_the_pool_it_read() {
     )
     .unwrap();
     let pool = pool_of(&[&wide, &narrow]);
-    let built = recombine(&pool, &graph, None).expect("the pool holds a whole decomposition");
-    built.validate(&graph).expect("valid");
+    let built = recombine_and_validate(&pool, &graph);
     assert!(built.treewidth() <= narrow.treewidth());
 }
 
@@ -131,21 +165,7 @@ fn it_glues_a_narrower_tree_out_of_two_candidates() {
     // decomposed by its two triangles, or badly by one bag of four.
     //   left:  0-1-2-3-0 with the chord 0-2
     //   right: 3-4-5-6-3 with the chord 3-5
-    let graph = Graph::new(
-        7,
-        [
-            (0, 1),
-            (1, 2),
-            (2, 3),
-            (3, 0),
-            (0, 2),
-            (3, 4),
-            (4, 5),
-            (5, 6),
-            (6, 3),
-            (3, 5),
-        ],
-    );
+    let graph = two_chorded_four_cycles();
     // Narrow on the left, wide on the right.
     let left = TreeDecomposition::new(
         &graph,
@@ -175,11 +195,7 @@ fn it_glues_a_narrower_tree_out_of_two_candidates() {
             }
         }
     }
-    let adjacency = Adjacency::of(&graph).expect("the rows fit");
-    let sets: Vec<_> = bags.iter().map(|bag| adjacency.set_of(bag)).collect();
-    let built = super::search(&sets, &graph, &adjacency, Limits::standard(), None)
-        .expect("the bags hold a whole decomposition");
-    built.validate(&graph).expect("valid");
+    let built = search_and_validate(&graph, &bags);
     // Neither candidate is narrower than 3; the four triangles between them
     // are a decomposition of width 2, and no candidate had them together.
     assert_eq!(built.treewidth(), 2);
@@ -187,13 +203,7 @@ fn it_glues_a_narrower_tree_out_of_two_candidates() {
 
 #[test]
 fn a_passed_deadline_gives_nothing() {
-    let graph = path(6);
-    let td = TreeDecomposition::new(
-        &graph,
-        [vec![0, 1], vec![1, 2], vec![2, 3], vec![3, 4], vec![4, 5]],
-        [(0, 1), (1, 2), (2, 3), (3, 4)],
-    )
-    .unwrap();
+    let (graph, td) = path_with_td(6);
     let pool = pool_of(&[&td]);
     let past = Instant::now() - Duration::from_secs(1);
     assert!(recombine(&pool, &graph, Some(past)).is_none());
@@ -209,8 +219,7 @@ fn a_disconnected_graph_comes_back_whole() {
     )
     .unwrap();
     let pool = pool_of(&[&td]);
-    let built = recombine(&pool, &graph, None).expect("the pool holds a whole decomposition");
-    built.validate(&graph).expect("valid");
+    let built = recombine_and_validate(&pool, &graph);
     assert_eq!(built.treewidth(), 1);
 }
 
@@ -218,13 +227,7 @@ fn a_disconnected_graph_comes_back_whole() {
 /// then is still a decomposition of the whole graph, or nothing.
 #[test]
 fn a_full_block_map_gives_a_valid_answer_or_none() {
-    let graph = path(8);
-    let td = TreeDecomposition::new(
-        &graph,
-        (0u32..7).map(|v| vec![v, v + 1]).collect::<Vec<_>>(),
-        (0usize..6).map(|edge| (edge, edge + 1)),
-    )
-    .unwrap();
+    let (graph, td) = path_with_td(8);
     for block_vertices in 0..64 {
         let mut pool = BagPool::new(Limits {
             block_vertices,
@@ -244,21 +247,7 @@ fn a_full_block_map_gives_a_valid_answer_or_none() {
 fn growth_adds_bags_the_pool_did_not_hold() {
     // Two chorded four-cycles joined at a vertex again, but the pool is given
     // only the coarse decomposition: one bag per cycle.
-    let graph = Graph::new(
-        7,
-        [
-            (0, 1),
-            (1, 2),
-            (2, 3),
-            (3, 0),
-            (0, 2),
-            (3, 4),
-            (4, 5),
-            (5, 6),
-            (6, 3),
-            (3, 5),
-        ],
-    );
+    let graph = two_chorded_four_cycles();
     let coarse =
         TreeDecomposition::new(&graph, [vec![0, 1, 2, 3], vec![3, 4, 5, 6]], [(0, 1)]).unwrap();
     let bags: Vec<Vec<u32>> = coarse
@@ -289,7 +278,7 @@ fn the_potential_maximal_clique_test_agrees_with_small_graphs() {
     // A four-cycle: its minimal separators are {0,2} and {1,3}, and its
     // potential maximal cliques are the four triangles, since every minimal
     // triangulation adds one chord.
-    let graph = Graph::new(4, [(0, 1), (1, 2), (2, 3), (3, 0)]);
+    let graph = four_cycle();
     let adjacency = Adjacency::of(&graph).expect("the rows fit");
     let mut scratch = super::sets::Scratch::new(&adjacency);
     for triple in [vec![0, 1, 2], vec![1, 2, 3], vec![0, 2, 3], vec![0, 1, 3]] {
@@ -322,7 +311,7 @@ fn the_potential_maximal_clique_test_agrees_with_small_graphs() {
 #[test]
 fn a_pooled_triangulation_leaves_out_the_cliques_the_caller_holds() {
     // The four-cycle, whose potential maximal cliques are its four triangles.
-    let graph = Graph::new(4, [(0, 1), (1, 2), (2, 3), (3, 0)]);
+    let graph = four_cycle();
     let adjacency = Adjacency::of(&graph).expect("the rows fit");
     let mut scratch = super::sets::Scratch::new(&adjacency);
     let mut state = super::merge::Loop::new(&graph, &adjacency, Limits::standard(), 0);
@@ -432,23 +421,6 @@ fn fixed_lists() -> Vec<(Graph, Vec<Vec<u32>>)> {
     cases
 }
 
-/// The `n × n` grid, vertex `n * row + column`.
-fn square_grid(n: u32) -> Graph {
-    let mut edges = Vec::new();
-    for row in 0..n {
-        for column in 0..n {
-            let vertex = row * n + column;
-            if column + 1 < n {
-                edges.push((vertex, vertex + 1));
-            }
-            if row + 1 < n {
-                edges.push((vertex, vertex + n));
-            }
-        }
-    }
-    Graph::new(n * n, edges)
-}
-
 /// A graph with no structure to it, built from a fixed rule so the list the
 /// test reads is the same on every machine.
 fn scattered(n: u32) -> Graph {
@@ -467,11 +439,7 @@ fn scattered(n: u32) -> Graph {
 fn the_programme_reads_the_widths_it_always_read() {
     let expected = [(4u32, 48usize), (5, 87), (13, 150)];
     for ((graph, bags), (width, total)) in fixed_lists().into_iter().zip(expected) {
-        let adjacency = Adjacency::of(&graph).expect("the rows fit");
-        let sets: Vec<_> = bags.iter().map(|bag| adjacency.set_of(bag)).collect();
-        let built = super::search(&sets, &graph, &adjacency, Limits::standard(), None)
-            .expect("the list holds a decomposition");
-        built.validate(&graph).expect("valid");
+        let built = search_and_validate(&graph, &bags);
         assert_eq!(built.quality_key(), (width, total));
     }
 }
@@ -495,7 +463,7 @@ fn the_local_step_beats_the_pooled_bags() {
             crate::elimination::decompose(&graph, order, 0, None).expect("an order");
         pool.absorb(&decomposition, slot as u32);
     }
-    let pooled = recombine(&pool, &graph, None).expect("the pool holds a decomposition");
+    let pooled = recombine_and_validate(&pool, &graph);
     assert_eq!(pooled.treewidth(), 13);
     let built = super::local_merge(&pool, &graph, &pooled, 0, None)
         .expect("the local step found something narrower");
@@ -507,13 +475,7 @@ fn the_local_step_beats_the_pooled_bags() {
 /// was given.
 #[test]
 fn the_local_step_declines_a_decomposition_it_cannot_beat() {
-    let graph = path(6);
-    let td = TreeDecomposition::new(
-        &graph,
-        [vec![0, 1], vec![1, 2], vec![2, 3], vec![3, 4], vec![4, 5]],
-        [(0, 1), (1, 2), (2, 3), (3, 4)],
-    )
-    .unwrap();
+    let (graph, td) = path_with_td(6);
     let pool = pool_of(&[&td]);
     assert!(super::local_merge(&pool, &graph, &td, 0, None).is_none());
 }
@@ -521,16 +483,10 @@ fn the_local_step_declines_a_decomposition_it_cannot_beat() {
 #[test]
 fn a_cap_cannot_repeat_vertices_outside_its_block() {
     let graph = Graph::new(6, [(0, 3), (1, 3), (0, 2), (2, 4), (4, 5)]);
-    let adjacency = Adjacency::of(&graph).unwrap();
     // With [0, 3] at the root, the block {2, 4, 5} has separator {0}.
     // The bag [0, 1, 2] cannot cap it: vertex 1 lies outside that block.
     let bags = [vec![0, 3], vec![0, 1, 2], vec![2, 4], vec![4, 5]];
-    let sets: Vec<_> = bags.iter().map(|bag| adjacency.set_of(bag)).collect();
-    let built = super::search(&sets, &graph, &adjacency, Limits::standard(), None)
-        .expect("the pool can cover the graph");
-    built
-        .validate(&graph)
-        .expect("every vertex's bags stay connected");
+    let built = search_and_validate(&graph, &bags);
     assert_eq!(built.treewidth(), 2);
 }
 

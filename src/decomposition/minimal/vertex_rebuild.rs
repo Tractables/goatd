@@ -173,24 +173,14 @@ fn rebuild(
             connecting.push(bag);
         }
     }
-    let mut separator: Vec<u32> = Vec::new();
-    for edge in &mut tree_edges {
-        let (a, b) = *edge;
-        if kept[a] && kept[b] {
-            separator.clear();
-            separator.extend(
-                small.bags()[a]
-                    .vertices()
-                    .iter()
-                    .copied()
-                    .filter(|v| small.bags()[b].vertices().binary_search(v).is_ok())
-                    .map(original),
-            );
-            connecting[attachment[a] - kept.len()].extend_from_slice(&separator);
-            connecting[attachment[b] - kept.len()].extend_from_slice(&separator);
-            *edge = (attachment[a], attachment[b]);
-        }
-    }
+    splice_support_edges(
+        &small,
+        &kept,
+        &attachment,
+        &mut tree_edges,
+        &mut connecting,
+        original,
+    );
     for (index, &on_support) in kept.iter().enumerate() {
         if on_support {
             tree_edges.push((index, attachment[index]));
@@ -212,6 +202,34 @@ fn rebuild(
     bags.extend(connecting.into_iter().map(TdBag::already_sorted));
     let candidate = TreeDecomposition::from_trusted_bags(graph, bags, tree_edges).ok()?;
     Some(compact(candidate))
+}
+
+fn splice_support_edges(
+    small: &TreeDecomposition,
+    kept: &[bool],
+    attachment: &[usize],
+    tree_edges: &mut [(usize, usize)],
+    connecting: &mut [Vec<u32>],
+    original: impl Fn(u32) -> u32,
+) {
+    let mut separator: Vec<u32> = Vec::new();
+    for edge in tree_edges {
+        let (a, b) = *edge;
+        if kept[a] && kept[b] {
+            separator.clear();
+            separator.extend(
+                small.bags()[a]
+                    .vertices()
+                    .iter()
+                    .copied()
+                    .filter(|v| small.bags()[b].vertices().binary_search(v).is_ok())
+                    .map(&original),
+            );
+            connecting[attachment[a] - kept.len()].extend_from_slice(&separator);
+            connecting[attachment[b] - kept.len()].extend_from_slice(&separator);
+            *edge = (attachment[a], attachment[b]);
+        }
+    }
 }
 
 fn connect_support_components(

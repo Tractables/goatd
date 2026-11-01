@@ -273,44 +273,78 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
         }
 
         let simplicial = P::ZERO_SCORE_IS_SIMPLICIAL && !cheap_mode && snapshot == 0;
-        if clique_residual {
-            graph.remove_without_fill_nbrs(v, &nbrs_buf);
-        } else if simplicial {
-            policy.eliminate_simplicial(graph, v, &nbrs_buf);
-        } else if cheap_mode {
-            graph.eliminate_with_nbrs(v, &nbrs_buf);
-        } else {
-            policy.eliminate_with_fill(graph, v, &nbrs_buf, soft_deadline);
-        }
-        sink.record(v, bag);
-
-        if exceeds_width_bound(bag_len, width_bound) {
-            return ElimExit::WidthLimitExceeded;
-        }
-
-        if clique_residual {
-            // The drain below will put every remaining vertex in one bag;
-            // check the bound against that now rather than after draining.
-            if exceeds_width_bound(graph.num_active, width_bound) {
-                return ElimExit::WidthLimitExceeded;
-            }
-            drain_clique_tail(graph, &mut sink, policy, &mut nbrs_buf);
-            return ElimExit::Complete;
-        }
-
-        match policy.after_eliminate(graph, &nbrs_buf, cheap_mode, soft_deadline, !simplicial) {
-            AfterElim::Continue => {}
-            AfterElim::EnterCheapMode => {
-                debug_assert!(P::CHEAP_MODE, "core without cheap mode asked to enter it");
-                cheap_mode = true;
-            }
-            // The residual is too large to finish even in cheap mode, and it
-            // is the soft cutoff that has passed: the engine completes what is
-            // left and the portfolio keeps its remaining hard-deadline time.
-            AfterElim::Bail => return ElimExit::DeadlineReached(Cutoff::Soft),
+        if let Some(exit) = eliminate_and_advance_greedy(
+            policy,
+            graph,
+            v,
+            bag,
+            bag_len,
+            &mut sink,
+            &mut nbrs_buf,
+            clique_residual,
+            simplicial,
+            &mut cheap_mode,
+            soft_deadline,
+            width_bound,
+        ) {
+            return exit;
         }
     }
     ElimExit::Complete
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eliminate_and_advance_greedy<P: ElimPolicy>(
+    policy: &mut P,
+    graph: &mut EliminationGraph,
+    v: u32,
+    bag: Vec<u32>,
+    bag_len: usize,
+    sink: &mut ElimSink<'_>,
+    nbrs_buf: &mut Vec<u32>,
+    clique_residual: bool,
+    simplicial: bool,
+    cheap_mode: &mut bool,
+    soft_deadline: Option<Instant>,
+    width_bound: Option<u32>,
+) -> Option<ElimExit> {
+    if clique_residual {
+        graph.remove_without_fill_nbrs(v, nbrs_buf);
+    } else if simplicial {
+        policy.eliminate_simplicial(graph, v, nbrs_buf);
+    } else if *cheap_mode {
+        graph.eliminate_with_nbrs(v, nbrs_buf);
+    } else {
+        policy.eliminate_with_fill(graph, v, nbrs_buf, soft_deadline);
+    }
+    sink.record(v, bag);
+
+    if exceeds_width_bound(bag_len, width_bound) {
+        return Some(ElimExit::WidthLimitExceeded);
+    }
+
+    if clique_residual {
+        // The drain below will put every remaining vertex in one bag;
+        // check the bound against that now rather than after draining.
+        if exceeds_width_bound(graph.num_active, width_bound) {
+            return Some(ElimExit::WidthLimitExceeded);
+        }
+        drain_clique_tail(graph, sink, policy, nbrs_buf);
+        return Some(ElimExit::Complete);
+    }
+
+    match policy.after_eliminate(graph, nbrs_buf, *cheap_mode, soft_deadline, !simplicial) {
+        AfterElim::Continue => None,
+        AfterElim::EnterCheapMode => {
+            debug_assert!(P::CHEAP_MODE, "core without cheap mode asked to enter it");
+            *cheap_mode = true;
+            None
+        }
+        // The residual is too large to finish even in cheap mode, and it
+        // is the soft cutoff that has passed: the engine completes what is
+        // left and the portfolio keeps its remaining hard-deadline time.
+        AfterElim::Bail => Some(ElimExit::DeadlineReached(Cutoff::Soft)),
+    }
 }
 
 fn check_step_deadlines<P: ElimPolicy>(

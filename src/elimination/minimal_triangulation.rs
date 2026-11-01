@@ -102,20 +102,7 @@ pub(crate) fn cardinality_search(
         while states[lowest] != 0 {
             lowest += 1;
         }
-        let (best, chosen) = choose_highest_unnumbered(&run_max, &counts, lowest);
-        debug_assert!(chosen < n, "every step has an unnumbered vertex to take");
-        debug_assert!(states[chosen] == 0 && counts[chosen] == best);
-        states[chosen] = NUMBERED;
-        counts[chosen] = 0;
-        if best != 0 {
-            let run = chosen / 64;
-            run_max[run] = counts[run * 64..]
-                .iter()
-                .take(64)
-                .copied()
-                .max()
-                .unwrap_or(0);
-        }
+        let chosen = number_chosen_vertex(&mut run_max, &mut counts, &mut states, lowest);
         selected.push(chosen as u32);
 
         raised.clear();
@@ -148,6 +135,32 @@ pub(crate) fn cardinality_search(
         }
     }
     Some(selected)
+}
+
+fn number_chosen_vertex(
+    run_max: &mut [u32],
+    counts: &mut [u32],
+    states: &mut [u8],
+    lowest: usize,
+) -> usize {
+    let (best, chosen) = choose_highest_unnumbered(run_max, counts, lowest);
+    debug_assert!(
+        chosen < counts.len(),
+        "every step has an unnumbered vertex to take"
+    );
+    debug_assert!(states[chosen] == 0 && counts[chosen] == best);
+    states[chosen] = NUMBERED;
+    counts[chosen] = 0;
+    if best != 0 {
+        let run = chosen / 64;
+        run_max[run] = counts[run * 64..]
+            .iter()
+            .take(64)
+            .copied()
+            .max()
+            .unwrap_or(0);
+    }
+    chosen
 }
 
 /// The highest count, then the first vertex holding it: a numbered

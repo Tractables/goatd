@@ -246,27 +246,7 @@ impl TreeDecomposition {
                     )?);
                 }
                 _ => {
-                    // Tree edge: two bare integers "<bag_id1> <bag_id2>".
-                    if !saw_solution_line {
-                        return Err(Error::Parse(format!(
-                            "tree edge before the solution line: {line}"
-                        )));
-                    }
-                    if tokens.len() != 2 {
-                        return Err(Error::Parse(format!("malformed tree edge: {line}")));
-                    }
-                    let a: usize =
-                        parse_zero_based("bag id", "bag id", tokens[0], num_bags as u64)?;
-                    let b: usize =
-                        parse_zero_based("bag id", "bag id", tokens[1], num_bags as u64)?;
-                    if a == b {
-                        return Err(Error::Parse(format!(
-                            "bag {} is adjacent to itself in the bag tree: {line}",
-                            a + 1
-                        )));
-                    }
-                    adj[a].push(b);
-                    adj[b].push(a);
+                    parse_tree_edge_line(line, &tokens, saw_solution_line, num_bags, &mut adj)?;
                 }
             }
         }
@@ -298,6 +278,35 @@ impl TreeDecomposition {
             .map_err(|error| Error::Parse(error.to_string()))?;
         Ok(decomposition)
     }
+}
+
+fn parse_tree_edge_line(
+    line: &str,
+    tokens: &[&str],
+    saw_solution_line: bool,
+    num_bags: usize,
+    adj: &mut [Vec<usize>],
+) -> Result<(), Error> {
+    // Tree edge: two bare integers "<bag_id1> <bag_id2>".
+    if !saw_solution_line {
+        return Err(Error::Parse(format!(
+            "tree edge before the solution line: {line}"
+        )));
+    }
+    if tokens.len() != 2 {
+        return Err(Error::Parse(format!("malformed tree edge: {line}")));
+    }
+    let a: usize = parse_zero_based("bag id", "bag id", tokens[0], num_bags as u64)?;
+    let b: usize = parse_zero_based("bag id", "bag id", tokens[1], num_bags as u64)?;
+    if a == b {
+        return Err(Error::Parse(format!(
+            "bag {} is adjacent to itself in the bag tree: {line}",
+            a + 1
+        )));
+    }
+    adj[a].push(b);
+    adj[b].push(a);
+    Ok(())
 }
 
 fn parse_solution_line(

@@ -52,14 +52,19 @@ fn breaking_out_of_a_bag_walk_leaves_the_bags_beyond_it_unreached() {
     assert_eq!(parent, vec![None, Some(0), Some(1), None]);
 }
 
-#[test]
-fn compact_subsumed_bags_keeps_incomparable_branches() {
+fn incomparable_branch_fixture() -> (Graph, TreeDecomposition) {
     let graph = Graph::new(3, [(0, 1), (0, 2)]);
     let td = make_td_for(
         3,
         vec![vec![0], vec![0, 1], vec![0, 2]],
         vec![(0, 1), (0, 2)],
     );
+    (graph, td)
+}
+
+#[test]
+fn compact_subsumed_bags_keeps_incomparable_branches() {
+    let (graph, td) = incomparable_branch_fixture();
 
     let compacted = td.subsumed_bag_compaction().apply(td);
 
@@ -87,12 +92,7 @@ fn compact_subsumed_bags_contracts_equal_bags_once() {
 
 #[test]
 fn a_subsumed_bag_plan_reports_and_applies_the_compacted_size() {
-    let graph = Graph::new(3, [(0, 1), (0, 2)]);
-    let td = make_td_for(
-        3,
-        vec![vec![0], vec![0, 1], vec![0, 2]],
-        vec![(0, 1), (0, 2)],
-    );
+    let (graph, td) = incomparable_branch_fixture();
 
     let plan = td.subsumed_bag_compaction();
     assert_eq!(plan.total_bag_size(), 4);
@@ -111,23 +111,30 @@ fn covered_vertices(td: &TreeDecomposition) -> FxHashSet<u32> {
         .collect()
 }
 
+fn glue_and_validate(
+    num_vertices: u32,
+    td_a: TreeDecomposition,
+    td_b: TreeDecomposition,
+    sep: &[u32],
+) -> TreeDecomposition {
+    let glued = glue_at_separator(td_a, td_b, sep).expect("glue should succeed");
+    glued
+        .validate(&Graph::new(num_vertices, []))
+        .expect("the glued decomposition is valid");
+    let seen = covered_vertices(&glued);
+    for v in 0..num_vertices {
+        assert!(seen.contains(&v), "vertex {v} missing from glued TD");
+    }
+    glued
+}
+
 #[test]
 fn glue_at_separator_preserves_rip_and_covers_all_vertices() {
     // Side A: two bags covering {0, 1, 2, 3}; S = {2, 3}.
     let td_a = make_td_for(6, vec![vec![0, 1, 2], vec![1, 2, 3]], vec![(0, 1)]);
     // Side B: two bags covering {2, 3, 4, 5}; S = {2, 3}.
     let td_b = make_td_for(6, vec![vec![2, 3, 4], vec![3, 4, 5]], vec![(0, 1)]);
-    let sep = vec![2u32, 3u32];
-    let glued = glue_at_separator(td_a, td_b, &sep).expect("glue should succeed");
-
-    let seen = covered_vertices(&glued);
-    for v in 0..6 {
-        assert!(seen.contains(&v), "vertex {} missing from glued TD", v);
-    }
-
-    glued
-        .validate(&Graph::new(6, []))
-        .expect("the glued decomposition is valid");
+    let glued = glue_and_validate(6, td_a, td_b, &[2, 3]);
 
     // Root bag (index 0) is the separator bag.
     assert_eq!(glued.bags[0].vertices, vec![2, 3]);
@@ -141,12 +148,7 @@ fn glue_at_separator_handles_sep_not_in_any_single_bag() {
     let td_a = make_td_for(7, vec![vec![0, 1, 2], vec![1, 3]], vec![(0, 1)]);
     // Side B has a single bag with all of S.
     let td_b = make_td_for(7, vec![vec![1, 2, 3, 4, 5, 6]], Vec::new());
-    let sep = vec![1u32, 2u32, 3u32];
-    let glued = glue_at_separator(td_a, td_b, &sep).expect("glue should succeed");
-
-    glued
-        .validate(&Graph::new(7, []))
-        .expect("the glued decomposition is valid");
+    let glued = glue_and_validate(7, td_a, td_b, &[1, 2, 3]);
 
     // Separator bag at index 0 contains exactly S.
     assert_eq!(glued.bags[0].vertices, vec![1, 2, 3]);
@@ -172,15 +174,7 @@ fn augmenting_a_disconnected_side_for_a_separator_keeps_the_running_intersection
     // Side B holds the whole separator in one bag.
     let td_b = make_td(vec![vec![0, 3, 4, 5]], Vec::new());
 
-    let glued = glue_at_separator(td_a, td_b, &[0u32, 5u32]).expect("glue should succeed");
-    glued
-        .validate(&Graph::new(6, []))
-        .expect("the glued decomposition is valid");
-
-    let seen = covered_vertices(&glued);
-    for v in 0..6 {
-        assert!(seen.contains(&v), "vertex {v} missing from the glued tree");
-    }
+    glue_and_validate(6, td_a, td_b, &[0, 5]);
 }
 
 /// The glue sorts the bags it wrote into and leaves the rest as they are, so a
@@ -200,7 +194,7 @@ fn glue_leaves_every_bag_of_both_sides_in_ascending_order() {
     );
     let td_b = make_td_for(6, vec![vec![2, 3, 4], vec![3, 4, 5]], vec![(0, 1)]);
 
-    let glued = glue_at_separator(td_a, td_b, &[2u32, 3u32]).expect("glue should succeed");
+    let glued = glue_and_validate(6, td_a, td_b, &[2, 3]);
 
     for bag in &glued.bags {
         assert!(
@@ -209,9 +203,6 @@ fn glue_leaves_every_bag_of_both_sides_in_ascending_order() {
             bag.vertices
         );
     }
-    glued
-        .validate(&Graph::new(6, []))
-        .expect("the glued decomposition is valid");
 }
 
 #[test]

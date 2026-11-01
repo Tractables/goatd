@@ -338,13 +338,7 @@ impl<'g> Session<'g> {
                         let proposal = self.prepare_visit_search(node);
                         slice.step();
                         if let Some((candidate, split, recommended)) = proposal {
-                            self.pending = Some(Pending::Split {
-                                split,
-                                finish_on_reject: true,
-                            });
-                            self.progress.proposed += 1;
-                            slice.record(&mut self.progress);
-                            return polishing::proposal(self, candidate, recommended);
+                            return self.propose_split(slice, candidate, split, recommended, true);
                         }
                         continue;
                     }
@@ -353,40 +347,54 @@ impl<'g> Session<'g> {
                         let proposal = self.finish_exhausted_search(node, legacy);
                         slice.step();
                         if let Some((candidate, split, recommended)) = proposal {
-                            self.pending = Some(Pending::Split {
-                                split,
-                                finish_on_reject: true,
-                            });
-                            self.progress.proposed += 1;
-                            slice.record(&mut self.progress);
-                            return polishing::proposal(self, candidate, recommended);
+                            return self.propose_split(slice, candidate, split, recommended, true);
                         }
                         continue;
                     }
-                    let before = active.search.attempts();
-                    let candidate = active.search.step(!legacy);
-                    self.progress.attempted += active.search.attempts() - before;
-                    slice.step();
-                    if let Some(vertices) = candidate {
-                        let active = self
-                            .active
-                            .as_ref()
-                            .expect("a search owns its restart result");
-                        if let Some((candidate, split, recommended)) =
-                            self.make_split(node, &active.graph, vertices)
-                        {
-                            self.pending = Some(Pending::Split {
-                                split,
-                                finish_on_reject: false,
-                            });
-                            self.progress.proposed += 1;
-                            slice.record(&mut self.progress);
-                            return polishing::proposal(self, candidate, recommended);
-                        }
+                    if let Some((candidate, split, recommended)) =
+                        self.step_active_search(node, legacy, &mut slice)
+                    {
+                        return self.propose_split(slice, candidate, split, recommended, false);
                     }
                 }
             }
         }
+    }
+
+    fn propose_split(
+        &mut self,
+        slice: polishing::Slice,
+        candidate: TreeDecomposition,
+        split: Split,
+        recommended: bool,
+        finish_on_reject: bool,
+    ) -> Advance<'_> {
+        self.pending = Some(Pending::Split {
+            split,
+            finish_on_reject,
+        });
+        self.progress.proposed += 1;
+        slice.record(&mut self.progress);
+        polishing::proposal(self, candidate, recommended)
+    }
+
+    fn step_active_search(
+        &mut self,
+        node: usize,
+        legacy: bool,
+        slice: &mut polishing::Slice,
+    ) -> Option<(TreeDecomposition, Split, bool)> {
+        let active = self.active.as_mut().expect("search was prepared");
+        let before = active.search.attempts();
+        let candidate = active.search.step(!legacy);
+        self.progress.attempted += active.search.attempts() - before;
+        slice.step();
+        let vertices = candidate?;
+        let active = self
+            .active
+            .as_ref()
+            .expect("a search owns its restart result");
+        self.make_split(node, &active.graph, vertices)
     }
 
     fn prepare_visit_search(&mut self, node: usize) -> Option<(TreeDecomposition, Split, bool)> {

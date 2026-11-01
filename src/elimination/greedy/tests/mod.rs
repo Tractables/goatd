@@ -3,6 +3,10 @@
 mod min_fill;
 mod relative_fill;
 
+use std::time::{Duration, Instant};
+
+use crate::elimination::graph::EliminationGraph;
+
 /// The tie set a draw within `band` of the minimum sees, materialised: the
 /// band's buckets concatenated ascending by key, and their combined mass.
 /// The sampler itself walks the same buckets without building this.
@@ -15,6 +19,27 @@ fn tie_set(buckets: &mut super::BucketMap<'_>, band: u64) -> Option<(Vec<u32>, u
         mass += buckets.bucket_mass(bucket);
     }
     Some((vertices, mass))
+}
+
+fn make_buckets<'a>(
+    storage: &'a mut super::BucketStorage,
+    weights: &'a [u32],
+    keys: &[(u32, u64)],
+) -> super::BucketMap<'a> {
+    let mut buckets =
+        super::BucketMap::with_weights(storage, weights, super::uniform_sampling_mass(weights));
+    for &(vertex, key) in keys {
+        buckets.insert(vertex, key);
+    }
+    buckets
+}
+
+fn dense_keys(len: usize) -> u64 {
+    super::PriorityBuckets::dense_keys_for(len) as u64
+}
+
+fn paw_graph() -> EliminationGraph {
+    EliminationGraph::from_edges(4, &[(0, 1), (1, 2), (2, 3), (0, 2)])
 }
 
 #[test]
@@ -59,10 +84,7 @@ fn unequal_sampling_weights_do_not_enable_the_uniform_path() {
 fn priority_buckets_track_their_weighted_sampling_mass() {
     let weights = [0, u32::MAX, 17, 42];
     let mut storage = super::BucketStorage::new();
-    let mut buckets = super::BucketMap::with_weights(&mut storage, &weights, None);
-    buckets.insert(0, 3);
-    buckets.insert(1, 3);
-    buckets.insert(2, 3);
+    let mut buckets = make_buckets(&mut storage, &weights, &[(0, 3), (1, 3), (2, 3)]);
 
     let (vertices, total_mass) = tie_set(&mut buckets, 0).unwrap();
     assert_eq!(vertices, [0, 1, 2]);
@@ -86,9 +108,7 @@ fn uniform_priority_buckets_derive_mass_from_their_length() {
     let weights = [7, 7];
     let mass = super::sampling_mass(7);
     let mut storage = super::BucketStorage::new();
-    let mut buckets = super::BucketMap::with_weights(&mut storage, &weights, Some(mass));
-    buckets.insert(0, 3);
-    buckets.insert(1, 3);
+    let mut buckets = make_buckets(&mut storage, &weights, &[(0, 3), (1, 3)]);
 
     assert_eq!(buckets.bucket(3).unwrap().sampling_mass, 0);
     assert_eq!(tie_set(&mut buckets, 0).unwrap().1, 2 * mass);
@@ -100,8 +120,7 @@ fn uniform_priority_buckets_derive_mass_from_their_length() {
 fn vacant_bucket_positions_do_not_reserve_a_priority_key() {
     let weights = [1];
     let mut storage = super::BucketStorage::new();
-    let mut buckets =
-        super::BucketMap::with_weights(&mut storage, &weights, Some(super::sampling_mass(1)));
+    let mut buckets = make_buckets(&mut storage, &weights, &[]);
 
     buckets.remove_vertex(0);
     buckets.insert(0, u64::MAX);
@@ -114,11 +133,7 @@ fn vacant_bucket_positions_do_not_reserve_a_priority_key() {
 fn priority_buckets_recompute_an_emptied_minimum() {
     let weights = [1, 1];
     let mut storage = super::BucketStorage::new();
-    let mut buckets =
-        super::BucketMap::with_weights(&mut storage, &weights, Some(super::sampling_mass(1)));
-
-    buckets.insert(0, 3);
-    buckets.insert(1, 5);
+    let mut buckets = make_buckets(&mut storage, &weights, &[(0, 3), (1, 5)]);
     buckets.update(0, 7);
     assert_eq!(buckets.minimum(), Some(5));
 
@@ -132,16 +147,19 @@ fn priority_buckets_recompute_an_emptied_minimum() {
 #[test]
 fn a_band_across_the_dense_boundary_walks_its_buckets_in_key_order() {
     let weights = [1; 5];
+    let dense = dense_keys(weights.len());
     let mut storage = super::BucketStorage::new();
-    let mut buckets =
-        super::BucketMap::with_weights(&mut storage, &weights, Some(super::sampling_mass(1)));
-    let dense = super::PriorityBuckets::dense_keys_for(weights.len()) as u64;
-
-    buckets.insert(0, dense + 4);
-    buckets.insert(1, 0);
-    buckets.insert(2, dense);
-    buckets.insert(3, dense - 1);
-    buckets.insert(4, u64::MAX);
+    let mut buckets = make_buckets(
+        &mut storage,
+        &weights,
+        &[
+            (0, dense + 4),
+            (1, 0),
+            (2, dense),
+            (3, dense - 1),
+            (4, u64::MAX),
+        ],
+    );
 
     let (vertices, mass) = tie_set(&mut buckets, u64::MAX).expect("a live minimum");
     assert_eq!(vertices, [1, 3, 2, 0, 4]);
@@ -156,11 +174,7 @@ fn a_band_across_the_dense_boundary_walks_its_buckets_in_key_order() {
 fn priority_buckets_keep_their_slots_when_a_key_overflows() {
     let weights = [1, 1];
     let mut storage = super::BucketStorage::new();
-    let mut buckets =
-        super::BucketMap::with_weights(&mut storage, &weights, Some(super::sampling_mass(1)));
-
-    buckets.insert(0, 3);
-    buckets.insert(1, u64::MAX);
+    let mut buckets = make_buckets(&mut storage, &weights, &[(0, 3), (1, u64::MAX)]);
     assert!(buckets.buckets.overflow.contains_key(&u64::MAX));
     assert_eq!(buckets.minimum(), Some(3));
 
@@ -179,20 +193,24 @@ fn smallest_filed_key(buckets: &super::BucketMap<'_>, vertices: &[u32]) -> Optio
 #[test]
 fn the_minimum_follows_the_smallest_key_across_the_dense_boundary() {
     let weights = [1; 6];
-    let mut storage = super::BucketStorage::new();
-    let mut buckets =
-        super::BucketMap::with_weights(&mut storage, &weights, Some(super::sampling_mass(1)));
-    let dense = super::PriorityBuckets::dense_keys_for(weights.len()) as u64;
+    let dense = dense_keys(weights.len());
     let all = [0, 1, 2, 3, 4, 5];
 
     // Two keys in the slots and three above them, one of those shared by two
     // vertices, filed in no particular order.
-    buckets.insert(0, dense + 9);
-    buckets.insert(1, dense + 2);
-    buckets.insert(2, dense);
-    buckets.insert(3, dense - 1);
-    buckets.insert(4, 0);
-    buckets.insert(5, dense + 2);
+    let mut storage = super::BucketStorage::new();
+    let mut buckets = make_buckets(
+        &mut storage,
+        &weights,
+        &[
+            (0, dense + 9),
+            (1, dense + 2),
+            (2, dense),
+            (3, dense - 1),
+            (4, 0),
+            (5, dense + 2),
+        ],
+    );
     assert_eq!(buckets.buckets.overflow.len(), 3, "keys above the slots");
 
     // Every removal but one takes the last vertex of the bucket the minimum
@@ -209,10 +227,9 @@ fn the_minimum_follows_the_smallest_key_across_the_dense_boundary() {
 #[test]
 fn an_insert_below_the_minimum_takes_it_on_either_side_of_the_boundary() {
     let weights = [1; 4];
+    let dense = dense_keys(weights.len());
     let mut storage = super::BucketStorage::new();
-    let mut buckets =
-        super::BucketMap::with_weights(&mut storage, &weights, Some(super::sampling_mass(1)));
-    let dense = super::PriorityBuckets::dense_keys_for(weights.len()) as u64;
+    let mut buckets = make_buckets(&mut storage, &weights, &[]);
 
     buckets.insert(0, dense + 8);
     assert_eq!(buckets.minimum(), Some(dense + 8));
@@ -235,19 +252,19 @@ fn an_insert_below_the_minimum_takes_it_on_either_side_of_the_boundary() {
 #[test]
 fn reused_storage_drops_the_buckets_a_stopped_run_left_above_the_slots() {
     let weights = [1; 4];
-    let mass = super::sampling_mass(1);
     let mut storage = super::BucketStorage::new();
-    let dense = super::PriorityBuckets::dense_keys_for(weights.len()) as u64;
+    let dense = dense_keys(weights.len());
     {
         // A run that stops at its deadline leaves its vertices filed.
-        let mut buckets = super::BucketMap::with_weights(&mut storage, &weights, Some(mass));
-        buckets.insert(0, 1);
-        buckets.insert(1, dense);
-        buckets.insert(2, dense + 4);
+        let buckets = make_buckets(
+            &mut storage,
+            &weights,
+            &[(0, 1), (1, dense), (2, dense + 4)],
+        );
         assert_eq!(buckets.buckets.overflow.len(), 2);
     }
 
-    let mut buckets = super::BucketMap::with_weights(&mut storage, &weights, Some(mass));
+    let mut buckets = make_buckets(&mut storage, &weights, &[]);
     assert!(buckets.buckets.overflow.is_empty());
     assert_eq!(buckets.spare_vertices.len(), 2, "both buckets handed back");
     assert_eq!(buckets.minimum(), None);
@@ -260,11 +277,7 @@ fn a_band_collects_the_buckets_above_the_minimum() {
     let weights = [1, 1, 1, 1];
     let mass = super::sampling_mass(1);
     let mut storage = super::BucketStorage::new();
-    let mut buckets = super::BucketMap::with_weights(&mut storage, &weights, Some(mass));
-    buckets.insert(0, 3);
-    buckets.insert(1, 4);
-    buckets.insert(2, 4);
-    buckets.insert(3, 9);
+    let mut buckets = make_buckets(&mut storage, &weights, &[(0, 3), (1, 4), (2, 4), (3, 9)]);
     assert_eq!(tie_set(&mut buckets, 0).unwrap(), (vec![0], mass));
     let (vertices, total_mass) = tie_set(&mut buckets, 1).unwrap();
     assert_eq!(
@@ -283,9 +296,7 @@ fn a_band_collects_overflowing_buckets_too() {
     let weights = [1, 1];
     let mass = super::sampling_mass(1);
     let mut storage = super::BucketStorage::new();
-    let mut buckets = super::BucketMap::with_weights(&mut storage, &weights, Some(mass));
-    buckets.insert(0, u64::MAX - 1);
-    buckets.insert(1, u64::MAX);
+    let mut buckets = make_buckets(&mut storage, &weights, &[(0, u64::MAX - 1), (1, u64::MAX)]);
     assert_eq!(buckets.buckets.overflow.len(), 2);
     let (vertices, total_mass) = tie_set(&mut buckets, 1).unwrap();
     assert_eq!(vertices, [0, 1]);
@@ -305,11 +316,9 @@ fn bucket_positions_use_less_space_than_the_optional_tuple() {
 fn empty_priority_buckets_reuse_their_vertex_storage() {
     let weights = [1];
     let mut storage = super::BucketStorage::new();
-    let mut buckets =
-        super::BucketMap::with_weights(&mut storage, &weights, Some(super::sampling_mass(1)));
+    let mut buckets = make_buckets(&mut storage, &weights, &[(0, 3)]);
 
     // A dense key hands its emptied bucket back on the free list.
-    buckets.insert(0, 3);
     let capacity = buckets.bucket(3).unwrap().vertices.capacity();
     buckets.remove_vertex(0);
     assert_eq!(buckets.buckets.free.len(), 1);
@@ -479,11 +488,7 @@ fn neighbour_fill_updates_match_recounts_on_a_large_graph() {
 
 #[test]
 fn the_initial_fill_pass_leaves_no_cache_when_it_is_abortable_and_the_clock_has_passed() {
-    use std::time::{Duration, Instant};
-
-    use crate::elimination::graph::EliminationGraph;
-
-    let graph = EliminationGraph::from_edges(4, &[(0, 1), (1, 2), (2, 3), (0, 2)]);
+    let graph = paw_graph();
     let past = Instant::now() - Duration::from_secs(1);
     let counted = |_vertex| 1;
 
@@ -506,9 +511,7 @@ fn the_initial_fill_pass_leaves_no_cache_when_it_is_abortable_and_the_clock_has_
 
 #[test]
 fn the_initial_fill_pass_counts_nothing_for_an_eliminated_vertex() {
-    use crate::elimination::graph::EliminationGraph;
-
-    let mut graph = EliminationGraph::from_edges(4, &[(0, 1), (1, 2), (2, 3), (0, 2)]);
+    let mut graph = paw_graph();
     graph.active[1] = false;
 
     assert_eq!(

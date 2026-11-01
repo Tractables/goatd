@@ -1383,47 +1383,18 @@ fn run_bipartite_lift(
         return Ok(());
     }
 
-    // Both sides are measured before either is built: a side whose
-    // eliminations would add too much is not a smaller search, and building it
-    // to find that out is the cost the measurement avoids. What is left is
-    // tried cheapest first, and the second side is built only if the first
-    // turns out to hold more edges than the input.
-    let limit = (edge_factor * graph.edges().len() as f64) as usize;
-    let mut sides: Vec<(&Vec<u32>, &Vec<u32>, bipartite_lift::Price)> =
-        [(&first, &second), (&second, &first)]
-            .into_iter()
-            .filter_map(|(keep, drop)| {
-                bipartite_lift::price(&adjacency, drop, u32::MAX, limit)
-                    .map(|priced| (keep, drop, priced))
-            })
-            .collect();
-    if sides.is_empty() {
+    let Some((sides, limit, affordable, share)) = priced_bipartite_sides(
+        graph,
+        &adjacency,
+        &first,
+        &second,
+        config,
+        soft_budget,
+        edge_factor,
+    ) else {
         give_up(trace);
         return Ok(());
-    }
-    sides.sort_by_key(|&(_, _, priced)| priced.work());
-
-    // The share is of the whole window, since that is what the stage spends:
-    // a sub-run stops at its own hard deadline. Inside its share it keeps the
-    // shape the caller asked for, a soft deadline at half the window, so the
-    // sub-run schedules itself the way the caller's own run does.
-    let window = config
-        .hard_budget
-        .unwrap_or_else(|| soft_budget.saturating_mul(2));
-    let share = window.mul_f64(BIPARTITE_LIFT_SHARE);
-
-    // What the stage may do per millisecond of that share. The work is the
-    // input's edges, which the colouring and the pricing each walk, and the
-    // cheaper side's estimate, which is what building the projection costs and
-    // stands for the search over it. A graph that is large for this window is
-    // refused here, and the share stays with the rest of the schedule; the same
-    // graph under a longer window is not.
-    let affordable = config.bipartite_lift_rate * share.as_millis() as f64;
-    let cheapest = (graph.edges().len() + sides[0].2.work()) as f64;
-    if cheapest > affordable {
-        give_up(trace);
-        return Ok(());
-    }
+    };
 
     for (keep, drop, whole) in sides {
         let (ladder, slice) = build_bipartite_ladder(
@@ -1456,6 +1427,64 @@ fn run_bipartite_lift(
     }
     give_up(trace);
     Ok(())
+}
+
+/// Both sides measured before either is built: a side whose eliminations would
+/// add too much is not a smaller search, and building it to find that out is
+/// the cost the measurement avoids. What is left is tried cheapest first, and
+/// the second side is built only if the first turns out to hold more edges than
+/// the input.
+#[allow(clippy::type_complexity)]
+fn priced_bipartite_sides<'a>(
+    graph: &Graph,
+    adjacency: &[Vec<u32>],
+    first: &'a [u32],
+    second: &'a [u32],
+    config: PortfolioConfig,
+    soft_budget: Duration,
+    edge_factor: f64,
+) -> Option<(
+    Vec<(&'a [u32], &'a [u32], bipartite_lift::Price)>,
+    usize,
+    f64,
+    Duration,
+)> {
+    let num_edges = graph.edges().len();
+    let limit = (edge_factor * num_edges as f64) as usize;
+    let mut sides: Vec<(&[u32], &[u32], bipartite_lift::Price)> =
+        [(first, second), (second, first)]
+            .into_iter()
+            .filter_map(|(keep, drop)| {
+                bipartite_lift::price(adjacency, drop, u32::MAX, limit)
+                    .map(|priced| (keep, drop, priced))
+            })
+            .collect();
+    if sides.is_empty() {
+        return None;
+    }
+    sides.sort_by_key(|&(_, _, priced)| priced.work());
+
+    // The share is of the whole window, since that is what the stage spends:
+    // a sub-run stops at its own hard deadline. Inside its share it keeps the
+    // shape the caller asked for, a soft deadline at half the window, so the
+    // sub-run schedules itself the way the caller's own run does.
+    let window = config
+        .hard_budget
+        .unwrap_or_else(|| soft_budget.saturating_mul(2));
+    let share = window.mul_f64(BIPARTITE_LIFT_SHARE);
+
+    // What the stage may do per millisecond of that share. The work is the
+    // input's edges, which the colouring and the pricing each walk, and the
+    // cheaper side's estimate, which is what building the projection costs and
+    // stands for the search over it. A graph that is large for this window is
+    // refused here, and the share stays with the rest of the schedule; the same
+    // graph under a longer window is not.
+    let affordable = config.bipartite_lift_rate * share.as_millis() as f64;
+    let cheapest = (num_edges + sides[0].2.work()) as f64;
+    if cheapest > affordable {
+        return None;
+    }
+    Some((sides, limit, affordable, share))
 }
 
 /// The rungs of the ladder the share pays for, and the slice each rung gets.
@@ -1610,49 +1639,17 @@ fn run_portfolio(
     let started_units = crate::meter::units_spent();
     let deadlines =
         crate::deadline::staged(started, config.soft_budget, config.hard_budget, "portfolio")?;
-    let soft_deadline = deadlines.soft;
-    let window_end = deadlines.hard;
     let closing = ClosingWindows::carve(
         graph,
         started,
         config,
         collection,
-        soft_deadline,
-        window_end,
+        deadlines.soft,
+        deadlines.hard,
     );
-    let hard_deadline = closing.hard_deadline;
-    let mut prebuilt = engine::prebuild(graph, soft_deadline);
-    let active = prebuilt.num_active();
-    // The class where the sizes settle it on their own. In the band between
-    // them it waits on what the first candidate costs.
-    let by_size = Residual::from_size(active, config.expensive_orders_up_to);
-    // Above the full-schedule line the second stage of the hard window is
-    // nominally FlowCutter's, and on a graph it declines nothing runs there at
-    // all: the elimination stops at the soft deadline and the rest of the
-    // window goes unused. Ask before the schedule is fixed, and where the
-    // answer is that FlowCutter will not take it, the elimination keeps the
-    // second stage and gives back only what it needs to hand its answer over.
-    // A residual the line alone puts on the whole schedule keeps the FlowCutter
-    // reserve there, so it is not asked.
-    let writeout = (by_size != Some(Residual::Ordinary)
-        && flowcutter_declines_second_stage(graph, config, soft_deadline, hard_deadline))
-    .then(|| writeout_reserve(graph, active));
-    let cells: [OnceCell<Vec<u32>>; MAX_HEDGE_PASSES] = std::array::from_fn(|_| OnceCell::new());
-    // The adjacency every eccentricity stage places its cloud on. The stages
-    // differ in dimension, not in the graph, so they share one.
-    let placement_adjacency: OnceCell<Adjacency> = OnceCell::new();
-    // The builder is needed again for the fixed orders the hedge repeats.
-    let order_builder = initial_orders;
-    let initial_orders = initial_orders(seed, weights);
-    let mut candidates = match collection.retention {
-        CandidateRetention::All => CandidateSet::all(initial_orders.len() + 1),
-        CandidateRetention::BestOnly => CandidateSet::best_only(),
-    }
-    .reporting_shape(collection.traced)
-    .with_deadline(window_end);
-    if closing.recombine || closing.local_merge {
-        candidates = candidates.collecting_bags(decomposition::BagPoolLimits::standard());
-    }
+    let mut prebuilt = engine::prebuild(graph, deadlines.soft);
+    let orders = initial_orders(seed, weights);
+    let mut candidates = init_candidate_set(collection, orders.len(), deadlines.hard, closing);
 
     // The bipartite lift runs before the orders that eliminate the input
     // itself, so that what it finds is the incumbent they are bounded against
@@ -1663,101 +1660,89 @@ fn run_portfolio(
         graph,
         weights,
         seed,
-        order_builder,
+        initial_orders,
         config,
         &mut candidates,
         &mut trace,
     )?;
 
     let initial = run_initial_orders(
-        &mut prebuilt,
-        &initial_orders,
-        by_size,
-        writeout,
-        config.flowcutter_budget,
-        soft_deadline,
-        hard_deadline,
-        &mut candidates,
-        &mut trace,
-    );
-    let class = initial.classified;
-    let residual = class.residual;
-    let restart_deadline = class.restart_deadline;
-    let hard_deadline_tripped = initial.hard_deadline_tripped;
-
-    let modified = build_modified_weights(
         graph,
-        config,
-        residual,
-        seed,
-        restart_deadline,
-        &cells,
-        &placement_adjacency,
-    );
-    // Every weighted stage repeats the fixed orders that read weights after the
-    // plain diverse pass. Which orders those are does not depend on the
-    // weights, so the count is known before a ranking is placed.
-    let fixed_runs = if !modified.is_empty() {
-        order_builder(seed, weights)
-            .iter()
-            .filter(|candidate| reads_weights(candidate.order))
-            .count() as u64
-    } else {
-        0
-    };
-    let cardinality_search_cost = run_cardinality_searches(
         &mut prebuilt,
+        &orders,
         config,
-        seed,
-        hard_deadline_tripped,
-        soft_deadline,
-        hard_deadline,
+        deadlines.soft,
+        closing.hard_deadline,
         &mut candidates,
         &mut trace,
     );
     run_sampling_phase(
+        graph,
         &mut prebuilt,
         config,
         seed,
         started,
-        residual,
-        initial.initial_runs,
-        initial.min_fill_finished,
-        hard_deadline_tripped,
-        restart_deadline,
-        hard_deadline,
-        cardinality_search_cost,
-        &modified,
-        fixed_runs,
-        order_builder,
+        &initial,
+        deadlines.soft,
+        closing.hard_deadline,
+        initial_orders,
         weights,
         &mut candidates,
         &mut trace,
     );
-    run_trailing_flowcutter(
-        graph,
-        config,
-        seed,
-        started,
-        started_units,
-        hard_deadline_tripped,
-        hard_deadline,
-        &mut candidates,
-        &mut trace,
-    )?;
     run_closing_stages(
         graph,
         weights,
         seed,
         config,
+        started,
+        started_units,
         closing,
-        active,
-        initial.fill_pass_cost,
+        &initial,
         &mut prebuilt,
         &mut candidates,
         &mut trace,
-    );
+    )?;
     Ok(candidates)
+}
+
+/// Above the full-schedule line the second stage of the hard window is
+/// nominally FlowCutter's, and on a graph it declines nothing runs there at
+/// all: the elimination stops at the soft deadline and the rest of the
+/// window goes unused. Ask before the schedule is fixed, and where the
+/// answer is that FlowCutter will not take it, the elimination keeps the
+/// second stage and gives back only what it needs to hand its answer over.
+/// A residual the line alone puts on the whole schedule keeps the FlowCutter
+/// reserve there, so it is not asked.
+fn declined_second_stage_writeout(
+    graph: &Graph,
+    config: PortfolioConfig,
+    by_size: Option<Residual>,
+    active: usize,
+    soft_deadline: Option<Instant>,
+    hard_deadline: Option<Instant>,
+) -> Option<Duration> {
+    (by_size != Some(Residual::Ordinary)
+        && flowcutter_declines_second_stage(graph, config, soft_deadline, hard_deadline))
+    .then(|| writeout_reserve(graph, active))
+}
+
+fn init_candidate_set(
+    collection: Collection,
+    initial_count: usize,
+    window_end: Option<Instant>,
+    closing: ClosingWindows,
+) -> CandidateSet {
+    let mut candidates = match collection.retention {
+        CandidateRetention::All => CandidateSet::all(initial_count + 1),
+        CandidateRetention::BestOnly => CandidateSet::best_only(),
+    }
+    .reporting_shape(collection.traced)
+    .with_deadline(window_end);
+    if closing.recombine || closing.local_merge {
+        candidates = candidates.collecting_bags(decomposition::BagPoolLimits::standard());
+    }
+    candidates
 }
 
 struct InitialOrdersResult {
@@ -1768,30 +1753,58 @@ struct InitialOrdersResult {
     initial_runs: u32,
 }
 
+fn initial_classification(
+    graph: &Graph,
+    active: usize,
+    config: PortfolioConfig,
+    soft_deadline: Option<Instant>,
+    hard_deadline: Option<Instant>,
+) -> (Option<Duration>, Option<Classified>) {
+    // The class where the sizes settle it on their own. In the band between
+    // them it waits on what the first candidate costs.
+    let by_size = Residual::from_size(active, config.expensive_orders_up_to);
+    let writeout = declined_second_stage_writeout(
+        graph,
+        config,
+        by_size,
+        active,
+        soft_deadline,
+        hard_deadline,
+    );
+    let classified = by_size.map(|residual| {
+        Classified::new(
+            residual,
+            writeout,
+            config.flowcutter_budget,
+            soft_deadline,
+            hard_deadline,
+        )
+    });
+    (writeout, classified)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_initial_orders(
+    graph: &Graph,
     prebuilt: &mut engine::Prebuilt,
     initial_orders: &[InitialCandidate],
-    by_size: Option<Residual>,
-    writeout: Option<Duration>,
-    tail_budget: Option<Duration>,
+    config: PortfolioConfig,
     soft_deadline: Option<Instant>,
     hard_deadline: Option<Instant>,
     candidates: &mut CandidateSet,
     trace: &mut TraceSink<'_>,
 ) -> InitialOrdersResult {
+    let (writeout, mut classified) = initial_classification(
+        graph,
+        prebuilt.num_active(),
+        config,
+        soft_deadline,
+        hard_deadline,
+    );
+    let tail_budget = config.flowcutter_budget;
     let mut hard_deadline_tripped = false;
     let mut min_fill_finished = false;
     let mut fill_pass_cost = None;
-    let mut classified: Option<Classified> = by_size.map(|residual| {
-        Classified::new(
-            residual,
-            writeout,
-            tail_budget,
-            soft_deadline,
-            hard_deadline,
-        )
-    });
     let mut initial_runs: u32 = 0;
 
     for (i, candidate) in initial_orders.iter().copied().enumerate() {
@@ -1803,57 +1816,19 @@ fn run_initial_orders(
             break;
         }
         let expensive = !is_min_degree_variant(order);
-        if i > 0 && residual == Some(Residual::Large) && expensive {
+        if should_skip_initial_order(i, candidate, residual, expensive, trace) {
             continue;
         }
-        if residual == Some(Residual::Admitted) && matches!(order, Order::NestedDissection) {
-            trace.report(
-                CandidateOrigin {
-                    stage: Stage::NestedDissection,
-                    seed: candidate.seed,
-                    pass: Pass::Only,
-                },
-                CandidateOutcome::NotStarted,
-            );
-            continue;
-        }
-        let phase = match classified {
-            Some(class) if class.residual == Residual::Admitted && expensive => {
-                EliminationPhase::AdmittedInitial(admitted_cutoff(
-                    class.restart_deadline,
-                    hard_deadline,
-                ))
-            }
-            _ => EliminationPhase::Initial,
-        };
-        let complete_on_deadline = candidates.is_empty() || residual != Some(Residual::Ordinary);
         let candidate_started = crate::meter::now();
-        let run = engine::run_order_prebuilt(
+        let (origin, outcome, stop, own_cutoff) = run_initial_candidate(
             prebuilt,
-            engine::RunSpec {
-                order,
-                seed: candidate.seed,
-                sample_band: 0,
-                update_order_ties: candidate.update_order_ties,
-                stop: elimination_stop(
-                    phase,
-                    initial_cutoff,
-                    hard_deadline,
-                    candidates.best_width(),
-                ),
-                complete_on_deadline,
-                setup_deadline: match phase {
-                    EliminationPhase::AdmittedInitial(cutoff) => cutoff,
-                    _ => None,
-                },
-            },
+            candidate,
+            classified,
+            expensive,
+            initial_cutoff,
+            hard_deadline,
+            candidates,
         );
-        let origin = CandidateOrigin {
-            stage: stage_of(order, phase),
-            seed: candidate.seed,
-            pass: Pass::Only,
-        };
-        let (outcome, stop) = candidates.record_elimination(run, origin);
         initial_runs += 1;
         let cost = crate::meter::now().saturating_duration_since(candidate_started);
         if initial_runs == 1 {
@@ -1875,7 +1850,6 @@ fn run_initial_orders(
             fill_pass_cost.get_or_insert(cost);
         }
         trace.report(origin, outcome);
-        let own_cutoff = matches!(phase, EliminationPhase::AdmittedInitial(_));
         hard_deadline_tripped = did_trip_hard_deadline(stop, outcome, own_cutoff, hard_deadline);
         if hard_deadline_tripped {
             break;
@@ -1888,6 +1862,81 @@ fn run_initial_orders(
         fill_pass_cost,
         initial_runs,
     }
+}
+
+fn should_skip_initial_order(
+    index: usize,
+    candidate: InitialCandidate<'_>,
+    residual: Option<Residual>,
+    expensive: bool,
+    trace: &mut TraceSink<'_>,
+) -> bool {
+    if index > 0 && residual == Some(Residual::Large) && expensive {
+        return true;
+    }
+    if residual == Some(Residual::Admitted) && matches!(candidate.order, Order::NestedDissection) {
+        trace.report(
+            CandidateOrigin {
+                stage: Stage::NestedDissection,
+                seed: candidate.seed,
+                pass: Pass::Only,
+            },
+            CandidateOutcome::NotStarted,
+        );
+        return true;
+    }
+    false
+}
+
+fn run_initial_candidate(
+    prebuilt: &mut engine::Prebuilt,
+    candidate: InitialCandidate<'_>,
+    classified: Option<Classified>,
+    expensive: bool,
+    initial_cutoff: Option<Instant>,
+    hard_deadline: Option<Instant>,
+    candidates: &mut CandidateSet,
+) -> (CandidateOrigin, CandidateOutcome, ScheduleStop, bool) {
+    let order = candidate.order;
+    let residual = classified.map(|class| class.residual);
+    let phase = match classified {
+        Some(class) if class.residual == Residual::Admitted && expensive => {
+            EliminationPhase::AdmittedInitial(admitted_cutoff(
+                class.restart_deadline,
+                hard_deadline,
+            ))
+        }
+        _ => EliminationPhase::Initial,
+    };
+    let complete_on_deadline = candidates.is_empty() || residual != Some(Residual::Ordinary);
+    let run = engine::run_order_prebuilt(
+        prebuilt,
+        engine::RunSpec {
+            order,
+            seed: candidate.seed,
+            sample_band: 0,
+            update_order_ties: candidate.update_order_ties,
+            stop: elimination_stop(
+                phase,
+                initial_cutoff,
+                hard_deadline,
+                candidates.best_width(),
+            ),
+            complete_on_deadline,
+            setup_deadline: match phase {
+                EliminationPhase::AdmittedInitial(cutoff) => cutoff,
+                _ => None,
+            },
+        },
+    );
+    let origin = CandidateOrigin {
+        stage: stage_of(order, phase),
+        seed: candidate.seed,
+        pass: Pass::Only,
+    };
+    let (outcome, stop) = candidates.record_elimination(run, origin);
+    let own_cutoff = matches!(phase, EliminationPhase::AdmittedInitial(_));
+    (origin, outcome, stop, own_cutoff)
 }
 
 fn settle_initial_classification(
@@ -1974,30 +2023,33 @@ fn build_modified_weights<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_sampling_phase(
-    prebuilt: &mut engine::Prebuilt,
+fn build_sampling_schedule<'a>(
     config: PortfolioConfig,
     seed: u64,
     started: Instant,
-    residual: Residual,
-    initial_runs: u32,
-    min_fill_finished: bool,
-    hard_deadline_tripped: bool,
-    restart_deadline: Option<Instant>,
-    hard_deadline: Option<Instant>,
-    cardinality_search_cost: Duration,
-    modified: &[ModifiedWeights<'_>],
-    fixed_runs: u64,
+    initial: &InitialOrdersResult,
+    modified: &'a [ModifiedWeights<'a>],
     order_builder: InitialOrderBuilder,
-    weights: &[u32],
-    candidates: &mut CandidateSet,
-    trace: &mut TraceSink<'_>,
-) {
+    weights: &'a [u32],
+) -> Schedule<'a> {
+    let residual = initial.classified.residual;
+    let restart_deadline = initial.classified.restart_deadline;
+    // Every weighted stage repeats the fixed orders that read weights after the
+    // plain diverse pass. Which orders those are does not depend on the
+    // weights, so the count is known before a ranking is placed.
+    let fixed_runs = if !modified.is_empty() {
+        order_builder(seed, weights)
+            .iter()
+            .filter(|candidate| reads_weights(candidate.order))
+            .count() as u64
+    } else {
+        0
+    };
     let ordinary_runs = restart_count(config, restart_deadline);
     let diverse_samples = if residual == Residual::Ordinary
         && diverse_pass_fits(
             crate::meter::now().saturating_duration_since(started),
-            initial_runs,
+            initial.initial_runs,
             restart_deadline,
         ) {
         config.diverse_sampling_runs
@@ -2006,10 +2058,10 @@ fn run_sampling_phase(
     };
     let min_degree_restarts = match residual {
         Residual::Ordinary => false,
-        Residual::Admitted => !min_fill_finished,
+        Residual::Admitted => !initial.min_fill_finished,
         Residual::Large => true,
     };
-    let schedule = Schedule {
+    Schedule {
         base_seed: seed,
         min_degree_restarts,
         ordinary_runs,
@@ -2022,12 +2074,91 @@ fn run_sampling_phase(
             width: config.sample_band,
             alternate: config.sample_band_alternate,
         },
-    };
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_sampling_phase(
+    graph: &Graph,
+    prebuilt: &mut engine::Prebuilt,
+    config: PortfolioConfig,
+    seed: u64,
+    started: Instant,
+    initial: &InitialOrdersResult,
+    soft_deadline: Option<Instant>,
+    hard_deadline: Option<Instant>,
+    order_builder: InitialOrderBuilder,
+    weights: &[u32],
+    candidates: &mut CandidateSet,
+    trace: &mut TraceSink<'_>,
+) {
+    let residual = initial.classified.residual;
+    let restart_deadline = initial.classified.restart_deadline;
+    let cells: [OnceCell<Vec<u32>>; MAX_HEDGE_PASSES] = std::array::from_fn(|_| OnceCell::new());
+    // The adjacency every eccentricity stage places its cloud on. The stages
+    // differ in dimension, not in the graph, so they share one.
+    let placement_adjacency: OnceCell<Adjacency> = OnceCell::new();
+    let modified = build_modified_weights(
+        graph,
+        config,
+        residual,
+        seed,
+        restart_deadline,
+        &cells,
+        &placement_adjacency,
+    );
+    let cardinality_search_cost = run_cardinality_searches(
+        prebuilt,
+        config,
+        seed,
+        initial.hard_deadline_tripped,
+        soft_deadline,
+        hard_deadline,
+        candidates,
+        trace,
+    );
+    let schedule = build_sampling_schedule(
+        config,
+        seed,
+        started,
+        initial,
+        &modified,
+        order_builder,
+        weights,
+    );
+    run_sampling_schedule(
+        prebuilt,
+        config,
+        seed,
+        started,
+        initial.hard_deadline_tripped,
+        restart_deadline,
+        hard_deadline,
+        cardinality_search_cost,
+        schedule,
+        candidates,
+        trace,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_sampling_schedule(
+    prebuilt: &mut engine::Prebuilt,
+    config: PortfolioConfig,
+    seed: u64,
+    started: Instant,
+    hard_deadline_tripped: bool,
+    restart_deadline: Option<Instant>,
+    hard_deadline: Option<Instant>,
+    cardinality_search_cost: Duration,
+    schedule: Schedule<'_>,
+    candidates: &mut CandidateSet,
+    trace: &mut TraceSink<'_>,
+) {
     let total_samples = schedule.total();
     let stage_length = schedule.stage_length();
     let stages_start = schedule.diverse_runs;
     let stages_end = schedule.passes_total();
-    let stage_count = schedule.modified_stages();
     let mut stage_budget: Option<StageBudget> = None;
     let mut stage_started = Duration::ZERO;
     let mut sample_index: u64 = 0;
@@ -2037,26 +2168,17 @@ fn run_sampling_phase(
     let mut last_improvement: Option<u64> = None;
 
     while sample_index < total_samples && !hard_deadline_tripped && !expired(restart_deadline) {
-        if sample_index >= ordinary_start {
-            let restarts = sample_index - ordinary_start;
-            if config
-                .sampling_patience
-                .stalled(restarts, last_improvement, schedule.ordinary_runs)
-            {
-                trace.report(
-                    CandidateOrigin {
-                        stage: Stage::SampledRestarts,
-                        seed,
-                        pass: Pass::Only,
-                    },
-                    CandidateOutcome::SamplingStopped {
-                        restarts,
-                        last_improvement,
-                        left: restart_deadline.map(remaining),
-                    },
-                );
-                break;
-            }
+        if sampling_patience_stopped(
+            config,
+            seed,
+            sample_index,
+            ordinary_start,
+            last_improvement,
+            schedule.ordinary_runs,
+            restart_deadline,
+            trace,
+        ) {
+            break;
         }
         if stage_length > 0
             && (stages_start..stages_end).contains(&sample_index)
@@ -2065,7 +2187,7 @@ fn run_sampling_phase(
                 started,
                 seed,
                 (sample_index - stages_start) / stage_length,
-                stage_count,
+                schedule.modified_stages(),
                 cardinality_search_cost,
                 restart_deadline,
                 config.hedge_reserve,
@@ -2088,29 +2210,13 @@ fn run_sampling_phase(
         }
         let candidate = extra_sample(schedule, sample_index)
             .expect("sample index is below the configured total");
-        let run = engine::run_order_prebuilt(
+        let (origin, outcome) = run_extra_sample(
             prebuilt,
-            engine::RunSpec {
-                order: candidate.order,
-                seed: candidate.seed,
-                sample_band: candidate.band,
-                update_order_ties: false,
-                stop: elimination_stop(
-                    EliminationPhase::ExtraSampling,
-                    restart_deadline,
-                    hard_deadline,
-                    candidates.best_width(),
-                ),
-                complete_on_deadline: false,
-                setup_deadline: None,
-            },
+            candidate,
+            restart_deadline,
+            hard_deadline,
+            candidates,
         );
-        let origin = CandidateOrigin {
-            stage: candidate.stage,
-            seed: candidate.seed,
-            pass: candidate.pass,
-        };
-        let (outcome, _) = candidates.record_elimination(run, origin);
         let finished = crate::meter::now();
         previous_restart = Some(finished.saturating_duration_since(restart_finished));
         restart_finished = finished;
@@ -2125,6 +2231,75 @@ fn run_sampling_phase(
         }
         sample_index += 1;
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sampling_patience_stopped(
+    config: PortfolioConfig,
+    seed: u64,
+    sample_index: u64,
+    ordinary_start: u64,
+    last_improvement: Option<u64>,
+    ordinary_runs: u64,
+    restart_deadline: Option<Instant>,
+    trace: &mut TraceSink<'_>,
+) -> bool {
+    if sample_index < ordinary_start {
+        return false;
+    }
+    let restarts = sample_index - ordinary_start;
+    if !config
+        .sampling_patience
+        .stalled(restarts, last_improvement, ordinary_runs)
+    {
+        return false;
+    }
+    trace.report(
+        CandidateOrigin {
+            stage: Stage::SampledRestarts,
+            seed,
+            pass: Pass::Only,
+        },
+        CandidateOutcome::SamplingStopped {
+            restarts,
+            last_improvement,
+            left: restart_deadline.map(remaining),
+        },
+    );
+    true
+}
+
+fn run_extra_sample(
+    prebuilt: &mut engine::Prebuilt,
+    candidate: Sample<'_>,
+    restart_deadline: Option<Instant>,
+    hard_deadline: Option<Instant>,
+    candidates: &mut CandidateSet,
+) -> (CandidateOrigin, CandidateOutcome) {
+    let run = engine::run_order_prebuilt(
+        prebuilt,
+        engine::RunSpec {
+            order: candidate.order,
+            seed: candidate.seed,
+            sample_band: candidate.band,
+            update_order_ties: false,
+            stop: elimination_stop(
+                EliminationPhase::ExtraSampling,
+                restart_deadline,
+                hard_deadline,
+                candidates.best_width(),
+            ),
+            complete_on_deadline: false,
+            setup_deadline: None,
+        },
+    );
+    let origin = CandidateOrigin {
+        stage: candidate.stage,
+        seed: candidate.seed,
+        pass: candidate.pass,
+    };
+    let (outcome, _) = candidates.record_elimination(run, origin);
+    (origin, outcome)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2367,62 +2542,69 @@ fn run_trailing_flowcutter(
     Ok(())
 }
 
-/// Runs the closing triangulation-refinement, recombination, merge, local-merge,
-/// and relative-fill stages in their carved windows.
+/// Runs the trailing FlowCutter candidate and the closing triangulation-refinement,
+/// recombination, merge, local-merge, and relative-fill stages in their carved windows.
 #[allow(clippy::too_many_arguments)]
 fn run_closing_stages(
     graph: &Graph,
     weights: &[u32],
     seed: u64,
     config: PortfolioConfig,
+    started: Instant,
+    started_units: u64,
     closing: ClosingWindows,
-    active: usize,
-    fill_pass_cost: Option<Duration>,
+    initial: &InitialOrdersResult,
     prebuilt: &mut engine::Prebuilt,
+    candidates: &mut CandidateSet,
+    trace: &mut TraceSink<'_>,
+) -> Result<(), crate::Error> {
+    run_trailing_flowcutter(
+        graph,
+        config,
+        seed,
+        started,
+        started_units,
+        initial.hard_deadline_tripped,
+        closing.hard_deadline,
+        candidates,
+        trace,
+    )?;
+    run_minimalize_closing(
+        graph,
+        seed,
+        config.triangulation_refinement,
+        closing.hard_deadline,
+        candidates,
+        trace,
+    );
+    run_pooled_closing_stages(graph, weights, seed, closing, candidates, trace);
+    if prebuilt.num_active() > 0
+        && initial
+            .fill_pass_cost
+            .is_some_and(|cost| relative_fill_fits(cost, closing.pooled_end))
+    {
+        run_relative_fill_closing(seed, closing.pooled_end, prebuilt, candidates, trace);
+    }
+    Ok(())
+}
+
+fn run_pooled_closing_stages(
+    graph: &Graph,
+    weights: &[u32],
+    seed: u64,
+    closing: ClosingWindows,
     candidates: &mut CandidateSet,
     trace: &mut TraceSink<'_>,
 ) {
     let ClosingWindows {
-        hard_deadline,
         recombine,
         recombine_end,
         merge,
         merge_end,
         local_merge,
         pooled_end,
+        ..
     } = closing;
-    // Last, the fill edges the winner's bags do not need. The pass rebuilds the
-    // decomposition on a minimal triangulation of the same graph, which is
-    // never wider, and hands the result back as one more candidate so the set
-    // compares it the way it compares every other.
-    //
-    // The vertex gate is the cheap filter, for the two n × n bit matrices the
-    // pass holds, at about n²/4 bytes.
-    // What it costs in time follows the bags rather than the vertices, so the
-    // clock rule is the winner's own size against what is left of the hard
-    // deadline, asked before the winner is copied.
-    if let Some(gate) = config.triangulation_refinement
-        && graph.num_vertices() <= gate
-        && let Some(best) = candidates
-            .best()
-            .filter(|best| decomposition::minimalize_fits(best, graph, hard_deadline))
-            .cloned()
-    {
-        let before = best.quality_key();
-        let minimalized = decomposition::minimalize_at(best, graph, hard_deadline);
-        // The pass returns its input where it found nothing to drop, and the
-        // set holds that decomposition already, so only an improvement is
-        // recorded. The trace reports the pass either way, so a caller can see
-        // what it cost on a graph where it changed nothing.
-        close_stage(
-            candidates,
-            trace,
-            seed,
-            Stage::Minimalized,
-            before,
-            Some(minimalized),
-        );
-    }
     // Last of all, the bags of every candidate together. The pool holds the
     // winner's bags among the rest, so the search cannot come back wider than
     // the set already has; it is recorded only where it is narrower, and a
@@ -2479,8 +2661,47 @@ fn run_closing_stages(
         // more than its cap allows.
         close_stage(candidates, trace, seed, Stage::LocallyMerged, before, found);
     }
-    if active > 0 && fill_pass_cost.is_some_and(|cost| relative_fill_fits(cost, pooled_end)) {
-        run_relative_fill_closing(seed, pooled_end, prebuilt, candidates, trace);
+}
+
+/// Last, the fill edges the winner's bags do not need. The pass rebuilds the
+/// decomposition on a minimal triangulation of the same graph, which is
+/// never wider, and hands the result back as one more candidate so the set
+/// compares it the way it compares every other.
+///
+/// The vertex gate is the cheap filter, for the two n × n bit matrices the
+/// pass holds, at about n²/4 bytes.
+/// What it costs in time follows the bags rather than the vertices, so the
+/// clock rule is the winner's own size against what is left of the hard
+/// deadline, asked before the winner is copied.
+fn run_minimalize_closing(
+    graph: &Graph,
+    seed: u64,
+    gate: Option<u32>,
+    hard_deadline: Option<Instant>,
+    candidates: &mut CandidateSet,
+    trace: &mut TraceSink<'_>,
+) {
+    if let Some(gate) = gate
+        && graph.num_vertices() <= gate
+        && let Some(best) = candidates
+            .best()
+            .filter(|best| decomposition::minimalize_fits(best, graph, hard_deadline))
+            .cloned()
+    {
+        let before = best.quality_key();
+        let minimalized = decomposition::minimalize_at(best, graph, hard_deadline);
+        // The pass returns its input where it found nothing to drop, and the
+        // set holds that decomposition already, so only an improvement is
+        // recorded. The trace reports the pass either way, so a caller can see
+        // what it cost on a graph where it changed nothing.
+        close_stage(
+            candidates,
+            trace,
+            seed,
+            Stage::Minimalized,
+            before,
+            Some(minimalized),
+        );
     }
 }
 

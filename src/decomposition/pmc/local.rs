@@ -90,41 +90,15 @@ pub(crate) fn local_merge(
                 break;
             }
             let width = best.treewidth();
-            let mut fresh = false;
-            for (anchor, inside) in &reaches {
-                if expired(deadline) {
-                    break;
-                }
-                let focuses = state.focuses_against(
-                    anchor,
-                    inside,
-                    partners,
-                    width as usize,
-                    &mut scratch,
-                    deadline,
-                );
-                for focus in focuses {
-                    if expired(deadline) || list.full() {
-                        break;
-                    }
-                    let draws = if focus.len() <= BASE_SIZE {
-                        SMALL_PIECE_DRAWS
-                    } else {
-                        1
-                    };
-                    let cliques = state.triangulate_pooled(
-                        &focus,
-                        width,
-                        draws,
-                        &list.held,
-                        &mut scratch,
-                        deadline,
-                    );
-                    for clique in cliques {
-                        fresh |= list.add(clique);
-                    }
-                }
-            }
+            let fresh = add_partner_focus_cliques(
+                &mut state,
+                &reaches,
+                partners,
+                width,
+                &mut list,
+                &mut scratch,
+                deadline,
+            );
             if !fresh || expired(deadline) {
                 continue;
             }
@@ -146,6 +120,41 @@ pub(crate) fn local_merge(
         }
     }
     (best.quality_key() < start.quality_key()).then_some(best)
+}
+
+fn add_partner_focus_cliques(
+    state: &mut Loop<'_>,
+    reaches: &[(VertexSet, VertexSet)],
+    partners: &[VertexSet],
+    width: u32,
+    list: &mut List,
+    scratch: &mut Scratch,
+    deadline: Option<Instant>,
+) -> bool {
+    let mut fresh = false;
+    for (anchor, inside) in reaches {
+        if expired(deadline) {
+            break;
+        }
+        let focuses =
+            state.focuses_against(anchor, inside, partners, width as usize, scratch, deadline);
+        for focus in focuses {
+            if expired(deadline) || list.full() {
+                break;
+            }
+            let draws = if focus.len() <= BASE_SIZE {
+                SMALL_PIECE_DRAWS
+            } else {
+                1
+            };
+            let cliques =
+                state.triangulate_pooled(&focus, width, draws, &list.held, scratch, deadline);
+            for clique in cliques {
+                fresh |= list.add(clique);
+            }
+        }
+    }
+    fresh
 }
 
 /// Each anchor of `answer` with the reach a partner of it has to lie inside.

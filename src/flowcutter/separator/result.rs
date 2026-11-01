@@ -76,39 +76,7 @@ fn split_sides_bfs(
         }
         flag
     };
-
-    // Counted, then scattered into one buffer, the shape `build_csr` uses: a
-    // `Vec` per vertex costs `num_nodes` allocations and `num_nodes` headers
-    // before any adjacency is written, and this runs once per candidate the
-    // refinement session offers. No sort and no dedup, unlike `build_csr`:
-    // `edges` is canonical already, and each row ends up holding what the
-    // per-vertex vector held, in the same order.
-    debug_assert!(
-        edges.len() <= u32::MAX as usize / 2,
-        "the arc count has to fit the u32 offsets"
-    );
-    let mut offsets = vec![0u32; num_nodes + 1];
-    for &(u, v) in edges {
-        if in_sep[u as usize] || in_sep[v as usize] {
-            continue;
-        }
-        offsets[u as usize + 1] += 1;
-        offsets[v as usize + 1] += 1;
-    }
-    for v in 0..num_nodes {
-        offsets[v + 1] += offsets[v];
-    }
-    let mut neighbors = vec![0u32; offsets[num_nodes] as usize];
-    let mut cursor = offsets[..num_nodes].to_vec();
-    for &(u, v) in edges {
-        if in_sep[u as usize] || in_sep[v as usize] {
-            continue;
-        }
-        neighbors[cursor[u as usize] as usize] = v;
-        cursor[u as usize] += 1;
-        neighbors[cursor[v as usize] as usize] = u;
-        cursor[v as usize] += 1;
-    }
+    let (offsets, neighbors) = non_separator_csr(num_nodes, edges, &in_sep);
 
     let mut component_of = vec![u32::MAX; num_nodes];
     let mut components: Vec<Vec<u32>> = Vec::new();
@@ -158,4 +126,44 @@ fn split_sides_bfs(
     side_a.sort_unstable();
     side_b.sort_unstable();
     Some((side_a, side_b))
+}
+
+/// Counted, then scattered into one buffer, the shape `build_csr` uses: a
+/// `Vec` per vertex costs `num_nodes` allocations and `num_nodes` headers
+/// before any adjacency is written, and this runs once per candidate the
+/// refinement session offers. No sort and no dedup, unlike `build_csr`:
+/// `edges` is canonical already, and each row ends up holding what the
+/// per-vertex vector held, in the same order.
+fn non_separator_csr(
+    num_nodes: usize,
+    edges: &[(u32, u32)],
+    in_sep: &[bool],
+) -> (Vec<u32>, Vec<u32>) {
+    debug_assert!(
+        edges.len() <= u32::MAX as usize / 2,
+        "the arc count has to fit the u32 offsets"
+    );
+    let mut offsets = vec![0u32; num_nodes + 1];
+    for &(u, v) in edges {
+        if in_sep[u as usize] || in_sep[v as usize] {
+            continue;
+        }
+        offsets[u as usize + 1] += 1;
+        offsets[v as usize + 1] += 1;
+    }
+    for v in 0..num_nodes {
+        offsets[v + 1] += offsets[v];
+    }
+    let mut neighbors = vec![0u32; offsets[num_nodes] as usize];
+    let mut cursor = offsets[..num_nodes].to_vec();
+    for &(u, v) in edges {
+        if in_sep[u as usize] || in_sep[v as usize] {
+            continue;
+        }
+        neighbors[cursor[u as usize] as usize] = v;
+        cursor[u as usize] += 1;
+        neighbors[cursor[v as usize] as usize] = u;
+        cursor[v as usize] += 1;
+    }
+    (offsets, neighbors)
 }

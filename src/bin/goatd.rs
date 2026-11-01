@@ -495,37 +495,71 @@ impl RawArgs {
 
     fn validate_order_and_hedge(&self, order: Method) {
         // Validate order-specific flags after the order and all flags are known.
-        let needs = |flag: &str, ok: bool, orders: &str| {
-            if !ok {
-                usage_error(&format!(
-                    "{flag} is not valid with --order {}; use --order {orders}",
-                    order.name()
-                ));
-            }
-        };
         let greedy = matches!(order, Method::MinFill | Method::MinDegree);
         if self.sample {
-            needs("--ties sample", greedy, "minfill or mindegree");
+            Self::require_order(order, "--ties sample", greedy, "minfill or mindegree");
         }
         if self.weights.is_some() {
-            needs("--weights", greedy, "minfill or mindegree");
+            Self::require_order(order, "--weights", greedy, "minfill or mindegree");
             if !self.sample {
                 usage_error("--weights requires --ties sample");
             }
         }
         if self.seed.is_some() {
-            needs(
+            Self::require_order(
+                order,
                 "--seed",
                 order != Method::FlowCutter,
                 "minfill, mindegree, nested-dissection, merge-loop or portfolio",
             );
         }
         if self.steps.is_some() {
-            needs("--steps", order == Method::FlowCutter, "flowcutter");
+            Self::require_order(order, "--steps", order == Method::FlowCutter, "flowcutter");
             if self.budget.is_some() {
                 usage_error("--steps and --budget both bound flowcutter; give one");
             }
         }
+        self.validate_portfolio_only_flags(order);
+        if let Some(hard) = self.hard_budget {
+            let Some(soft) = self.budget else {
+                usage_error("--hard-budget requires --budget");
+            };
+            if hard < soft {
+                usage_error("--hard-budget must be at least --budget");
+            }
+        }
+        // --hedge-dims and --hedge-random both say what the hedge's weighted stages
+        // run, so each is refused beside anything else that says it.
+        if let Some(flag) = self
+            .hedge_dims
+            .is_some()
+            .then_some("--hedge-dims")
+            .or(self.hedge_random.is_some().then_some("--hedge-random"))
+        {
+            if self.hedge_dims.is_some() && self.hedge_random.is_some() {
+                usage_error(
+                    "--hedge-dims and --hedge-random each say what the hedge's weighted stages \
+                     run; give one",
+                );
+            }
+            if self.no_hedge {
+                usage_error(&format!(
+                    "{flag} asks for weighted stages and --no-hedge runs none; give one"
+                ));
+            }
+        }
+    }
+
+    fn require_order(order: Method, flag: &str, ok: bool, orders: &str) {
+        if !ok {
+            usage_error(&format!(
+                "{flag} is not valid with --order {}; use --order {orders}",
+                order.name()
+            ));
+        }
+    }
+
+    fn validate_portfolio_only_flags(&self, order: Method) {
         // Every flag here tunes something only the portfolio has.
         for (flag, given) in [
             ("--hard-budget", self.hard_budget.is_some()),
@@ -559,155 +593,14 @@ impl RawArgs {
             ("--trace", self.trace),
         ] {
             if given {
-                needs(flag, order == Method::Portfolio, "portfolio");
-            }
-        }
-        if let Some(hard) = self.hard_budget {
-            let Some(soft) = self.budget else {
-                usage_error("--hard-budget requires --budget");
-            };
-            if hard < soft {
-                usage_error("--hard-budget must be at least --budget");
-            }
-        }
-        // --hedge-dims and --hedge-random both say what the hedge's weighted stages
-        // run, so each is refused beside anything else that says it.
-        if let Some(flag) = self
-            .hedge_dims
-            .is_some()
-            .then_some("--hedge-dims")
-            .or(self.hedge_random.is_some().then_some("--hedge-random"))
-        {
-            if self.hedge_dims.is_some() && self.hedge_random.is_some() {
-                usage_error(
-                    "--hedge-dims and --hedge-random each say what the hedge's weighted stages \
-                     run; give one",
-                );
-            }
-            if self.no_hedge {
-                usage_error(&format!(
-                    "{flag} asks for weighted stages and --no-hedge runs none; give one"
-                ));
+                Self::require_order(order, flag, order == Method::Portfolio, "portfolio");
             }
         }
     }
 
     fn validate_stage_gates_and_budgets(&self, order: Method) {
-        // The reserve decides how many stages follow the first, so it says nothing
-        // where there is no second stage to refuse. With neither flag the series is
-        // the portfolio's own, which has more than one stage.
-        if self.hedge_reserve.is_some() {
-            let stages = self
-                .hedge_dims
-                .as_ref()
-                .map(Vec::len)
-                .or(self.hedge_random)
-                .unwrap_or(DEFAULT_HEDGE_DIMS.len());
-            if stages < 2 {
-                usage_error(
-                    "--hedge-reserve decides how many weighted stages run after the first, and \
-                     the first runs on any budget; give --hedge-dims or --hedge-random with two \
-                     or more stages",
-                );
-            }
-            if self.no_hedge {
-                usage_error(
-                    "--hedge-reserve says how much of the budget the hedge's weighted stages may \
-                     spend and --no-hedge runs none; give one",
-                );
-            }
-            if self.budget.is_none() {
-                usage_error(
-                    "--hedge-reserve requires --budget: the reserve is a fraction of the time the \
-                     restarts would otherwise take, and a run with no budget leaves every stage \
-                     unbounded",
-                );
-            }
-        }
-        // The rate decides whether the bipartite lift runs, so it says nothing
-        // where the stage is off.
-        if self.bipartite_lift_rate.is_some() && self.no_bipartite_lift {
-            usage_error(
-                "--bipartite-lift-rate says how much work the bipartite lift may do, and \
-                 --no-bipartite-lift turns it off",
-            );
-        }
-        // The count is what stops the restarts of a run with no deadline, so the
-        // flag decides nothing there.
-        if self.capped_restarts && self.budget.is_none() {
-            usage_error(
-                "--capped-restarts requires --budget: with no deadline the restarts stop at \
-                 their count anyway",
-            );
-        }
-        // Alternating with a band of zero is the exact minimum on every restart,
-        // so the flag would decide nothing. Without --sample-band the library's
-        // own band applies, which is not zero, so only the flag set to zero is
-        // the inert pair.
-        if self.sample_band_alternate && self.sample_band == Some(0) {
-            usage_error(
-                "--sample-band-alternate alternates between the exact minimum and the band, \
-                 and --sample-band 0 is the exact minimum",
-            );
-        }
-        if self.sampling_patience.is_some() && self.no_sampling_patience {
-            usage_error(
-                "--sampling-patience and --no-sampling-patience both say when the restarts \
-                 stop; give one",
-            );
-        }
-        // Each pair says whether one construction runs and how large a graph it
-        // runs on, so giving both leaves one of them with nothing to decide.
-        for (gate, gate_given, off, off_given, stage) in [
-            (
-                "--mcs-up-to",
-                self.mcs_up_to.is_some(),
-                "--no-mcs",
-                self.no_mcs,
-                "maximum cardinality search candidate",
-            ),
-            (
-                "--mcsm-up-to",
-                self.mcsm_up_to.is_some(),
-                "--no-mcsm",
-                self.no_mcsm,
-                "MCS-M candidate",
-            ),
-            (
-                "--drop-fill-up-to",
-                self.drop_fill_up_to.is_some(),
-                "--no-drop-fill",
-                self.no_drop_fill,
-                "fill-dropping pass",
-            ),
-            (
-                "--recombine-up-to",
-                self.recombine_up_to.is_some(),
-                "--no-recombine",
-                self.no_recombine,
-                "recombination stage",
-            ),
-            (
-                "--merge-up-to",
-                self.merge_up_to.is_some(),
-                "--no-merge",
-                self.no_merge,
-                "merge loop",
-            ),
-            (
-                "--local-merge-up-to",
-                self.local_merge_up_to.is_some(),
-                "--no-local-merge",
-                self.no_local_merge,
-                "local re-triangulation stage",
-            ),
-        ] {
-            if gate_given && off_given {
-                usage_error(&format!(
-                    "{gate} gates the {stage} and {off} runs none; give one"
-                ));
-            }
-        }
+        self.validate_hedge_and_sampling_gates();
+        self.validate_stage_gate_conflicts();
         // Four stages take their share off a window a run with no budget does not
         // have. The library refuses the equivalent config.
         if self.budget.is_none() {
@@ -772,6 +665,127 @@ impl RawArgs {
                  FlowCutter candidate runs inside the budget, and there is nothing left for a \
                  refinement pass to do afterwards",
             );
+        }
+    }
+
+    fn validate_hedge_and_sampling_gates(&self) {
+        // The reserve decides how many stages follow the first, so it says nothing
+        // where there is no second stage to refuse. With neither flag the series is
+        // the portfolio's own, which has more than one stage.
+        if self.hedge_reserve.is_some() {
+            let stages = self
+                .hedge_dims
+                .as_ref()
+                .map(Vec::len)
+                .or(self.hedge_random)
+                .unwrap_or(DEFAULT_HEDGE_DIMS.len());
+            if stages < 2 {
+                usage_error(
+                    "--hedge-reserve decides how many weighted stages run after the first, and \
+                     the first runs on any budget; give --hedge-dims or --hedge-random with two \
+                     or more stages",
+                );
+            }
+            if self.no_hedge {
+                usage_error(
+                    "--hedge-reserve says how much of the budget the hedge's weighted stages may \
+                     spend and --no-hedge runs none; give one",
+                );
+            }
+            if self.budget.is_none() {
+                usage_error(
+                    "--hedge-reserve requires --budget: the reserve is a fraction of the time the \
+                     restarts would otherwise take, and a run with no budget leaves every stage \
+                     unbounded",
+                );
+            }
+        }
+        // The rate decides whether the bipartite lift runs, so it says nothing
+        // where the stage is off.
+        if self.bipartite_lift_rate.is_some() && self.no_bipartite_lift {
+            usage_error(
+                "--bipartite-lift-rate says how much work the bipartite lift may do, and \
+                 --no-bipartite-lift turns it off",
+            );
+        }
+        // The count is what stops the restarts of a run with no deadline, so the
+        // flag decides nothing there.
+        if self.capped_restarts && self.budget.is_none() {
+            usage_error(
+                "--capped-restarts requires --budget: with no deadline the restarts stop at \
+                 their count anyway",
+            );
+        }
+        // Alternating with a band of zero is the exact minimum on every restart,
+        // so the flag would decide nothing. Without --sample-band the library's
+        // own band applies, which is not zero, so only the flag set to zero is
+        // the inert pair.
+        if self.sample_band_alternate && self.sample_band == Some(0) {
+            usage_error(
+                "--sample-band-alternate alternates between the exact minimum and the band, \
+                 and --sample-band 0 is the exact minimum",
+            );
+        }
+        if self.sampling_patience.is_some() && self.no_sampling_patience {
+            usage_error(
+                "--sampling-patience and --no-sampling-patience both say when the restarts \
+                 stop; give one",
+            );
+        }
+    }
+
+    fn validate_stage_gate_conflicts(&self) {
+        // Each pair says whether one construction runs and how large a graph it
+        // runs on, so giving both leaves one of them with nothing to decide.
+        for (gate, gate_given, off, off_given, stage) in [
+            (
+                "--mcs-up-to",
+                self.mcs_up_to.is_some(),
+                "--no-mcs",
+                self.no_mcs,
+                "maximum cardinality search candidate",
+            ),
+            (
+                "--mcsm-up-to",
+                self.mcsm_up_to.is_some(),
+                "--no-mcsm",
+                self.no_mcsm,
+                "MCS-M candidate",
+            ),
+            (
+                "--drop-fill-up-to",
+                self.drop_fill_up_to.is_some(),
+                "--no-drop-fill",
+                self.no_drop_fill,
+                "fill-dropping pass",
+            ),
+            (
+                "--recombine-up-to",
+                self.recombine_up_to.is_some(),
+                "--no-recombine",
+                self.no_recombine,
+                "recombination stage",
+            ),
+            (
+                "--merge-up-to",
+                self.merge_up_to.is_some(),
+                "--no-merge",
+                self.no_merge,
+                "merge loop",
+            ),
+            (
+                "--local-merge-up-to",
+                self.local_merge_up_to.is_some(),
+                "--no-local-merge",
+                self.no_local_merge,
+                "local re-triangulation stage",
+            ),
+        ] {
+            if gate_given && off_given {
+                usage_error(&format!(
+                    "{gate} gates the {stage} and {off} runs none; give one"
+                ));
+            }
         }
     }
 

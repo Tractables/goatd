@@ -93,7 +93,16 @@ pub(super) fn coarsen_one_level(
         return None;
     }
 
-    let coarse_vertex_weights = coarse_vertex_weights(nc, &coarse_id, &hg.vertex_weights);
+    let coarse_hg = build_coarse_hypergraph(hg, nc, &coarse_id);
+
+    Some(CoarseningLevel {
+        hg: coarse_hg,
+        mapping: coarse_id,
+    })
+}
+
+fn build_coarse_hypergraph(hg: &Hypergraph, nc: usize, coarse_id: &[u32]) -> Hypergraph {
+    let coarse_vertex_weights = coarse_vertex_weights(nc, coarse_id, &hg.vertex_weights);
 
     let num_hyperedges = hg.num_hyperedges();
     let mut weighted_hyperedges: Vec<(Vec<u32>, u32)> = Vec::with_capacity(num_hyperedges);
@@ -118,9 +127,5 @@ pub(super) fn coarsen_one_level(
     let mut coarse_hg =
         Hypergraph::from_hyperedges(nc, &coarse_hyperedges, Some(&coarse_hyperedge_weights));
     coarse_hg.vertex_weights = coarse_vertex_weights;
-
-    Some(CoarseningLevel {
-        hg: coarse_hg,
-        mapping: coarse_id,
-    })
+    coarse_hg
 }

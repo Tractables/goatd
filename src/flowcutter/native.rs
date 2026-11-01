@@ -113,59 +113,17 @@ impl NativeDecomposition {
         let mut iterations_done = 0i64;
         let mut greedy_touches = 0i64;
 
-        let raw = match budget.kind {
-            BudgetKind::Timed {
-                timeout,
-                patience,
-                iterations,
-                steps,
-                timeout_behavior,
-            } => {
-                let timeout_ms = duration_ms(timeout);
-                let patience_ms = patience.map(duration_ms).unwrap_or(0);
-                let (steps, iterations) = ffi_step_limits(steps, iterations);
-                let steps = match timeout_behavior {
-                    TimeoutBehavior::AdaptSearch => steps,
-                    TimeoutBehavior::StopOnly => scaled_steps(steps, num_edges),
-                };
-                // SAFETY: all input and output buffers remain live for the
-                // call; a non-null returned handle transfers ownership.
-                unsafe {
-                    ffi::td_compute_timed_patience(
-                        num_vertices as c_int,
-                        num_edges as c_int,
-                        flat_edges.as_ptr(),
-                        steps,
-                        iterations,
-                        timeout_ms,
-                        patience_ms,
-                        patience_unit_budget,
-                        timeout_behavior.as_ffi(),
-                        &mut iterations_done,
-                        &mut greedy_touches,
-                        search_budget,
-                        units_per_iteration,
-                    )
-                }
-            }
-            BudgetKind::Steps { steps, iterations } => {
-                let (steps, iterations) = ffi_step_limits(steps, iterations);
-                // SAFETY: as for the timed call above.
-                unsafe {
-                    ffi::td_compute(
-                        num_vertices as c_int,
-                        num_edges as c_int,
-                        flat_edges.as_ptr(),
-                        scaled_steps(steps, num_edges),
-                        iterations,
-                        &mut iterations_done,
-                        &mut greedy_touches,
-                        search_budget,
-                        units_per_iteration,
-                    )
-                }
-            }
-        };
+        let raw = invoke_td_compute(
+            num_vertices,
+            num_edges,
+            flat_edges,
+            budget,
+            patience_unit_budget,
+            search_budget,
+            units_per_iteration,
+            &mut iterations_done,
+            &mut greedy_touches,
+        );
 
         charge_build(vertices, num_edges as u64, iterations_done, greedy_touches);
 
@@ -175,6 +133,73 @@ impl NativeDecomposition {
             return None;
         }
         Some(Self(raw))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn invoke_td_compute(
+    num_vertices: u32,
+    num_edges: usize,
+    flat_edges: &[c_int],
+    budget: Budget,
+    patience_unit_budget: i64,
+    search_budget: i64,
+    units_per_iteration: i64,
+    iterations_done: &mut i64,
+    greedy_touches: &mut i64,
+) -> *mut ffi::TdResult {
+    match budget.kind {
+        BudgetKind::Timed {
+            timeout,
+            patience,
+            iterations,
+            steps,
+            timeout_behavior,
+        } => {
+            let timeout_ms = duration_ms(timeout);
+            let patience_ms = patience.map(duration_ms).unwrap_or(0);
+            let (steps, iterations) = ffi_step_limits(steps, iterations);
+            let steps = match timeout_behavior {
+                TimeoutBehavior::AdaptSearch => steps,
+                TimeoutBehavior::StopOnly => scaled_steps(steps, num_edges),
+            };
+            // SAFETY: all input and output buffers remain live for the
+            // call; a non-null returned handle transfers ownership.
+            unsafe {
+                ffi::td_compute_timed_patience(
+                    num_vertices as c_int,
+                    num_edges as c_int,
+                    flat_edges.as_ptr(),
+                    steps,
+                    iterations,
+                    timeout_ms,
+                    patience_ms,
+                    patience_unit_budget,
+                    timeout_behavior.as_ffi(),
+                    iterations_done,
+                    greedy_touches,
+                    search_budget,
+                    units_per_iteration,
+                )
+            }
+        }
+        BudgetKind::Steps { steps, iterations } => {
+            let (steps, iterations) = ffi_step_limits(steps, iterations);
+            // SAFETY: as for the timed call above.
+            unsafe {
+                ffi::td_compute(
+                    num_vertices as c_int,
+                    num_edges as c_int,
+                    flat_edges.as_ptr(),
+                    scaled_steps(steps, num_edges),
+                    iterations,
+                    iterations_done,
+                    greedy_touches,
+                    search_budget,
+                    units_per_iteration,
+                )
+            }
+        }
     }
 }
 

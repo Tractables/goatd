@@ -23,31 +23,69 @@ fn grid(side: u32) -> Graph {
     Graph::new(side * side, edges)
 }
 
+fn unit_weights(graph: &Graph) -> Vec<u32> {
+    vec![1; graph.num_vertices() as usize]
+}
+
+fn decompose_unit(graph: &Graph, config: PortfolioConfig) -> TreeDecomposition {
+    let td = decompose(graph, &unit_weights(graph), 0, config).unwrap();
+    td.validate(graph).unwrap();
+    td
+}
+
+fn candidates_unit(graph: &Graph, config: PortfolioConfig) -> Vec<TreeDecomposition> {
+    let list = candidates(graph, &unit_weights(graph), 0, config).unwrap();
+    assert!(!list.is_empty());
+    for td in &list {
+        td.validate(graph).unwrap();
+    }
+    list
+}
+
+fn assert_no_subsumed_adjacent_bags(decomposition: &TreeDecomposition) {
+    let bags = decomposition.bags();
+    for (bag, neighbours) in decomposition.adjacency().iter().enumerate() {
+        for &neighbour in neighbours {
+            let left = bags[bag].vertices();
+            let right = bags[neighbour].vertices();
+            assert!(
+                !left.iter().all(|vertex| right.contains(vertex)),
+                "bag {bag} is subsumed by adjacent bag {neighbour}"
+            );
+        }
+    }
+}
+
+fn assert_sorted_by_quality<'a>(decompositions: impl IntoIterator<Item = &'a TreeDecomposition>) {
+    let keys: Vec<(u32, usize)> = decompositions
+        .into_iter()
+        .map(|td| (td.treewidth(), td.total_bag_size()))
+        .collect();
+    assert!(keys.windows(2).all(|pair| pair[0] <= pair[1]));
+}
+
+fn has_stage(stages: &[(Stage, Pass)], target: Stage) -> bool {
+    stages.iter().any(|&(stage, _)| stage == target)
+}
+
 #[test]
 fn every_portfolio_entry_point_decomposes_a_grid() {
     let graph = grid(4);
-    let weight = vec![1; graph.num_vertices() as usize];
+    let weight = unit_weights(&graph);
 
-    let candidates = candidates(&graph, &weight, 0, PortfolioConfig::standard()).unwrap();
-    assert!(!candidates.is_empty());
-    for decomposition in &candidates {
-        decomposition.validate(&graph).unwrap();
-    }
-    let quality: Vec<(u32, usize)> = candidates
-        .iter()
-        .map(|td| (td.treewidth(), td.total_bag_size()))
-        .collect();
-    assert!(quality.windows(2).all(|pair| pair[0] <= pair[1]));
+    let candidates = candidates_unit(&graph, PortfolioConfig::standard());
+    assert_sorted_by_quality(&candidates);
+    let best_quality = (candidates[0].treewidth(), candidates[0].total_bag_size());
 
     // The list's head is the decomposition `decompose` returns: both are
     // compared on the compacted key, and both contract the same bags.
-    let winner = decompose(&graph, &weight, 0, PortfolioConfig::standard()).unwrap();
+    let winner = decompose_unit(&graph, PortfolioConfig::standard());
     assert_eq!(candidates[0].bags(), winner.bags());
 
     let refined =
         decompose_and_refine(&graph, &weight, 0, PortfolioConfig::standard(), None).unwrap();
     refined.validate(&graph).unwrap();
-    assert!((refined.treewidth(), refined.total_bag_size()) <= quality[0]);
+    assert!((refined.treewidth(), refined.total_bag_size()) <= best_quality);
 
     let sampled =
         sampled_min_fill_candidates(&graph, &weight, 0, PortfolioConfig::sampled_min_fill())
@@ -61,7 +99,7 @@ fn every_portfolio_entry_point_decomposes_a_grid() {
 #[test]
 fn portfolio_configuration_rejects_invalid_durations() {
     let graph = grid(2);
-    let weight = vec![1; graph.num_vertices() as usize];
+    let weight = unit_weights(&graph);
     let invalid = [
         PortfolioConfig::standard().with_flowcutter(Duration::from_millis(49)),
         PortfolioConfig::standard().with_flowcutter(Duration::MAX),
@@ -100,30 +138,15 @@ fn a_budget_too_short_for_flowcutter_still_decomposes() {
 #[test]
 fn zero_extra_sampling_runs_still_runs_the_initial_candidates() {
     let graph = grid(2);
-    let weight = vec![1; graph.num_vertices() as usize];
-    let candidates = candidates(
-        &graph,
-        &weight,
-        0,
-        PortfolioConfig::standard().with_sampling_runs(0),
-    )
-    .unwrap();
-
-    assert!(!candidates.is_empty());
-    assert!(
-        candidates
-            .iter()
-            .all(|decomposition| decomposition.validate(&graph).is_ok())
-    );
+    candidates_unit(&graph, PortfolioConfig::standard().with_sampling_runs(0));
 }
 
 /// The restarts of a run, and how many candidates it ran on the hedge's
 /// ranking.
 fn restarts(graph: &Graph, config: PortfolioConfig) -> (Vec<(u64, Pass)>, usize) {
-    let weight = vec![1; graph.num_vertices() as usize];
     let mut samples = Vec::new();
     let mut modified = 0;
-    decompose_traced(graph, &weight, 0, config, &mut |candidate| {
+    decompose_traced(graph, &unit_weights(graph), 0, config, &mut |candidate| {
         if matches!(candidate.pass, Pass::Modified { .. }) {
             modified += 1;
         }
@@ -208,9 +231,8 @@ fn a_soft_budget_on_the_standard_portfolio_keeps_the_restart_count() {
 
 /// Every candidate a run traced, in order.
 fn traced_stages(graph: &Graph, config: PortfolioConfig) -> Vec<(Stage, Pass)> {
-    let weight = vec![1; graph.num_vertices() as usize];
     let mut seen = Vec::new();
-    decompose_traced(graph, &weight, 0, config, &mut |candidate| {
+    decompose_traced(graph, &unit_weights(graph), 0, config, &mut |candidate| {
         seen.push((candidate.stage, candidate.pass));
     })
     .expect("a decomposition");
@@ -220,10 +242,9 @@ fn traced_stages(graph: &Graph, config: PortfolioConfig) -> Vec<(Stage, Pass)> {
 /// How many ordinary restarts a run made, and what the patience rule reported
 /// when it stopped them: the restarts that had run and the last improving one.
 fn restart_run(graph: &Graph, config: PortfolioConfig) -> (usize, Vec<(u64, Option<u64>)>) {
-    let weight = vec![1; graph.num_vertices() as usize];
     let mut ran = 0;
     let mut stops = Vec::new();
-    decompose_traced(graph, &weight, 0, config, &mut |candidate| {
+    decompose_traced(graph, &unit_weights(graph), 0, config, &mut |candidate| {
         if let CandidateOutcome::SamplingStopped {
             restarts,
             last_improvement,
@@ -304,11 +325,11 @@ fn the_expensive_orders_stop_at_the_configured_residual() {
     let at_the_default = traced_stages(&graph, config.with_expensive_orders_up_to(300_000));
 
     assert!(
-        ordinary.iter().any(|&(stage, _)| stage == Stage::MinFill),
+        has_stage(&ordinary, Stage::MinFill),
         "a small graph runs the expensive orders: {ordinary:?}"
     );
     assert!(
-        ordinary.iter().any(|&(stage, _)| stage == Stage::Sample),
+        has_stage(&ordinary, Stage::Sample),
         "its restarts are sampled min-fill: {ordinary:?}"
     );
     assert!(
@@ -335,9 +356,7 @@ fn the_expensive_orders_stop_at_the_configured_residual() {
         "above the limit min-degree runs, plus the self-gated candidates: {min_degree_only:?}"
     );
     assert!(
-        min_degree_only
-            .iter()
-            .any(|&(stage, _)| stage == Stage::MinDegree),
+        has_stage(&min_degree_only, Stage::MinDegree),
         "and min-degree is among them: {min_degree_only:?}"
     );
     assert_eq!(at_the_default, ordinary, "300,000 is the default limit");
@@ -346,25 +365,9 @@ fn the_expensive_orders_stop_at_the_configured_residual() {
 #[test]
 fn the_portfolio_winner_has_no_bag_subsumed_by_a_neighbour() {
     let graph = Graph::new(4, [(0, 1), (1, 2), (2, 3)]);
-    let weight = vec![1; graph.num_vertices() as usize];
-    let decomposition = decompose(
-        &graph,
-        &weight,
-        0,
-        PortfolioConfig::standard().with_sampling_runs(0),
-    )
-    .unwrap();
+    let decomposition = decompose_unit(&graph, PortfolioConfig::standard().with_sampling_runs(0));
 
-    for (bag, neighbours) in decomposition.adjacency().iter().enumerate() {
-        for &neighbour in neighbours {
-            let left = decomposition.bags()[bag].vertices();
-            let right = decomposition.bags()[neighbour].vertices();
-            assert!(
-                !left.iter().all(|vertex| right.contains(vertex)),
-                "bag {bag} is subsumed by adjacent bag {neighbour}"
-            );
-        }
-    }
+    assert_no_subsumed_adjacent_bags(&decomposition);
 }
 
 #[test]
@@ -372,9 +375,7 @@ fn the_minimal_triangulation_candidate_can_be_gated_off_and_on() {
     let graph = grid(5);
     let stages = traced_stages(&graph, PortfolioConfig::standard());
     assert!(
-        stages
-            .iter()
-            .any(|&(stage, _)| stage == Stage::MinimalTriangulation),
+        has_stage(&stages, Stage::MinimalTriangulation),
         "the standard portfolio runs the candidate on a graph this size"
     );
 
@@ -382,26 +383,17 @@ fn the_minimal_triangulation_candidate_can_be_gated_off_and_on() {
         &graph,
         PortfolioConfig::standard().without_minimal_triangulation(),
     );
-    assert!(
-        !stages
-            .iter()
-            .any(|&(stage, _)| stage == Stage::MinimalTriangulation)
-    );
+    assert!(!has_stage(&stages, Stage::MinimalTriangulation));
 }
 
 #[test]
 fn dropping_fill_never_widens_the_portfolio_winner() {
     let graph = grid(6);
-    let weight = vec![1; graph.num_vertices() as usize];
-    let kept = decompose(
+    let kept = decompose_unit(
         &graph,
-        &weight,
-        0,
         PortfolioConfig::standard().without_triangulation_refinement(),
-    )
-    .unwrap();
-    let dropped = decompose(&graph, &weight, 0, PortfolioConfig::standard()).unwrap();
-    dropped.validate(&graph).unwrap();
+    );
+    let dropped = decompose_unit(&graph, PortfolioConfig::standard());
     assert!(dropped.treewidth() <= kept.treewidth());
 }
 
@@ -410,9 +402,7 @@ fn the_maximum_cardinality_candidate_can_be_gated_off_and_on() {
     let graph = grid(5);
     let stages = traced_stages(&graph, PortfolioConfig::standard());
     assert!(
-        stages
-            .iter()
-            .any(|&(stage, _)| stage == Stage::MaximumCardinality),
+        has_stage(&stages, Stage::MaximumCardinality),
         "the standard portfolio runs the candidate on a graph this size"
     );
     let plain = stages
@@ -427,16 +417,8 @@ fn the_maximum_cardinality_candidate_can_be_gated_off_and_on() {
         &graph,
         PortfolioConfig::standard().without_maximum_cardinality(),
     );
-    assert!(
-        !stages
-            .iter()
-            .any(|&(stage, _)| stage == Stage::MaximumCardinality)
-    );
-    assert!(
-        stages
-            .iter()
-            .any(|&(stage, _)| stage == Stage::MinimalTriangulation)
-    );
+    assert!(!has_stage(&stages, Stage::MaximumCardinality));
+    assert!(has_stage(&stages, Stage::MinimalTriangulation));
 }
 
 #[test]
@@ -446,11 +428,7 @@ fn a_gate_below_the_residual_leaves_the_maximum_cardinality_candidate_unrun() {
         &graph,
         PortfolioConfig::standard().with_maximum_cardinality(0),
     );
-    assert!(
-        !stages
-            .iter()
-            .any(|&(stage, _)| stage == Stage::MaximumCardinality)
-    );
+    assert!(!has_stage(&stages, Stage::MaximumCardinality));
 }
 
 /// A decomposition's bags and tree, free of the order the algorithm listed
@@ -518,7 +496,7 @@ fn complete(n: u32) -> Graph {
 #[test]
 fn a_decomposition_several_candidates_produce_is_listed_once() {
     let graph = complete_bipartite(4, 4);
-    let weight = vec![1; graph.num_vertices() as usize];
+    let weight = unit_weights(&graph);
     let traced =
         candidates_traced(&graph, &weight, 0, PortfolioConfig::standard(), &mut |_| {}).unwrap();
     assert!(
@@ -533,12 +511,11 @@ fn a_decomposition_several_candidates_produce_is_listed_once() {
             traced[index].origin
         );
     }
-    let plain = candidates(&graph, &weight, 0, PortfolioConfig::standard()).unwrap();
+    let plain = candidates_unit(&graph, PortfolioConfig::standard());
     assert_eq!(plain.len(), traced.len());
 
     let clique = complete(5);
-    let weight = vec![1; clique.num_vertices() as usize];
-    let listed = candidates(&clique, &weight, 0, PortfolioConfig::standard()).unwrap();
+    let listed = candidates_unit(&clique, PortfolioConfig::standard());
     assert_eq!(listed.len(), 1, "a clique has one decomposition to list");
     assert_eq!(listed[0].bags().len(), 1);
 }
@@ -549,11 +526,10 @@ fn a_decomposition_several_candidates_produce_is_listed_once() {
 #[test]
 fn a_produced_candidate_carries_its_shape() {
     let graph = grid(5);
-    let weight = vec![1; graph.num_vertices() as usize];
     let mut produced = 0;
     candidates_traced(
         &graph,
-        &weight,
+        &unit_weights(&graph),
         0,
         PortfolioConfig::standard(),
         &mut |trace| {
@@ -581,13 +557,12 @@ fn a_produced_candidate_carries_its_shape() {
 #[test]
 fn a_best_only_run_shapes_only_the_candidates_it_keeps() {
     let graph = grid(5);
-    let weight = vec![1; graph.num_vertices() as usize];
     let mut best_width = u32::MAX;
     let mut shaped = 0;
     let mut unshaped = 0;
     decompose_traced(
         &graph,
-        &weight,
+        &unit_weights(&graph),
         0,
         PortfolioConfig::standard(),
         &mut |trace| {
@@ -613,11 +588,10 @@ fn a_best_only_run_shapes_only_the_candidates_it_keeps() {
 #[test]
 fn every_candidate_is_compacted_and_names_the_stage_that_made_it() {
     let graph = grid(5);
-    let weight = vec![1; graph.num_vertices() as usize];
     let mut produced = Vec::new();
     let traced = candidates_traced(
         &graph,
-        &weight,
+        &unit_weights(&graph),
         0,
         PortfolioConfig::standard(),
         &mut |trace| {
@@ -628,7 +602,7 @@ fn every_candidate_is_compacted_and_names_the_stage_that_made_it() {
     )
     .unwrap();
     assert!(!traced.is_empty());
-    let plain = candidates(&graph, &weight, 0, PortfolioConfig::standard()).unwrap();
+    let plain = candidates_unit(&graph, PortfolioConfig::standard());
     assert_eq!(traced.len(), plain.len());
     for (candidate, decomposition) in traced.iter().zip(&plain) {
         assert_eq!(candidate.decomposition.bags(), decomposition.bags());
@@ -639,39 +613,20 @@ fn every_candidate_is_compacted_and_names_the_stage_that_made_it() {
             "origin {origin:?} was never reported as produced"
         );
         // No bag is contained in a neighbouring bag.
-        let bags = candidate.decomposition.bags();
-        for (index, bag) in bags.iter().enumerate() {
-            for &neighbour in &candidate.decomposition.adjacency()[index] {
-                let other = &bags[neighbour];
-                assert!(
-                    !bag.vertices().iter().all(|v| other.vertices().contains(v)),
-                    "bag {index} is contained in its neighbour {neighbour}"
-                );
-            }
-        }
+        assert_no_subsumed_adjacent_bags(&candidate.decomposition);
     }
-    let keys: Vec<(u32, usize)> = traced
-        .iter()
-        .map(|c| {
-            (
-                c.decomposition.treewidth(),
-                c.decomposition.total_bag_size(),
-            )
-        })
-        .collect();
-    assert!(keys.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert_sorted_by_quality(traced.iter().map(|c| &c.decomposition));
     assert!(traced.iter().any(|c| c.origin.stage == Stage::MinDegree));
 }
 
 #[test]
 fn recombination_runs_under_a_budget_and_never_widens_the_winner() {
     let graph = grid(6);
-    let weight = vec![1; graph.num_vertices() as usize];
     let budget = Duration::from_millis(500);
     let mut stages = Vec::new();
     let recombined = decompose_traced(
         &graph,
-        &weight,
+        &unit_weights(&graph),
         0,
         PortfolioConfig::standard_with_budget(budget),
         &mut |candidate| stages.push(candidate.stage),
@@ -679,13 +634,10 @@ fn recombination_runs_under_a_budget_and_never_widens_the_winner() {
     .unwrap();
     recombined.validate(&graph).unwrap();
     assert!(stages.contains(&Stage::Recombined));
-    let alone = decompose(
+    let alone = decompose_unit(
         &graph,
-        &weight,
-        0,
         PortfolioConfig::standard_with_budget(budget).without_recombination(),
-    )
-    .unwrap();
+    );
     assert!(recombined.treewidth() <= alone.treewidth());
 }
 
@@ -693,14 +645,14 @@ fn recombination_runs_under_a_budget_and_never_widens_the_winner() {
 fn the_unbudgeted_portfolio_does_not_recombine() {
     let graph = grid(5);
     let stages = traced_stages(&graph, PortfolioConfig::standard());
-    assert!(!stages.iter().any(|&(stage, _)| stage == Stage::Recombined));
+    assert!(!has_stage(&stages, Stage::Recombined));
 }
 
 #[test]
 fn callers_can_skip_final_reinsertion_without_skipping_candidate_generation() {
     let _clock = goatd::meter::arm(std::time::Instant::now());
     let graph = Graph::new(8, [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7)]);
-    let weights = vec![1; 8];
+    let weights = unit_weights(&graph);
     let config = PortfolioConfig::standard()
         .with_sampling_runs(0)
         .with_soft_budget(std::time::Duration::from_millis(500))
@@ -731,11 +683,10 @@ fn callers_can_skip_final_reinsertion_without_skipping_candidate_generation() {
 fn callers_can_schedule_polishing_after_candidate_generation() {
     let _clock = goatd::meter::arm(std::time::Instant::now());
     let graph = grid(4);
-    let weights = vec![1; graph.num_vertices() as usize];
     let config = PortfolioConfig::standard()
         .without_vertex_reinsertion()
         .with_sampling_runs(0);
-    let trees = candidates(&graph, &weights, 0, config).unwrap();
+    let trees = candidates_unit(&graph, config);
     let original = &trees[0];
     let original_text = original.to_td();
 
@@ -765,12 +716,8 @@ fn the_portfolio_takes_a_graph_whose_only_edges_are_self_loops() {
     let loops: Vec<(u32, u32)> = (0..64).map(|vertex| (vertex, vertex)).collect();
     let graph = Graph::new(64, loops);
     assert!(graph.edges().is_empty(), "a self-loop is not an edge");
-    let weight = vec![1; graph.num_vertices() as usize];
 
-    let td = decompose(&graph, &weight, 0, PortfolioConfig::standard())
-        .expect("an edgeless graph has a decomposition");
-    td.validate(&graph)
-        .expect("the decomposition is valid for the graph");
+    let td = decompose_unit(&graph, PortfolioConfig::standard());
     assert_eq!(td.treewidth(), 0, "no edges, no bag of two vertices");
 }
 
@@ -780,12 +727,8 @@ fn a_large_edgeless_graph_costs_one_bag_a_vertex() {
     // and the schedule runs on nothing. The size is past the point where an
     // accidental `n × n` allocation would be noticed.
     let graph = Graph::new(100_000, Vec::<(u32, u32)>::new());
-    let weight = vec![1; graph.num_vertices() as usize];
 
-    let td = decompose(&graph, &weight, 0, PortfolioConfig::standard())
-        .expect("an edgeless graph has a decomposition");
-    td.validate(&graph)
-        .expect("the decomposition is valid for the graph");
+    let td = decompose_unit(&graph, PortfolioConfig::standard());
     assert_eq!(td.treewidth(), 0);
     // Width 0 means a bag holds at most one vertex, so covering the graph
     // takes one bag a vertex at least.

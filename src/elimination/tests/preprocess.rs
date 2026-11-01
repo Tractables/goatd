@@ -4,44 +4,61 @@ use crate::elimination::graph::EliminationGraph;
 use crate::elimination::preprocess::*;
 use crate::tests::td_fixture::clique_edges as complete_graph;
 
+fn preprocess_fully(n: u32, edges: &[(u32, u32)]) -> Reduced {
+    let reduced = preprocess(EliminationGraph::from_edges(n, edges), None);
+    assert_eq!(reduced.graph.num_active, 0);
+    reduced
+}
+
+fn push_k4(base: u32, edges: &mut Vec<(u32, u32)>) {
+    for a in 0..4 {
+        for b in a + 1..4 {
+            edges.push((base + a, base + b));
+        }
+    }
+}
+
+fn push_almost_simplicial_gadget(base: u32, edges: &mut Vec<(u32, u32)>) {
+    edges.extend([
+        (base, base + 1),
+        (base, base + 2),
+        (base, base + 3),
+        (base + 1, base + 2),
+        (base + 1, base + 3),
+        (base + 4, base + 1),
+        (base + 4, base + 2),
+        (base + 4, base + 3),
+    ]);
+}
+
 #[test]
 fn a_single_edge_and_an_isolate_reduce_to_one_bag_per_vertex() {
-    let g = EliminationGraph::from_edges(3, &[(0, 1)]);
-    let reduced = preprocess(g, None);
-    assert_eq!(reduced.graph.num_active, 0);
+    let reduced = preprocess_fully(3, &[(0, 1)]);
     assert_eq!(reduced.prefix.bags.len(), 3);
 }
 
 #[test]
 fn twig_removes_leaves() {
-    let g = EliminationGraph::from_edges(4, &[(0, 1), (1, 2), (2, 3)]);
-    let reduced = preprocess(g, None);
-    assert_eq!(reduced.graph.num_active, 0);
+    preprocess_fully(4, &[(0, 1), (1, 2), (2, 3)]);
 }
 
 #[test]
 fn low_degree_rules_revisit_vertices_before_series() {
     // The path order is 4-0-3-1-2. Removing the high-index leaf 4 exposes
     // vertex 0 after the scan cursor has passed it.
-    let edges = [(4, 0), (0, 3), (3, 1), (1, 2)];
-    let reduced = preprocess(EliminationGraph::from_edges(5, &edges), None);
-    assert_eq!(reduced.graph.num_active, 0);
+    let reduced = preprocess_fully(5, &[(4, 0), (0, 3), (3, 1), (1, 2)]);
     assert!(reduced.prefix.bags.iter().all(|bag| bag.len() <= 2));
 }
 
 #[test]
 fn simplicial_triangle_collapses() {
-    let g = EliminationGraph::from_edges(3, &[(0, 1), (0, 2), (1, 2)]);
-    let reduced = preprocess(g, None);
-    assert_eq!(reduced.graph.num_active, 0);
+    let reduced = preprocess_fully(3, &[(0, 1), (0, 2), (1, 2)]);
     assert_eq!(reduced.prefix.bags[0].len(), 3);
 }
 
 #[test]
 fn series_adds_fill_then_contracts() {
-    let g = EliminationGraph::from_edges(4, &[(0, 1), (1, 2), (2, 3), (3, 0)]);
-    let reduced = preprocess(g, None);
-    assert_eq!(reduced.graph.num_active, 0);
+    preprocess_fully(4, &[(0, 1), (1, 2), (2, 3), (3, 0)]);
 }
 
 #[test]
@@ -49,28 +66,10 @@ fn almost_simplicial_fires_under_lb() {
     // An almost-simplicial vertex of degree 3 only fires once tw_lb >= 3, so
     // a disjoint K_4 establishes that bound before vertices 0 and 4 (each
     // almost-simplicial, missing edge (2,3)) get a turn.
-    let edges = vec![
-        // K_4 on {0,1,2,3} minus (2,3).
-        (0, 1),
-        (0, 2),
-        (0, 3),
-        (1, 2),
-        (1, 3),
-        // vertex 4: same neighbourhood shape as 0, also almost-simplicial.
-        (4, 1),
-        (4, 2),
-        (4, 3),
-        // disjoint K_4 establishing tw_lb = 3.
-        (8, 9),
-        (8, 10),
-        (8, 11),
-        (9, 10),
-        (9, 11),
-        (10, 11),
-    ];
-    let g = EliminationGraph::from_edges(12, &edges);
-    let reduced = preprocess(g, None);
-    assert_eq!(reduced.graph.num_active, 0);
+    let mut edges = Vec::new();
+    push_almost_simplicial_gadget(0, &mut edges);
+    push_k4(8, &mut edges);
+    let reduced = preprocess_fully(12, &edges);
     let max_bag = reduced.prefix.bags.iter().map(|b| b.len()).max().unwrap();
     assert_eq!(max_bag, 4);
 }
@@ -80,9 +79,7 @@ fn almost_simplicial_skipped_without_tw_lb() {
     // Two triangles sharing an edge: fully reduces via simplicial+twig
     // without ever needing almost-simplicial — verifies the rule doesn't
     // over-fire when tw_lb hasn't been established.
-    let g = EliminationGraph::from_edges(4, &[(0, 1), (0, 2), (1, 2), (0, 3), (1, 3)]);
-    let reduced = preprocess(g, None);
-    assert_eq!(reduced.graph.num_active, 0);
+    preprocess_fully(4, &[(0, 1), (0, 2), (1, 2), (0, 3), (1, 3)]);
 }
 
 #[test]
@@ -93,8 +90,7 @@ fn preprocessing_stops_at_the_soft_cutoff_instead_of_reducing_to_the_end() {
     // armed, so this is a count of work and not a race with the wall.
     let edges = complete_graph(500);
 
-    let whole = preprocess(EliminationGraph::from_edges(500, &edges), None);
-    assert_eq!(whole.graph.num_active, 0);
+    preprocess_fully(500, &edges);
 
     let epoch = std::time::Instant::now();
     let _meter = crate::meter::arm(epoch);
@@ -136,8 +132,7 @@ fn the_almost_simplicial_rule_fires_on_a_single_missing_edge() {
     // reduction still empties the graph and every bag stays within the width.
     let mut edges = complete_graph(6);
     edges.retain(|&e| e != (4, 5));
-    let reduced = preprocess(EliminationGraph::from_edges(6, &edges), None);
-    assert_eq!(reduced.graph.num_active, 0);
+    let reduced = preprocess_fully(6, &edges);
     assert!(reduced.prefix.bags.iter().all(|bag| bag.len() <= 6));
 }
 
@@ -164,28 +159,24 @@ fn reduction_gadgets(base: u32, edges: &mut Vec<(u32, u32)>) -> u32 {
         (square, square + 3),
     ]);
 
-    let k4 = next;
+    push_k4(next, edges);
     next += 4;
-    for a in 0..4 {
-        for b in a + 1..4 {
-            edges.push((k4 + a, k4 + b));
-        }
-    }
 
-    let almost = next;
-    next += 5;
-    edges.extend([
-        (almost, almost + 1),
-        (almost, almost + 2),
-        (almost, almost + 3),
-        (almost + 1, almost + 2),
-        (almost + 1, almost + 3),
-        (almost + 4, almost + 1),
-        (almost + 4, almost + 2),
-        (almost + 4, almost + 3),
-    ]);
+    push_almost_simplicial_gadget(next, edges);
+    next + 5
+}
 
-    next
+fn gadgets_graph() -> (u32, Vec<(u32, u32)>) {
+    let mut edges = Vec::new();
+    let n = reduction_gadgets(0, &mut edges);
+    (n, edges)
+}
+
+fn ring_with_gadgets_graph(ring: u32) -> (u32, Vec<(u32, u32)>) {
+    let mut edges = Vec::new();
+    chorded_ring(ring, &mut edges);
+    let n = reduction_gadgets(ring, &mut edges);
+    (n, edges)
 }
 
 /// A chorded ring, which no rule fires on, so it is what the gadgets beside it
@@ -269,16 +260,12 @@ fn assert_bags_and_residual_match_fill_eliminations(n: u32, edges: &[(u32, u32)]
 #[test]
 fn recorded_bags_and_the_residual_match_eliminating_with_fill() {
     // All five rules on a graph dense enough for the bitset path.
-    let mut dense = Vec::new();
-    let dense_n = reduction_gadgets(0, &mut dense);
+    let (dense_n, dense) = gadgets_graph();
     assert_bags_and_residual_match_fill_eliminations(dense_n, &dense);
 
     // The same rules on a graph too sparse for it, so short adjacency rows
     // answer, and with a residual left over.
-    let mut sparse = Vec::new();
-    let ring = 2_000u32;
-    chorded_ring(ring, &mut sparse);
-    let sparse_n = reduction_gadgets(ring, &mut sparse);
+    let (sparse_n, sparse) = ring_with_gadgets_graph(2_000);
     assert_bags_and_residual_match_fill_eliminations(sparse_n, &sparse);
 
     // A clique whose rows are long enough to carry membership maps, in a graph
@@ -403,14 +390,11 @@ fn scattered(n: u32, degree: u32, seed: u64) -> Vec<(u32, u32)> {
 
 #[test]
 fn marked_passes_fire_on_the_same_vertices_as_scans_of_every_vertex() {
-    let mut graphs: Vec<(u32, Vec<(u32, u32)>)> = vec![chain_with_leaves(400)];
-    let mut gadgets = Vec::new();
-    let gadgets_n = reduction_gadgets(0, &mut gadgets);
-    graphs.push((gadgets_n, gadgets));
-    let mut ring = Vec::new();
-    chorded_ring(2_000, &mut ring);
-    let ring_n = reduction_gadgets(2_000, &mut ring);
-    graphs.push((ring_n, ring));
+    let mut graphs: Vec<(u32, Vec<(u32, u32)>)> = vec![
+        chain_with_leaves(400),
+        gadgets_graph(),
+        ring_with_gadgets_graph(2_000),
+    ];
     for (seed, (n, degree)) in [(60, 3), (300, 2), (300, 3), (2_000, 3), (100, 8)]
         .into_iter()
         .enumerate()
@@ -434,8 +418,7 @@ fn a_chain_with_leaves_reduces_in_work_proportional_to_its_length() {
     let (n, edges) = chain_with_leaves(20_000);
     let _meter = crate::meter::arm(std::time::Instant::now());
     let start = crate::meter::units_spent();
-    let reduced = preprocess(EliminationGraph::from_edges(n, &edges), None);
-    assert_eq!(reduced.graph.num_active, 0);
+    preprocess_fully(n, &edges);
     let units = crate::meter::units_spent() - start;
     assert!(
         units < 40 * n as u64,

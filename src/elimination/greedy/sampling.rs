@@ -237,15 +237,6 @@ fn eliminate_sampled_fill_based(
     degree_coefficient: Option<i8>,
     scratch: &mut SampleScratch,
 ) -> ElimExit {
-    let SampleSeed {
-        initial_fill,
-        active,
-    } = seed;
-    let SampleDraw {
-        weights,
-        band,
-        seed,
-    } = draw;
     // No cheap mode here to degrade into, so the soft deadline is not this
     // core's to read.
     let ElimStop {
@@ -253,21 +244,6 @@ fn eliminate_sampled_fill_based(
         width_bound,
         ..
     } = stop;
-    let n = graph.len();
-    assert_eq!(weights.len(), n);
-    let uniform_mass = uniform_sampling_mass(weights);
-    let priority = match degree_coefficient {
-        None => FillPriority::Fill,
-        Some(coefficient) => FillPriority::FillDegree {
-            coefficient,
-            live: graph.num_active as u64,
-        },
-    };
-
-    if graph.should_promote_bitset() {
-        graph.promote_bitset();
-    }
-
     let SampleScratch {
         fill: fill_scratch,
         affected,
@@ -276,37 +252,18 @@ fn eliminate_sampled_fill_based(
         fills: fill_store,
         ..
     } = scratch;
-    fill_scratch.size_for(n);
-    affected.size_for(n);
-    // Plain min-fill already stores the current fill as the bucket key. Only
-    // composite scores need a second array to recover the fill component.
-    //
-    // The entries are written for every active vertex by the seeding loop below
-    // and read only at active vertices, so the store is grown to the graph and
-    // left holding whatever the run before it wrote.
-    let mut fills: Option<&mut [u64]> = if priority.tracks_fill_separately() {
-        if fill_store.len() < n {
-            fill_store.resize(n, 0);
-        }
-        Some(&mut fill_store[..n])
-    } else {
-        None
-    };
-    let mut buckets = BucketMap::with_weights(bucket_storage, weights, uniform_mass);
-    for v in seeding_order(graph, active) {
-        debug_assert!(graph.active[v as usize]);
-        seed_bucket(
-            graph,
-            v,
-            initial_fill,
-            fill_scratch,
-            &mut fills,
-            &mut buckets,
-            priority,
-        );
-    }
+    let (priority, mut fills, mut buckets) = init_sampled_fill_buckets(
+        graph,
+        seed,
+        draw.weights,
+        degree_coefficient,
+        fill_scratch,
+        affected,
+        fill_store,
+        bucket_storage,
+    );
 
-    let mut rng = search_stream(seed);
+    let mut rng = search_stream(draw.seed);
     let mut pacer = DeadlinePacer::new();
 
     while buckets.minimum().is_some() {
@@ -321,13 +278,12 @@ fn eliminate_sampled_fill_based(
 
         crate::meter::charge(SAMPLED_FILL_STEP_UNITS);
         let v = buckets
-            .sample_min_band(band, &mut rng)
+            .sample_min_band(draw.band, &mut rng)
             .expect("a live minimum has a tie set");
         // The drawn vertex's own fill, not the band's smallest: the simplicial
         // path below is only correct for a vertex that adds no fill edge, and a
         // band wider than 0 can draw one that does.
         let sampled_fill = fill_of(v, fills.as_deref(), &buckets);
-
         buckets.remove_vertex(v);
 
         let bag = take_bag(graph, v, live_nbrs);
@@ -339,22 +295,10 @@ fn eliminate_sampled_fill_based(
         // that bag holds what is still in the graph, which `v` no longer is.
         sink.record(v, bag);
 
-        if sampled_fill == 0 {
-            // N(v) is a clique: no fill edge is added, and each neighbour
-            // loses the missing pairs it had with v alone.
-            affected.prepare(graph, v, live_nbrs, false, None);
-            graph.remove_without_fill_nbrs(v, live_nbrs);
-            update_neighbours(
-                affected,
-                graph,
-                live_nbrs,
-                &mut buckets,
-                &mut fills,
-                priority,
-            );
-        } else if let Err(exit) = eliminate_sampled_with_fill(
+        if let Err(exit) = eliminate_sampled_fill_vertex(
             graph,
             v,
+            sampled_fill,
             live_nbrs,
             affected,
             &mut buckets,
@@ -372,9 +316,66 @@ fn eliminate_sampled_fill_based(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn eliminate_sampled_with_fill(
+fn init_sampled_fill_buckets<'a>(
+    graph: &mut EliminationGraph,
+    seed: SampleSeed<'_>,
+    weights: &'a [u32],
+    degree_coefficient: Option<i8>,
+    fill_scratch: &mut FillScratch,
+    affected: &mut FillAffected,
+    fill_store: &'a mut Vec<u64>,
+    bucket_storage: &'a mut BucketStorage,
+) -> (FillPriority, Option<&'a mut [u64]>, BucketMap<'a>) {
+    if graph.should_promote_bitset() {
+        graph.promote_bitset();
+    }
+    let priority = match degree_coefficient {
+        None => FillPriority::Fill,
+        Some(coefficient) => FillPriority::FillDegree {
+            coefficient,
+            live: graph.num_active as u64,
+        },
+    };
+    let n = graph.len();
+    assert_eq!(weights.len(), n);
+    let uniform_mass = uniform_sampling_mass(weights);
+    fill_scratch.size_for(n);
+    affected.size_for(n);
+    // Plain min-fill already stores the current fill as the bucket key. Only
+    // composite scores need a second array to recover the fill component.
+    //
+    // The entries are written for every active vertex by the seeding loop below
+    // and read only at active vertices, so the store is grown to the graph and
+    // left holding whatever the run before it wrote.
+    let mut fills: Option<&mut [u64]> = if priority.tracks_fill_separately() {
+        if fill_store.len() < n {
+            fill_store.resize(n, 0);
+        }
+        Some(&mut fill_store[..n])
+    } else {
+        None
+    };
+    let mut buckets = BucketMap::with_weights(bucket_storage, weights, uniform_mass);
+    for v in seeding_order(graph, seed.active) {
+        debug_assert!(graph.active[v as usize]);
+        seed_bucket(
+            graph,
+            v,
+            seed.initial_fill,
+            fill_scratch,
+            &mut fills,
+            &mut buckets,
+            priority,
+        );
+    }
+    (priority, fills, buckets)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eliminate_sampled_fill_vertex(
     graph: &mut EliminationGraph,
     v: u32,
+    sampled_fill: u64,
     live_nbrs: &[u32],
     affected: &mut FillAffected,
     buckets: &mut BucketMap<'_>,
@@ -382,6 +383,14 @@ fn eliminate_sampled_with_fill(
     priority: FillPriority,
     hard_deadline: Option<Instant>,
 ) -> Result<(), ElimExit> {
+    if sampled_fill == 0 {
+        // N(v) is a clique: no fill edge is added, and each neighbour
+        // loses the missing pairs it had with v alone.
+        affected.prepare(graph, v, live_nbrs, false, None);
+        graph.remove_without_fill_nbrs(v, live_nbrs);
+        update_neighbours(affected, graph, live_nbrs, buckets, fills, priority);
+        return Ok(());
+    }
     // `v` is recorded above, so it leaves the graph even on the
     // deadline exit below: the residual bag that exit builds holds
     // what is still in the graph, and `v` must not appear twice.
@@ -471,18 +480,8 @@ pub(crate) fn eliminate_sampled_min_degree(
         let v = buckets
             .sample_min_band(band, &mut rng)
             .expect("a live minimum has a tie set");
-        let vi = v as usize;
-
-        if degree_stale[vi] {
-            let live_degree = graph.degree(v) as u64;
-            degree_stale[vi] = false;
-            let filed_degree = buckets
-                .key_of(v)
-                .expect("a sampled vertex has a degree bucket");
-            if live_degree != filed_degree {
-                buckets.update(v, live_degree);
-                continue;
-            }
+        if refresh_stale_degree(graph, v, &mut buckets, degree_stale) {
+            continue;
         }
 
         buckets.remove_vertex(v);
@@ -510,4 +509,26 @@ pub(crate) fn eliminate_sampled_min_degree(
         }
     }
     ElimExit::Complete
+}
+
+fn refresh_stale_degree(
+    graph: &EliminationGraph,
+    v: u32,
+    buckets: &mut BucketMap<'_>,
+    degree_stale: &mut [bool],
+) -> bool {
+    let vi = v as usize;
+    if !degree_stale[vi] {
+        return false;
+    }
+    let live_degree = graph.degree(v) as u64;
+    degree_stale[vi] = false;
+    let filed_degree = buckets
+        .key_of(v)
+        .expect("a sampled vertex has a degree bucket");
+    if live_degree != filed_degree {
+        buckets.update(v, live_degree);
+        return true;
+    }
+    false
 }

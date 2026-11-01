@@ -546,34 +546,16 @@ fn minimalize(
                     if pacer.due() && expired(deadline) {
                         return removed + removed_this_pass;
                     }
-                    let untouched = touched[vertex] == 0 && touched[other] == 0;
-                    let hint = match witnesses.lookup(vertex, other, untouched) {
-                        Known::Fails(size) => {
-                            // What the test would have charged for its rows.
-                            crate::meter::charge(size.saturating_mul(words as u64));
-                            continue;
-                        }
-                        Known::Hint(pair) => Some(pair),
-                        Known::Nothing => None,
-                    };
-                    match common_neighbourhood_is_clique(
+                    if test_and_maybe_remove_edge(
                         completion,
                         vertex,
                         other,
+                        pass,
+                        touched,
                         &mut common[..],
-                        hint,
+                        witnesses,
                     ) {
-                        (_, None) => {
-                            completion.remove(vertex, other);
-                            touched[vertex] = pass;
-                            touched[other] = pass;
-                            removed_this_pass += 1;
-                        }
-                        (size, Some((a, b))) => {
-                            if untouched && touched[a] == 0 && touched[b] == 0 {
-                                witnesses.record(size, (a, b));
-                            }
-                        }
+                        removed_this_pass += 1;
                     }
                 }
             }
@@ -581,6 +563,42 @@ fn minimalize(
         removed += removed_this_pass;
         if removed_this_pass == 0 {
             return removed;
+        }
+    }
+}
+
+fn test_and_maybe_remove_edge(
+    completion: &mut RowSet,
+    vertex: usize,
+    other: usize,
+    pass: u32,
+    touched: &mut [u32],
+    common: &mut [u64],
+    witnesses: &mut impl Witnesses,
+) -> bool {
+    let words = completion.words;
+    let untouched = touched[vertex] == 0 && touched[other] == 0;
+    let hint = match witnesses.lookup(vertex, other, untouched) {
+        Known::Fails(size) => {
+            // What the test would have charged for its rows.
+            crate::meter::charge(size.saturating_mul(words as u64));
+            return false;
+        }
+        Known::Hint(pair) => Some(pair),
+        Known::Nothing => None,
+    };
+    match common_neighbourhood_is_clique(completion, vertex, other, common, hint) {
+        (_, None) => {
+            completion.remove(vertex, other);
+            touched[vertex] = pass;
+            touched[other] = pass;
+            true
+        }
+        (size, Some((a, b))) => {
+            if untouched && touched[a] == 0 && touched[b] == 0 {
+                witnesses.record(size, (a, b));
+            }
+            false
         }
     }
 }
