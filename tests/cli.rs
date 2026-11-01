@@ -1135,60 +1135,30 @@ fn help_prints_the_usage_and_exits_zero() {
     assert!(help.contains("portfolio"));
 }
 
+fn traced_portfolio(extra: &[&str]) -> String {
+    let mut args = vec!["-", "--order", "portfolio", "--budget", "500", "--trace"];
+    args.extend_from_slice(extra);
+    let out = goatd(&args, Some(&grid_gr()));
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    stderr_of(&out)
+}
+
 #[test]
 fn the_portfolio_runs_an_mcs_m_candidate_and_no_mcsm_turns_it_off() {
-    let with = goatd(
-        &["-", "--order", "portfolio", "--budget", "500", "--trace"],
-        Some(&grid_gr()),
-    );
-    assert!(with.status.success(), "{}", stderr_of(&with));
-    assert!(
-        stderr_of(&with).contains("candidate=minimal-triangulation"),
-        "{}",
-        stderr_of(&with)
-    );
+    let with = traced_portfolio(&[]);
+    assert!(with.contains("candidate=minimal-triangulation"), "{with}");
 
-    let without = goatd(
-        &[
-            "-",
-            "--order",
-            "portfolio",
-            "--budget",
-            "500",
-            "--trace",
-            "--no-mcsm",
-        ],
-        Some(&grid_gr()),
-    );
-    assert!(without.status.success(), "{}", stderr_of(&without));
+    let without = traced_portfolio(&["--no-mcsm"]);
     assert!(
-        !stderr_of(&without).contains("candidate=minimal-triangulation"),
-        "{}",
-        stderr_of(&without)
+        !without.contains("candidate=minimal-triangulation"),
+        "{without}"
     );
 }
 
 #[test]
 fn a_zero_gate_leaves_the_mcs_m_candidate_unrun() {
-    let out = goatd(
-        &[
-            "-",
-            "--order",
-            "portfolio",
-            "--budget",
-            "500",
-            "--trace",
-            "--mcsm-up-to",
-            "0",
-        ],
-        Some(&grid_gr()),
-    );
-    assert!(out.status.success(), "{}", stderr_of(&out));
-    assert!(
-        !stderr_of(&out).contains("candidate=minimal-triangulation"),
-        "{}",
-        stderr_of(&out)
-    );
+    let err = traced_portfolio(&["--mcsm-up-to", "0"]);
+    assert!(!err.contains("candidate=minimal-triangulation"), "{err}");
 }
 
 #[test]
@@ -1207,61 +1177,22 @@ fn the_fill_dropping_pass_leaves_a_valid_decomposition() {
 
 #[test]
 fn the_portfolio_runs_a_maximum_cardinality_candidate_and_no_mcs_turns_it_off() {
-    let with = goatd(
-        &["-", "--order", "portfolio", "--budget", "500", "--trace"],
-        Some(&grid_gr()),
-    );
-    assert!(with.status.success(), "{}", stderr_of(&with));
-    assert!(
-        stderr_of(&with).contains("candidate=maximum-cardinality"),
-        "{}",
-        stderr_of(&with)
-    );
+    let with = traced_portfolio(&[]);
+    assert!(with.contains("candidate=maximum-cardinality"), "{with}");
 
-    let without = goatd(
-        &[
-            "-",
-            "--order",
-            "portfolio",
-            "--budget",
-            "500",
-            "--trace",
-            "--no-mcs",
-        ],
-        Some(&grid_gr()),
-    );
-    assert!(without.status.success(), "{}", stderr_of(&without));
+    let without = traced_portfolio(&["--no-mcs"]);
     assert!(
-        !stderr_of(&without).contains("candidate=maximum-cardinality"),
-        "{}",
-        stderr_of(&without)
+        !without.contains("candidate=maximum-cardinality"),
+        "{without}"
     );
     assert!(
-        stderr_of(&without).contains("candidate=minimal-triangulation"),
-        "--no-mcs leaves the MCS-M candidate alone: {}",
-        stderr_of(&without)
+        without.contains("candidate=minimal-triangulation"),
+        "--no-mcs leaves the MCS-M candidate alone: {without}",
     );
 }
 
 #[test]
 fn a_zero_gate_leaves_the_maximum_cardinality_candidate_unrun() {
-    let out = goatd(
-        &[
-            "-",
-            "--order",
-            "portfolio",
-            "--budget",
-            "500",
-            "--trace",
-            "--mcs-up-to",
-            "0",
-        ],
-        Some(&grid_gr()),
-    );
-    assert!(out.status.success(), "{}", stderr_of(&out));
-    assert!(
-        !stderr_of(&out).contains("candidate=maximum-cardinality"),
-        "{}",
-        stderr_of(&out)
-    );
+    let err = traced_portfolio(&["--mcs-up-to", "0"]);
+    assert!(!err.contains("candidate=maximum-cardinality"), "{err}");
 }

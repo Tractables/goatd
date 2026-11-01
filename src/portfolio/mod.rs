@@ -1561,38 +1561,16 @@ fn run_portfolio(
     let deadlines =
         crate::deadline::staged(started, config.soft_budget, config.hard_budget, "portfolio")?;
     let soft_deadline = deadlines.soft;
-    // The recombination stage runs last and reads the bags of everything before
-    // it, so its share of the window comes off the end: the schedule sees a
-    // hard deadline that much earlier and the stage keeps the rest. Where the
-    // stage does not run, the two deadlines are the same and nothing moves.
     let window_end = deadlines.hard;
-    // The vertex reinsertion runs after everything and starts from the answer
-    // everything left, so its share comes off the very end; the stages before
-    // it see the window end that much earlier. It runs a level up, so only a
-    // caller that will run it pays for it.
-    let reinsertion_share = (config.vertex_reinsertion && collection.reinserts_after)
-        .then(|| reinsertion_reserve(graph, started, window_end))
-        .flatten();
-    let (pooled_end, _) = less_reserve(window_end, reinsertion_share, soft_deadline);
-    // The local re-triangulation stage runs last of the pooled stages and
-    // reads the answer of the two before it, so its share comes off that end
-    // first; the merge loop takes its share from what is left, and the
-    // recombination stage from what that leaves.
-    let (merge_end, local_merge) = carve(
+    let closing = ClosingWindows::carve(
         graph,
         started,
-        config.local_merge,
-        pooled_end,
+        config,
+        collection,
         soft_deadline,
+        window_end,
     );
-    let (recombine_end, merge) = carve(graph, started, config.merge_loop, merge_end, soft_deadline);
-    let (hard_deadline, recombine) = carve(
-        graph,
-        started,
-        config.recombination,
-        recombine_end,
-        soft_deadline,
-    );
+    let hard_deadline = closing.hard_deadline;
     let mut prebuilt = engine::prebuild(graph, soft_deadline);
     let active = prebuilt.num_active();
     // The class where the sizes settle it on their own. In the band between
@@ -1622,7 +1600,7 @@ fn run_portfolio(
     }
     .reporting_shape(collection.traced)
     .with_deadline(window_end);
-    if recombine || local_merge {
+    if closing.recombine || closing.local_merge {
         candidates = candidates.collecting_bags(decomposition::BagPoolLimits::standard());
     }
 
@@ -1885,73 +1863,16 @@ fn run_portfolio(
     } else {
         0
     };
-    // The cardinality-search candidates, between the fixed orders and the
-    // restarts: first the plain maximum cardinality search, then MCS-M, which
-    // is the same search with a longer reach. Both eliminate along a numbering
-    // rather than a greedy score, so they win on graphs where the greedy scores
-    // agree with each other. Both are deterministic, so each runs once; each
-    // runs only on a residual its own gate admits, since the plain search
-    // affords a residual an order of magnitude larger than the path search
-    // does; and both run against the soft deadline, which the search reads as
-    // it walks, so a graph where one does not finish gives up part-way and
-    // loses nothing but the time it spent. The cheaper one goes first, which
-    // also leaves MCS-M a tighter width bound to abort on.
-    //
-    // What they cost, which the hedge's model of a stage leaves out: the stages
-    // repeat the plain pass on other weights, and neither candidate is part of
-    // either.
-    let mut cardinality_search_cost = Duration::ZERO;
-    for (gate, order) in [
-        (config.maximum_cardinality, Order::MaximumCardinality),
-        (config.minimal_triangulation, Order::MinimalTriangulation),
-    ] {
-        // Each gate is the one place that decides how large a residual its own
-        // search runs on, so the schedule's residual classification does not
-        // gate them as well.
-        let Some(gate) = gate else { continue };
-        if hard_deadline_tripped || prebuilt.num_active() > gate as usize || expired(soft_deadline)
-        {
-            continue;
-        }
-        let before = crate::meter::now();
-        let run = engine::run_order_prebuilt(
-            &mut prebuilt,
-            engine::RunSpec {
-                order,
-                seed,
-                // Neither search samples a tie set, so the band means nothing
-                // to it, and neither reads the initial fill counts, so there
-                // is no setup for a deadline to pace.
-                sample_band: 0,
-                update_order_ties: false,
-                // The soft deadline, not the wider one the initial candidates
-                // get where the elimination keeps the second stage: a search
-                // that does not finish returns no numbering at all, so running
-                // it into the second stage would spend that stage to produce
-                // nothing, and the restarts use it instead.
-                stop: elimination_stop(
-                    EliminationPhase::ExtraSampling,
-                    soft_deadline,
-                    hard_deadline,
-                    candidates.best_width(),
-                ),
-                // Nothing to complete: a search stopped by its deadline hands
-                // back no order, so the elimination never started and there
-                // are no bags for a residual to be attached to.
-                complete_on_deadline: false,
-                setup_deadline: None,
-            },
-        );
-        let origin = CandidateOrigin {
-            stage: stage_of(order, EliminationPhase::ExtraSampling),
-            seed,
-            pass: Pass::Only,
-        };
-        let (outcome, _) = candidates.record_elimination(run, origin);
-        let now = crate::meter::now();
-        cardinality_search_cost += now.saturating_duration_since(before);
-        trace.report_at(now, origin, outcome);
-    }
+    let cardinality_search_cost = run_cardinality_searches(
+        &mut prebuilt,
+        config,
+        seed,
+        hard_deadline_tripped,
+        soft_deadline,
+        hard_deadline,
+        &mut candidates,
+        &mut trace,
+    );
     // Sampling phase: try additional seeds of the full-tie-set sampling
     // order with any remaining budget. Measured ≥79% of min-fill pops have
     // ≥2 tied candidates, so different seeds explore different
@@ -2167,15 +2088,182 @@ fn run_portfolio(
             }
         }
     }
-    // Runs vanilla FlowCutter once as a final portfolio candidate. Placed after
-    // the extra-sampling loop so it runs in whatever is left of the hard
-    // window: the restart reserve where the restarts ran into that window, and
-    // up to the whole second stage where they stopped at the soft deadline. On a graph whose second stage it declined up front there is
-    // nothing left here, which is what let the elimination take that stage.
-    // FlowCutter already returns a complete decomposition, so no
-    // separator-refinement pass is applied to it. It runs on every residual; on
-    // the large ones it is often the best candidate by a wide margin, and
-    // `flowcutter_candidate` has its own vertex cap.
+    run_trailing_flowcutter(
+        graph,
+        config,
+        seed,
+        started,
+        started_units,
+        hard_deadline_tripped,
+        hard_deadline,
+        &mut candidates,
+        &mut trace,
+    )?;
+    run_closing_stages(
+        graph,
+        weights,
+        seed,
+        config,
+        closing,
+        active,
+        fill_pass_cost,
+        &mut prebuilt,
+        &mut candidates,
+        &mut trace,
+    );
+    Ok(candidates)
+}
+
+/// The deadlines carved off the end of the portfolio's hard window for the
+/// closing refinement stages.
+#[derive(Clone, Copy)]
+struct ClosingWindows {
+    hard_deadline: Option<Instant>,
+    recombine: bool,
+    recombine_end: Option<Instant>,
+    merge: bool,
+    merge_end: Option<Instant>,
+    local_merge: bool,
+    pooled_end: Option<Instant>,
+}
+
+impl ClosingWindows {
+    fn carve(
+        graph: &Graph,
+        started: Instant,
+        config: PortfolioConfig,
+        collection: Collection,
+        soft_deadline: Option<Instant>,
+        window_end: Option<Instant>,
+    ) -> Self {
+        // The vertex reinsertion runs after everything and starts from the
+        // answer everything left, so its share comes off the very end; the
+        // stages before it see the window end that much earlier. It runs a
+        // level up, so only a caller that will run it pays for it.
+        let reinsertion_share = (config.vertex_reinsertion && collection.reinserts_after)
+            .then(|| reinsertion_reserve(graph, started, window_end))
+            .flatten();
+        let (pooled_end, _) = less_reserve(window_end, reinsertion_share, soft_deadline);
+        // The local re-triangulation stage runs last of the pooled stages and
+        // reads the answer of the two before it, so its share comes off that
+        // end first; the merge loop takes its share from what is left, and the
+        // recombination stage from what that leaves.
+        let (merge_end, local_merge) = carve(
+            graph,
+            started,
+            config.local_merge,
+            pooled_end,
+            soft_deadline,
+        );
+        let (recombine_end, merge) =
+            carve(graph, started, config.merge_loop, merge_end, soft_deadline);
+        let (hard_deadline, recombine) = carve(
+            graph,
+            started,
+            config.recombination,
+            recombine_end,
+            soft_deadline,
+        );
+        Self {
+            hard_deadline,
+            recombine,
+            recombine_end,
+            merge,
+            merge_end,
+            local_merge,
+            pooled_end,
+        }
+    }
+}
+
+/// The cardinality-search candidates between the fixed orders and the restarts:
+/// first the plain maximum cardinality search, then MCS-M, which is the same
+/// search with a longer reach. Both eliminate along a numbering rather than a
+/// greedy score, so they win on graphs where the greedy scores agree with each
+/// other. Both are deterministic, so each runs once; each runs only on a
+/// residual its own gate admits; and both run against the soft deadline.
+///
+/// Returns what they cost, which the hedge's model of a stage leaves out.
+#[allow(clippy::too_many_arguments)]
+fn run_cardinality_searches(
+    prebuilt: &mut engine::Prebuilt,
+    config: PortfolioConfig,
+    seed: u64,
+    hard_deadline_tripped: bool,
+    soft_deadline: Option<Instant>,
+    hard_deadline: Option<Instant>,
+    candidates: &mut CandidateSet,
+    trace: &mut TraceSink<'_>,
+) -> Duration {
+    let mut cardinality_search_cost = Duration::ZERO;
+    for (gate, order) in [
+        (config.maximum_cardinality, Order::MaximumCardinality),
+        (config.minimal_triangulation, Order::MinimalTriangulation),
+    ] {
+        // Each gate is the one place that decides how large a residual its own
+        // search runs on, so the schedule's residual classification does not
+        // gate them as well.
+        let Some(gate) = gate else { continue };
+        if hard_deadline_tripped || prebuilt.num_active() > gate as usize || expired(soft_deadline)
+        {
+            continue;
+        }
+        let before = crate::meter::now();
+        let run = engine::run_order_prebuilt(
+            prebuilt,
+            engine::RunSpec {
+                order,
+                seed,
+                // Neither search samples a tie set, so the band means nothing
+                // to it, and neither reads the initial fill counts, so there
+                // is no setup for a deadline to pace.
+                sample_band: 0,
+                update_order_ties: false,
+                // The soft deadline, not the wider one the initial candidates
+                // get where the elimination keeps the second stage: a search
+                // that does not finish returns no numbering at all, so running
+                // it into the second stage would spend that stage to produce
+                // nothing, and the restarts use it instead.
+                stop: elimination_stop(
+                    EliminationPhase::ExtraSampling,
+                    soft_deadline,
+                    hard_deadline,
+                    candidates.best_width(),
+                ),
+                // Nothing to complete: a search stopped by its deadline hands
+                // back no order, so the elimination never started and there
+                // are no bags for a residual to be attached to.
+                complete_on_deadline: false,
+                setup_deadline: None,
+            },
+        );
+        let origin = CandidateOrigin {
+            stage: stage_of(order, EliminationPhase::ExtraSampling),
+            seed,
+            pass: Pass::Only,
+        };
+        let (outcome, _) = candidates.record_elimination(run, origin);
+        let now = crate::meter::now();
+        cardinality_search_cost += now.saturating_duration_since(before);
+        trace.report_at(now, origin, outcome);
+    }
+    cardinality_search_cost
+}
+
+/// Runs vanilla FlowCutter once as a final portfolio candidate after the
+/// extra-sampling loop, in whatever is left of the hard window.
+#[allow(clippy::too_many_arguments)]
+fn run_trailing_flowcutter(
+    graph: &Graph,
+    config: PortfolioConfig,
+    seed: u64,
+    started: Instant,
+    started_units: u64,
+    hard_deadline_tripped: bool,
+    hard_deadline: Option<Instant>,
+    candidates: &mut CandidateSet,
+    trace: &mut TraceSink<'_>,
+) -> Result<(), crate::Error> {
     let tail_started = crate::meter::now();
     if let Some(configured_budget) = config
         .flowcutter_budget
@@ -2217,6 +2305,33 @@ fn run_portfolio(
             );
         }
     }
+    Ok(())
+}
+
+/// Runs the closing triangulation-refinement, recombination, merge, local-merge,
+/// and relative-fill stages in their carved windows.
+#[allow(clippy::too_many_arguments)]
+fn run_closing_stages(
+    graph: &Graph,
+    weights: &[u32],
+    seed: u64,
+    config: PortfolioConfig,
+    closing: ClosingWindows,
+    active: usize,
+    fill_pass_cost: Option<Duration>,
+    prebuilt: &mut engine::Prebuilt,
+    candidates: &mut CandidateSet,
+    trace: &mut TraceSink<'_>,
+) {
+    let ClosingWindows {
+        hard_deadline,
+        recombine,
+        recombine_end,
+        merge,
+        merge_end,
+        local_merge,
+        pooled_end,
+    } = closing;
     // Last, the fill edges the winner's bags do not need. The pass rebuilds the
     // decomposition on a minimal triangulation of the same graph, which is
     // never wider, and hands the result back as one more candidate so the set
@@ -2241,8 +2356,8 @@ fn run_portfolio(
         // recorded. The trace reports the pass either way, so a caller can see
         // what it cost on a graph where it changed nothing.
         close_stage(
-            &mut candidates,
-            &mut trace,
+            candidates,
+            trace,
             seed,
             Stage::Minimalized,
             before,
@@ -2254,7 +2369,7 @@ fn run_portfolio(
     // the set already has; it is recorded only where it is narrower, and a
     // search that runs out of its share hands back nothing.
     if recombine && !expired(recombine_end) {
-        variety_draws(graph, weights, seed, &mut candidates, recombine_end);
+        variety_draws(graph, weights, seed, candidates, recombine_end);
         let found = candidates
             .bag_pool()
             .and_then(|pool| decomposition::recombine(pool, graph, recombine_end));
@@ -2264,14 +2379,7 @@ fn run_portfolio(
             .expect("a candidate has produced a decomposition");
         // Nothing comes back where the pool was empty, the search ran past its
         // share, or it would have held more than its cap allows.
-        close_stage(
-            &mut candidates,
-            &mut trace,
-            seed,
-            Stage::Recombined,
-            before,
-            found,
-        );
+        close_stage(candidates, trace, seed, Stage::Recombined, before, found);
     }
     // And last, the merge loop: a decomposition built independently of
     // everything above, improved on its own until it is no wider than the best
@@ -2292,14 +2400,7 @@ fn run_portfolio(
         // Nothing comes back where the share ran out before the programme
         // settled anything, or where the search would have held more than its
         // cap allows.
-        close_stage(
-            &mut candidates,
-            &mut trace,
-            seed,
-            Stage::Merged,
-            before,
-            found,
-        );
+        close_stage(candidates, trace, seed, Stage::Merged, before, found);
     }
     // Last of all, the local re-triangulations between the answer and the other
     // trees the run pooled: the piece of the graph a bag of the one and a bag of
@@ -2317,18 +2418,11 @@ fn run_portfolio(
         // Nothing comes back where the stage did not beat the answer it started
         // from, where its share ran out, or where the search would have held
         // more than its cap allows.
-        close_stage(
-            &mut candidates,
-            &mut trace,
-            seed,
-            Stage::LocallyMerged,
-            before,
-            found,
-        );
+        close_stage(candidates, trace, seed, Stage::LocallyMerged, before, found);
     }
     if active > 0 && fill_pass_cost.is_some_and(|cost| relative_fill_fits(cost, pooled_end)) {
         let run = engine::run_order_prebuilt(
-            &mut prebuilt,
+            prebuilt,
             engine::RunSpec {
                 order: Order::RelativeFill,
                 seed,
@@ -2351,7 +2445,6 @@ fn run_portfolio(
         let (outcome, _) = candidates.record_elimination(run, origin);
         trace.report(origin, outcome);
     }
-    Ok(candidates)
 }
 
 fn relative_fill_fits(cost: Duration, deadline: Option<Instant>) -> bool {

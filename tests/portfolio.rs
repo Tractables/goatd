@@ -370,31 +370,23 @@ fn the_portfolio_winner_has_no_bag_subsumed_by_a_neighbour() {
 #[test]
 fn the_minimal_triangulation_candidate_can_be_gated_off_and_on() {
     let graph = grid(5);
-    let weight = vec![1; graph.num_vertices() as usize];
-    let mut stages = Vec::new();
-    decompose_traced(
-        &graph,
-        &weight,
-        0,
-        PortfolioConfig::standard(),
-        &mut |candidate| stages.push(candidate.stage),
-    )
-    .unwrap();
+    let stages = traced_stages(&graph, PortfolioConfig::standard());
     assert!(
-        stages.contains(&Stage::MinimalTriangulation),
+        stages
+            .iter()
+            .any(|&(stage, _)| stage == Stage::MinimalTriangulation),
         "the standard portfolio runs the candidate on a graph this size"
     );
 
-    stages.clear();
-    decompose_traced(
+    let stages = traced_stages(
         &graph,
-        &weight,
-        0,
         PortfolioConfig::standard().without_minimal_triangulation(),
-        &mut |candidate| stages.push(candidate.stage),
-    )
-    .unwrap();
-    assert!(!stages.contains(&Stage::MinimalTriangulation));
+    );
+    assert!(
+        !stages
+            .iter()
+            .any(|&(stage, _)| stage == Stage::MinimalTriangulation)
+    );
 }
 
 #[test]
@@ -416,55 +408,49 @@ fn dropping_fill_never_widens_the_portfolio_winner() {
 #[test]
 fn the_maximum_cardinality_candidate_can_be_gated_off_and_on() {
     let graph = grid(5);
-    let weight = vec![1; graph.num_vertices() as usize];
-    let mut stages = Vec::new();
-    decompose_traced(
-        &graph,
-        &weight,
-        0,
-        PortfolioConfig::standard(),
-        &mut |candidate| stages.push(candidate.stage),
-    )
-    .unwrap();
+    let stages = traced_stages(&graph, PortfolioConfig::standard());
     assert!(
-        stages.contains(&Stage::MaximumCardinality),
+        stages
+            .iter()
+            .any(|&(stage, _)| stage == Stage::MaximumCardinality),
         "the standard portfolio runs the candidate on a graph this size"
     );
     let plain = stages
         .iter()
-        .position(|stage| *stage == Stage::MaximumCardinality);
+        .position(|&(stage, _)| stage == Stage::MaximumCardinality);
     let paths = stages
         .iter()
-        .position(|stage| *stage == Stage::MinimalTriangulation);
+        .position(|&(stage, _)| stage == Stage::MinimalTriangulation);
     assert!(plain < paths, "the cheaper search runs first: {stages:?}");
 
-    stages.clear();
-    decompose_traced(
+    let stages = traced_stages(
         &graph,
-        &weight,
-        0,
         PortfolioConfig::standard().without_maximum_cardinality(),
-        &mut |candidate| stages.push(candidate.stage),
-    )
-    .unwrap();
-    assert!(!stages.contains(&Stage::MaximumCardinality));
-    assert!(stages.contains(&Stage::MinimalTriangulation));
+    );
+    assert!(
+        !stages
+            .iter()
+            .any(|&(stage, _)| stage == Stage::MaximumCardinality)
+    );
+    assert!(
+        stages
+            .iter()
+            .any(|&(stage, _)| stage == Stage::MinimalTriangulation)
+    );
 }
 
 #[test]
 fn a_gate_below_the_residual_leaves_the_maximum_cardinality_candidate_unrun() {
     let graph = grid(5);
-    let weight = vec![1; graph.num_vertices() as usize];
-    let mut stages = Vec::new();
-    decompose_traced(
+    let stages = traced_stages(
         &graph,
-        &weight,
-        0,
         PortfolioConfig::standard().with_maximum_cardinality(0),
-        &mut |candidate| stages.push(candidate.stage),
-    )
-    .unwrap();
-    assert!(!stages.contains(&Stage::MaximumCardinality));
+    );
+    assert!(
+        !stages
+            .iter()
+            .any(|&(stage, _)| stage == Stage::MaximumCardinality)
+    );
 }
 
 /// A decomposition's bags and tree, free of the order the algorithm listed
@@ -706,17 +692,8 @@ fn recombination_runs_under_a_budget_and_never_widens_the_winner() {
 #[test]
 fn the_unbudgeted_portfolio_does_not_recombine() {
     let graph = grid(5);
-    let weight = vec![1; graph.num_vertices() as usize];
-    let mut stages = Vec::new();
-    decompose_traced(
-        &graph,
-        &weight,
-        0,
-        PortfolioConfig::standard(),
-        &mut |candidate| stages.push(candidate.stage),
-    )
-    .unwrap();
-    assert!(!stages.contains(&Stage::Recombined));
+    let stages = traced_stages(&graph, PortfolioConfig::standard());
+    assert!(!stages.iter().any(|&(stage, _)| stage == Stage::Recombined));
 }
 
 #[test]

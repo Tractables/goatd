@@ -1993,14 +1993,7 @@ fn final_reinsertion_skips_unbounded_and_expired_runs() {
     let _clock = crate::meter::arm(epoch);
     for deadline in [None, Some(epoch)] {
         let mut candidates = CandidateSet::best_only().with_deadline(deadline);
-        candidates.push(
-            tree.clone(),
-            CandidateOrigin {
-                stage: Stage::MinFill,
-                seed: 0,
-                pass: Pass::Only,
-            },
-        );
+        candidates.push(tree.clone(), ORIGIN);
         super::reinsert_at_end(
             &graph,
             0,
@@ -2024,14 +2017,7 @@ fn final_reinsertion_narrows_a_minimal_triangulation_and_reports_the_winner() {
     let mut candidates = CandidateSet::best_only()
         .reporting_shape(true)
         .with_deadline(Some(epoch + Duration::from_secs(1)));
-    candidates.push(
-        tree,
-        CandidateOrigin {
-            stage: Stage::MinFill,
-            seed: 0,
-            pass: Pass::Only,
-        },
-    );
+    candidates.push(tree, ORIGIN);
     let mut trace = Vec::new();
     super::reinsert_at_end(
         &graph,
@@ -2067,14 +2053,7 @@ fn final_reinsertion_reports_an_unchanged_tree_without_claiming_a_deadline() {
         let mut candidates = candidates
             .reporting_shape(true)
             .with_deadline(Some(epoch + Duration::from_secs(1)));
-        candidates.push(
-            tree.clone(),
-            CandidateOrigin {
-                stage: Stage::MinFill,
-                seed: 0,
-                pass: Pass::Only,
-            },
-        );
+        candidates.push(tree.clone(), ORIGIN);
         let mut trace = Vec::new();
         super::reinsert_at_end(
             &graph,

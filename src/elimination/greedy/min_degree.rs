@@ -40,6 +40,16 @@ struct MinDegree<'a> {
     next_update: u64,
 }
 
+fn next_tie_key(update_order_ties: bool, next_update: &mut u64, salt: &[u32], v: u32) -> u64 {
+    if update_order_ties {
+        let update = *next_update;
+        *next_update += 1;
+        update
+    } else {
+        salt[v as usize] as u64
+    }
+}
+
 impl ElimPolicy for MinDegree<'_> {
     type Entry = DegEntry;
 
@@ -59,13 +69,7 @@ impl ElimPolicy for MinDegree<'_> {
     }
 
     fn push(&mut self, _: &EliminationGraph, v: u32, score: u64) {
-        let tie = if self.update_order_ties {
-            let update = self.next_update;
-            self.next_update += 1;
-            update
-        } else {
-            self.salt[v as usize] as u64
-        };
+        let tie = next_tie_key(self.update_order_ties, &mut self.next_update, self.salt, v);
         self.queue.set(v, score, tie);
     }
 
@@ -186,13 +190,7 @@ mod tests {
         }
 
         fn push(&mut self, _: &EliminationGraph, v: u32, score: u64) {
-            let tie = if self.update_order_ties {
-                let update = self.next_update;
-                self.next_update += 1;
-                update
-            } else {
-                self.salt[v as usize] as u64
-            };
+            let tie = next_tie_key(self.update_order_ties, &mut self.next_update, self.salt, v);
             self.heap.push(RefEntry {
                 key: (Reverse(score), Reverse(tie), Reverse(v)),
                 vertex: v,
@@ -330,6 +328,20 @@ mod tests {
         }
     }
 
+    fn run_both(
+        vertices: u32,
+        edges: &[(u32, u32)],
+        salt: &[u32],
+        update_order_ties: bool,
+    ) -> (ElimSteps, ElimSteps) {
+        let mut a = EliminationGraph::from_edges(vertices, edges);
+        let mut b = EliminationGraph::from_edges(vertices, edges);
+        (
+            reference_steps(&mut a, salt, update_order_ties),
+            bucket_steps(&mut b, salt, update_order_ties),
+        )
+    }
+
     /// Every degree in a cycle is 2 and every salt is 0, so the whole first
     /// pass is one tie: if the bucket queue ordered a tie differently from the
     /// heap it would show here.
@@ -343,10 +355,7 @@ mod tests {
         {
             for varied in [false, true] {
                 let salt = salts(vertices, varied);
-                let mut a = EliminationGraph::from_edges(vertices, &edges);
-                let mut b = EliminationGraph::from_edges(vertices, &edges);
-                let reference = reference_steps(&mut a, &salt, false);
-                let bucket = bucket_steps(&mut b, &salt, false);
+                let (reference, bucket) = run_both(vertices, &edges, &salt, false);
                 assert_eq!(
                     reference.rank_pairs, bucket.rank_pairs,
                     "{name} (varied salt: {varied}) eliminated in a different order"
@@ -367,10 +376,7 @@ mod tests {
     fn the_update_order_form_keeps_the_heap_order_on_equal_degrees() {
         let edges = cycle(12);
         let salt = salts(12, true);
-        let mut a = EliminationGraph::from_edges(12, &edges);
-        let mut b = EliminationGraph::from_edges(12, &edges);
-        let reference = reference_steps(&mut a, &salt, true);
-        let bucket = bucket_steps(&mut b, &salt, true);
+        let (reference, bucket) = run_both(12, &edges, &salt, true);
         assert_eq!(reference.rank_pairs, bucket.rank_pairs);
         assert_eq!(reference.bags, bucket.bags);
     }
@@ -395,10 +401,7 @@ mod tests {
         } in cases()
         {
             let salt = salts(vertices, true);
-            let mut a = EliminationGraph::from_edges(vertices, &edges);
-            let mut b = EliminationGraph::from_edges(vertices, &edges);
-            let reference = reference_steps(&mut a, &salt, true);
-            let bucket = bucket_steps(&mut b, &salt, true);
+            let (reference, bucket) = run_both(vertices, &edges, &salt, true);
             let mut reference_sizes: Vec<usize> = reference.bags.iter().map(Vec::len).collect();
             let mut bucket_sizes: Vec<usize> = bucket.bags.iter().map(Vec::len).collect();
             reference_sizes.sort_unstable();

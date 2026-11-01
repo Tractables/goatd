@@ -202,6 +202,24 @@ fn rebuild(
         bag.dedup();
     }
 
+    connect_support_components(&kept, small.adjacency(), &attachment, &mut tree_edges);
+    // The bags the rebuild did not change move into the candidate as they
+    // stand; raising their ids over the restored vertex preserves their order.
+    let mut bags = small.into_bags();
+    for bag in &mut bags {
+        bag.relabel_ascending(original);
+    }
+    bags.extend(connecting.into_iter().map(TdBag::already_sorted));
+    let candidate = TreeDecomposition::from_trusted_bags(graph, bags, tree_edges).ok()?;
+    Some(compact(candidate))
+}
+
+fn connect_support_components(
+    kept: &[bool],
+    adjacency: &[Vec<usize>],
+    attachment: &[usize],
+    tree_edges: &mut Vec<(usize, usize)>,
+) {
     let mut seen = vec![false; kept.len()];
     let mut first = None;
     for root in 0..kept.len() {
@@ -216,7 +234,7 @@ fn rebuild(
         let mut stack = vec![root];
         seen[root] = true;
         while let Some(bag) = stack.pop() {
-            for &other in &small.adjacency()[bag] {
+            for &other in &adjacency[bag] {
                 if kept[other] && !seen[other] {
                     seen[other] = true;
                     stack.push(other);
@@ -224,15 +242,6 @@ fn rebuild(
             }
         }
     }
-    // The bags the rebuild did not change move into the candidate as they
-    // stand; raising their ids over the restored vertex preserves their order.
-    let mut bags = small.into_bags();
-    for bag in &mut bags {
-        bag.relabel_ascending(original);
-    }
-    bags.extend(connecting.into_iter().map(TdBag::already_sorted));
-    let candidate = TreeDecomposition::from_trusted_bags(graph, bags, tree_edges).ok()?;
-    Some(compact(candidate))
 }
 
 /// Every vertex of the tree's graph, those in the widest bags first, ties in
