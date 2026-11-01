@@ -488,40 +488,37 @@ impl TreeDecomposition {
                 self.num_vertices
             )));
         }
-        let global_to_local = index_by_vertex(&sorted);
-
         if sorted.is_empty() {
             return Ok(Projection {
                 decomposition: TreeDecomposition::from_parts(0, Vec::new(), Vec::new()),
                 local_to_original: Vec::new(),
             });
         }
+        let global_to_local = index_by_vertex(&sorted);
 
-        let Some(mut projected) = project_td_keeping_global_ids(self, &sorted) else {
+        let Some(mut projected) = project_bags_where(self, |v| global_to_local.contains_key(&v))
+        else {
             return Err(Error::InvalidDecomposition(
                 "none of the projected vertices occurs in a bag".into(),
             ));
         };
 
-        let represented: FxHashSet<u32> = projected
-            .bags
-            .iter()
-            .flat_map(|bag| bag.vertices.iter().copied())
-            .collect();
-        if let Some(&missing) = sorted
-            .iter()
-            .find(|&&vertex| !represented.contains(&vertex))
-        {
-            return Err(Error::InvalidDecomposition(format!(
-                "projected vertex {missing} occurs in no bag"
-            )));
-        }
-
         // Relabelling is order-preserving (a local id is the rank of its global
         // id in `sorted`), so bags that came back sorted by global id stay
         // sorted.
+        let mut represented = vec![false; sorted.len()];
         for bag in &mut projected.bags {
-            bag.relabel_ascending(|v| global_to_local[&v]);
+            bag.relabel_ascending(|v| {
+                let local = global_to_local[&v];
+                represented[local as usize] = true;
+                local
+            });
+        }
+        if let Some(local) = represented.iter().position(|&seen| !seen) {
+            return Err(Error::InvalidDecomposition(format!(
+                "projected vertex {} occurs in no bag",
+                sorted[local]
+            )));
         }
         projected.num_vertices = sorted.len() as u32;
 

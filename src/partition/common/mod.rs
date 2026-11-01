@@ -293,6 +293,34 @@ pub(super) fn matching_order(
     perm
 }
 
+/// The best partner among `candidates` for vertex `v`, preferring same-side
+/// partners under `part`, then highest connection weight, then lowest vertex
+/// index on ties.
+pub(super) fn select_best_neighbor(
+    v: usize,
+    part: Option<&[u8]>,
+    candidates: impl IntoIterator<Item = (u32, u32)>,
+) -> Option<u32> {
+    let mut best_neighbor = None;
+    let mut best_weight: u32 = 0;
+    let mut best_same_part = false;
+    for (nb, w) in candidates {
+        let same_part = part.is_some_and(|p| p[nb as usize] == p[v]);
+        if same_part && !best_same_part {
+            best_weight = w;
+            best_neighbor = Some(nb);
+            best_same_part = true;
+        } else if same_part == best_same_part
+            && (w > best_weight
+                || (w == best_weight && best_neighbor.is_none_or(|best| nb < best)))
+        {
+            best_weight = w;
+            best_neighbor = Some(nb);
+        }
+    }
+    best_neighbor
+}
+
 /// The move a localized Fiduccia-Mattheyses pass makes next: the highest-gain
 /// vertex of `active` the balance window admits, as `(vertex, its gain)`.
 ///

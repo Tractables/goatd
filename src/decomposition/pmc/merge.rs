@@ -156,12 +156,14 @@ pub(super) fn bags_of(decomposition: &TreeDecomposition, adjacency: &Adjacency) 
         .iter()
         .map(|bag| {
             let mut vertices = bag.vertices().to_vec();
-            vertices.sort_unstable();
+            if !bag.is_sorted() {
+                vertices.sort_unstable();
+            }
             vertices.dedup();
             vertices
         })
         .collect();
-    bags.sort();
+    bags.sort_unstable();
     bags.dedup();
     bags.iter().map(|bag| adjacency.set_of(bag)).collect()
 }

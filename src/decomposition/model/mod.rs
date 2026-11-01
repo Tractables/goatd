@@ -58,7 +58,7 @@ impl TdBag {
     /// [`Self::new`] would leave the relabelled vertices. The map preserves
     /// order, so a bag known to be in order stays in order and only a bag
     /// whose order was never established needs the sort.
-    pub(crate) fn relabel_ascending(&mut self, map: impl Fn(u32) -> u32) {
+    pub(crate) fn relabel_ascending(&mut self, mut map: impl FnMut(u32) -> u32) {
         for vertex in &mut self.vertices {
             *vertex = map(*vertex);
         }

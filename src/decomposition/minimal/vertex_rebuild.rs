@@ -56,16 +56,6 @@ fn compact(mut tree: TreeDecomposition) -> TreeDecomposition {
     }
 }
 
-fn edges(tree: &TreeDecomposition) -> Vec<(usize, usize)> {
-    // A forest over the bags has fewer edges than it has bags, so the list is
-    // allocated once at that size rather than grown as the rows come in.
-    let mut edges = Vec::with_capacity(tree.bags().len());
-    for (a, adjacent) in tree.adjacency().iter().enumerate() {
-        edges.extend(adjacent.iter().copied().filter(|&b| b > a).map(|b| (a, b)));
-    }
-    edges
-}
-
 /// A connected support in each needed component, meeting every required vertex.
 fn support(tree: &TreeDecomposition, required: &[bool]) -> Vec<bool> {
     let count = required.iter().filter(|&&yes| yes).count();
@@ -164,7 +154,7 @@ fn rebuild(
     // attachment bag, and those bags connect through the restored vertex.
     // They are the only new bags: the others go into the candidate as they
     // are, at the end.
-    let mut tree_edges = edges(&small);
+    let mut tree_edges: Vec<(usize, usize)> = small.tree_edges().collect();
     let mut attachment: Vec<_> = (0..kept.len()).collect();
     let mut connecting: Vec<Vec<u32>> = Vec::new();
     for (index, &on_support) in kept.iter().enumerate() {

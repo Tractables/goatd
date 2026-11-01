@@ -7,7 +7,7 @@
 //! kept by the caller, since uncoarsening needs it back.
 
 use super::csr::CsrGraph;
-use crate::partition::common::{matching_order, shrank_enough};
+use crate::partition::common::{matching_order, select_best_neighbor, shrank_enough};
 use crate::rng::Xorshift64;
 
 pub(super) struct CoarseningLevel {
@@ -56,32 +56,15 @@ pub(super) fn coarsen_one_level(
         let end = graph.offsets[vtx + 1] as usize;
         let neighbors = &graph.neighbors[start..end];
         let weights = &graph.edge_weights[start..end];
-        let mut best_neighbor = None;
-        let mut best_wt: u32 = 0;
-        let mut best_same_part = false;
-
-        for (&nb, &w) in neighbors.iter().zip(weights) {
-            if match_of[nb as usize].is_some() {
-                continue;
-            }
-            // Same-partition neighbours are preferred over cross-partition ones;
-            // within that tier, heaviest edge wins. With no partition,
-            // `best_same_part` stays false for every neighbour, degenerating to
-            // plain heaviest-unmatched-neighbour.
-            // `w > best_wt` is strict and `neighbors` is sorted ascending, so a
-            // weight tie goes to the lowest-numbered neighbour. The hypergraph
-            // sibling ranks candidates out of a `HashMap` and has to spell that
-            // tie-break out to get the same determinism.
-            let same_part = part.is_some_and(|p| p[nb as usize] == p[vtx]);
-            if same_part && !best_same_part {
-                best_wt = w;
-                best_neighbor = Some(nb);
-                best_same_part = true;
-            } else if same_part == best_same_part && w > best_wt {
-                best_wt = w;
-                best_neighbor = Some(nb);
-            }
-        }
+        let best_neighbor = select_best_neighbor(
+            vtx,
+            part,
+            neighbors
+                .iter()
+                .copied()
+                .zip(weights.iter().copied())
+                .filter(|&(nb, _)| match_of[nb as usize].is_none()),
+        );
 
         if let Some(neighbor) = best_neighbor {
             match_of[vtx] = Some(neighbor);

@@ -419,6 +419,14 @@ impl BasicCutter {
         chosen
     }
 
+    fn pierce_side(&mut self, g: &OrigGraph, side: usize, pierce: u32) {
+        self.assim[side].set_extra(pierce);
+        self.reach[side].set_extra(pierce);
+        self.grow_reachable_sets(g, side);
+        self.grow_assimilated_sets(g);
+        self.cut_available = true;
+    }
+
     /// Returns false once no further cut is reachable.
     fn advance(&mut self, g: &OrigGraph) -> bool {
         debug_assert!(self.cut_available);
@@ -427,19 +435,11 @@ impl BasicCutter {
             self.cut_available = false;
             return false;
         }
-        let py = self.select_pierce_node(g, side);
-        let pierce = match py {
-            Some(y) => y,
-            None => {
-                self.cut_available = false;
-                return false;
-            }
+        let Some(pierce) = self.select_pierce_node(g, side) else {
+            self.cut_available = false;
+            return false;
         };
-        self.assim[side].set_extra(pierce);
-        self.reach[side].set_extra(pierce);
-        self.grow_reachable_sets(g, side);
-        self.grow_assimilated_sets(g);
-        self.cut_available = true;
+        self.pierce_side(g, side, pierce);
         true
     }
 
@@ -460,11 +460,7 @@ impl BasicCutter {
             if self.reach[1 - side].inside[pierce as usize] {
                 break;
             }
-            self.assim[side].set_extra(pierce);
-            self.reach[side].set_extra(pierce);
-            self.grow_reachable_sets(g, side);
-            self.grow_assimilated_sets(g);
-            self.cut_available = true;
+            self.pierce_side(g, side, pierce);
             guard += 1;
             if guard > 1_000_000 {
                 break;

@@ -125,7 +125,10 @@ pub(crate) fn prebuild_unreduced(input: &crate::Graph) -> Prebuilt {
     })
 }
 
-fn prebuilt_over(reduced: Reduced) -> Prebuilt {
+fn prebuilt_over(mut reduced: Reduced) -> Prebuilt {
+    for bag in &mut reduced.prefix.bags {
+        bag.sort_unstable();
+    }
     let components = find_connected_components(&reduced.graph);
     let active = execution::active_vertices(&reduced.graph);
     let prefix_max_bag = reduced.prefix.bags.iter().map(Vec::len).max().unwrap_or(0);

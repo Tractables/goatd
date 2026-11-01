@@ -8,7 +8,7 @@
 //! with identical pin sets become one with their weights summed.
 
 use super::model::Hypergraph;
-use crate::partition::common::{matching_order, shrank_enough};
+use crate::partition::common::{matching_order, select_best_neighbor, shrank_enough};
 use crate::rng::Xorshift64;
 
 pub(super) struct CoarseningLevel {
@@ -68,26 +68,13 @@ pub(super) fn coarsen_one_level(
             }
         }
 
-        // An explicit lowest-index tie-break makes selection independent of the
-        // order the candidates were reached in.
-        let mut best_neighbor = None;
-        let mut best_conn: u32 = 0;
-        let mut best_same_part = false;
-        for &nb in &candidates {
-            let conn = connectivity[nb as usize];
-            let same_part = part.is_some_and(|p| p[nb as usize] == p[v]);
-            if same_part && !best_same_part {
-                best_conn = conn;
-                best_neighbor = Some(nb);
-                best_same_part = true;
-            } else if same_part == best_same_part
-                && (conn > best_conn
-                    || (conn == best_conn && best_neighbor.is_none_or(|best| nb < best)))
-            {
-                best_conn = conn;
-                best_neighbor = Some(nb);
-            }
-        }
+        let best_neighbor = select_best_neighbor(
+            v,
+            part,
+            candidates
+                .iter()
+                .map(|&nb| (nb, connectivity[nb as usize])),
+        );
         for &nb in &candidates {
             connectivity[nb as usize] = 0;
         }
@@ -134,7 +121,7 @@ pub(super) fn coarsen_one_level(
     // scan below can merge them by summing weights: two hyperedges that this
     // contraction made indistinguishable are one hyperedge of their combined
     // weight from here up.
-    weighted_hyperedges.sort_by(|a, b| a.0.cmp(&b.0));
+    weighted_hyperedges.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     let mut coarse_hyperedges: Vec<Vec<u32>> = Vec::new();
     let mut coarse_hyperedge_weights: Vec<u32> = Vec::new();
     for (pins, weight) in weighted_hyperedges {

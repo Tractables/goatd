@@ -310,14 +310,7 @@ impl Projection {
                     .collect()
             })
             .collect();
-        let mut edges: Vec<(usize, usize)> = Vec::new();
-        for (bag, neighbours) in projection.adjacency().iter().enumerate() {
-            for &neighbour in neighbours {
-                if bag < neighbour {
-                    edges.push((bag, neighbour));
-                }
-            }
-        }
+        let mut edges: Vec<(usize, usize)> = projection.tree_edges().collect();
 
         let (depth, shallowest) = self.rooted_depths(projection);
         // One stamp per projection vertex, so the containment check below
@@ -354,6 +347,7 @@ impl Projection {
                     .iter()
                     .map(|&neighbour| self.vertices[neighbour as usize]),
             );
+            bag.sort_unstable();
             bags.push(bag);
             edges.push((bags.len() - 1, host));
         }

@@ -1,5 +1,6 @@
-use std::collections::HashSet;
 use std::time::Instant;
+
+use rustc_hash::FxHashSet;
 
 use crate::TreeDecomposition;
 use crate::decomposition::{BagPool, BagPoolLimits, SubsumedBagCompaction};
@@ -294,7 +295,10 @@ impl CandidateSet {
         // One decomposition has nothing to repeat, and a canonical form copies
         // and sorts every bag of it.
         let deduplicate = retained.len() > 1;
-        let mut seen = HashSet::with_capacity(if deduplicate { retained.len() } else { 0 });
+        let mut seen = FxHashSet::with_capacity_and_hasher(
+            if deduplicate { retained.len() } else { 0 },
+            Default::default(),
+        );
         retained
             .into_iter()
             .map(|retained| Candidate {
@@ -336,7 +340,9 @@ fn bag_tree(decomposition: &TreeDecomposition) -> (Vec<Vec<u32>>, Vec<(usize, us
         .enumerate()
         .map(|(index, bag)| {
             let mut vertices = bag.vertices().to_vec();
-            vertices.sort_unstable();
+            if !bag.is_sorted() {
+                vertices.sort_unstable();
+            }
             (vertices, index)
         })
         .collect();
