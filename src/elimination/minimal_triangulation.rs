@@ -98,11 +98,8 @@ pub(crate) fn cardinality_search(
             && !reach_lower_paths(
                 adjacency,
                 chosen,
-                &mut states,
-                &counts,
-                &mut raised,
-                &mut touched,
-                &mut buckets,
+                (&mut states, &counts),
+                (&mut raised, &mut touched, &mut buckets),
                 &mut pacer,
                 hard_deadline,
             )
@@ -186,15 +183,11 @@ fn choose_highest_unnumbered(run_max: &[u32], counts: &[u32], lowest: usize) -> 
     (best, chosen)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn reach_lower_paths(
     adjacency: &[Vec<u32>],
     chosen: usize,
-    states: &mut [u8],
-    counts: &[u32],
-    raised: &mut Vec<u32>,
-    touched: &mut Vec<u32>,
-    buckets: &mut [Vec<u32>],
+    (states, counts): (&mut [u8], &[u32]),
+    (raised, touched, buckets): (&mut Vec<u32>, &mut Vec<u32>, &mut [Vec<u32>]),
     pacer: &mut DeadlinePacer,
     hard_deadline: Option<Instant>,
 ) -> bool {

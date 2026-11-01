@@ -370,28 +370,10 @@ fn run_elimination_raw(
         Order::MinDegree => {
             eliminate_min_degree(graph, salt, spec.update_order_ties, steps.sink(), spec.stop)
         }
-        Order::MinFillSampled { weights } => {
-            let (draw, stop) = sampled_draw_and_stop(spec, weights);
-            eliminate_sampled_min_fill(graph, draw, steps.sink(), stop, seed, scratch)
-        }
-        Order::MinDegreeSampled { weights } => {
-            let (draw, stop) = sampled_draw_and_stop(spec, weights);
-            eliminate_sampled_min_degree(graph, draw, steps.sink(), stop, seed.active, scratch)
-        }
-        Order::FillDegreeSampled {
-            weights,
-            degree_coefficient,
-        } => {
-            let (draw, stop) = sampled_draw_and_stop(spec, weights);
-            eliminate_sampled_fill_degree(
-                graph,
-                draw,
-                steps.sink(),
-                stop,
-                seed,
-                degree_coefficient,
-                scratch,
-            )
+        Order::MinFillSampled { weights }
+        | Order::MinDegreeSampled { weights }
+        | Order::FillDegreeSampled { weights, .. } => {
+            eliminate_sampled_order(graph, weights, steps.sink(), seed, spec, scratch)
         }
         Order::NestedDissection => {
             eliminate_nested_dissection(graph, salt, spec.seed, steps.sink(), spec.stop)
@@ -409,6 +391,37 @@ fn run_elimination_raw(
         Vec::new()
     };
     (steps, exit, residual)
+}
+
+fn eliminate_sampled_order(
+    graph: &mut EliminationGraph,
+    weights: &[u32],
+    sink: execution::ElimSink<'_>,
+    seed: SampleSeed<'_>,
+    spec: RunSpec<'_>,
+    scratch: &mut greedy::SampleScratch,
+) -> ElimExit {
+    let (draw, stop) = sampled_draw_and_stop(spec, weights);
+    match spec.order {
+        Order::MinFillSampled { .. } => {
+            eliminate_sampled_min_fill(graph, draw, sink, stop, seed, scratch)
+        }
+        Order::MinDegreeSampled { .. } => {
+            eliminate_sampled_min_degree(graph, draw, sink, stop, seed.active, scratch)
+        }
+        Order::FillDegreeSampled {
+            degree_coefficient, ..
+        } => eliminate_sampled_fill_degree(
+            graph,
+            draw,
+            sink,
+            stop,
+            seed,
+            degree_coefficient,
+            scratch,
+        ),
+        _ => unreachable!(),
+    }
 }
 
 fn eliminate_ranked(
@@ -487,15 +500,12 @@ fn component_subgraph<'a>(
 }
 
 /// Run the elimination order on a single component's subgraph.
-#[allow(clippy::too_many_arguments)]
 fn run_component_elimination(
     pristine: &EliminationGraph,
-    comp_idx: usize,
-    comp: &[u32],
+    (comp_idx, comp): (usize, &[u32]),
     sub_initial_fill: Option<&[u64]>,
     salt: &[u32],
-    spec: RunSpec<'_>,
-    stop: ElimStop,
+    (spec, stop): (RunSpec<'_>, ElimStop),
     component_work: &mut Option<EliminationGraph>,
     sample: &mut greedy::SampleScratch,
 ) -> (ElimSteps, ElimExit, Vec<u32>) {
@@ -512,7 +522,6 @@ fn run_component_elimination(
         }
         slot => slot.insert(pristine.clone()),
     };
-
     // An order that reads no salt has none to re-index.
     let sub_salt: Vec<u32> = if salt.is_empty() {
         Vec::new()
@@ -535,13 +544,11 @@ fn run_component_elimination(
         stop,
         ..spec
     };
-
     // Every vertex of a component subgraph is active, so its seeding scan
     // has nothing to skip and needs no list of its own.
-    let empty_prefix = ElimSteps::default();
     run_elimination_raw(
         sub_graph,
-        &empty_prefix,
+        &ElimSteps::default(),
         &sub_salt,
         SampleSeed {
             initial_fill: sub_initial_fill,
@@ -575,13 +582,20 @@ fn run_order_per_component(
 ) -> OrderRun {
     prepare_per_component_scratch(graph.len(), prefix, components, initial_fill, scratch);
     let component_fill = initial_fill.and(scratch.component_fill.as_deref());
+    let mut nbrs_buf = Vec::new();
     // The bags after the prefix's; the prefix is put in front of them once
-    // there is a decomposition to build.
-    let base = prefix.next_step();
-    let (mut all_bags, mut nbrs_buf) = (Vec::new(), Vec::new());
-    // Components after a soft-cutoff stop run against the hard deadline alone,
-    // so this changes once and applies to every later component.
-    let (mut stop, mut soft_cutoff_passed) = (spec.stop, false);
+    // there is a decomposition to build. Components after a soft-cutoff stop
+    // run against the hard deadline alone, so `stop` changes once and applies
+    // to every later component.
+    let mut acc = ComponentAccumulator {
+        prefix,
+        base: prefix.next_step(),
+        complete_on_deadline: spec.complete_on_deadline,
+        all_bags: Vec::new(),
+        rank: &mut scratch.rank,
+        stop: spec.stop,
+        soft_cutoff_passed: false,
+    };
     for (comp_idx, comp) in components.iter().enumerate() {
         let pristine = component_subgraph(
             graph,
@@ -593,129 +607,123 @@ fn run_order_per_component(
         let sub_initial_fill = component_fill.map(|fill| fill[comp_idx].as_slice());
         let (comp_steps, comp_exit, comp_residual) = run_component_elimination(
             pristine,
-            comp_idx,
-            comp,
+            (comp_idx, comp),
             sub_initial_fill,
             &scratch.salt,
-            spec,
-            stop,
+            (spec, acc.stop),
             &mut scratch.component_work,
             &mut scratch.sample,
         );
-        if let Some(early) = record_component_result(
-            prefix,
+        if let Some(early) = acc.record_result(
             comp,
             &components[(comp_idx + 1)..],
             comp_steps,
             comp_exit,
             comp_residual,
-            base,
-            spec.complete_on_deadline,
-            &mut all_bags,
-            &mut scratch.rank,
-            &mut stop,
-            &mut soft_cutoff_passed,
         ) {
             return early;
         }
     }
     // A run that bagged one component's residual on the way through stopped at
     // a deadline, whatever the components after it managed.
-    let exit = if soft_cutoff_passed {
-        ElimExit::DeadlineReached(Cutoff::Soft)
-    } else {
-        ElimExit::Complete
-    };
-    let complete = spec.complete_on_deadline;
-    finish_after(prefix, all_bags, &scratch.rank, exit, complete)
+    acc.finish()
 }
 
-#[allow(clippy::too_many_arguments)]
-fn record_component_result(
-    prefix: &ElimSteps,
-    comp: &[u32],
-    remaining_components: &[Vec<u32>],
-    comp_steps: ElimSteps,
-    comp_exit: ElimExit,
-    comp_residual: Vec<u32>,
+struct ComponentAccumulator<'a> {
+    prefix: &'a ElimSteps,
     base: usize,
     complete_on_deadline: bool,
-    all_bags: &mut Vec<Vec<u32>>,
-    global_rank: &mut [u32],
-    stop: &mut ElimStop,
-    soft_cutoff_passed: &mut bool,
-) -> Option<OrderRun> {
-    match comp_exit {
-        ElimExit::WidthLimitExceeded => return Some(OrderRun::WidthAborted),
-        ElimExit::DeadlineReached(cutoff) if !complete_on_deadline => {
-            return Some(OrderRun::DeadlineAborted(cutoff));
-        }
-        ElimExit::Complete | ElimExit::DeadlineReached(_) => {
-            comp_steps.append_reindexed(comp, base, all_bags, global_rank);
-        }
-    }
-    if matches!(comp_exit, ElimExit::DeadlineReached(_))
-        && !handle_component_deadline(
-            comp,
-            comp_residual,
-            remaining_components,
-            comp_exit,
-            base,
-            all_bags,
-            global_rank,
-            stop,
-            soft_cutoff_passed,
-        )
-    {
-        return Some(finish_after(
-            prefix,
-            std::mem::take(all_bags),
-            global_rank,
-            comp_exit,
-            true,
-        ));
-    }
-    None
+    all_bags: Vec<Vec<u32>>,
+    rank: &'a mut [u32],
+    stop: ElimStop,
+    soft_cutoff_passed: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn handle_component_deadline(
-    comp: &[u32],
-    comp_residual: Vec<u32>,
-    remaining_components: &[Vec<u32>],
-    comp_exit: ElimExit,
-    base: usize,
-    all_bags: &mut Vec<Vec<u32>>,
-    global_rank: &mut [u32],
-    stop: &mut ElimStop,
-    soft_cutoff_passed: &mut bool,
-) -> bool {
-    append_residual_bag(
-        comp_residual
-            .into_iter()
-            .map(|vertex| comp[vertex as usize]),
-        base,
-        all_bags,
-        global_rank,
-    );
-    // The soft cutoff is the construction budget, not the end of the
-    // run: the components after this one still have the hard deadline
-    // to be decomposed in, and one bag each is what they fall back to
-    // when it passes. Their orders run against the hard deadline
-    // alone, since the soft one has gone.
-    if comp_exit == ElimExit::DeadlineReached(Cutoff::Soft) {
-        *soft_cutoff_passed = true;
-        *stop = ElimStop {
-            soft_deadline: None,
-            ..*stop
+impl ComponentAccumulator<'_> {
+    fn finish(self) -> OrderRun {
+        let exit = if self.soft_cutoff_passed {
+            ElimExit::DeadlineReached(Cutoff::Soft)
+        } else {
+            ElimExit::Complete
         };
-        return true;
+        finish_after(
+            self.prefix,
+            self.all_bags,
+            self.rank,
+            exit,
+            self.complete_on_deadline,
+        )
     }
-    // After the hard cutoff there is no time to start another order.
-    for remaining in remaining_components {
-        append_residual_bag(remaining.iter().copied(), base, all_bags, global_rank);
+    fn record_result(
+        &mut self,
+        comp: &[u32],
+        remaining_components: &[Vec<u32>],
+        comp_steps: ElimSteps,
+        comp_exit: ElimExit,
+        comp_residual: Vec<u32>,
+    ) -> Option<OrderRun> {
+        match comp_exit {
+            ElimExit::WidthLimitExceeded => return Some(OrderRun::WidthAborted),
+            ElimExit::DeadlineReached(cutoff) if !self.complete_on_deadline => {
+                return Some(OrderRun::DeadlineAborted(cutoff));
+            }
+            ElimExit::Complete | ElimExit::DeadlineReached(_) => {
+                comp_steps.append_reindexed(comp, self.base, &mut self.all_bags, self.rank);
+            }
+        }
+        if matches!(comp_exit, ElimExit::DeadlineReached(_))
+            && !self.handle_deadline(comp, comp_residual, remaining_components, comp_exit)
+        {
+            return Some(finish_after(
+                self.prefix,
+                std::mem::take(&mut self.all_bags),
+                self.rank,
+                comp_exit,
+                true,
+            ));
+        }
+        None
     }
-    false
+
+    fn handle_deadline(
+        &mut self,
+        comp: &[u32],
+        comp_residual: Vec<u32>,
+        remaining_components: &[Vec<u32>],
+        comp_exit: ElimExit,
+    ) -> bool {
+        append_residual_bag(
+            comp_residual
+                .into_iter()
+                .map(|vertex| comp[vertex as usize]),
+            self.base,
+            &mut self.all_bags,
+            self.rank,
+        );
+        // The soft cutoff is the construction budget, not the end of the
+        // run: the components after this one still have the hard deadline
+        // to be decomposed in, and one bag each is what they fall back to
+        // when it passes. Their orders run against the hard deadline
+        // alone, since the soft one has gone.
+        if comp_exit == ElimExit::DeadlineReached(Cutoff::Soft) {
+            self.soft_cutoff_passed = true;
+            self.stop = ElimStop {
+                soft_deadline: None,
+                ..self.stop
+            };
+            return true;
+        }
+        // After the hard cutoff there is no time to start another order.
+        for remaining in remaining_components {
+            append_residual_bag(
+                remaining.iter().copied(),
+                self.base,
+                &mut self.all_bags,
+                self.rank,
+            );
+        }
+        false
+    }
 }
 
 fn prepare_per_component_scratch(

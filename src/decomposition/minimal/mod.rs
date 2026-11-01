@@ -531,27 +531,17 @@ fn minimalize(
                     // tested from their smaller endpoint instead.
                     bits &= (!1u64) << (vertex % 64);
                 }
-                // A removal below clears bits of this row, but only the bit of
-                // the member being tested, which this walk has already taken
-                // out of `bits`.
-                while bits != 0 {
-                    let other = word * 64 + bits.trailing_zeros() as usize;
-                    bits &= bits - 1;
-                    // An endpoint touched in pass p is retested in pass p and
-                    // in pass p + 1: an edge tested earlier in pass p saw the
-                    // neighbourhood as it was before that removal.
-                    if scratch.touched[vertex] + 2 <= pass && scratch.touched[other] + 2 <= pass {
-                        continue;
-                    }
-                    if pacer.due() && expired(deadline) {
-                        return removed + removed_this_pass;
-                    }
-                    if test_and_maybe_remove_edge(
-                        completion, vertex, other, pass, scratch, witnesses,
-                    ) {
-                        removed_this_pass += 1;
-                    }
-                }
+                let Some(word_removed) = minimalize_word_bits(
+                    completion,
+                    (vertex, word, bits, pass),
+                    scratch,
+                    witnesses,
+                    &mut pacer,
+                    deadline,
+                ) else {
+                    return removed + removed_this_pass;
+                };
+                removed_this_pass += word_removed;
             }
         }
         removed += removed_this_pass;
@@ -559,6 +549,38 @@ fn minimalize(
             return removed;
         }
     }
+}
+
+/// Tests set bits in `bits` for `vertex`'s `word`; returns `None` when the
+/// deadline expires mid-word.
+fn minimalize_word_bits(
+    completion: &mut RowSet,
+    (vertex, word, mut bits, pass): (usize, usize, u64, u32),
+    scratch: &mut Scratch,
+    witnesses: &mut impl Witnesses,
+    pacer: &mut DeadlinePacer,
+    deadline: Option<Instant>,
+) -> Option<usize> {
+    let mut removed = 0;
+    // A removal below clears bits of this row, but only the bit of the member
+    // being tested, which this walk has already taken out of `bits`.
+    while bits != 0 {
+        let other = word * 64 + bits.trailing_zeros() as usize;
+        bits &= bits - 1;
+        // An endpoint touched in pass p is retested in pass p and in pass p + 1:
+        // an edge tested earlier in pass p saw the neighbourhood as it was before
+        // that removal.
+        if scratch.touched[vertex] + 2 <= pass && scratch.touched[other] + 2 <= pass {
+            continue;
+        }
+        if pacer.due() && expired(deadline) {
+            return None;
+        }
+        if test_and_maybe_remove_edge(completion, vertex, other, pass, scratch, witnesses) {
+            removed += 1;
+        }
+    }
+    Some(removed)
 }
 
 fn prepare_minimalize_scratch(scratch: &mut Scratch, words: usize, vertices: usize) {

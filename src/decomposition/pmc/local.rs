@@ -82,12 +82,9 @@ pub(crate) fn local_merge(
             if expired(deadline) {
                 break;
             }
-            let width = best.treewidth();
             let fresh = add_partner_focus_cliques(
                 &mut state,
-                &reaches,
-                partners,
-                width,
+                (&reaches, partners, best.treewidth()),
                 &mut list,
                 &mut scratch,
                 deadline,
@@ -101,11 +98,8 @@ pub(crate) fn local_merge(
             if built.quality_key() < best.quality_key() {
                 best = built;
                 round_moved = true;
-                // At width k no tree of width k or less has a bag of more than
-                // k + 2 vertices, so the list drops them: they are what the
-                // merges would otherwise pile up.
-                list.trim(best.treewidth() as usize + 2);
-                reaches = anchor_reaches(&state, &best, &adjacency, &mut scratch);
+                reaches =
+                    refresh_local_merge_best(&state, &best, &adjacency, &mut list, &mut scratch);
             }
         }
         if !round_moved {
@@ -113,6 +107,20 @@ pub(crate) fn local_merge(
         }
     }
     (best.quality_key() < start.quality_key()).then_some(best)
+}
+
+fn refresh_local_merge_best(
+    state: &Loop<'_>,
+    best: &TreeDecomposition,
+    adjacency: &Adjacency,
+    list: &mut List,
+    scratch: &mut Scratch,
+) -> Vec<(VertexSet, VertexSet)> {
+    // At width k no tree of width k or less has a bag of more than
+    // k + 2 vertices, so the list drops them: they are what the
+    // merges would otherwise pile up.
+    list.trim(best.treewidth() as usize + 2);
+    anchor_reaches(state, best, adjacency, scratch)
 }
 
 fn init_local_merge_list(
@@ -132,9 +140,7 @@ fn init_local_merge_list(
 
 fn add_partner_focus_cliques(
     state: &mut Loop<'_>,
-    reaches: &[(VertexSet, VertexSet)],
-    partners: &[VertexSet],
-    width: u32,
+    (reaches, partners, width): (&[(VertexSet, VertexSet)], &[VertexSet], u32),
     list: &mut List,
     scratch: &mut Scratch,
     deadline: Option<Instant>,

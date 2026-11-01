@@ -461,19 +461,9 @@ impl Loop<'_> {
             if expired(deadline) {
                 break;
             }
-            let budget = deadline.map(|deadline| remaining(deadline) / LEVEL_TIME_SHARE);
-            // The first draw is the deterministic one, so a piece that one
-            // triangulation settles is settled the same way here as in the
-            // merge loop; the rest are randomised and made minimal.
-            let (choice, seed) = if draw == 0 {
-                (crate::elimination::Order::MinimalTriangulation, 0)
-            } else {
-                (crate::elimination::Order::RelativeFill, self.rng.next_u64())
-            };
-            let Ok(drawn) = crate::elimination::decompose(&local, choice, seed, budget) else {
+            let Some(drawn) = self.draw_local_triangulation(&local, draw, deadline) else {
                 continue;
             };
-            let drawn = crate::decomposition::minimalize_at(drawn, &local, deadline);
             for bag in drawn.bags() {
                 let set = rows.set_of(bag.vertices());
                 if seen.insert(set.clone()) {
@@ -499,6 +489,25 @@ impl Loop<'_> {
             return Vec::new();
         }
         self.cliques_of(&chosen, &order, width, held, scratch)
+    }
+
+    fn draw_local_triangulation(
+        &mut self,
+        local: &Graph,
+        draw: usize,
+        deadline: Option<Instant>,
+    ) -> Option<TreeDecomposition> {
+        let budget = deadline.map(|deadline| remaining(deadline) / LEVEL_TIME_SHARE);
+        // The first draw is the deterministic one, so a piece that one
+        // triangulation settles is settled the same way here as in the
+        // merge loop; the rest are randomised and made minimal.
+        let (choice, seed) = if draw == 0 {
+            (crate::elimination::Order::MinimalTriangulation, 0)
+        } else {
+            (crate::elimination::Order::RelativeFill, self.rng.next_u64())
+        };
+        let drawn = crate::elimination::decompose(local, choice, seed, budget).ok()?;
+        Some(crate::decomposition::minimalize_at(drawn, local, deadline))
     }
 
     /// The bags of `triangulated`, in the whole graph's numbering, keeping the

@@ -156,23 +156,10 @@ pub(super) fn fm_refine_pass(
     };
 
     scratch.prepare(n);
+    init_fm_pass_queues(graph, part, scratch);
     let gain = scratch.gain.as_mut_slice();
     let cut_edges = scratch.cut_edges.as_mut_slice();
-    for v in 0..n {
-        let (g, cut) = vertex_gain_and_cut(graph, part, v);
-        gain[v] = g;
-        cut_edges[v] = cut;
-    }
-
-    // Only boundary vertices are queued: an interior vertex has every edge on
-    // its own side, so moving it can only add to the cut.
     let bq = &mut scratch.bq;
-    for v in 0..n {
-        if cut_edges[v] > 0 {
-            bq[part[v] as usize].insert(v, gain[v]);
-        }
-    }
-
     let locked = scratch.locked.as_mut_slice();
     let log = &mut scratch.log;
     log.begin((n / 2).max(20));
@@ -198,19 +185,30 @@ pub(super) fn fm_refine_pass(
             break;
         }
 
-        update_neighbor_gains_after_move(graph, v, to, part, locked, gain, cut_edges, bq);
+        update_neighbor_gains_after_move(graph, (v, to), (part, locked), gain, cut_edges, bq);
     }
 
     log.commit(part)
 }
 
-#[allow(clippy::too_many_arguments)]
+fn init_fm_pass_queues(graph: &CsrGraph, part: &[u8], scratch: &mut FmScratch) {
+    let n = graph.num_vertices();
+    for v in 0..n {
+        let (g, cut) = vertex_gain_and_cut(graph, part, v);
+        scratch.gain[v] = g;
+        scratch.cut_edges[v] = cut;
+        // Only boundary vertices are queued: an interior vertex has every edge on
+        // its own side, so moving it can only add to the cut.
+        if cut > 0 {
+            scratch.bq[part[v] as usize].insert(v, g);
+        }
+    }
+}
+
 fn update_neighbor_gains_after_move(
     graph: &CsrGraph,
-    v: usize,
-    to: usize,
-    part: &[u8],
-    locked: &[bool],
+    (v, to): (usize, usize),
+    (part, locked): (&[u8], &[bool]),
     gain: &mut [i64],
     cut_edges: &mut [i64],
     bq: &mut [GainBuckets; 2],
@@ -276,22 +274,18 @@ pub(super) fn localized_fm_pass(
     };
 
     prepare_graph_region(graph, part, seed, scratch);
-    let in_region = scratch.in_region.as_mut_slice();
-    let boundary = scratch.boundary.as_mut_slice();
-    let boundary_touched = &mut scratch.boundary_touched;
-    let region_list = &mut scratch.region_list;
+    let in_region = scratch.in_region.as_slice();
+    let region_len = scratch.region_list.len();
     let active = &mut scratch.active;
     let gain = scratch.gain.as_mut_slice();
     let locked = scratch.locked.as_mut_slice();
     let log = &mut scratch.log;
-    log.begin(region_list.len() / 2);
 
     // O(region²), not O(n × region): only the region is scanned per move, and
     // the selection drops each vertex it locks. Ties go to whichever vertex BFS
     // reached first because `gain[v] > best_g` is strict. The hypergraph pass
     // scans its region in ascending index order.
-    active.extend_from_slice(region_list);
-    for _ in 0..region_list.len() {
+    for _ in 0..region_len {
         if stop.reached() {
             break;
         }
@@ -315,58 +309,37 @@ pub(super) fn localized_fm_pass(
     }
 
     let improved = log.commit(part);
-    reset_graph_region_marks(region_list, boundary_touched, in_region, locked, boundary);
+    reset_graph_region_marks(scratch);
     improved
 }
 
 fn prepare_graph_region(graph: &CsrGraph, part: &[u8], seed: usize, scratch: &mut RegionScratch) {
     let n = graph.num_vertices();
     scratch.prepare(n);
-    let in_region = scratch.in_region.as_mut_slice();
-    let boundary = scratch.boundary.as_mut_slice();
-    let boundary_touched = &mut scratch.boundary_touched;
-    let region_list = &mut scratch.region_list;
-    let queue = &mut scratch.queue;
-
     let max_region = (n / 4).max(20).min(n);
-    grow_graph_region(
-        graph,
-        part,
-        seed,
-        max_region,
-        in_region,
-        boundary,
-        boundary_touched,
-        region_list,
-        queue,
-    );
+    grow_graph_region(graph, part, seed, max_region, scratch);
 
     // Gains only for region vertices: O(region × deg), not O(n × deg). A
     // non-region entry is never read, so `gain` is written here and left alone
     // rather than cleared.
-    let gain = scratch.gain.as_mut_slice();
-    for &v in region_list.iter() {
+    for &v in &scratch.region_list {
         let (g, _) = vertex_gain_and_cut(graph, part, v);
-        gain[v] = g;
+        scratch.gain[v] = g;
     }
+    scratch.log.begin(scratch.region_list.len() / 2);
+    scratch.active.extend_from_slice(&scratch.region_list);
 }
 
 /// Hand the arrays back the way they were found. Only region vertices are
 /// marked in `in_region` and `locked`, and `boundary_touched` names every
 /// vertex whose `boundary` entry was written.
-fn reset_graph_region_marks(
-    region_list: &[usize],
-    boundary_touched: &[usize],
-    in_region: &mut [bool],
-    locked: &mut [bool],
-    boundary: &mut [u8],
-) {
-    for &v in region_list {
-        in_region[v] = false;
-        locked[v] = false;
+fn reset_graph_region_marks(scratch: &mut RegionScratch) {
+    for &v in &scratch.region_list {
+        scratch.in_region[v] = false;
+        scratch.locked[v] = false;
     }
-    for &v in boundary_touched {
-        boundary[v] = 0;
+    for &v in &scratch.boundary_touched {
+        scratch.boundary[v] = 0;
     }
 }
 
@@ -397,18 +370,19 @@ fn update_region_neighbor_gains(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn grow_graph_region(
     graph: &CsrGraph,
     part: &[u8],
     seed: usize,
     max_region: usize,
-    in_region: &mut [bool],
-    boundary: &mut [u8],
-    boundary_touched: &mut Vec<usize>,
-    region_list: &mut Vec<usize>,
-    queue: &mut VecDeque<usize>,
+    scratch: &mut RegionScratch,
 ) {
+    let in_region = scratch.in_region.as_mut_slice();
+    let boundary = scratch.boundary.as_mut_slice();
+    let boundary_touched = &mut scratch.boundary_touched;
+    let region_list = &mut scratch.region_list;
+    let queue = &mut scratch.queue;
+
     // region_list is collected alongside in_region to avoid a separate O(n)
     // scan in the selection loop below.
     in_region[seed] = true;
@@ -433,28 +407,37 @@ fn grow_graph_region(
         // just cross-partition ones — gives FM room to move on both sides.
         for &nb in graph.neighbors(v) {
             let nb = nb as usize;
-            if !in_region[nb] && region_list.len() < max_region {
-                // No move happens until the region is grown, so whether `nb`
-                // has a neighbour on the other side does not change while this
-                // loop runs. A vertex the region keeps reaching but never
-                // admits is reached once per region neighbour it has, and
-                // without the record below its adjacency is walked every time.
-                let is_boundary = match boundary[nb] {
-                    0 => {
-                        let on_boundary = has_cross_neighbor(graph, part, nb);
-                        boundary[nb] = 1 + u8::from(on_boundary);
-                        boundary_touched.push(nb);
-                        on_boundary
-                    }
-                    known => known == 2,
-                };
-                if is_boundary {
-                    in_region[nb] = true;
-                    queue.push_back(nb);
-                    region_list.push(nb);
-                }
+            if !in_region[nb]
+                && region_list.len() < max_region
+                && is_or_mark_boundary(graph, part, nb, boundary, boundary_touched)
+            {
+                in_region[nb] = true;
+                queue.push_back(nb);
+                region_list.push(nb);
             }
         }
+    }
+}
+
+/// No move happens until the region is grown, so whether `nb` has a neighbour
+/// on the other side does not change while the growth loop runs. A vertex the
+/// region keeps reaching but never admits is reached once per region neighbour
+/// it has, and without this record its adjacency would be walked every time.
+fn is_or_mark_boundary(
+    graph: &CsrGraph,
+    part: &[u8],
+    nb: usize,
+    boundary: &mut [u8],
+    boundary_touched: &mut Vec<usize>,
+) -> bool {
+    match boundary[nb] {
+        0 => {
+            let on_boundary = has_cross_neighbor(graph, part, nb);
+            boundary[nb] = 1 + u8::from(on_boundary);
+            boundary_touched.push(nb);
+            on_boundary
+        }
+        known => known == 2,
     }
 }
 

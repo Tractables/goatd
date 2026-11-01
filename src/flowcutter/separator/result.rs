@@ -69,15 +69,42 @@ fn split_sides_bfs(
     edges: &[(u32, u32)],
     separator: &[u32],
 ) -> Option<(Vec<u32>, Vec<u32>)> {
-    let in_sep = {
-        let mut flag = vec![false; num_nodes];
-        for &v in separator {
-            flag[v as usize] = true;
-        }
-        flag
-    };
-    let (offsets, neighbors) = non_separator_csr(num_nodes, edges, &in_sep);
+    let mut in_sep = vec![false; num_nodes];
+    for &v in separator {
+        in_sep[v as usize] = true;
+    }
+    let mut components = collect_non_separator_components(num_nodes, edges, &in_sep);
+    if components.is_empty() {
+        return None;
+    }
 
+    // Pack components into two sides greedily (largest-first) to balance.
+    components.sort_by_key(|c| std::cmp::Reverse(c.len()));
+    let mut side_a: Vec<u32> = Vec::new();
+    let mut side_b: Vec<u32> = Vec::new();
+    for comp in components {
+        if side_a.len() <= side_b.len() {
+            side_a.extend(comp);
+        } else {
+            side_b.extend(comp);
+        }
+    }
+
+    if side_a.is_empty() || side_b.is_empty() {
+        return None;
+    }
+
+    side_a.sort_unstable();
+    side_b.sort_unstable();
+    Some((side_a, side_b))
+}
+
+fn collect_non_separator_components(
+    num_nodes: usize,
+    edges: &[(u32, u32)],
+    in_sep: &[bool],
+) -> Vec<Vec<u32>> {
+    let (offsets, neighbors) = non_separator_csr(num_nodes, edges, in_sep);
     let mut component_of = vec![u32::MAX; num_nodes];
     let mut components: Vec<Vec<u32>> = Vec::new();
 
@@ -102,30 +129,7 @@ fn split_sides_bfs(
         }
         components.push(comp);
     }
-
-    if components.is_empty() {
-        return None;
-    }
-
-    // Pack components into two sides greedily (largest-first) to balance.
-    components.sort_by_key(|c| std::cmp::Reverse(c.len()));
-    let mut side_a: Vec<u32> = Vec::new();
-    let mut side_b: Vec<u32> = Vec::new();
-    for comp in components {
-        if side_a.len() <= side_b.len() {
-            side_a.extend(comp);
-        } else {
-            side_b.extend(comp);
-        }
-    }
-
-    if side_a.is_empty() || side_b.is_empty() {
-        return None;
-    }
-
-    side_a.sort_unstable();
-    side_b.sort_unstable();
-    Some((side_a, side_b))
+    components
 }
 
 /// Counted, then scattered into one buffer, the shape `build_csr` uses: a

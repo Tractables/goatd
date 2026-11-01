@@ -140,7 +140,6 @@ impl FillScratch {
             );
             return graph.fill_count_of_bs(v);
         }
-
         let nbrs_v = graph.adj[v as usize].as_slice();
         let k = nbrs_v.len();
         // The marker scan below is O(k + Σ deg(u) for u ∈ N(v)), and is charged
@@ -159,14 +158,11 @@ impl FillScratch {
         if k < 2 {
             return 0;
         }
-
         self.bump_stamp();
         let s = self.stamp;
-
         for &u in nbrs_v {
             self.marker[u as usize] = s;
         }
-
         // Each edge in the induced subgraph is counted from both endpoints,
         // so `doubled` sums to 2× the true edge count.
         //
@@ -190,10 +186,30 @@ impl FillScratch {
                 doubled += (m == s) as u64;
             }
         }
-        let edge_count = doubled / 2;
-
         let total_pairs = (k as u64) * (k as u64 - 1) / 2;
-        total_pairs - edge_count
+        total_pairs - doubled / 2
+    }
+}
+
+struct BitsetSplitScratch<'a> {
+    v_words: &'a [u32],
+    inside: &'a mut [u64],
+    outside: &'a [u64],
+    x_inside: &'a mut [u64],
+    x_outside: &'a mut [u64],
+    x_words: &'a mut Vec<u32>,
+}
+
+impl BitsetSplitScratch<'_> {
+    fn split_row(&mut self, u_row: &[u64]) {
+        FillAffected::split_neighbour_row_bs(
+            u_row,
+            self.inside,
+            self.outside,
+            self.x_inside,
+            self.x_outside,
+            self.x_words,
+        );
     }
 }
 
@@ -504,20 +520,16 @@ impl FillAffected {
         // Slots run in vertex-id order, so the slots say which is smaller.
         let mut done = true;
         let mut pacer = DeadlinePacer::new();
+        let mut split = BitsetSplitScratch {
+            v_words: &v_words,
+            inside: &mut inside[..w],
+            outside: &outside[..w],
+            x_inside: &mut x_inside[..w],
+            x_outside: &mut x_outside[..w],
+            x_words: &mut x_words,
+        };
         for &u_raw in nbrs {
-            if !self.prepare_neighbour_bs(
-                graph,
-                u_raw,
-                k,
-                &v_words,
-                &mut inside[..w],
-                &outside[..w],
-                &mut x_inside[..w],
-                &mut x_outside[..w],
-                &mut x_words,
-                &mut pacer,
-                deadline,
-            ) {
+            if !self.prepare_neighbour_bs(graph, u_raw, k, &mut split, &mut pacer, deadline) {
                 done = false;
                 break;
             }
@@ -554,39 +566,33 @@ impl FillAffected {
         outside[vi / 64] &= !(1u64 << (vi % 64));
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn prepare_neighbour_bs(
         &mut self,
         graph: &EliminationGraph,
         u_raw: u32,
         k: usize,
-        v_words: &[u32],
-        inside: &mut [u64],
-        outside: &[u64],
-        x_inside: &mut [u64],
-        x_outside: &mut [u64],
-        x_words: &mut Vec<u32>,
+        split: &mut BitsetSplitScratch<'_>,
         pacer: &mut DeadlinePacer,
         deadline: Option<Instant>,
     ) -> bool {
         let w = graph.bitset_words;
         let u = graph.bitset_slot_of(u_raw);
-        crate::meter::charge(v_words.len() as u64);
+        crate::meter::charge(split.v_words.len() as u64);
         // u's fill edges are v's other neighbours that u's row lacks:
         // u's own bit leaves v's row while they are read, and is put
         // back after. u is never a common neighbour of its own fill
         // edge, so the pass over each edge does not see the difference.
-        inside[u / 64] &= !(1u64 << (u % 64));
+        split.inside[u / 64] &= !(1u64 << (u % 64));
         let u_row = &graph.bitset[u * w..u * w + w];
         let (mut gained, mut masked) = (0u32, false);
         // u's own word may have gone empty above; walking it is harmless.
-        for &j in v_words {
+        for &j in split.v_words {
             let j = j as usize;
             debug_assert!(j < w);
             // SAFETY: `v_words` holds indices below `w`, and `inside`
             // and u's row both hold `w` words.
             let (inside_word, u_word) =
-                unsafe { (*inside.get_unchecked(j), *u_row.get_unchecked(j)) };
+                unsafe { (*split.inside.get_unchecked(j), *u_row.get_unchecked(j)) };
             let mut mask = inside_word & !u_word;
             while mask != 0 {
                 let other = j * 64 + mask.trailing_zeros() as usize;
@@ -594,7 +600,7 @@ impl FillAffected {
                 gained += 1;
                 if u < other {
                     if pacer.due() && crate::deadline::expired(deadline) {
-                        inside[u / 64] |= 1u64 << (u % 64);
+                        split.inside[u / 64] |= 1u64 << (u % 64);
                         return false;
                     }
                     if !masked {
@@ -603,15 +609,20 @@ impl FillAffected {
                         // hold a bit of either part. The words left
                         // stale are never read.
                         masked = true;
-                        Self::split_neighbour_row_bs(
-                            u_row, inside, outside, x_inside, x_outside, x_words,
-                        );
+                        split.split_row(u_row);
                     }
-                    self.fill_edge_bs(graph, x_words, x_inside, x_outside, u, other);
+                    self.fill_edge_bs(
+                        graph,
+                        split.x_words,
+                        split.x_inside,
+                        split.x_outside,
+                        u,
+                        other,
+                    );
                 }
             }
         }
-        inside[u / 64] |= 1u64 << (u % 64);
+        split.inside[u / 64] |= 1u64 << (u % 64);
         // The fill edges at u are B \ A. A ∩ B is the rest of B, and
         // A \ B the rest of A, whose size is u's degree less v.
         self.gained[u_raw as usize] = gained;

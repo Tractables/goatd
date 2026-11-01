@@ -138,16 +138,9 @@ fn rebuild(
     // Restricting the graph to the other vertices used to read its whole edge
     // list; the rebuild no longer needs that copy but is charged the same.
     crate::meter::charge(graph.edges().len() as u64);
-    let small = crate::decomposition::ops::project_dropping_vertex(tree, vertex)?;
-    let small = compact(small);
     let remaining_edges = graph.edges().len() - neighbours.len();
-    // Compacting a tree that is already compacted takes nothing out of it, so
-    // the second compaction runs only where the minimalization rebuilt the
-    // bags.
-    let small = match rebuild_candidate(&small, shared, vertex, remaining_edges, deadline.into()) {
-        Some(candidate) => compact(candidate),
-        None => small,
-    };
+    let small =
+        project_and_compact_without_vertex(tree, shared, vertex, remaining_edges, deadline.into())?;
     let kept = support(&small, &required);
     let original = |v: u32| v + u32::from(v >= vertex);
     // Deletion can disconnect the graph. Each selected support gets a new
@@ -178,6 +171,26 @@ fn rebuild(
 
     connect_support_components(&kept, small.adjacency(), &attachment, &mut tree_edges);
     finish_rebuilt_decomposition(graph, small, connecting, tree_edges, original)
+}
+
+fn project_and_compact_without_vertex(
+    tree: &TreeDecomposition,
+    shared: &mut SharedCompletion,
+    vertex: u32,
+    remaining_edges: usize,
+    deadline: Option<Instant>,
+) -> Option<TreeDecomposition> {
+    let small = crate::decomposition::ops::project_dropping_vertex(tree, vertex)?;
+    let small = compact(small);
+    // Compacting a tree that is already compacted takes nothing out of it, so
+    // the second compaction runs only where the minimalization rebuilt the
+    // bags.
+    Some(
+        match rebuild_candidate(&small, shared, vertex, remaining_edges, deadline) {
+            Some(candidate) => compact(candidate),
+            None => small,
+        },
+    )
 }
 
 fn finish_rebuilt_decomposition(

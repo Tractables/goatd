@@ -235,34 +235,50 @@ fn try_kuhn(
             continue;
         }
 
-        let top = stack.len() - 1;
-        let u = stack[top].u;
-        let mut stepped = false;
-        while stack[top].cursor < adj[u].len() {
-            let v = adj[u][stack[top].cursor];
-            stack[top].cursor += 1;
-            if visited_r[v] == generation {
-                continue;
-            }
-            visited_r[v] = generation;
-            if let Some(matched) = match_r[v] {
-                stack.push(KuhnFrame {
-                    u: matched,
-                    cursor: 0,
-                });
-            } else {
-                // The pairing itself is recorded on the next iteration's
-                // `reported.take()` branch above, not here.
-                reported = Some(true);
-            }
-            stepped = true;
-            break;
-        }
-        if !stepped {
+        if !step_kuhn_frame(
+            adj,
+            visited_r,
+            generation,
+            match_r,
+            &mut stack,
+            &mut reported,
+        ) {
             stack.pop();
             reported = Some(false);
         }
     }
 
     reported == Some(true)
+}
+
+fn step_kuhn_frame(
+    adj: &[Vec<usize>],
+    visited_r: &mut [u32],
+    generation: u32,
+    match_r: &[Option<usize>],
+    stack: &mut Vec<KuhnFrame>,
+    reported: &mut Option<bool>,
+) -> bool {
+    let top = stack.len() - 1;
+    let u = stack[top].u;
+    while stack[top].cursor < adj[u].len() {
+        let v = adj[u][stack[top].cursor];
+        stack[top].cursor += 1;
+        if visited_r[v] == generation {
+            continue;
+        }
+        visited_r[v] = generation;
+        if let Some(matched) = match_r[v] {
+            stack.push(KuhnFrame {
+                u: matched,
+                cursor: 0,
+            });
+        } else {
+            // The pairing itself is recorded on the next iteration's
+            // `reported.take()` branch above, not here.
+            *reported = Some(true);
+        }
+        return true;
+    }
+    false
 }

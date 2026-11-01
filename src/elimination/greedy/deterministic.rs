@@ -238,7 +238,6 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
         Err(exit) => return exit,
     } {
         let bag = take_bag(graph, v, &mut nbrs_buf);
-        let bag_len = bag.len();
         if !clique_residual && graph.is_residual_clique() {
             clique_residual = true;
         }
@@ -246,16 +245,11 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
         if let Some(exit) = eliminate_and_advance_greedy(
             policy,
             graph,
-            v,
-            bag,
-            bag_len,
+            (v, bag),
             &mut sink,
             &mut nbrs_buf,
-            clique_residual,
-            simplicial,
-            &mut cheap_mode,
-            stop.soft_deadline,
-            stop.width_bound,
+            (clique_residual, simplicial, &mut cheap_mode),
+            stop,
         ) {
             return exit;
         }
@@ -302,21 +296,16 @@ fn pop_next_greedy_vertex<P: ElimPolicy>(
     Ok(None)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn eliminate_and_advance_greedy<P: ElimPolicy>(
     policy: &mut P,
     graph: &mut EliminationGraph,
-    v: u32,
-    bag: Vec<u32>,
-    bag_len: usize,
+    (v, bag): (u32, Vec<u32>),
     sink: &mut ElimSink<'_>,
     nbrs_buf: &mut Vec<u32>,
-    clique_residual: bool,
-    simplicial: bool,
-    cheap_mode: &mut bool,
-    soft_deadline: Option<Instant>,
-    width_bound: Option<u32>,
+    (clique_residual, simplicial, cheap_mode): (bool, bool, &mut bool),
+    stop: ElimStop,
 ) -> Option<ElimExit> {
+    let bag_len = bag.len();
     if clique_residual {
         graph.remove_without_fill_nbrs(v, nbrs_buf);
     } else if simplicial {
@@ -324,25 +313,31 @@ fn eliminate_and_advance_greedy<P: ElimPolicy>(
     } else if *cheap_mode {
         graph.eliminate_with_nbrs(v, nbrs_buf);
     } else {
-        policy.eliminate_with_fill(graph, v, nbrs_buf, soft_deadline);
+        policy.eliminate_with_fill(graph, v, nbrs_buf, stop.soft_deadline);
     }
     sink.record(v, bag);
 
-    if exceeds_width_bound(bag_len, width_bound) {
+    if exceeds_width_bound(bag_len, stop.width_bound) {
         return Some(ElimExit::WidthLimitExceeded);
     }
 
     if clique_residual {
         // The drain below will put every remaining vertex in one bag;
         // check the bound against that now rather than after draining.
-        if exceeds_width_bound(graph.num_active, width_bound) {
+        if exceeds_width_bound(graph.num_active, stop.width_bound) {
             return Some(ElimExit::WidthLimitExceeded);
         }
         drain_clique_tail(graph, sink, policy, nbrs_buf);
         return Some(ElimExit::Complete);
     }
 
-    match policy.after_eliminate(graph, nbrs_buf, *cheap_mode, soft_deadline, !simplicial) {
+    match policy.after_eliminate(
+        graph,
+        nbrs_buf,
+        *cheap_mode,
+        stop.soft_deadline,
+        !simplicial,
+    ) {
         AfterElim::Continue => None,
         AfterElim::EnterCheapMode => {
             debug_assert!(P::CHEAP_MODE, "core without cheap mode asked to enter it");

@@ -45,10 +45,23 @@ pub(super) fn coarsen_one_level(
         &graph.vertex_weights,
         rng,
     );
+    let (coarse_id, nc) = match_fine_vertices(graph, &perm, part);
+    if !shrank_enough(n, nc) {
+        return None;
+    }
+    let coarse_vwgt = coarse_vertex_weights(nc, &coarse_id, &graph.vertex_weights);
+    Some(CoarseningLevel {
+        graph: build_coarse_csr(graph, nc, &coarse_id, coarse_vwgt),
+        mapping: coarse_id,
+    })
+}
+
+fn match_fine_vertices(graph: &CsrGraph, perm: &[usize], part: Option<&[u8]>) -> (Vec<u32>, usize) {
+    let n = graph.num_vertices();
     let mut match_of = vec![None; n];
     let mut coarse_id: Vec<u32> = vec![0; n];
     let mut num_coarse: u32 = 0;
-    for &vtx in &perm {
+    for &vtx in perm {
         if match_of[vtx].is_some() {
             continue;
         }
@@ -72,15 +85,7 @@ pub(super) fn coarsen_one_level(
             &mut num_coarse,
         );
     }
-    let nc = num_coarse as usize;
-    if !shrank_enough(n, nc) {
-        return None;
-    }
-    let coarse_vwgt = coarse_vertex_weights(nc, &coarse_id, &graph.vertex_weights);
-    Some(CoarseningLevel {
-        graph: build_coarse_csr(graph, nc, &coarse_id, coarse_vwgt),
-        mapping: coarse_id,
-    })
+    (coarse_id, num_coarse as usize)
 }
 
 fn build_coarse_csr(

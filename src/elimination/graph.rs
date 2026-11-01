@@ -680,29 +680,19 @@ impl EliminationGraph {
     /// indexes it over the active vertices; otherwise slots are vertex ids.
     fn build_bitset(&mut self, compact: bool) {
         let n = self.adj.len();
-        // Slots are vertex ids unless the graph is too large for that, in
-        // which case only the active vertices get one.
-        let mut bitset_slot = Vec::new();
-        let mut slot_vertex = Vec::new();
-        let slots = if compact {
-            bitset_slot = vec![NO_SLOT; n];
-            slot_vertex.reserve(self.num_active);
-            for (v, &live) in self.active.iter().enumerate() {
-                if live {
-                    bitset_slot[v] = slot_vertex.len() as u32;
-                    slot_vertex.push(v as u32);
-                }
-            }
-            slot_vertex.len()
-        } else {
-            n
-        };
+        let (bitset_slot, slot_vertex, slots) =
+            assign_bitset_slots(&self.active, n, self.num_active, compact);
         self.bitset_compact = compact;
         let w = slots.div_ceil(64);
         let mut bitset = vec![0u64; slots * w];
         let mut degree = vec![0u32; slots];
         for v in 0..n {
             if !self.active[v] {
+                if !compact {
+                    // An inactive vertex keeps the degree its row still reports, as
+                    // the vertex-indexed build always has.
+                    degree[v] = self.adj[v].len() as u32;
+                }
                 continue;
             }
             let vs = if compact { bitset_slot[v] as usize } else { v };
@@ -715,15 +705,6 @@ impl EliminationGraph {
                     u as usize
                 };
                 bitset[vb + us / 64] |= 1u64 << (us % 64);
-            }
-        }
-        if !compact {
-            // An inactive vertex keeps the degree its row still reports, as
-            // the vertex-indexed build always has.
-            for (v, row) in self.adj.iter().enumerate() {
-                if !self.active[v] {
-                    degree[v] = row.len() as u32;
-                }
             }
         }
         // Every path that reads a row is guarded by `bitset_words == 0`, so
@@ -1520,4 +1501,27 @@ fn push_unindexed_missing_neighbours(
         }
     }
     pushes
+}
+
+/// Slots are vertex ids unless the graph is too large for that, in which case
+/// only the active vertices get one.
+fn assign_bitset_slots(
+    active: &[bool],
+    n: usize,
+    num_active: usize,
+    compact: bool,
+) -> (Vec<u32>, Vec<u32>, usize) {
+    if !compact {
+        return (Vec::new(), Vec::new(), n);
+    }
+    let mut bitset_slot = vec![NO_SLOT; n];
+    let mut slot_vertex = Vec::with_capacity(num_active);
+    for (v, &live) in active.iter().enumerate() {
+        if live {
+            bitset_slot[v] = slot_vertex.len() as u32;
+            slot_vertex.push(v as u32);
+        }
+    }
+    let slots = slot_vertex.len();
+    (bitset_slot, slot_vertex, slots)
 }

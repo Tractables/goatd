@@ -252,10 +252,8 @@ fn eliminate_sampled_fill_based(
         seed,
         draw.weights,
         degree_coefficient,
-        fill_scratch,
-        affected,
-        fill_store,
-        bucket_storage,
+        (fill_scratch, affected),
+        (fill_store, bucket_storage),
     );
     let (mut rng, mut pacer) = (search_stream(draw.seed), DeadlinePacer::new());
     while buckets.minimum().is_some() {
@@ -273,13 +271,9 @@ fn eliminate_sampled_fill_based(
         );
         if let Err(exit) = eliminate_sampled_fill_vertex(
             graph,
-            v,
-            sampled_fill,
-            live_nbrs,
+            (v, sampled_fill, live_nbrs),
             affected,
-            &mut buckets,
-            &mut fills,
-            priority,
+            (&mut buckets, &mut fills, priority),
             stop.hard_deadline,
         ) {
             return exit;
@@ -338,16 +332,13 @@ fn check_sampled_fill_pacer(
     false
 }
 
-#[allow(clippy::too_many_arguments)]
 fn init_sampled_fill_buckets<'a>(
     graph: &mut EliminationGraph,
     seed: SampleSeed<'_>,
     weights: &'a [u32],
     degree_coefficient: Option<i8>,
-    fill_scratch: &mut FillScratch,
-    affected: &mut FillAffected,
-    fill_store: &'a mut Vec<u64>,
-    bucket_storage: &'a mut BucketStorage,
+    (fill_scratch, affected): (&mut FillScratch, &mut FillAffected),
+    (fill_store, bucket_storage): (&'a mut Vec<u64>, &'a mut BucketStorage),
 ) -> (FillPriority, Option<&'a mut [u64]>, BucketMap<'a>) {
     if graph.should_promote_bitset() {
         graph.promote_bitset();
@@ -394,16 +385,11 @@ fn init_sampled_fill_buckets<'a>(
     (priority, fills, buckets)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn eliminate_sampled_fill_vertex(
     graph: &mut EliminationGraph,
-    v: u32,
-    sampled_fill: u64,
-    live_nbrs: &[u32],
+    (v, sampled_fill, live_nbrs): (u32, u64, &[u32]),
     affected: &mut FillAffected,
-    buckets: &mut BucketMap<'_>,
-    fills: &mut Option<&mut [u64]>,
-    priority: FillPriority,
+    (buckets, fills, priority): (&mut BucketMap<'_>, &mut Option<&mut [u64]>, FillPriority),
     hard_deadline: Option<Instant>,
 ) -> Result<(), ElimExit> {
     if sampled_fill == 0 {
@@ -455,17 +441,7 @@ pub(crate) fn eliminate_sampled_min_degree(
     active: Option<&[u32]>,
     scratch: &mut SampleScratch,
 ) -> ElimExit {
-    let SampleDraw {
-        weights,
-        band,
-        seed,
-    } = draw;
     // As in `eliminate_sampled_min_fill`: no cheap mode, so no soft deadline.
-    let ElimStop {
-        hard_deadline,
-        width_bound,
-        ..
-    } = stop;
     let SampleScratch {
         buckets: bucket_storage,
         live_nbrs: nbrs_buf,
@@ -473,37 +449,28 @@ pub(crate) fn eliminate_sampled_min_degree(
         ..
     } = scratch;
     let (mut buckets, degree_stale) =
-        init_sampled_degree_buckets(graph, weights, active, bucket_storage, degree_stale);
-
-    let mut rng = search_stream(seed);
-    let mut pacer = DeadlinePacer::new();
+        init_sampled_degree_buckets(graph, draw.weights, active, bucket_storage, degree_stale);
+    let (mut rng, mut pacer) = (search_stream(draw.seed), DeadlinePacer::new());
     let mut clique_residual = false;
-
     while buckets.minimum().is_some() {
-        if pacer.due() && expired(hard_deadline) {
+        if pacer.due() && expired(stop.hard_deadline) {
             return ElimExit::DeadlineReached(Cutoff::Hard);
         }
-
         let v = buckets
-            .sample_min_band(band, &mut rng)
+            .sample_min_band(draw.band, &mut rng)
             .expect("a live minimum has a tie set");
         if refresh_stale_degree(graph, v, &mut buckets, degree_stale) {
             continue;
         }
-
         buckets.remove_vertex(v);
         crate::meter::charge(SAMPLED_DEGREE_STEP_UNITS);
-
         let bag = take_bag(graph, v, nbrs_buf);
         let bag_len = bag.len();
-
         eliminate_min_degree_vertex(graph, v, nbrs_buf, &mut clique_residual);
         sink.record(v, bag);
-
-        if exceeds_width_bound(bag_len, width_bound) {
+        if exceeds_width_bound(bag_len, stop.width_bound) {
             return ElimExit::WidthLimitExceeded;
         }
-
         for &u in nbrs_buf.iter() {
             degree_stale[u as usize] = true;
         }

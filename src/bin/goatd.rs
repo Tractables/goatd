@@ -374,28 +374,8 @@ impl RawArgs {
                     raw.sample = true;
                 }
                 "--weights" => raw.weights = Some(arg_value(argv, &mut i, arg)),
-                "--budget" => {
-                    let milliseconds = arg_number(argv, &mut i, arg);
-                    if milliseconds == 0 {
-                        usage_error("--budget wants a positive millisecond count");
-                    }
-                    raw.budget = Some(Duration::from_millis(milliseconds));
-                }
-                "--hard-budget" => {
-                    let milliseconds = arg_number(argv, &mut i, arg);
-                    if milliseconds == 0 {
-                        usage_error("--hard-budget wants a positive millisecond count");
-                    }
-                    raw.hard_budget = Some(Duration::from_millis(milliseconds));
-                }
-                "--steps" => {
-                    let n = arg_number(argv, &mut i, arg);
-                    if n == 0 {
-                        usage_error("--steps wants a positive step count");
-                    }
-                    raw.steps = Some(n);
-                }
                 "--refine" => raw.refine = true,
+                _ if raw.parse_budget_or_steps_flag(argv, &mut i, arg) => {}
                 _ if raw.parse_portfolio_flag(argv, &mut i, arg) => {}
                 _ if arg.starts_with('-') && arg != "-" => {
                     usage_error(&format!("unknown option {arg:?}"))
@@ -409,6 +389,34 @@ impl RawArgs {
             i += 1;
         }
         raw
+    }
+
+    fn parse_budget_or_steps_flag(&mut self, argv: &[String], i: &mut usize, arg: &str) -> bool {
+        match arg {
+            "--budget" => {
+                let milliseconds = arg_number(argv, i, arg);
+                if milliseconds == 0 {
+                    usage_error("--budget wants a positive millisecond count");
+                }
+                self.budget = Some(Duration::from_millis(milliseconds));
+            }
+            "--hard-budget" => {
+                let milliseconds = arg_number(argv, i, arg);
+                if milliseconds == 0 {
+                    usage_error("--hard-budget wants a positive millisecond count");
+                }
+                self.hard_budget = Some(Duration::from_millis(milliseconds));
+            }
+            "--steps" => {
+                let n = arg_number(argv, i, arg);
+                if n == 0 {
+                    usage_error("--steps wants a positive step count");
+                }
+                self.steps = Some(n);
+            }
+            _ => return false,
+        }
+        true
     }
 
     fn parse_portfolio_flag(&mut self, argv: &[String], i: &mut usize, arg: &str) -> bool {

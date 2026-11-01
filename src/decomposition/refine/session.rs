@@ -315,41 +315,46 @@ impl<'g> Session<'g> {
                     }
                 }
                 Task::Visit(node) => {
-                    if (legacy && expired(deadline))
-                        || !self
-                            .config
-                            .eligible(self.node(node).vertices.len(), self.node(node).depth)
+                    if let Some((candidate, split, recommended, finished)) =
+                        self.advance_visit_task(node, legacy, deadline, &mut slice)
                     {
-                        self.active = None;
-                        self.tasks.pop();
-                        slice.step();
-                        continue;
-                    }
-                    if self.active.is_none() {
-                        let proposal = self.prepare_visit_search(node);
-                        slice.step();
-                        if let Some((candidate, split, recommended)) = proposal {
-                            return self.propose_split(slice, candidate, split, recommended, true);
-                        }
-                        continue;
-                    }
-                    let active = self.active.as_mut().expect("search was prepared");
-                    if active.search.exhausted() {
-                        let proposal = self.finish_exhausted_search(node, legacy);
-                        slice.step();
-                        if let Some((candidate, split, recommended)) = proposal {
-                            return self.propose_split(slice, candidate, split, recommended, true);
-                        }
-                        continue;
-                    }
-                    if let Some((candidate, split, recommended)) =
-                        self.step_active_search(node, legacy, &mut slice)
-                    {
-                        return self.propose_split(slice, candidate, split, recommended, false);
+                        return self.propose_split(slice, candidate, split, recommended, finished);
                     }
                 }
             }
         }
+    }
+
+    fn advance_visit_task(
+        &mut self,
+        node: usize,
+        legacy: bool,
+        deadline: Option<Instant>,
+        slice: &mut polishing::Slice,
+    ) -> Option<(TreeDecomposition, Split, bool, bool)> {
+        if (legacy && expired(deadline))
+            || !self
+                .config
+                .eligible(self.node(node).vertices.len(), self.node(node).depth)
+        {
+            self.active = None;
+            self.tasks.pop();
+            slice.step();
+            return None;
+        }
+        if self.active.is_none() {
+            let proposal = self.prepare_visit_search(node);
+            slice.step();
+            return proposal.map(|(c, s, r)| (c, s, r, true));
+        }
+        let active = self.active.as_mut().expect("search was prepared");
+        if active.search.exhausted() {
+            let proposal = self.finish_exhausted_search(node, legacy);
+            slice.step();
+            return proposal.map(|(c, s, r)| (c, s, r, true));
+        }
+        self.step_active_search(node, legacy, slice)
+            .map(|(c, s, r)| (c, s, r, false))
     }
 
     fn finish_branch_task(

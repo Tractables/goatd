@@ -404,38 +404,53 @@ impl TreeDecomposition {
         let (holder_offsets, holder_bags) =
             build_holder_index(&self.bags, graph.num_vertices, &mut seen_in_bag)?;
         let (parent, depth) = check_forest_adjacency(&self.adj, num_bags)?;
-
-        for vertex in 0..num_vertices {
-            if holder_run(&holder_offsets, &holder_bags, vertex).is_empty() {
-                return invalid(format!("vertex {vertex} is in no bag"));
-            }
-        }
-
-        // In a rooted forest, a nonempty set of bags is connected exactly
-        // when only one of its bags has no parent in the set. That bag is
-        // the root-most holder. Marking holders avoids walking the neighbours
-        // of a high-degree bag once for every vertex it contains.
-        let mut top = vec![usize::MAX; num_vertices];
-        let mut holding_mark = vec![usize::MAX; num_bags];
-        for (vertex, vertex_top) in top.iter_mut().enumerate() {
-            let vertex_holders = holder_run(&holder_offsets, &holder_bags, vertex);
-            for &bag in vertex_holders {
-                holding_mark[bag] = vertex;
-            }
-            for &bag in vertex_holders {
-                if parent[bag] == usize::MAX || holding_mark[parent[bag]] != vertex {
-                    if *vertex_top != usize::MAX {
-                        return invalid(format!(
-                            "the bags holding vertex {vertex} are not connected"
-                        ));
-                    }
-                    *vertex_top = bag;
-                }
-            }
-        }
+        let top = check_connected_holder_subtrees(
+            &holder_offsets,
+            &holder_bags,
+            &parent,
+            num_vertices,
+            num_bags,
+        )?;
 
         check_edge_coverage(&self.bags, graph, &top, &depth, &mut seen_in_bag)
     }
+}
+
+/// In a rooted forest, a nonempty set of bags is connected exactly when only
+/// one of its bags has no parent in the set. That bag is the root-most holder.
+/// Marking holders avoids walking the neighbours of a high-degree bag once for
+/// every vertex it contains.
+fn check_connected_holder_subtrees(
+    holder_offsets: &[usize],
+    holder_bags: &[usize],
+    parent: &[usize],
+    num_vertices: usize,
+    num_bags: usize,
+) -> Result<Vec<usize>, Error> {
+    for vertex in 0..num_vertices {
+        if holder_run(holder_offsets, holder_bags, vertex).is_empty() {
+            return invalid(format!("vertex {vertex} is in no bag"));
+        }
+    }
+    let mut top = vec![usize::MAX; num_vertices];
+    let mut holding_mark = vec![usize::MAX; num_bags];
+    for (vertex, vertex_top) in top.iter_mut().enumerate() {
+        let vertex_holders = holder_run(holder_offsets, holder_bags, vertex);
+        for &bag in vertex_holders {
+            holding_mark[bag] = vertex;
+        }
+        for &bag in vertex_holders {
+            if parent[bag] == usize::MAX || holding_mark[parent[bag]] != vertex {
+                if *vertex_top != usize::MAX {
+                    return invalid(format!(
+                        "the bags holding vertex {vertex} are not connected"
+                    ));
+                }
+                *vertex_top = bag;
+            }
+        }
+    }
+    Ok(top)
 }
 
 /// Which bags hold each vertex, as one flat array rather than a `Vec`
@@ -485,32 +500,7 @@ fn check_forest_adjacency(
     adj: &[Vec<usize>],
     num_bags: usize,
 ) -> Result<(Vec<usize>, Vec<usize>), Error> {
-    let mut arcs = FxHashSet::default();
-    for (bag, neighbours) in adj.iter().enumerate() {
-        for &neighbour in neighbours {
-            if neighbour >= num_bags {
-                return invalid(format!(
-                    "bag {bag} has neighbour {neighbour}, but there are {num_bags} bags"
-                ));
-            }
-            if neighbour == bag {
-                return invalid(format!("bag {bag} is adjacent to itself"));
-            }
-            if !arcs.insert((bag, neighbour)) {
-                return invalid(format!(
-                    "bag {neighbour} occurs more than once in adjacency list {bag}"
-                ));
-            }
-        }
-    }
-    for &(bag, neighbour) in &arcs {
-        if !arcs.contains(&(neighbour, bag)) {
-            return invalid(format!(
-                "bag {bag} names {neighbour} as a neighbour, but the reverse edge is missing"
-            ));
-        }
-    }
-
+    let arcs = collect_bag_arcs(adj, num_bags)?;
     let mut seen = vec![false; num_bags];
     let mut parent = vec![usize::MAX; num_bags];
     let mut depth = vec![0usize; num_bags];
@@ -541,6 +531,38 @@ fn check_forest_adjacency(
         ));
     }
     Ok((parent, depth))
+}
+
+fn collect_bag_arcs(
+    adj: &[Vec<usize>],
+    num_bags: usize,
+) -> Result<FxHashSet<(usize, usize)>, Error> {
+    let mut arcs = FxHashSet::default();
+    for (bag, neighbours) in adj.iter().enumerate() {
+        for &neighbour in neighbours {
+            if neighbour >= num_bags {
+                return invalid(format!(
+                    "bag {bag} has neighbour {neighbour}, but there are {num_bags} bags"
+                ));
+            }
+            if neighbour == bag {
+                return invalid(format!("bag {bag} is adjacent to itself"));
+            }
+            if !arcs.insert((bag, neighbour)) {
+                return invalid(format!(
+                    "bag {neighbour} occurs more than once in adjacency list {bag}"
+                ));
+            }
+        }
+    }
+    for &(bag, neighbour) in &arcs {
+        if !arcs.contains(&(neighbour, bag)) {
+            return invalid(format!(
+                "bag {bag} names {neighbour} as a neighbour, but the reverse edge is missing"
+            ));
+        }
+    }
+    Ok(arcs)
 }
 
 /// Two connected holder subtrees intersect iff the deeper root-most

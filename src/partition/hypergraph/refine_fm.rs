@@ -221,20 +221,16 @@ pub(super) fn fm_refine_pass(
             break;
         }
 
-        update_hyperedge_gains_after_move(hg, v, from, to, part, locked, pin_counts, gain, bq);
+        update_hyperedge_gains_after_move(hg, (v, from, to), (part, locked), pin_counts, gain, bq);
     }
 
     log.commit(part)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn update_hyperedge_gains_after_move(
     hg: &Hypergraph,
-    v: usize,
-    from: usize,
-    to: usize,
-    part: &[u8],
-    locked: &[bool],
+    (v, from, to): (usize, usize, usize),
+    (part, locked): (&[u8], &[bool]),
     pin_counts: &mut [[u32; 2]],
     gain: &mut [i64],
     bq: &mut [GainBuckets; 2],
@@ -244,54 +240,63 @@ fn update_hyperedge_gains_after_move(
     for &hei in hg.vertex_hyperedges(v) {
         let hei = hei as usize;
         let w = i64::from(hg.hyperedge_weights[hei]);
-        let old_from = pin_counts[hei][from];
-        let old_to = pin_counts[hei][to];
-
+        let (old_from, old_to) = (pin_counts[hei][from], pin_counts[hei][to]);
         pin_counts[hei][from] -= 1;
         pin_counts[hei][to] += 1;
+        let hyperedge_is_cut = pin_counts[hei][0] > 0 && pin_counts[hei][1] > 0;
+        let cut_changed = hyperedge_is_cut != (old_from > 0 && old_to > 0);
 
         for &u in hg.charged_hyperedge_pins(hei) {
             let u = u as usize;
             if locked[u] {
                 continue;
             }
-
             let u_side = part[u] as usize;
             let delta = pin_gain_delta(u_side, from, old_from, old_to, w);
-            if delta != 0 {
-                gain[u] += delta;
-            }
-
-            // Queue membership is per vertex, not per hyperedge: `u` leaves
-            // only when none of its hyperedges is cut any more, so the
-            // rescan below runs just on the step where this hyperedge
-            // changed cut state.
-            let hyperedge_is_cut = pin_counts[hei][0] > 0 && pin_counts[hei][1] > 0;
-            let was_in_queue = bq[u_side].contains(u);
-            let was_cut = old_from > 0 && old_to > 0;
-
-            if hyperedge_is_cut != was_cut {
-                let on_boundary = if hyperedge_is_cut {
-                    true
-                } else {
-                    hg.vertex_hyperedges(u).iter().any(|&hej| {
-                        let hej = hej as usize;
-                        pin_counts[hej][0] > 0 && pin_counts[hej][1] > 0
-                    })
-                };
-                if on_boundary {
-                    if was_in_queue {
-                        bq[u_side].update(u, gain[u]);
-                    } else {
-                        bq[u_side].insert(u, gain[u]);
-                    }
-                } else if was_in_queue {
-                    bq[u_side].remove(u);
-                }
-            } else if was_in_queue && delta != 0 {
-                bq[u_side].update(u, gain[u]);
-            }
+            gain[u] += delta;
+            sync_pin_queue(
+                hg,
+                u,
+                gain[u],
+                delta,
+                (hyperedge_is_cut, cut_changed),
+                pin_counts,
+                &mut bq[u_side],
+            );
         }
+    }
+}
+
+/// Queue membership is per vertex, not per hyperedge: `u` leaves only when none
+/// of its hyperedges is cut any more, so the rescan runs just on the step where
+/// this hyperedge changed cut state.
+fn sync_pin_queue(
+    hg: &Hypergraph,
+    u: usize,
+    u_gain: i64,
+    delta: i64,
+    (hyperedge_is_cut, cut_changed): (bool, bool),
+    pin_counts: &[[u32; 2]],
+    queue: &mut GainBuckets,
+) {
+    let was_in_queue = queue.contains(u);
+    if cut_changed {
+        let on_boundary = hyperedge_is_cut
+            || hg.vertex_hyperedges(u).iter().any(|&hej| {
+                let hej = hej as usize;
+                pin_counts[hej][0] > 0 && pin_counts[hej][1] > 0
+            });
+        if on_boundary {
+            if was_in_queue {
+                queue.update(u, u_gain);
+            } else {
+                queue.insert(u, u_gain);
+            }
+        } else if was_in_queue {
+            queue.remove(u);
+        }
+    } else if was_in_queue && delta != 0 {
+        queue.update(u, u_gain);
     }
 }
 
@@ -318,18 +323,16 @@ pub(super) fn localized_fm_pass(
 
     prepare_hypergraph_region(hg, part, seed, scratch);
     let pin_counts = scratch.pin_counts.as_mut_slice();
-    let in_region = scratch.in_region.as_mut_slice();
-    let region_list = &mut scratch.region_list;
+    let in_region = scratch.in_region.as_slice();
+    let region_len = scratch.region_list.len();
     let active = &mut scratch.active;
     let gain = scratch.gain.as_mut_slice();
     let locked = scratch.locked.as_mut_slice();
     let log = &mut scratch.log;
-    log.begin(region_list.len() / 2);
 
     // O(region²), not O(region·n): the region, not 0..n, is scanned per move,
     // and the selection drops each vertex it locks.
-    active.extend_from_slice(region_list);
-    for _ in 0..region_list.len() {
+    for _ in 0..region_len {
         if stop.reached() {
             break;
         }
@@ -340,28 +343,34 @@ pub(super) fn localized_fm_pass(
         };
         let from = part[v] as usize;
         let to = 1 - from;
-
         balance.weight[from] -= hg.vertex_weights[v];
         balance.weight[to] += hg.vertex_weights[v];
         part[v] = to as u8;
         locked[v] = true;
-
         if log.record(v, best_gain) {
             break;
         }
-
-        update_region_hyperedge_gains(hg, v, from, to, part, locked, in_region, pin_counts, gain);
+        update_region_hyperedge_gains(
+            hg,
+            (v, from, to),
+            (part, locked, in_region),
+            pin_counts,
+            gain,
+        );
     }
 
     let improved = log.commit(part);
-
-    // Hand the arrays back the way they were found. Only region vertices are
-    // marked in `in_region`, and only region vertices are ever locked.
-    for &v in region_list.iter() {
-        in_region[v] = false;
-        locked[v] = false;
-    }
+    reset_hypergraph_region_marks(scratch);
     improved
+}
+
+/// Hand the arrays back the way they were found. Only region vertices are
+/// marked in `in_region`, and only region vertices are ever locked.
+fn reset_hypergraph_region_marks(scratch: &mut RegionScratch) {
+    for &v in &scratch.region_list {
+        scratch.in_region[v] = false;
+        scratch.locked[v] = false;
+    }
 }
 
 fn prepare_hypergraph_region(
@@ -395,17 +404,14 @@ fn prepare_hypergraph_region(
         let (g, _) = vertex_gain_and_boundary(hg, part, pin_counts, v);
         gain[v] = g;
     }
+    scratch.log.begin(region_list.len() / 2);
+    scratch.active.extend_from_slice(region_list);
 }
 
-#[allow(clippy::too_many_arguments)]
 fn update_region_hyperedge_gains(
     hg: &Hypergraph,
-    v: usize,
-    from: usize,
-    to: usize,
-    part: &[u8],
-    locked: &[bool],
-    in_region: &[bool],
+    (v, from, to): (usize, usize, usize),
+    (part, locked, in_region): (&[u8], &[bool], &[bool]),
     pin_counts: &mut [[u32; 2]],
     gain: &mut [i64],
 ) {

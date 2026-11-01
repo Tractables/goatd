@@ -64,15 +64,7 @@ pub(super) fn greedy_graph_growing(
         if stop.reached() {
             break;
         }
-        let mut best_v = None;
-        while let Some((g, Reverse(v))) = heap.pop() {
-            if !in_set[v] && g == gain[v] {
-                best_v = Some(v);
-                break;
-            }
-        }
-
-        let Some(v) = best_v else {
+        let Some(v) = pop_next_growth_vertex(&mut heap, &in_set, &gain) else {
             break;
         };
         part[v] = 0;
@@ -83,6 +75,19 @@ pub(super) fn greedy_graph_growing(
     }
 
     part
+}
+
+fn pop_next_growth_vertex(
+    heap: &mut BinaryHeap<(i64, Reverse<usize>)>,
+    in_set: &[bool],
+    gain: &[i64],
+) -> Option<usize> {
+    while let Some((g, Reverse(v))) = heap.pop() {
+        if !in_set[v] && g == gain[v] {
+            return Some(v);
+        }
+    }
+    None
 }
 
 fn update_grown_set_neighbor_gains(

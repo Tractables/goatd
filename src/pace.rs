@@ -456,6 +456,10 @@ fn check_parsed_td(
              {expected_tree_edges}"
         )));
     }
+    check_bag_tree_connectivity(adj, num_bags)
+}
+
+fn check_bag_tree_connectivity(adj: &[Vec<usize>], num_bags: usize) -> Result<(), Error> {
     let mut seen = vec![false; num_bags];
     seen[0] = true;
     let mut stack = vec![0usize];

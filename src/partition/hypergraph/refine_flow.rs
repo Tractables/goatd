@@ -374,6 +374,16 @@ fn build_flow_network(
 
     // Boundary-vertex-to-cut-hyperedge capacity equals the hyperedge weight,
     // so the min-cut cost matches the hg cut it approximates.
+    add_cut_hyperedge_arcs(hg, part, finest, hyperedge_node_start);
+    total_nodes
+}
+
+fn add_cut_hyperedge_arcs(
+    hg: &Hypergraph,
+    part: &[u8],
+    finest: &mut FinestScratch,
+    hyperedge_node_start: usize,
+) {
     for (cut_index, &hyperedge) in finest.cut_hyperedges.iter().enumerate() {
         let hyperedge_node = hyperedge_node_start + cut_index;
         let hyperedge_weight = i64::from(hg.hyperedge_weights[hyperedge]);
@@ -395,7 +405,6 @@ fn build_flow_network(
             }
         }
     }
-    total_nodes
 }
 
 /// FM refinement with multi-try localized passes and flow-based refinement.
