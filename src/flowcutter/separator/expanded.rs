@@ -59,27 +59,22 @@ pub(super) fn inter_to_orig_arc(arc: u32) -> u32 {
     arc / 2
 }
 
-pub(super) fn exp_tail(g: &OrigGraph, arc: u32) -> u32 {
-    let flag = arc_tail_out_flag(arc);
-    if is_intra(arc, g.arc_count) {
-        let v = intra_to_orig_node(arc, g.arc_count);
-        2 * v + flag
+#[inline]
+fn exp_endpoint(g: &OrigGraph, endpoints: &[u32], arc: u32, out_flag: u32) -> u32 {
+    let v = if is_intra(arc, g.arc_count) {
+        intra_to_orig_node(arc, g.arc_count)
     } else {
-        let oa = inter_to_orig_arc(arc) as usize;
-        2 * g.tail[oa] + flag
-    }
+        endpoints[inter_to_orig_arc(arc) as usize]
+    };
+    2 * v + out_flag
+}
+
+pub(super) fn exp_tail(g: &OrigGraph, arc: u32) -> u32 {
+    exp_endpoint(g, &g.tail, arc, arc_tail_out_flag(arc))
 }
 
 pub(super) fn exp_head(g: &OrigGraph, arc: u32) -> u32 {
-    let flag = arc_tail_out_flag(arc);
-    let head_flag = 1 - flag;
-    if is_intra(arc, g.arc_count) {
-        let v = intra_to_orig_node(arc, g.arc_count);
-        2 * v + head_flag
-    } else {
-        let oa = inter_to_orig_arc(arc) as usize;
-        2 * g.head[oa] + head_flag
-    }
+    exp_endpoint(g, &g.head, arc, 1 - arc_tail_out_flag(arc))
 }
 
 pub(super) fn exp_back(g: &OrigGraph, arc: u32) -> u32 {

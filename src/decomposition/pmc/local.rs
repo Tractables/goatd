@@ -167,8 +167,7 @@ fn anchor_reaches(
 
 /// The bags of `answer` to re-triangulate around, widest first.
 fn anchors(answer: &TreeDecomposition, adjacency: &Adjacency) -> Vec<VertexSet> {
-    let mut order: Vec<usize> = (0..answer.bags().len()).collect();
-    order.sort_by_key(|&index| std::cmp::Reverse(answer.bags()[index].vertices().len()));
+    let mut order = super::bags_widest_first(answer);
     order.truncate(ANCHORS_PER_TREE);
     order
         .into_iter()

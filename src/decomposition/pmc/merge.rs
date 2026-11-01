@@ -575,20 +575,13 @@ impl Loop<'_> {
             }
         }
         for border in borders(self.adjacency, &set, scratch) {
-            scratch.row.clear();
-            scratch.row.resize(words, 0);
-            for vertex in border.iter() {
-                let local = scratch.position[vertex as usize] as usize;
-                scratch.row[local / 64] |= 1 << (local % 64);
-            }
-            for vertex in border.iter() {
-                let local = scratch.position[vertex as usize] as usize;
-                let row = &mut rows[local * words..(local + 1) * words];
-                for (word, &mask) in row.iter_mut().zip(&scratch.row) {
-                    *word |= mask;
-                }
-                row[local / 64] &= !(1 << (local % 64));
-            }
+            add_border_clique(
+                &border,
+                &scratch.position,
+                words,
+                &mut scratch.row,
+                &mut rows,
+            );
         }
         let mut edges: Vec<(u32, u32)> = Vec::new();
         for left in 0..size {
@@ -670,6 +663,31 @@ pub(super) fn is_potential_maximal_clique(
     answer
 }
 
+/// Mark every distinct pair of `border` in the `words`-wide local bit matrix
+/// `matrix`, using `row` as scratch.
+fn add_border_clique(
+    border: &VertexSet,
+    position: &[u32],
+    words: usize,
+    row: &mut Vec<u64>,
+    matrix: &mut [u64],
+) {
+    row.clear();
+    row.resize(words, 0);
+    for vertex in border.iter() {
+        let local = position[vertex as usize] as usize;
+        row[local / 64] |= 1 << (local % 64);
+    }
+    for vertex in border.iter() {
+        let local = position[vertex as usize] as usize;
+        let dest = &mut matrix[local * words..(local + 1) * words];
+        for (word, &mask) in dest.iter_mut().zip(row.iter()) {
+            *word |= mask;
+        }
+        dest[local / 64] &= !(1 << (local % 64));
+    }
+}
+
 /// The two halves of the test, over the borders `components`: no border may
 /// hold the whole of `candidate`, and every non-adjacent pair of it must lie
 /// on one of them.
@@ -692,21 +710,7 @@ fn every_pair_is_together(
         }
         // A component's border is a set of `K`'s own vertices, so the pairs it
         // covers are one row of bits added to each vertex of it.
-        row.clear();
-        row.resize(words, 0);
-        for vertex in border.iter() {
-            let local = position[vertex as usize] as usize;
-            row[local / 64] |= 1 << (local % 64);
-        }
-        for vertex in border.iter() {
-            let local = position[vertex as usize] as usize;
-            for (word, &mask) in together[local * words..(local + 1) * words]
-                .iter_mut()
-                .zip(row.iter())
-            {
-                *word |= mask;
-            }
-        }
+        add_border_clique(border, position, words, row, together);
     }
     for (left, &one) in candidate.iter().enumerate() {
         for (right, &other) in candidate.iter().enumerate().skip(left + 1) {

@@ -331,15 +331,7 @@ impl BagPool {
         let mut taken_in_all = 0usize;
         let mut seen: FxHashSet<VertexSet> = FxHashSet::default();
         let mut stored = 0usize;
-        let mut widest: Vec<Vec<usize>> = sources
-            .iter()
-            .map(|source| {
-                let mut indices: Vec<usize> = (0..source.bags().len()).collect();
-                indices
-                    .sort_by_key(|&index| std::cmp::Reverse(source.bags()[index].vertices().len()));
-                indices
-            })
-            .collect();
+        let mut widest: Vec<Vec<usize>> = sources.iter().map(bags_widest_first).collect();
         for round in 0..2 {
             for (rank, source) in sources.iter().enumerate() {
                 let share = if rank == 0 { 2 } else { 1 };
@@ -467,6 +459,13 @@ fn search(
     search.build(bags, graph, deadline)
 }
 
+/// Bag indices of `decomposition` ordered from widest to narrowest.
+pub(super) fn bags_widest_first(decomposition: &TreeDecomposition) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..decomposition.bags().len()).collect();
+    indices.sort_by_key(|&index| std::cmp::Reverse(decomposition.bags()[index].vertices().len()));
+    indices
+}
+
 /// Take the widest bags of `answer`, decompose the piece around each of them on
 /// its own, and add the bags that come back to `bags`.
 ///
@@ -483,10 +482,8 @@ fn grow(
     deadline: Option<Instant>,
 ) -> bool {
     let width = answer.treewidth();
-    let mut widest: Vec<usize> = (0..answer.bags().len())
-        .filter(|&index| answer.bags()[index].vertices().len() as u32 > width)
-        .collect();
-    widest.sort_by_key(|&index| std::cmp::Reverse(answer.bags()[index].vertices().len()));
+    let mut widest = bags_widest_first(answer);
+    widest.retain(|&index| answer.bags()[index].vertices().len() as u32 > width);
     widest.truncate(GROWTH_PIECES);
     let mut list = List::new(std::mem::take(bags), limits);
     let mut grew = false;

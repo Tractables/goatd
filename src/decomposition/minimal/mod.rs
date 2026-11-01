@@ -677,20 +677,21 @@ pub fn minimalize_triangulation(
     Ok(minimalize_at(decomposition, graph, deadline))
 }
 
+/// Saturating sum of squared bag sizes across `decomposition`.
+pub(super) fn bag_squares(decomposition: &TreeDecomposition) -> u64 {
+    decomposition.bags().iter().fold(0u64, |sum, bag| {
+        let size = bag.vertices().len() as u64;
+        sum.saturating_add(size.saturating_mul(size))
+    })
+}
+
 /// What the pass costs before it can drop anything, in the units the loops
 /// charge: completing the bags is one insert per pair of a bag, and the rebuild
 /// after it scans every vertex once per step of its search and walks every edge
 /// of the completion once. A completion has at most as many edges as there are
 /// pairs in the bags, so twice the bag squares covers both.
 fn projected_units(decomposition: &TreeDecomposition, vertices: usize) -> u64 {
-    let squares = decomposition
-        .bags()
-        .iter()
-        .map(|bag| {
-            let size = bag.vertices().len() as u64;
-            size.saturating_mul(size)
-        })
-        .fold(0u64, u64::saturating_add);
+    let squares = bag_squares(decomposition);
     let vertices = vertices as u64;
     squares
         .saturating_mul(2)

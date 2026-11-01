@@ -197,6 +197,45 @@ impl BasicCutter {
         cap == flow
     }
 
+    /// Grow `reach[side]` from its pending `extra` node along unsaturated arcs.
+    /// When `stop_at_assim` names the opposite side, stops at and returns the
+    /// first reached node in `assim[other]`.
+    fn grow_reachable_side(
+        &mut self,
+        g: &OrigGraph,
+        side: usize,
+        stop_at_assim: Option<usize>,
+    ) -> Option<u32> {
+        let extra = self.reach[side].extra.take()?;
+        self.tmp_dfs.clear();
+        self.tmp_dfs.push(extra);
+        while let Some(x) = self.tmp_dfs.pop() {
+            let mut target_hit = None;
+            exp_out_arcs(g, x, |xy| {
+                if target_hit.is_some() {
+                    return;
+                }
+                let y = exp_head(g, xy);
+                if self.reach[side].inside[y as usize] || self.is_saturated(g, side, xy) {
+                    return;
+                }
+                self.predecessor[side][y as usize] = xy;
+                self.reach[side].inside[y as usize] = true;
+                self.reach_touched[side].push(y);
+                self.reach[side].count += 1;
+                if stop_at_assim.is_some_and(|other| self.assim[other].inside[y as usize]) {
+                    target_hit = Some(y);
+                    return;
+                }
+                self.tmp_dfs.push(y);
+            });
+            if target_hit.is_some() {
+                return target_hit;
+            }
+        }
+        None
+    }
+
     /// Grows `reach[pierced_side]`; on hitting the opposite assimilated set it
     /// augments `flow` and continues, then conditionally regrows the other
     /// side once no augmenting path remains.
@@ -206,82 +245,17 @@ impl BasicCutter {
 
         let mut was_flow_augmented = false;
 
-        loop {
-            let mut target_hit = None;
-
-            let extra = match self.reach[my_src].extra.take() {
-                Some(x) => x,
-                None => break,
-            };
-
-            self.tmp_dfs.clear();
-            self.tmp_dfs.push(extra);
-            'dfs: while let Some(x) = self.tmp_dfs.pop() {
-                let mut found_in_iter = None;
-                let mut stop = false;
-                exp_out_arcs(g, x, |xy| {
-                    if stop {
-                        return;
-                    }
-                    let y = exp_head(g, xy);
-                    if self.reach[my_src].inside[y as usize] {
-                        return;
-                    }
-                    if self.is_saturated(g, my_src, xy) {
-                        return;
-                    }
-                    self.predecessor[my_src][y as usize] = xy;
-                    self.reach[my_src].inside[y as usize] = true;
-                    self.reach_touched[my_src].push(y);
-                    self.reach[my_src].count += 1;
-                    if self.assim[my_tgt].inside[y as usize] {
-                        found_in_iter = Some(y);
-                        stop = true;
-                        return;
-                    }
-                    self.tmp_dfs.push(y);
-                });
-                if found_in_iter.is_some() {
-                    target_hit = found_in_iter;
-                    break 'dfs;
-                }
-            }
-
-            if let Some(target) = target_hit {
-                self.augment_along_path(g, my_src, target, pierced_side == SOURCE_SIDE);
-                self.reset_reachable(my_src);
-                was_flow_augmented = true;
-            } else {
-                break;
-            }
+        while let Some(target) = self.grow_reachable_side(g, my_src, Some(my_tgt)) {
+            self.augment_along_path(g, my_src, target, pierced_side == SOURCE_SIDE);
+            self.reset_reachable(my_src);
+            was_flow_augmented = true;
         }
 
         if was_flow_augmented {
             self.reset_reachable(my_tgt);
             // No early exit here, unlike the my_src grow above: this needs the
             // full reachable set, not just the first augmenting path.
-            let extra = match self.reach[my_tgt].extra.take() {
-                Some(x) => x,
-                None => return,
-            };
-            self.tmp_dfs.clear();
-            self.tmp_dfs.push(extra);
-            while let Some(x) = self.tmp_dfs.pop() {
-                exp_out_arcs(g, x, |xy| {
-                    let y = exp_head(g, xy);
-                    if self.reach[my_tgt].inside[y as usize] {
-                        return;
-                    }
-                    if self.is_saturated(g, my_tgt, xy) {
-                        return;
-                    }
-                    self.predecessor[my_tgt][y as usize] = xy;
-                    self.reach[my_tgt].inside[y as usize] = true;
-                    self.reach_touched[my_tgt].push(y);
-                    self.reach[my_tgt].count += 1;
-                    self.tmp_dfs.push(y);
-                });
-            }
+            self.grow_reachable_side(g, my_tgt, None);
         }
     }
 
@@ -427,15 +401,21 @@ impl BasicCutter {
         self.cut_available = true;
     }
 
+    /// Returns the current cut side and its next pierce candidate when one
+    /// exists before the assimilation half-graph limit.
+    fn next_pierce(&self, g: &OrigGraph) -> Option<(usize, u32)> {
+        let side = self.current_cut_side();
+        if self.assim[side].count >= n_exp(g.n) / 2 {
+            return None;
+        }
+        let pierce = self.select_pierce_node(g, side)?;
+        Some((side, pierce))
+    }
+
     /// Returns false once no further cut is reachable.
     fn advance(&mut self, g: &OrigGraph) -> bool {
         debug_assert!(self.cut_available);
-        let side = self.current_cut_side();
-        if self.assim[side].count >= n_exp(g.n) / 2 {
-            self.cut_available = false;
-            return false;
-        }
-        let Some(pierce) = self.select_pierce_node(g, side) else {
+        let Some((side, pierce)) = self.next_pierce(g) else {
             self.cut_available = false;
             return false;
         };
@@ -448,23 +428,14 @@ impl BasicCutter {
     /// sides that are not the maximum.
     fn advance_while_cut_holds(&mut self, g: &OrigGraph) {
         debug_assert!(self.cut_available);
-        let mut guard = 0u32;
-        loop {
-            let side = self.current_cut_side();
-            if self.assim[side].count >= n_exp(g.n) / 2 {
-                break;
-            }
-            let Some(pierce) = self.select_pierce_node(g, side) else {
+        for _ in 0..=1_000_000 {
+            let Some((side, pierce)) = self.next_pierce(g) else {
                 break;
             };
             if self.reach[1 - side].inside[pierce as usize] {
                 break;
             }
             self.pierce_side(g, side, pierce);
-            guard += 1;
-            if guard > 1_000_000 {
-                break;
-            }
         }
     }
 }

@@ -84,16 +84,7 @@ fn a_rejected_gr_names_what_is_wrong() {
         ),
     ];
     for &(text, what, expected) in cases {
-        let err = Graph::from_gr(text)
-            .map(|_| ())
-            .expect_err(what)
-            .to_string();
-        for want in expected {
-            assert!(
-                err.contains(want),
-                "{what}: the message must name {want:?}, got: {err}",
-            );
-        }
+        assert_rejection_mentions(Graph::from_gr(text), what, expected);
     }
 }
 
@@ -328,15 +319,16 @@ fn a_rejected_td_names_the_offending_id_and_the_count_it_was_checked_against() {
         ),
     ];
     for &(td_str, what, expected) in cases {
-        let err = TreeDecomposition::from_td(td_str)
-            .map(|_| ())
-            .expect_err(what)
-            .to_string();
-        for want in expected {
-            assert!(
-                err.contains(want),
-                "{what}: the message must name {want:?}, got: {err}",
-            );
-        }
+        assert_rejection_mentions(TreeDecomposition::from_td(td_str), what, expected);
+    }
+}
+
+fn assert_rejection_mentions<T>(result: Result<T, goatd::Error>, what: &str, expected: &[&str]) {
+    let err = result.map(|_| ()).expect_err(what).to_string();
+    for want in expected {
+        assert!(
+            err.contains(want),
+            "{what}: the message must name {want:?}, got: {err}",
+        );
     }
 }

@@ -150,10 +150,7 @@ impl<'g> Session<'g> {
                     });
                 if let Some(remaining) = remaining {
                     let n = u64::from(self.graph.num_vertices());
-                    let squares = self.best.bags().iter().fold(0u64, |sum, bag| {
-                        let size = bag.vertices().len() as u64;
-                        sum.saturating_add(size.saturating_mul(size))
-                    });
+                    let squares = bag_squares(&self.best);
                     let projected = (n.saturating_mul(n) / 64).saturating_add(squares);
                     if Duration::from_millis(crate::meter::milliseconds_for_units(projected))
                         > remaining / 8
