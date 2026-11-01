@@ -308,33 +308,8 @@ pub(super) fn localized_fm_pass(
     let region_queue = &mut scratch.queue;
 
     let max_region = (n / 4).max(20).min(n);
-    in_region[seed] = true;
-    region_queue.push_back(seed);
-    let mut region_size = 1usize;
-
-    // Growing along cut hyperedges only, and taking every pin of one, picks up
-    // both sides of the cut in a single rule — a hyperedge is only cut if it
-    // has pins on both. The graph sibling needs a second sweep to reach the
-    // same-side vertices FM wants room to move.
-    while let Some(v) = region_queue.pop_front() {
-        if region_size >= max_region {
-            break;
-        }
-        for &hei in hg.vertex_hyperedges(v) {
-            let hei_idx = hei as usize;
-            if pin_counts[hei_idx][0] == 0 || pin_counts[hei_idx][1] == 0 {
-                continue;
-            }
-            for &u in hg.charged_hyperedge_pins(hei_idx) {
-                let u = u as usize;
-                if !in_region[u] && region_size < max_region {
-                    in_region[u] = true;
-                    region_queue.push_back(u);
-                    region_size += 1;
-                }
-            }
-        }
-    }
+    let region_size =
+        grow_hypergraph_region(hg, seed, max_region, pin_counts, in_region, region_queue);
 
     // Ascending index order (not BFS discovery order) preserves the lowest-index
     // tie-break in the move loop: `gain[v] > best_gain` keeps the first vertex
@@ -412,6 +387,44 @@ pub(super) fn localized_fm_pass(
         locked[v] = false;
     }
     improved
+}
+
+fn grow_hypergraph_region(
+    hg: &Hypergraph,
+    seed: usize,
+    max_region: usize,
+    pin_counts: &[[u32; 2]],
+    in_region: &mut [bool],
+    region_queue: &mut VecDeque<usize>,
+) -> usize {
+    in_region[seed] = true;
+    region_queue.push_back(seed);
+    let mut region_size = 1usize;
+
+    // Growing along cut hyperedges only, and taking every pin of one, picks up
+    // both sides of the cut in a single rule — a hyperedge is only cut if it
+    // has pins on both. The graph sibling needs a second sweep to reach the
+    // same-side vertices FM wants room to move.
+    while let Some(v) = region_queue.pop_front() {
+        if region_size >= max_region {
+            break;
+        }
+        for &hei in hg.vertex_hyperedges(v) {
+            let hei_idx = hei as usize;
+            if pin_counts[hei_idx][0] == 0 || pin_counts[hei_idx][1] == 0 {
+                continue;
+            }
+            for &u in hg.charged_hyperedge_pins(hei_idx) {
+                let u = u as usize;
+                if !in_region[u] && region_size < max_region {
+                    in_region[u] = true;
+                    region_queue.push_back(u);
+                    region_size += 1;
+                }
+            }
+        }
+    }
+    region_size
 }
 
 /// Standard FM refinement (global passes only).

@@ -352,46 +352,63 @@ fn eliminate_sampled_fill_based(
                 &mut fills,
                 priority,
             );
-        } else {
-            // `v` is recorded above, so it leaves the graph even on the
-            // deadline exit below: the residual bag that exit builds holds
-            // what is still in the graph, and `v` must not appear twice.
-            if !affected.prepare(graph, v, live_nbrs, true, hard_deadline) {
-                graph.eliminate_with_nbrs(v, live_nbrs);
-                return ElimExit::DeadlineReached(Cutoff::Hard);
-            }
-            graph.eliminate_prepared(v, live_nbrs, &affected.fill_edges());
-            // Applying one delta is a bucket move, so this loop reads the
-            // deadline on the pacer's stride.
-            let mut delta_pacer = DeadlinePacer::new();
-            while let Some((u, delta)) = affected.pop_delta(graph) {
-                if delta_pacer.due() && expired(hard_deadline) {
-                    // The neighbour terms this run's last prepare left are
-                    // never read now, and the scratch outlives the run, so
-                    // they go back to zero here rather than at the next use.
-                    affected.clear();
-                    affected.clear_neighbours(graph, live_nbrs);
-                    return ElimExit::DeadlineReached(Cutoff::Hard);
-                }
-                let old_fill = fill_of(u, fills.as_deref(), &buckets);
-                debug_assert!(delta <= old_fill);
-                let new_fill = old_fill.saturating_sub(delta);
-                set_fill_and_bucket(u, new_fill, graph, &mut fills, &mut buckets, priority);
-            }
-            update_neighbours(
-                affected,
-                graph,
-                live_nbrs,
-                &mut buckets,
-                &mut fills,
-                priority,
-            );
+        } else if let Err(exit) = eliminate_sampled_with_fill(
+            graph,
+            v,
+            live_nbrs,
+            affected,
+            &mut buckets,
+            &mut fills,
+            priority,
+            hard_deadline,
+        ) {
+            return exit;
         }
         if exceeds_width_bound(bag_len, width_bound) {
             return ElimExit::WidthLimitExceeded;
         }
     }
     ElimExit::Complete
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eliminate_sampled_with_fill(
+    graph: &mut EliminationGraph,
+    v: u32,
+    live_nbrs: &[u32],
+    affected: &mut FillAffected,
+    buckets: &mut BucketMap<'_>,
+    fills: &mut Option<&mut [u64]>,
+    priority: FillPriority,
+    hard_deadline: Option<Instant>,
+) -> Result<(), ElimExit> {
+    // `v` is recorded above, so it leaves the graph even on the
+    // deadline exit below: the residual bag that exit builds holds
+    // what is still in the graph, and `v` must not appear twice.
+    if !affected.prepare(graph, v, live_nbrs, true, hard_deadline) {
+        graph.eliminate_with_nbrs(v, live_nbrs);
+        return Err(ElimExit::DeadlineReached(Cutoff::Hard));
+    }
+    graph.eliminate_prepared(v, live_nbrs, &affected.fill_edges());
+    // Applying one delta is a bucket move, so this loop reads the
+    // deadline on the pacer's stride.
+    let mut delta_pacer = DeadlinePacer::new();
+    while let Some((u, delta)) = affected.pop_delta(graph) {
+        if delta_pacer.due() && expired(hard_deadline) {
+            // The neighbour terms this run's last prepare left are
+            // never read now, and the scratch outlives the run, so
+            // they go back to zero here rather than at the next use.
+            affected.clear();
+            affected.clear_neighbours(graph, live_nbrs);
+            return Err(ElimExit::DeadlineReached(Cutoff::Hard));
+        }
+        let old_fill = fill_of(u, fills.as_deref(), buckets);
+        debug_assert!(delta <= old_fill);
+        let new_fill = old_fill.saturating_sub(delta);
+        set_fill_and_bucket(u, new_fill, graph, fills, buckets, priority);
+    }
+    update_neighbours(affected, graph, live_nbrs, buckets, fills, priority);
+    Ok(())
 }
 
 /// htd-style min-degree elimination: priority = degree only, ties broken by

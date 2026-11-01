@@ -244,32 +244,14 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
         }
         let snapshot = entry.snapshot();
 
-        if cheap_mode {
-            // Score maintenance is off, so the only thing left to respect is
-            // the hard deadline — checked every pop, because a single cheap
-            // elimination on a dense residual can still take a while.
-            if expired(hard_deadline) {
-                return ElimExit::DeadlineReached(Cutoff::Hard);
-            }
-        } else if pacer.due() {
-            if expired(hard_deadline) {
-                return ElimExit::DeadlineReached(Cutoff::Hard);
-            }
-            if P::CHEAP_MODE && expired(soft_deadline) {
-                // On a large residual even a cheap elimination can
-                // overshoot the hard deadline by seconds, so stop at the
-                // soft cutoff and let the engine complete the residual.
-                if graph.num_active > CHEAP_MODE_MAX_ACTIVE {
-                    return ElimExit::DeadlineReached(Cutoff::Soft);
-                }
-                cheap_mode = true;
-            }
-            // Fill edges can push an initially sparse graph past the
-            // density break-even mid-elimination, turning scoring into
-            // the hotspot.
-            if P::MAINTAIN_BITSET && graph.should_promote_bitset() {
-                graph.promote_bitset();
-            }
+        if let Some(exit) = check_step_deadlines::<P>(
+            graph,
+            &mut pacer,
+            &mut cheap_mode,
+            soft_deadline,
+            hard_deadline,
+        ) {
+            return exit;
         }
 
         // Stale-snapshot guard: re-score a popped vertex and, if it moved,
@@ -329,4 +311,41 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
         }
     }
     ElimExit::Complete
+}
+
+fn check_step_deadlines<P: ElimPolicy>(
+    graph: &mut EliminationGraph,
+    pacer: &mut DeadlinePacer,
+    cheap_mode: &mut bool,
+    soft_deadline: Option<Instant>,
+    hard_deadline: Option<Instant>,
+) -> Option<ElimExit> {
+    if *cheap_mode {
+        // Score maintenance is off, so the only thing left to respect is
+        // the hard deadline — checked every pop, because a single cheap
+        // elimination on a dense residual can still take a while.
+        if expired(hard_deadline) {
+            return Some(ElimExit::DeadlineReached(Cutoff::Hard));
+        }
+    } else if pacer.due() {
+        if expired(hard_deadline) {
+            return Some(ElimExit::DeadlineReached(Cutoff::Hard));
+        }
+        if P::CHEAP_MODE && expired(soft_deadline) {
+            // On a large residual even a cheap elimination can
+            // overshoot the hard deadline by seconds, so stop at the
+            // soft cutoff and let the engine complete the residual.
+            if graph.num_active > CHEAP_MODE_MAX_ACTIVE {
+                return Some(ElimExit::DeadlineReached(Cutoff::Soft));
+            }
+            *cheap_mode = true;
+        }
+        // Fill edges can push an initially sparse graph past the
+        // density break-even mid-elimination, turning scoring into
+        // the hotspot.
+        if P::MAINTAIN_BITSET && graph.should_promote_bitset() {
+            graph.promote_bitset();
+        }
+    }
+    None
 }

@@ -19,49 +19,9 @@ pub(super) fn minimum_vertex_cover_separator(
     // Four vertex arrays and a read of every edge before the matching, which
     // runs on the cut alone.
     crate::meter::charge((4 * n as u64).saturating_add(edges.len() as u64));
-    let mut is_boundary_a = vec![false; n];
-    let mut is_boundary_b = vec![false; n];
-    let mut cross_edges: Vec<(u32, u32)> = Vec::new();
-    for &(u, v) in edges {
-        if part[u as usize] != part[v as usize] {
-            let (a, b) = if part[u as usize] == 0 {
-                (u, v)
-            } else {
-                (v, u)
-            };
-            is_boundary_a[a as usize] = true;
-            is_boundary_b[b as usize] = true;
-            cross_edges.push((a, b));
-        }
-    }
-    let boundary_a: Vec<u32> = (0..n as u32)
-        .filter(|&i| is_boundary_a[i as usize])
-        .collect();
-    let boundary_b: Vec<u32> = (0..n as u32)
-        .filter(|&i| is_boundary_b[i as usize])
-        .collect();
-
+    let (boundary_a, boundary_b, adj) = build_bipartite_boundary(n, edges, part);
     let la = boundary_a.len();
     let lb = boundary_b.len();
-    let mut idx_a = vec![None; n];
-    let mut idx_b = vec![None; n];
-    for (i, &v) in boundary_a.iter().enumerate() {
-        idx_a[v as usize] = Some(i);
-    }
-    for (i, &v) in boundary_b.iter().enumerate() {
-        idx_b[v as usize] = Some(i);
-    }
-
-    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); la];
-    for &(a, b) in &cross_edges {
-        let ai = idx_a[a as usize].expect("cross-edge endpoint is in the left boundary");
-        let bi = idx_b[b as usize].expect("cross-edge endpoint is in the right boundary");
-        adj[ai].push(bi);
-    }
-    for list in &mut adj {
-        list.sort_unstable();
-        list.dedup();
-    }
 
     // Max matching via Kuhn's algorithm. Each left vertex's search carries its
     // own generation stamp instead of clearing a right-boundary flag array
@@ -86,31 +46,7 @@ pub(super) fn minimum_vertex_cover_separator(
 
     // König's construction: Z = vertices reachable from unmatched L via
     // alternating paths. Min vertex cover = (L \ Z) ∪ (R ∩ Z).
-    let mut in_z_l = vec![false; la];
-    let mut in_z_r = vec![false; lb];
-    let mut queue: Vec<usize> = Vec::new();
-    for u in 0..la {
-        if match_l[u].is_none() {
-            in_z_l[u] = true;
-            queue.push(u);
-        }
-    }
-    while let Some(u) = queue.pop() {
-        for &v in &adj[u] {
-            if match_l[u] == Some(v) {
-                continue;
-            }
-            if !in_z_r[v] {
-                in_z_r[v] = true;
-                if let Some(matched) = match_r[v]
-                    && !in_z_l[matched]
-                {
-                    in_z_l[matched] = true;
-                    queue.push(matched);
-                }
-            }
-        }
-    }
+    let (in_z_l, in_z_r) = konig_reachable_set(la, lb, &adj, &match_l, &match_r);
 
     // Separator = (L \ Z) ∪ (R ∩ Z).
     let mut separator: Vec<u32> = Vec::new();
@@ -146,6 +82,91 @@ pub(super) fn minimum_vertex_cover_separator(
         side_b,
         separator,
     }
+}
+
+fn build_bipartite_boundary(
+    n: usize,
+    edges: &[(u32, u32)],
+    part: &[u8],
+) -> (Vec<u32>, Vec<u32>, Vec<Vec<usize>>) {
+    let mut is_boundary_a = vec![false; n];
+    let mut is_boundary_b = vec![false; n];
+    let mut cross_edges: Vec<(u32, u32)> = Vec::new();
+    for &(u, v) in edges {
+        if part[u as usize] != part[v as usize] {
+            let (a, b) = if part[u as usize] == 0 {
+                (u, v)
+            } else {
+                (v, u)
+            };
+            is_boundary_a[a as usize] = true;
+            is_boundary_b[b as usize] = true;
+            cross_edges.push((a, b));
+        }
+    }
+    let boundary_a: Vec<u32> = (0..n as u32)
+        .filter(|&i| is_boundary_a[i as usize])
+        .collect();
+    let boundary_b: Vec<u32> = (0..n as u32)
+        .filter(|&i| is_boundary_b[i as usize])
+        .collect();
+
+    let la = boundary_a.len();
+    let mut idx_a = vec![None; n];
+    let mut idx_b = vec![None; n];
+    for (i, &v) in boundary_a.iter().enumerate() {
+        idx_a[v as usize] = Some(i);
+    }
+    for (i, &v) in boundary_b.iter().enumerate() {
+        idx_b[v as usize] = Some(i);
+    }
+
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); la];
+    for &(a, b) in &cross_edges {
+        let ai = idx_a[a as usize].expect("cross-edge endpoint is in the left boundary");
+        let bi = idx_b[b as usize].expect("cross-edge endpoint is in the right boundary");
+        adj[ai].push(bi);
+    }
+    for list in &mut adj {
+        list.sort_unstable();
+        list.dedup();
+    }
+    (boundary_a, boundary_b, adj)
+}
+
+fn konig_reachable_set(
+    la: usize,
+    lb: usize,
+    adj: &[Vec<usize>],
+    match_l: &[Option<usize>],
+    match_r: &[Option<usize>],
+) -> (Vec<bool>, Vec<bool>) {
+    let mut in_z_l = vec![false; la];
+    let mut in_z_r = vec![false; lb];
+    let mut queue: Vec<usize> = Vec::new();
+    for u in 0..la {
+        if match_l[u].is_none() {
+            in_z_l[u] = true;
+            queue.push(u);
+        }
+    }
+    while let Some(u) = queue.pop() {
+        for &v in &adj[u] {
+            if match_l[u] == Some(v) {
+                continue;
+            }
+            if !in_z_r[v] {
+                in_z_r[v] = true;
+                if let Some(matched) = match_r[v]
+                    && !in_z_l[matched]
+                {
+                    in_z_l[matched] = true;
+                    queue.push(matched);
+                }
+            }
+        }
+    }
+    (in_z_l, in_z_r)
 }
 
 pub(super) struct SeparatorResult {

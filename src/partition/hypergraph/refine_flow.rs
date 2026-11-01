@@ -233,103 +233,13 @@ pub(super) fn flow_refine(
     let finest = &mut scratch.finest;
     finest.prepare(n);
 
-    // Corridor: every pin of every cut hyperedge. Interior vertices are left
-    // out of the network entirely, which is what keeps it small enough for a
-    // whole-corridor max-flow to be worth running.
-    //
-    // Max-flow cost grows with the network, so a corridor over either cap
-    // skips the pass rather than pays for it. Both counts are kept as the
-    // corridor is marked, so a hypergraph far over a cap stops at it instead
-    // of walking every cut hyperedge's pins first.
-    let mut arcs = 0usize;
-    for (hyperedge, counts) in pin_counts.iter().enumerate() {
-        if counts[0] > 0 && counts[1] > 0 {
-            finest.cut_hyperedges.push(hyperedge);
-            arcs += usize::try_from(counts[0] + counts[1]).unwrap_or(usize::MAX);
-            for &vertex in hg.charged_hyperedge_pins(hyperedge) {
-                let vertex = vertex as usize;
-                if finest.stamp[vertex] != finest.pass {
-                    finest.stamp[vertex] = finest.pass;
-                    finest.corridor.push(vertex);
-                }
-            }
-            if finest.corridor.len() > MAX_CORRIDOR || arcs > MAX_CORRIDOR_ARCS {
-                // The pins the walk stops short of are charged all the same: a
-                // budgeted run repeats on the meter, so skipped work still has
-                // to pay for itself. A cut hyperedge's two counts add up to its
-                // pin count.
-                let unwalked: u64 = pin_counts[hyperedge + 1..]
-                    .iter()
-                    .filter(|rest| rest[0] > 0 && rest[1] > 0)
-                    .map(|rest| u64::from(rest[0]) + u64::from(rest[1]))
-                    .sum();
-                crate::meter::charge(unwalked);
-                return false;
-            }
-        }
-    }
-
-    if finest.cut_hyperedges.is_empty() {
+    if !mark_flow_corridor(hg, pin_counts, finest) {
         return false;
     }
 
-    // Flow-network node-ID layout: source (0), sink (1), corridor vertices
-    // (2..2+corridor), cut hyperedge nodes (2+corridor..). The corridor is
-    // sorted rather than collected by a scan of the whole vertex range, which
-    // is the same ascending order over at most `MAX_CORRIDOR` entries.
-    finest.corridor.sort_unstable();
-    let mut next_node = 2usize;
-    for &vertex in &finest.corridor {
-        finest.node_by_vertex[vertex] = next_node as u32;
-        next_node += 1;
-    }
-    let hyperedge_node_start = next_node;
-    let total_nodes = hyperedge_node_start + finest.cut_hyperedges.len();
     let source = 0;
     let sink = 1;
-
-    finest.network.reset(total_nodes);
-
-    // Source feeds partition-0 boundary vertices; partition-1 ones feed sink.
-    // A vertex therefore ends on side 0 exactly when the residual graph still
-    // reaches it from the source, and cutting its terminal edge is what the
-    // network charges for relocating it.
-    for &vertex in &finest.corridor {
-        let vertex_node = finest.node_by_vertex[vertex] as usize;
-        if part[vertex] == 0 {
-            finest
-                .network
-                .add_edge(source, vertex_node, i64::from(hg.vertex_weights[vertex]));
-        } else {
-            finest
-                .network
-                .add_edge(vertex_node, sink, i64::from(hg.vertex_weights[vertex]));
-        }
-    }
-
-    // Boundary-vertex-to-cut-hyperedge capacity equals the hyperedge weight,
-    // so the min-cut cost matches the hg cut it approximates.
-    for (cut_index, &hyperedge) in finest.cut_hyperedges.iter().enumerate() {
-        let hyperedge_node = hyperedge_node_start + cut_index;
-        let hyperedge_weight = i64::from(hg.hyperedge_weights[hyperedge]);
-        for &vertex in hg.charged_hyperedge_pins(hyperedge) {
-            let vertex = vertex as usize;
-            debug_assert_eq!(
-                finest.stamp[vertex], finest.pass,
-                "every cut-hyperedge pin is in the corridor"
-            );
-            let vertex_node = finest.node_by_vertex[vertex] as usize;
-            if part[vertex] == 0 {
-                finest
-                    .network
-                    .add_edge(vertex_node, hyperedge_node, hyperedge_weight);
-            } else {
-                finest
-                    .network
-                    .add_edge(hyperedge_node, vertex_node, hyperedge_weight);
-            }
-        }
-    }
+    let total_nodes = build_flow_network(hg, part, finest, source, sink);
 
     finest.reachable.resize(total_nodes, false);
     finest
@@ -374,6 +284,114 @@ pub(super) fn flow_refine(
         part[vertex] = 1 - new_side;
     }
     false
+}
+
+/// Corridor: every pin of every cut hyperedge. Interior vertices are left
+/// out of the network entirely, which is what keeps it small enough for a
+/// whole-corridor max-flow to be worth running.
+///
+/// Max-flow cost grows with the network, so a corridor over either cap
+/// skips the pass rather than pays for it. Both counts are kept as the
+/// corridor is marked, so a hypergraph far over a cap stops at it instead
+/// of walking every cut hyperedge's pins first.
+fn mark_flow_corridor(
+    hg: &Hypergraph,
+    pin_counts: &[[u32; 2]],
+    finest: &mut FinestScratch,
+) -> bool {
+    let mut arcs = 0usize;
+    for (hyperedge, counts) in pin_counts.iter().enumerate() {
+        if counts[0] > 0 && counts[1] > 0 {
+            finest.cut_hyperedges.push(hyperedge);
+            arcs += usize::try_from(counts[0] + counts[1]).unwrap_or(usize::MAX);
+            for &vertex in hg.charged_hyperedge_pins(hyperedge) {
+                let vertex = vertex as usize;
+                if finest.stamp[vertex] != finest.pass {
+                    finest.stamp[vertex] = finest.pass;
+                    finest.corridor.push(vertex);
+                }
+            }
+            if finest.corridor.len() > MAX_CORRIDOR || arcs > MAX_CORRIDOR_ARCS {
+                // The pins the walk stops short of are charged all the same: a
+                // budgeted run repeats on the meter, so skipped work still has
+                // to pay for itself. A cut hyperedge's two counts add up to its
+                // pin count.
+                let unwalked: u64 = pin_counts[hyperedge + 1..]
+                    .iter()
+                    .filter(|rest| rest[0] > 0 && rest[1] > 0)
+                    .map(|rest| u64::from(rest[0]) + u64::from(rest[1]))
+                    .sum();
+                crate::meter::charge(unwalked);
+                return false;
+            }
+        }
+    }
+    !finest.cut_hyperedges.is_empty()
+}
+
+fn build_flow_network(
+    hg: &Hypergraph,
+    part: &[u8],
+    finest: &mut FinestScratch,
+    source: usize,
+    sink: usize,
+) -> usize {
+    // Flow-network node-ID layout: source (0), sink (1), corridor vertices
+    // (2..2+corridor), cut hyperedge nodes (2+corridor..). The corridor is
+    // sorted rather than collected by a scan of the whole vertex range, which
+    // is the same ascending order over at most `MAX_CORRIDOR` entries.
+    finest.corridor.sort_unstable();
+    let mut next_node = 2usize;
+    for &vertex in &finest.corridor {
+        finest.node_by_vertex[vertex] = next_node as u32;
+        next_node += 1;
+    }
+    let hyperedge_node_start = next_node;
+    let total_nodes = hyperedge_node_start + finest.cut_hyperedges.len();
+
+    finest.network.reset(total_nodes);
+
+    // Source feeds partition-0 boundary vertices; partition-1 ones feed sink.
+    // A vertex therefore ends on side 0 exactly when the residual graph still
+    // reaches it from the source, and cutting its terminal edge is what the
+    // network charges for relocating it.
+    for &vertex in &finest.corridor {
+        let vertex_node = finest.node_by_vertex[vertex] as usize;
+        if part[vertex] == 0 {
+            finest
+                .network
+                .add_edge(source, vertex_node, i64::from(hg.vertex_weights[vertex]));
+        } else {
+            finest
+                .network
+                .add_edge(vertex_node, sink, i64::from(hg.vertex_weights[vertex]));
+        }
+    }
+
+    // Boundary-vertex-to-cut-hyperedge capacity equals the hyperedge weight,
+    // so the min-cut cost matches the hg cut it approximates.
+    for (cut_index, &hyperedge) in finest.cut_hyperedges.iter().enumerate() {
+        let hyperedge_node = hyperedge_node_start + cut_index;
+        let hyperedge_weight = i64::from(hg.hyperedge_weights[hyperedge]);
+        for &vertex in hg.charged_hyperedge_pins(hyperedge) {
+            let vertex = vertex as usize;
+            debug_assert_eq!(
+                finest.stamp[vertex], finest.pass,
+                "every cut-hyperedge pin is in the corridor"
+            );
+            let vertex_node = finest.node_by_vertex[vertex] as usize;
+            if part[vertex] == 0 {
+                finest
+                    .network
+                    .add_edge(vertex_node, hyperedge_node, hyperedge_weight);
+            } else {
+                finest
+                    .network
+                    .add_edge(hyperedge_node, vertex_node, hyperedge_weight);
+            }
+        }
+    }
+    total_nodes
 }
 
 /// FM refinement with multi-try localized passes and flow-based refinement.

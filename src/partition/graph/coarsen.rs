@@ -84,6 +84,19 @@ pub(super) fn coarsen_one_level(
 
     let coarse_vwgt = coarse_vertex_weights(nc, &coarse_id, &graph.vertex_weights);
 
+    Some(CoarseningLevel {
+        graph: build_coarse_csr(graph, nc, &coarse_id, coarse_vwgt),
+        mapping: coarse_id,
+    })
+}
+
+fn build_coarse_csr(
+    graph: &CsrGraph,
+    nc: usize,
+    coarse_id: &[u32],
+    coarse_vwgt: Vec<u32>,
+) -> CsrGraph {
+    let n = graph.num_vertices();
     // Count then fill, with `counts` reused as the per-row cursor: the coarse
     // adjacency lands contiguously in one flat buffer instead of a Vec of Vecs.
     // Entries are duplicated here (one per fine edge) and merged below.
@@ -158,13 +171,10 @@ pub(super) fn coarsen_one_level(
         coarse_offsets.push(coarse_neighbors.len() as u32);
     }
 
-    Some(CoarseningLevel {
-        graph: CsrGraph {
-            offsets: coarse_offsets,
-            neighbors: coarse_neighbors,
-            vertex_weights: coarse_vwgt,
-            edge_weights: coarse_edge_weights,
-        },
-        mapping: coarse_id,
-    })
+    CsrGraph {
+        offsets: coarse_offsets,
+        neighbors: coarse_neighbors,
+        vertex_weights: coarse_vwgt,
+        edge_weights: coarse_edge_weights,
+    }
 }

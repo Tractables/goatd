@@ -102,22 +102,7 @@ pub(crate) fn cardinality_search(
         while states[lowest] != 0 {
             lowest += 1;
         }
-        // The highest count, then the first vertex holding it: a numbered
-        // vertex counts zero, so it is never that vertex unless nothing
-        // unnumbered counts either, and then the lowest unnumbered one is
-        // taken instead. Ties go to the smallest index either way.
-        let best = run_max.iter().copied().max().unwrap_or(0);
-        let chosen = if best == 0 {
-            lowest
-        } else {
-            let run = run_max.iter().position(|&max| max == best).unwrap_or(0);
-            run * 64
-                + counts[run * 64..]
-                    .iter()
-                    .take(64)
-                    .position(|&count| count == best)
-                    .unwrap_or(0)
-        };
+        let (best, chosen) = choose_highest_unnumbered(&run_max, &counts, lowest);
         debug_assert!(chosen < n, "every step has an unnumbered vertex to take");
         debug_assert!(states[chosen] == 0 && counts[chosen] == best);
         states[chosen] = NUMBERED;
@@ -140,59 +125,20 @@ pub(crate) fn cardinality_search(
                 raised.push(neighbour);
             }
         }
-        if reach == Reach::LowerPaths {
-            // The neighbours are the paths of length one; each of them can then
-            // carry a path on to a vertex counting higher than it does.
-            // Bucket `j` holds the vertices reachable through interior vertices
-            // that all count at most `j`, so draining the buckets in increasing
-            // `j` reaches every vertex by its cheapest path first.
-            touched.clear();
-            states[chosen] |= REACHED;
-            touched.push(chosen as u32);
-            for &neighbour in &raised {
-                states[neighbour as usize] |= REACHED;
-                let count = counts[neighbour as usize] as usize;
-                touched.push(neighbour);
-                buckets[count].push(neighbour);
-            }
-            // A step that reaches a handful of vertices would otherwise index
-            // and pop every one of the `n + 1` buckets. A vertex is only ever
-            // added to the level being drained or to a higher one, so once
-            // every bucket is empty no later level can fill.
-            let mut bucketed = raised.len();
-            for level in 0..=n {
-                if bucketed == 0 {
-                    break;
-                }
-                while let Some(interior) = buckets[level].pop() {
-                    bucketed -= 1;
-                    crate::meter::charge(adjacency[interior as usize].len() as u64);
-                    if pacer.due() && expired(hard_deadline) {
-                        return None;
-                    }
-                    for &next in &adjacency[interior as usize] {
-                        // Numbered and reached are both disqualifying, so the
-                        // step reads one byte and tests it once.
-                        let state = &mut states[next as usize];
-                        if *state != 0 {
-                            continue;
-                        }
-                        *state = REACHED;
-                        let count = counts[next as usize] as usize;
-                        touched.push(next);
-                        bucketed += 1;
-                        if count > level {
-                            raised.push(next);
-                            buckets[count].push(next);
-                        } else {
-                            buckets[level].push(next);
-                        }
-                    }
-                }
-            }
-            for &vertex in &touched {
-                states[vertex as usize] &= !REACHED;
-            }
+        if reach == Reach::LowerPaths
+            && !reach_lower_paths(
+                adjacency,
+                chosen,
+                &mut states,
+                &counts,
+                &mut raised,
+                &mut touched,
+                &mut buckets,
+                &mut pacer,
+                hard_deadline,
+            )
+        {
+            return None;
         }
         for &vertex in &raised {
             let count = counts[vertex as usize] + 1;
@@ -202,6 +148,94 @@ pub(crate) fn cardinality_search(
         }
     }
     Some(selected)
+}
+
+/// The highest count, then the first vertex holding it: a numbered
+/// vertex counts zero, so it is never that vertex unless nothing
+/// unnumbered counts either, and then the lowest unnumbered one is
+/// taken instead. Ties go to the smallest index either way.
+fn choose_highest_unnumbered(run_max: &[u32], counts: &[u32], lowest: usize) -> (u32, usize) {
+    let best = run_max.iter().copied().max().unwrap_or(0);
+    let chosen = if best == 0 {
+        lowest
+    } else {
+        let run = run_max.iter().position(|&max| max == best).unwrap_or(0);
+        run * 64
+            + counts[run * 64..]
+                .iter()
+                .take(64)
+                .position(|&count| count == best)
+                .unwrap_or(0)
+    };
+    (best, chosen)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reach_lower_paths(
+    adjacency: &[Vec<u32>],
+    chosen: usize,
+    states: &mut [u8],
+    counts: &[u32],
+    raised: &mut Vec<u32>,
+    touched: &mut Vec<u32>,
+    buckets: &mut [Vec<u32>],
+    pacer: &mut DeadlinePacer,
+    hard_deadline: Option<Instant>,
+) -> bool {
+    let n = adjacency.len();
+    // The neighbours are the paths of length one; each of them can then
+    // carry a path on to a vertex counting higher than it does.
+    // Bucket `j` holds the vertices reachable through interior vertices
+    // that all count at most `j`, so draining the buckets in increasing
+    // `j` reaches every vertex by its cheapest path first.
+    touched.clear();
+    states[chosen] |= REACHED;
+    touched.push(chosen as u32);
+    for &neighbour in raised.iter() {
+        states[neighbour as usize] |= REACHED;
+        let count = counts[neighbour as usize] as usize;
+        touched.push(neighbour);
+        buckets[count].push(neighbour);
+    }
+    // A step that reaches a handful of vertices would otherwise index
+    // and pop every one of the `n + 1` buckets. A vertex is only ever
+    // added to the level being drained or to a higher one, so once
+    // every bucket is empty no later level can fill.
+    let mut bucketed = raised.len();
+    for level in 0..=n {
+        if bucketed == 0 {
+            break;
+        }
+        while let Some(interior) = buckets[level].pop() {
+            bucketed -= 1;
+            crate::meter::charge(adjacency[interior as usize].len() as u64);
+            if pacer.due() && expired(hard_deadline) {
+                return false;
+            }
+            for &next in &adjacency[interior as usize] {
+                // Numbered and reached are both disqualifying, so the
+                // step reads one byte and tests it once.
+                let state = &mut states[next as usize];
+                if *state != 0 {
+                    continue;
+                }
+                *state = REACHED;
+                let count = counts[next as usize] as usize;
+                touched.push(next);
+                bucketed += 1;
+                if count > level {
+                    raised.push(next);
+                    buckets[count].push(next);
+                } else {
+                    buckets[level].push(next);
+                }
+            }
+        }
+    }
+    for &vertex in touched.iter() {
+        states[vertex as usize] &= !REACHED;
+    }
+    true
 }
 
 /// Number the active residual with a cardinality search of the given reach and

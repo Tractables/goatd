@@ -399,99 +399,11 @@ impl TreeDecomposition {
             };
         }
 
-        // Which bags hold each vertex, as one flat array rather than a `Vec`
-        // per vertex. The first pass checks each bag's contents and counts the
-        // holders, the second places them through prefix-sum offsets. Bags are
-        // visited in ascending order in both. `seen_in_bag`
-        // carries the position of the bag a vertex was last seen in, which
-        // catches a repeat within one bag without a set per bag.
         let num_vertices = graph.num_vertices as usize;
-        let mut holder_offsets = vec![0usize; num_vertices + 1];
         let mut seen_in_bag = vec![usize::MAX; num_vertices];
-        for (position, bag) in self.bags.iter().enumerate() {
-            for &vertex in &bag.vertices {
-                if vertex >= graph.num_vertices {
-                    return invalid(format!(
-                        "bag {position} contains vertex {vertex}, outside 0..{}",
-                        graph.num_vertices
-                    ));
-                }
-                if seen_in_bag[vertex as usize] == position {
-                    return invalid(format!(
-                        "bag {position} contains vertex {vertex} more than once"
-                    ));
-                }
-                seen_in_bag[vertex as usize] = position;
-                holder_offsets[vertex as usize + 1] += 1;
-            }
-        }
-        for vertex in 0..num_vertices {
-            holder_offsets[vertex + 1] += holder_offsets[vertex];
-        }
-        let mut holder_bags = vec![0usize; holder_offsets[num_vertices]];
-        let mut holder_cursor = holder_offsets[..num_vertices].to_vec();
-        for (position, bag) in self.bags.iter().enumerate() {
-            for &vertex in &bag.vertices {
-                holder_bags[holder_cursor[vertex as usize]] = position;
-                holder_cursor[vertex as usize] += 1;
-            }
-        }
-
-        let mut arcs = FxHashSet::default();
-        for (bag, neighbours) in self.adj.iter().enumerate() {
-            for &neighbour in neighbours {
-                if neighbour >= num_bags {
-                    return invalid(format!(
-                        "bag {bag} has neighbour {neighbour}, but there are {num_bags} bags"
-                    ));
-                }
-                if neighbour == bag {
-                    return invalid(format!("bag {bag} is adjacent to itself"));
-                }
-                if !arcs.insert((bag, neighbour)) {
-                    return invalid(format!(
-                        "bag {neighbour} occurs more than once in adjacency list {bag}"
-                    ));
-                }
-            }
-        }
-        for &(bag, neighbour) in &arcs {
-            if !arcs.contains(&(neighbour, bag)) {
-                return invalid(format!(
-                    "bag {bag} names {neighbour} as a neighbour, but the reverse edge is missing"
-                ));
-            }
-        }
-
-        let mut seen = vec![false; num_bags];
-        let mut parent = vec![usize::MAX; num_bags];
-        let mut depth = vec![0usize; num_bags];
-        let mut num_components = 0usize;
-        for start in 0..num_bags {
-            if seen[start] {
-                continue;
-            }
-            num_components += 1;
-            let mut stack = vec![start];
-            seen[start] = true;
-            while let Some(bag) = stack.pop() {
-                for &neighbour in &self.adj[bag] {
-                    if !seen[neighbour] {
-                        seen[neighbour] = true;
-                        parent[neighbour] = bag;
-                        depth[neighbour] = depth[bag] + 1;
-                        stack.push(neighbour);
-                    }
-                }
-            }
-        }
-        let num_tree_edges = arcs.len() / 2;
-        let forest_edges = num_bags - num_components;
-        if num_tree_edges != forest_edges {
-            return invalid(format!(
-                "the bag graph has {num_tree_edges} edges; a forest of {num_components} components on {num_bags} bags has {forest_edges}"
-            ));
-        }
+        let (holder_offsets, holder_bags) =
+            build_holder_index(&self.bags, graph.num_vertices, &mut seen_in_bag)?;
+        let (parent, depth) = check_forest_adjacency(&self.adj, num_bags)?;
 
         for vertex in 0..num_vertices {
             if holder_run(&holder_offsets, &holder_bags, vertex).is_empty() {
@@ -522,44 +434,159 @@ impl TreeDecomposition {
             }
         }
 
-        // Two connected holder subtrees intersect iff the deeper root-most
-        // holder contains both vertices. Group edges by that bag, then mark
-        // its vertices once to check every assigned edge in constant time.
-        let mut first_edge = vec![usize::MAX; num_bags];
-        let mut next_edge = vec![usize::MAX; graph.edges.len()];
-        for (edge, &(u, v)) in graph.edges.iter().enumerate() {
-            if u >= graph.num_vertices || v >= graph.num_vertices {
+        check_edge_coverage(&self.bags, graph, &top, &depth, &mut seen_in_bag)
+    }
+}
+
+/// Which bags hold each vertex, as one flat array rather than a `Vec`
+/// per vertex. The first pass checks each bag's contents and counts the
+/// holders, the second places them through prefix-sum offsets. Bags are
+/// visited in ascending order in both. `seen_in_bag`
+/// carries the position of the bag a vertex was last seen in, which
+/// catches a repeat within one bag without a set per bag.
+fn build_holder_index(
+    bags: &[TdBag],
+    num_vertices_u32: u32,
+    seen_in_bag: &mut [usize],
+) -> Result<(Vec<usize>, Vec<usize>), Error> {
+    let num_vertices = num_vertices_u32 as usize;
+    let mut holder_offsets = vec![0usize; num_vertices + 1];
+    for (position, bag) in bags.iter().enumerate() {
+        for &vertex in &bag.vertices {
+            if vertex >= num_vertices_u32 {
                 return invalid(format!(
-                    "graph edge ({u}, {v}) has an endpoint outside 0..{}",
-                    graph.num_vertices
+                    "bag {position} contains vertex {vertex}, outside 0..{num_vertices_u32}"
                 ));
             }
-            let (left, right) = (top[u as usize], top[v as usize]);
-            let bag = if depth[left] >= depth[right] {
-                left
-            } else {
-                right
-            };
-            next_edge[edge] = first_edge[bag];
-            first_edge[bag] = edge;
-        }
-        seen_in_bag.fill(usize::MAX);
-        for (position, bag) in self.bags.iter().enumerate() {
-            for &vertex in &bag.vertices {
-                seen_in_bag[vertex as usize] = position;
+            if seen_in_bag[vertex as usize] == position {
+                return invalid(format!(
+                    "bag {position} contains vertex {vertex} more than once"
+                ));
             }
-            let mut edge = first_edge[position];
-            while edge != usize::MAX {
-                let (u, v) = graph.edges[edge];
-                if seen_in_bag[u as usize] != position || seen_in_bag[v as usize] != position {
-                    return invalid(format!("edge ({u}, {v}) is covered by no bag"));
-                }
-                edge = next_edge[edge];
-            }
+            seen_in_bag[vertex as usize] = position;
+            holder_offsets[vertex as usize + 1] += 1;
         }
-
-        Ok(())
     }
+    for vertex in 0..num_vertices {
+        holder_offsets[vertex + 1] += holder_offsets[vertex];
+    }
+    let mut holder_bags = vec![0usize; holder_offsets[num_vertices]];
+    let mut holder_cursor = holder_offsets[..num_vertices].to_vec();
+    for (position, bag) in bags.iter().enumerate() {
+        for &vertex in &bag.vertices {
+            holder_bags[holder_cursor[vertex as usize]] = position;
+            holder_cursor[vertex as usize] += 1;
+        }
+    }
+    Ok((holder_offsets, holder_bags))
+}
+
+fn check_forest_adjacency(
+    adj: &[Vec<usize>],
+    num_bags: usize,
+) -> Result<(Vec<usize>, Vec<usize>), Error> {
+    let mut arcs = FxHashSet::default();
+    for (bag, neighbours) in adj.iter().enumerate() {
+        for &neighbour in neighbours {
+            if neighbour >= num_bags {
+                return invalid(format!(
+                    "bag {bag} has neighbour {neighbour}, but there are {num_bags} bags"
+                ));
+            }
+            if neighbour == bag {
+                return invalid(format!("bag {bag} is adjacent to itself"));
+            }
+            if !arcs.insert((bag, neighbour)) {
+                return invalid(format!(
+                    "bag {neighbour} occurs more than once in adjacency list {bag}"
+                ));
+            }
+        }
+    }
+    for &(bag, neighbour) in &arcs {
+        if !arcs.contains(&(neighbour, bag)) {
+            return invalid(format!(
+                "bag {bag} names {neighbour} as a neighbour, but the reverse edge is missing"
+            ));
+        }
+    }
+
+    let mut seen = vec![false; num_bags];
+    let mut parent = vec![usize::MAX; num_bags];
+    let mut depth = vec![0usize; num_bags];
+    let mut num_components = 0usize;
+    for start in 0..num_bags {
+        if seen[start] {
+            continue;
+        }
+        num_components += 1;
+        let mut stack = vec![start];
+        seen[start] = true;
+        while let Some(bag) = stack.pop() {
+            for &neighbour in &adj[bag] {
+                if !seen[neighbour] {
+                    seen[neighbour] = true;
+                    parent[neighbour] = bag;
+                    depth[neighbour] = depth[bag] + 1;
+                    stack.push(neighbour);
+                }
+            }
+        }
+    }
+    let num_tree_edges = arcs.len() / 2;
+    let forest_edges = num_bags - num_components;
+    if num_tree_edges != forest_edges {
+        return invalid(format!(
+            "the bag graph has {num_tree_edges} edges; a forest of {num_components} components on {num_bags} bags has {forest_edges}"
+        ));
+    }
+    Ok((parent, depth))
+}
+
+/// Two connected holder subtrees intersect iff the deeper root-most
+/// holder contains both vertices. Group edges by that bag, then mark
+/// its vertices once to check every assigned edge in constant time.
+fn check_edge_coverage(
+    bags: &[TdBag],
+    graph: &Graph,
+    top: &[usize],
+    depth: &[usize],
+    seen_in_bag: &mut [usize],
+) -> Result<(), Error> {
+    let num_bags = bags.len();
+    let mut first_edge = vec![usize::MAX; num_bags];
+    let mut next_edge = vec![usize::MAX; graph.edges.len()];
+    for (edge, &(u, v)) in graph.edges.iter().enumerate() {
+        if u >= graph.num_vertices || v >= graph.num_vertices {
+            return invalid(format!(
+                "graph edge ({u}, {v}) has an endpoint outside 0..{}",
+                graph.num_vertices
+            ));
+        }
+        let (left, right) = (top[u as usize], top[v as usize]);
+        let bag = if depth[left] >= depth[right] {
+            left
+        } else {
+            right
+        };
+        next_edge[edge] = first_edge[bag];
+        first_edge[bag] = edge;
+    }
+    seen_in_bag.fill(usize::MAX);
+    for (position, bag) in bags.iter().enumerate() {
+        for &vertex in &bag.vertices {
+            seen_in_bag[vertex as usize] = position;
+        }
+        let mut edge = first_edge[position];
+        while edge != usize::MAX {
+            let (u, v) = graph.edges[edge];
+            if seen_in_bag[u as usize] != position || seen_in_bag[v as usize] != position {
+                return invalid(format!("edge ({u}, {v}) is covered by no bag"));
+            }
+            edge = next_edge[edge];
+        }
+    }
+    Ok(())
 }
 
 /// The bags holding `vertex`, as a run of the flat holder array `validate`

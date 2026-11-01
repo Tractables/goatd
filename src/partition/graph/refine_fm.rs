@@ -269,54 +269,18 @@ pub(super) fn localized_fm_pass(
     let active = &mut scratch.active;
     let queue = &mut scratch.queue;
 
-    // region_list is collected alongside in_region to avoid a separate O(n)
-    // scan in the selection loop below.
     let max_region = (n / 4).max(20).min(n);
-    in_region[seed] = true;
-    queue.push_back(seed);
-    region_list.push(seed);
-
-    // Cross-partition neighbours first, so the region hugs the cut even when
-    // the cap cuts the growth short.
-    while let Some(v) = queue.pop_front() {
-        if region_list.len() >= max_region {
-            break;
-        }
-        for &nb in graph.neighbors(v) {
-            let nb = nb as usize;
-            if !in_region[nb] && part[nb] != part[v] && region_list.len() < max_region {
-                in_region[nb] = true;
-                queue.push_back(nb);
-                region_list.push(nb);
-            }
-        }
-        // Region also absorbs same-side neighbors of boundary vertices, not
-        // just cross-partition ones — gives FM room to move on both sides.
-        for &nb in graph.neighbors(v) {
-            let nb = nb as usize;
-            if !in_region[nb] && region_list.len() < max_region {
-                // No move happens until the region is grown, so whether `nb`
-                // has a neighbour on the other side does not change while this
-                // loop runs. A vertex the region keeps reaching but never
-                // admits is reached once per region neighbour it has, and
-                // without the record below its adjacency is walked every time.
-                let is_boundary = match boundary[nb] {
-                    0 => {
-                        let on_boundary = has_cross_neighbor(graph, part, nb);
-                        boundary[nb] = 1 + u8::from(on_boundary);
-                        boundary_touched.push(nb);
-                        on_boundary
-                    }
-                    known => known == 2,
-                };
-                if is_boundary {
-                    in_region[nb] = true;
-                    queue.push_back(nb);
-                    region_list.push(nb);
-                }
-            }
-        }
-    }
+    grow_graph_region(
+        graph,
+        part,
+        seed,
+        max_region,
+        in_region,
+        boundary,
+        boundary_touched,
+        region_list,
+        queue,
+    );
 
     // Gains only for region vertices: O(region × deg), not O(n × deg). A
     // non-region entry is never read, so `gain` is written here and left alone
@@ -387,6 +351,67 @@ pub(super) fn localized_fm_pass(
         boundary[v] = 0;
     }
     improved
+}
+
+#[allow(clippy::too_many_arguments)]
+fn grow_graph_region(
+    graph: &CsrGraph,
+    part: &[u8],
+    seed: usize,
+    max_region: usize,
+    in_region: &mut [bool],
+    boundary: &mut [u8],
+    boundary_touched: &mut Vec<usize>,
+    region_list: &mut Vec<usize>,
+    queue: &mut VecDeque<usize>,
+) {
+    // region_list is collected alongside in_region to avoid a separate O(n)
+    // scan in the selection loop below.
+    in_region[seed] = true;
+    queue.push_back(seed);
+    region_list.push(seed);
+
+    // Cross-partition neighbours first, so the region hugs the cut even when
+    // the cap cuts the growth short.
+    while let Some(v) = queue.pop_front() {
+        if region_list.len() >= max_region {
+            break;
+        }
+        for &nb in graph.neighbors(v) {
+            let nb = nb as usize;
+            if !in_region[nb] && part[nb] != part[v] && region_list.len() < max_region {
+                in_region[nb] = true;
+                queue.push_back(nb);
+                region_list.push(nb);
+            }
+        }
+        // Region also absorbs same-side neighbors of boundary vertices, not
+        // just cross-partition ones — gives FM room to move on both sides.
+        for &nb in graph.neighbors(v) {
+            let nb = nb as usize;
+            if !in_region[nb] && region_list.len() < max_region {
+                // No move happens until the region is grown, so whether `nb`
+                // has a neighbour on the other side does not change while this
+                // loop runs. A vertex the region keeps reaching but never
+                // admits is reached once per region neighbour it has, and
+                // without the record below its adjacency is walked every time.
+                let is_boundary = match boundary[nb] {
+                    0 => {
+                        let on_boundary = has_cross_neighbor(graph, part, nb);
+                        boundary[nb] = 1 + u8::from(on_boundary);
+                        boundary_touched.push(nb);
+                        on_boundary
+                    }
+                    known => known == 2,
+                };
+                if is_boundary {
+                    in_region[nb] = true;
+                    queue.push_back(nb);
+                    region_list.push(nb);
+                }
+            }
+        }
+    }
 }
 
 /// Standard FM refinement (global passes only).

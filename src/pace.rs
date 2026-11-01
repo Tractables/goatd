@@ -227,78 +227,23 @@ impl TreeDecomposition {
             tokens.extend(line.split_whitespace());
             match tokens[0] {
                 "s" => {
-                    // "s td <num_bags> <max_bag_size> <num_vertices>" — the
-                    // counts every id below is checked against.
-                    if saw_solution_line {
-                        return Err(Error::Parse(format!("more than one solution line: {line}")));
-                    }
-                    if tokens.len() != 5 || tokens[1] != "td" {
-                        return Err(Error::Parse(format!("malformed solution line: {line}")));
-                    }
-                    // Every count in the file is read as `u64`, whatever it
-                    // is checked against. Parsing straight into `usize` would
-                    // reject a header wider than the target's pointer with the
-                    // parser's overflow message on a 32-bit build and with the
-                    // check's own message on a 64-bit one.
-                    let declared_bags: u64 = parse_count("bag count", tokens[2])?;
-                    declared_max_bag_size = parse_count("maximum bag size", tokens[3])?;
-                    declared_vertices = parse_count("vertex count", tokens[4])?;
-                    // Every declared bag needs its own "b" line, which is
-                    // four bytes at least, and every declared vertex has to
-                    // appear in one of them, which is two, so a count wider
-                    // than that cannot be met. Rejecting it here keeps the
-                    // allocations below sized by the file rather than by a
-                    // number an ill-formed header asked for: `adj` alone is 24
-                    // bytes a bag.
-                    if declared_bags > text.len().div_ceil(4) as u64 {
-                        return Err(Error::Parse(format!(
-                            "the solution line declares {declared_bags} bags, more than the \
-                             {} bytes of input can define",
-                            text.len()
-                        )));
-                    }
-                    num_bags = declared_bags as usize;
-                    if u64::from(declared_vertices) > text.len().div_ceil(2) as u64 {
-                        return Err(Error::Parse(format!(
-                            "the solution line declares {declared_vertices} vertices, more than \
-                             the {} bytes of input can list",
-                            text.len()
-                        )));
-                    }
+                    let (bags_cap, max_bag, verts) =
+                        parse_solution_line(line, &tokens, text.len(), saw_solution_line)?;
+                    num_bags = bags_cap;
+                    declared_max_bag_size = max_bag;
+                    declared_vertices = verts;
                     bags = Vec::with_capacity(num_bags.min(text.len() / 4));
                     adj = vec![Vec::new(); num_bags];
                     saw_solution_line = true;
                 }
                 "b" => {
-                    // "b <bag_id> <v1> <v2> ..."
-                    if tokens.len() < 2 {
-                        return Err(Error::Parse(format!("malformed bag line: {line}")));
-                    }
-                    if !saw_solution_line {
-                        return Err(Error::Parse(format!(
-                            "bag line before the solution line: {line}"
-                        )));
-                    }
-                    let bag_id = parse_zero_based("bag id", "bag id", tokens[1], num_bags as u64)?;
-                    let vertices: Vec<u32> = tokens[2..]
-                        .iter()
-                        .map(|t| {
-                            parse_zero_based("vertex", "vertex id", t, u64::from(declared_vertices))
-                        })
-                        .collect::<Result<_, Error>>()?;
-                    let bag = TdBag::new(vertices);
-                    if let Some(vertex) = bag
-                        .vertices
-                        .windows(2)
-                        .find_map(|pair| (pair[0] == pair[1]).then_some(pair[0]))
-                    {
-                        return Err(Error::Parse(format!(
-                            "bag {} contains vertex {} more than once",
-                            bag_id + 1,
-                            vertex + 1
-                        )));
-                    }
-                    bags.push((bag_id, bag));
+                    bags.push(parse_bag_line(
+                        line,
+                        &tokens,
+                        saw_solution_line,
+                        num_bags,
+                        declared_vertices,
+                    )?);
                 }
                 _ => {
                     // Tree edge: two bare integers "<bag_id1> <bag_id2>".
@@ -338,63 +283,7 @@ impl TreeDecomposition {
         }
 
         bags.sort_by_key(|(bag_id, _)| *bag_id);
-
-        // `adj` is sized from the solution line and `bags` from the bag lines,
-        // so the two are co-indexed only when the file defines each declared
-        // bag exactly once.
-        if bags.len() != num_bags {
-            return Err(Error::Parse(format!(
-                "the solution line declares {num_bags} bags but the file defines {}",
-                bags.len()
-            )));
-        }
-        if let Some((_, (bag_id, _))) = bags
-            .iter()
-            .enumerate()
-            .find(|(position, (bag_id, _))| *bag_id != *position)
-        {
-            return Err(Error::Parse(format!(
-                "bag {} is defined more than once; each of the {num_bags} declared bags is \
-                 defined once",
-                bag_id + 1
-            )));
-        }
-        let actual_max_bag_size = bags
-            .iter()
-            .map(|(_, bag)| bag.vertices.len())
-            .max()
-            .unwrap_or(0);
-        if actual_max_bag_size as u64 != declared_max_bag_size {
-            return Err(Error::Parse(format!(
-                "the solution line declares maximum bag size {declared_max_bag_size} but the \
-                 largest bag contains {actual_max_bag_size} vertices"
-            )));
-        }
-        let num_tree_edges = adj.iter().map(Vec::len).sum::<usize>() / 2;
-        let expected_tree_edges = num_bags - 1;
-        if num_tree_edges != expected_tree_edges {
-            return Err(Error::Parse(format!(
-                "the bag tree has {num_tree_edges} edges; a tree on {num_bags} bags has \
-                 {expected_tree_edges}"
-            )));
-        }
-        let mut seen = vec![false; num_bags];
-        seen[0] = true;
-        let mut stack = vec![0usize];
-        while let Some(bag) = stack.pop() {
-            for &neighbour in &adj[bag] {
-                if !seen[neighbour] {
-                    seen[neighbour] = true;
-                    stack.push(neighbour);
-                }
-            }
-        }
-        if let Some(disconnected) = seen.iter().position(|&reached| !reached) {
-            return Err(Error::Parse(format!(
-                "bag {} is not connected to the bag tree rooted at 1",
-                disconnected + 1
-            )));
-        }
+        check_parsed_td(&bags, &adj, num_bags, declared_max_bag_size)?;
 
         let decomposition = TreeDecomposition::from_parts(
             declared_vertices,
@@ -409,6 +298,155 @@ impl TreeDecomposition {
             .map_err(|error| Error::Parse(error.to_string()))?;
         Ok(decomposition)
     }
+}
+
+fn parse_solution_line(
+    line: &str,
+    tokens: &[&str],
+    text_len: usize,
+    saw_solution_line: bool,
+) -> Result<(usize, u64, u32), Error> {
+    // "s td <num_bags> <max_bag_size> <num_vertices>" — the
+    // counts every id below is checked against.
+    if saw_solution_line {
+        return Err(Error::Parse(format!("more than one solution line: {line}")));
+    }
+    if tokens.len() != 5 || tokens[1] != "td" {
+        return Err(Error::Parse(format!("malformed solution line: {line}")));
+    }
+    // Every count in the file is read as `u64`, whatever it
+    // is checked against. Parsing straight into `usize` would
+    // reject a header wider than the target's pointer with the
+    // parser's overflow message on a 32-bit build and with the
+    // check's own message on a 64-bit one.
+    let declared_bags: u64 = parse_count("bag count", tokens[2])?;
+    let declared_max_bag_size: u64 = parse_count("maximum bag size", tokens[3])?;
+    let declared_vertices: u32 = parse_count("vertex count", tokens[4])?;
+    // Every declared bag needs its own "b" line, which is
+    // four bytes at least, and every declared vertex has to
+    // appear in one of them, which is two, so a count wider
+    // than that cannot be met. Rejecting it here keeps the
+    // allocations below sized by the file rather than by a
+    // number an ill-formed header asked for: `adj` alone is 24
+    // bytes a bag.
+    if declared_bags > text_len.div_ceil(4) as u64 {
+        return Err(Error::Parse(format!(
+            "the solution line declares {declared_bags} bags, more than the \
+             {text_len} bytes of input can define"
+        )));
+    }
+    if u64::from(declared_vertices) > text_len.div_ceil(2) as u64 {
+        return Err(Error::Parse(format!(
+            "the solution line declares {declared_vertices} vertices, more than \
+             the {text_len} bytes of input can list"
+        )));
+    }
+    Ok((
+        declared_bags as usize,
+        declared_max_bag_size,
+        declared_vertices,
+    ))
+}
+
+fn parse_bag_line(
+    line: &str,
+    tokens: &[&str],
+    saw_solution_line: bool,
+    num_bags: usize,
+    declared_vertices: u32,
+) -> Result<(usize, TdBag), Error> {
+    // "b <bag_id> <v1> <v2> ..."
+    if tokens.len() < 2 {
+        return Err(Error::Parse(format!("malformed bag line: {line}")));
+    }
+    if !saw_solution_line {
+        return Err(Error::Parse(format!(
+            "bag line before the solution line: {line}"
+        )));
+    }
+    let bag_id = parse_zero_based("bag id", "bag id", tokens[1], num_bags as u64)?;
+    let vertices: Vec<u32> = tokens[2..]
+        .iter()
+        .map(|t| parse_zero_based("vertex", "vertex id", t, u64::from(declared_vertices)))
+        .collect::<Result<_, Error>>()?;
+    let bag = TdBag::new(vertices);
+    if let Some(vertex) = bag
+        .vertices
+        .windows(2)
+        .find_map(|pair| (pair[0] == pair[1]).then_some(pair[0]))
+    {
+        return Err(Error::Parse(format!(
+            "bag {} contains vertex {} more than once",
+            bag_id + 1,
+            vertex + 1
+        )));
+    }
+    Ok((bag_id, bag))
+}
+
+fn check_parsed_td(
+    bags: &[(usize, TdBag)],
+    adj: &[Vec<usize>],
+    num_bags: usize,
+    declared_max_bag_size: u64,
+) -> Result<(), Error> {
+    // `adj` is sized from the solution line and `bags` from the bag lines,
+    // so the two are co-indexed only when the file defines each declared
+    // bag exactly once.
+    if bags.len() != num_bags {
+        return Err(Error::Parse(format!(
+            "the solution line declares {num_bags} bags but the file defines {}",
+            bags.len()
+        )));
+    }
+    if let Some((_, (bag_id, _))) = bags
+        .iter()
+        .enumerate()
+        .find(|(position, (bag_id, _))| *bag_id != *position)
+    {
+        return Err(Error::Parse(format!(
+            "bag {} is defined more than once; each of the {num_bags} declared bags is \
+             defined once",
+            bag_id + 1
+        )));
+    }
+    let actual_max_bag_size = bags
+        .iter()
+        .map(|(_, bag)| bag.vertices.len())
+        .max()
+        .unwrap_or(0);
+    if actual_max_bag_size as u64 != declared_max_bag_size {
+        return Err(Error::Parse(format!(
+            "the solution line declares maximum bag size {declared_max_bag_size} but the \
+             largest bag contains {actual_max_bag_size} vertices"
+        )));
+    }
+    let num_tree_edges = adj.iter().map(Vec::len).sum::<usize>() / 2;
+    let expected_tree_edges = num_bags - 1;
+    if num_tree_edges != expected_tree_edges {
+        return Err(Error::Parse(format!(
+            "the bag tree has {num_tree_edges} edges; a tree on {num_bags} bags has \
+             {expected_tree_edges}"
+        )));
+    }
+    let mut seen = vec![false; num_bags];
+    seen[0] = true;
+    let mut stack = vec![0usize];
+    while let Some(bag) = stack.pop() {
+        for &neighbour in &adj[bag] {
+            if !seen[neighbour] {
+                seen[neighbour] = true;
+                stack.push(neighbour);
+            }
+        }
+    }
+    if let Some(disconnected) = seen.iter().position(|&reached| !reached) {
+        return Err(Error::Parse(format!(
+            "bag {} is not connected to the bag tree rooted at 1",
+            disconnected + 1
+        )));
+    }
+    Ok(())
 }
 
 fn parse_count<T: std::str::FromStr<Err = std::num::ParseIntError>>(
