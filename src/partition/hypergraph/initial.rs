@@ -8,7 +8,7 @@
 
 use super::model::Hypergraph;
 use super::refine_fm::{FmScratch, refine_level};
-use crate::partition::common::{BisectionStop, random_bisection};
+use crate::partition::common::{BisectionStop, select_initial_partition};
 use crate::rng::Xorshift64;
 
 /// Grows side 0 outward from `seed` until it holds half the vertex weight;
@@ -111,52 +111,16 @@ pub(super) fn initial_partition(
     scratch: &mut FmScratch,
     stop: &mut BisectionStop,
 ) -> Vec<u8> {
-    let n = hg.vertex_count;
-    if n == 0 {
-        return Vec::new();
-    }
-    if n == 1 {
-        return vec![0];
-    }
-
-    let mut best_part = Vec::new();
-    // Wider than the cut it holds, as on the graph side: a hypergraph may
-    // carry a total hyperedge weight of `u32::MAX`, and a sentinel a candidate
-    // can tie leaves `best_part` empty.
-    let mut best_cut = u64::MAX;
-
     // Restart counts: see "Where the two bisectors differ" in the shared
     // partition bookkeeping.
-    let num_ggg = if n >= 30 { 6 } else { 4 };
-    let num_rand = if n >= 30 { 6 } else { 4 };
-
-    for _ in 0..num_ggg.min(n) {
-        let seed = rng.below(n);
-        let part = greedy_growing(hg, seed, stop);
-        if stop.stopped() {
-            return part;
-        }
-        let candidate_cut = u64::from(hyperedge_cut(hg, &part));
-        if candidate_cut < best_cut {
-            best_cut = candidate_cut;
-            best_part = part;
-        }
-    }
-
-    // Random starts get an FM pass before being scored; grown ones are scored
-    // as produced.
-    for _ in 0..num_rand.min(n) {
-        let mut part = random_bisection(&hg.vertex_weights, rng);
-        refine_level(hg, &mut part, max_imbalance, scratch, stop);
-        if stop.stopped() {
-            return part;
-        }
-        let candidate_cut = u64::from(hyperedge_cut(hg, &part));
-        if candidate_cut < best_cut {
-            best_cut = candidate_cut;
-            best_part = part;
-        }
-    }
-
-    best_part
+    let restarts = if hg.vertex_count >= 30 { 6 } else { 4 };
+    select_initial_partition(
+        &hg.vertex_weights,
+        restarts,
+        rng,
+        stop,
+        |seed, stop| greedy_growing(hg, seed, stop),
+        |part, stop| refine_level(hg, part, max_imbalance, scratch, stop),
+        |part| u64::from(hyperedge_cut(hg, part)),
+    )
 }

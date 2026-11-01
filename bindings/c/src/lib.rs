@@ -544,6 +544,28 @@ fn flatten(td: &TreeDecomposition) -> GoatdDecomposition {
     }
 }
 
+/// Borrow `len` items from `ptr`, or `&[]` when `ptr` is null and `non_empty`
+/// is false.
+///
+/// # Safety
+///
+/// `ptr` must be null or point to `len` initialized values.
+unsafe fn slice_or_empty<'a, T>(
+    ptr: *const T,
+    len: usize,
+    non_empty: bool,
+    null_err: &str,
+) -> Result<&'a [T], Error> {
+    if non_empty && ptr.is_null() {
+        return Err(invalid(null_err));
+    }
+    if ptr.is_null() {
+        Ok(&[])
+    } else {
+        Ok(unsafe { slice::from_raw_parts(ptr, len) })
+    }
+}
+
 /// Read a flattened decomposition back into the shapes
 /// `TreeDecomposition::new` takes. The offsets are checked here because a
 /// caller may have built the arrays itself.
@@ -555,13 +577,13 @@ fn flatten(td: &TreeDecomposition) -> GoatdDecomposition {
 unsafe fn unflatten(
     td: &GoatdDecomposition,
 ) -> Result<(Vec<Vec<u32>>, Vec<(usize, usize)>), Error> {
-    if td.num_bags != 0 && td.bag_offsets.is_null() {
-        return Err(invalid("bag_offsets is null but num_bags is not zero"));
-    }
-    let offsets = if td.bag_offsets.is_null() {
-        &[][..]
-    } else {
-        unsafe { slice::from_raw_parts(td.bag_offsets, td.num_bags + 1) }
+    let offsets = unsafe {
+        slice_or_empty(
+            td.bag_offsets,
+            td.num_bags + 1,
+            td.num_bags != 0,
+            "bag_offsets is null but num_bags is not zero",
+        )?
     };
     let total = match offsets.first().copied() {
         None => 0,
@@ -571,13 +593,13 @@ unsafe fn unflatten(
     if offsets.windows(2).any(|pair| pair[0] > pair[1]) {
         return Err(invalid("bag_offsets does not increase"));
     }
-    if total != 0 && td.bag_vertices.is_null() {
-        return Err(invalid("bag_vertices is null but the bags are not empty"));
-    }
-    let vertices = if td.bag_vertices.is_null() {
-        &[][..]
-    } else {
-        unsafe { slice::from_raw_parts(td.bag_vertices, total) }
+    let vertices = unsafe {
+        slice_or_empty(
+            td.bag_vertices,
+            total,
+            total != 0,
+            "bag_vertices is null but the bags are not empty",
+        )?
     };
     let bags = (0..td.num_bags)
         .map(|bag| vertices[offsets[bag]..offsets[bag + 1]].to_vec())
@@ -589,11 +611,7 @@ unsafe fn unflatten(
     let Some(len) = td.num_tree_edges.checked_mul(2) else {
         return Err(invalid("num_tree_edges is too large to address as pairs"));
     };
-    let flat = if td.tree_edges.is_null() {
-        &[][..]
-    } else {
-        unsafe { slice::from_raw_parts(td.tree_edges, len) }
-    };
+    let flat = unsafe { slice_or_empty(td.tree_edges, len, false, "")? };
     let (pairs, _) = flat.as_chunks::<2>();
     let tree_edges = pairs.iter().map(|pair| (pair[0], pair[1])).collect();
     Ok((bags, tree_edges))

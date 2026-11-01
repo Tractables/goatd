@@ -8,7 +8,7 @@
 
 use super::csr::CsrGraph;
 use super::refine_fm::{FmScratch, refine_level};
-use crate::partition::common::{BisectionStop, random_bisection};
+use crate::partition::common::{BisectionStop, select_initial_partition};
 use crate::rng::Xorshift64;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -135,46 +135,15 @@ pub(super) fn initial_partition(
     scratch: &mut FmScratch,
     stop: &mut BisectionStop,
 ) -> Vec<u8> {
-    let n = graph.num_vertices();
-    if n == 0 {
-        return Vec::new();
-    }
-    if n == 1 {
-        return vec![0];
-    }
-
-    let mut best_part = Vec::new();
-    let mut best_cut = u64::MAX;
-
     // Restart count: see "Where the two bisectors differ" in the shared
     // partition bookkeeping.
-    for _ in 0..4.min(n) {
-        let seed = rng.below(n);
-        let part = greedy_graph_growing(graph, seed, stop);
-        if stop.stopped() {
-            return part;
-        }
-        let cut = edge_cut(graph, &part);
-        if cut < best_cut {
-            best_cut = cut;
-            best_part = part;
-        }
-    }
-
-    // Random starts get an FM pass before being scored; grown ones are scored
-    // as produced.
-    for _ in 0..4.min(n) {
-        let mut part = random_bisection(&graph.vertex_weights, rng);
-        refine_level(graph, &mut part, max_imbalance, scratch, stop);
-        if stop.stopped() {
-            return part;
-        }
-        let cut = edge_cut(graph, &part);
-        if cut < best_cut {
-            best_cut = cut;
-            best_part = part;
-        }
-    }
-
-    best_part
+    select_initial_partition(
+        &graph.vertex_weights,
+        4,
+        rng,
+        stop,
+        |seed, stop| greedy_graph_growing(graph, seed, stop),
+        |part, stop| refine_level(graph, part, max_imbalance, scratch, stop),
+        |part| edge_cut(graph, part),
+    )
 }

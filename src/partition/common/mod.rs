@@ -486,6 +486,62 @@ pub(super) fn random_bisection(vertex_weights: &[u32], rng: &mut Xorshift64) -> 
     part
 }
 
+/// Run `restarts` greedy-growing starts and `restarts` random-bisection + FM
+/// starts on the coarsest level and return the partition with the smallest cut.
+pub(super) fn select_initial_partition(
+    vertex_weights: &[u32],
+    restarts: usize,
+    rng: &mut Xorshift64,
+    stop: &mut BisectionStop,
+    mut grow: impl FnMut(usize, &mut BisectionStop) -> Vec<u8>,
+    mut refine: impl FnMut(&mut [u8], &mut BisectionStop),
+    mut cut: impl FnMut(&[u8]) -> u64,
+) -> Vec<u8> {
+    let n = vertex_weights.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    if n == 1 {
+        return vec![0];
+    }
+
+    let mut best_part = Vec::new();
+    // Wider than a `u32` cut so a candidate whose total hyperedge weight is
+    // `u32::MAX` still beats the initial sentinel.
+    let mut best_cut = u64::MAX;
+    let count = restarts.min(n);
+
+    for _ in 0..count {
+        let seed = rng.below(n);
+        let part = grow(seed, stop);
+        if stop.stopped() {
+            return part;
+        }
+        let candidate_cut = cut(&part);
+        if candidate_cut < best_cut {
+            best_cut = candidate_cut;
+            best_part = part;
+        }
+    }
+
+    // Random starts get an FM pass before being scored; grown ones are scored
+    // as produced.
+    for _ in 0..count {
+        let mut part = random_bisection(vertex_weights, rng);
+        refine(&mut part, stop);
+        if stop.stopped() {
+            return part;
+        }
+        let candidate_cut = cut(&part);
+        if candidate_cut < best_cut {
+            best_cut = candidate_cut;
+            best_part = part;
+        }
+    }
+
+    best_part
+}
+
 /// Vertices bucketed by gain. Each bucket is a stack, so the most recently
 /// inserted or updated vertex wins a gain tie.
 pub(super) struct GainBuckets {
