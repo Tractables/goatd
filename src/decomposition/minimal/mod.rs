@@ -224,38 +224,43 @@ fn common_neighbourhood_is_clique(
             let index = member_word * 64 + bits.trailing_zeros() as usize;
             bits &= bits - 1;
             let row = graph.row(index);
-            // A vertex is in its own common-neighbourhood word but not in its
-            // own row, so that word is compared apart from the rest.
-            let own = common[member_word] & !(1u64 << (index % 64));
-            let absent = own & !row[member_word];
-            if absent != 0 {
-                return (
-                    size,
-                    Some((index, member_word * 64 + absent.trailing_zeros() as usize)),
-                );
-            }
-            let missing = |(word, (&wanted, &present)): (usize, (&u64, &u64))| {
-                let absent = wanted & !present;
-                (absent != 0).then(|| word * 64 + absent.trailing_zeros() as usize)
-            };
-            if let Some(other) = common[..member_word]
-                .iter()
-                .zip(&row[..member_word])
-                .enumerate()
-                .find_map(missing)
-                .or_else(|| {
-                    common[member_word + 1..]
-                        .iter()
-                        .zip(&row[member_word + 1..])
-                        .enumerate()
-                        .find_map(|(word, pair)| missing((member_word + 1 + word, pair)))
-                })
-            {
+            if let Some(other) = first_missing_common_neighbour(common, row, index, member_word) {
                 return (size, Some((index, other)));
             }
         }
     }
     (size, None)
+}
+
+fn first_missing_common_neighbour(
+    common: &[u64],
+    row: &[u64],
+    index: usize,
+    member_word: usize,
+) -> Option<usize> {
+    // A vertex is in its own common-neighbourhood word but not in its
+    // own row, so that word is compared apart from the rest.
+    let own = common[member_word] & !(1u64 << (index % 64));
+    let absent = own & !row[member_word];
+    if absent != 0 {
+        return Some(member_word * 64 + absent.trailing_zeros() as usize);
+    }
+    let missing = |(word, (&wanted, &present)): (usize, (&u64, &u64))| {
+        let absent = wanted & !present;
+        (absent != 0).then(|| word * 64 + absent.trailing_zeros() as usize)
+    };
+    common[..member_word]
+        .iter()
+        .zip(&row[..member_word])
+        .enumerate()
+        .find_map(missing)
+        .or_else(|| {
+            common[member_word + 1..]
+                .iter()
+                .zip(&row[member_word + 1..])
+                .enumerate()
+                .find_map(|(word, pair)| missing((member_word + 1 + word, pair)))
+        })
 }
 
 /// What a sweep knows about an edge before testing it.
@@ -542,13 +547,7 @@ fn minimalize(
                         return removed + removed_this_pass;
                     }
                     if test_and_maybe_remove_edge(
-                        completion,
-                        vertex,
-                        other,
-                        pass,
-                        &mut scratch.touched,
-                        &mut scratch.common[..],
-                        witnesses,
+                        completion, vertex, other, pass, scratch, witnesses,
                     ) {
                         removed_this_pass += 1;
                     }
@@ -574,12 +573,11 @@ fn test_and_maybe_remove_edge(
     vertex: usize,
     other: usize,
     pass: u32,
-    touched: &mut [u32],
-    common: &mut [u64],
+    scratch: &mut Scratch,
     witnesses: &mut impl Witnesses,
 ) -> bool {
     let words = completion.words;
-    let untouched = touched[vertex] == 0 && touched[other] == 0;
+    let untouched = scratch.touched[vertex] == 0 && scratch.touched[other] == 0;
     let hint = match witnesses.lookup(vertex, other, untouched) {
         Known::Fails(size) => {
             // What the test would have charged for its rows.
@@ -589,15 +587,15 @@ fn test_and_maybe_remove_edge(
         Known::Hint(pair) => Some(pair),
         Known::Nothing => None,
     };
-    match common_neighbourhood_is_clique(completion, vertex, other, common, hint) {
+    match common_neighbourhood_is_clique(completion, vertex, other, &mut scratch.common[..], hint) {
         (_, None) => {
             completion.remove(vertex, other);
-            touched[vertex] = pass;
-            touched[other] = pass;
+            scratch.touched[vertex] = pass;
+            scratch.touched[other] = pass;
             true
         }
         (size, Some((a, b))) => {
-            if untouched && touched[a] == 0 && touched[b] == 0 {
+            if untouched && scratch.touched[a] == 0 && scratch.touched[b] == 0 {
                 witnesses.record(size, (a, b));
             }
             false

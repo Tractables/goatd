@@ -29,31 +29,25 @@ pub(super) fn coarsen_one_level(
     if n <= min_vertices {
         return None;
     }
-
     // A vertex's degree here is the number of hyperedges it is a pin of.
     let perm = matching_order(n, |v| hg.vertex_degree(v), &hg.vertex_weights, rng);
-
     let mut match_of = vec![None; n];
     let mut coarse_id: Vec<u32> = vec![0; n];
     let mut num_coarse: u32 = 0;
-
     // Shared weight per candidate, indexed by vertex and cleared over
     // `candidates` after each match: a map per vertex per level is one
     // allocation for every vertex of every level of every restart.
     let mut connectivity: Vec<u32> = vec![0; n];
     let mut candidates: Vec<u32> = Vec::new();
-
     for &v in &perm {
         if match_of[v].is_some() {
             continue;
         }
-
         // Candidates are ranked by the total weight of the hyperedges they
         // share with `v`. This makes an explicitly weighted hyperedge, including
         // canonicalized repeats whose weights were added, influence coarsening
         // by the same amount that it influences the cut objective.
         collect_neighbor_connectivity(hg, v, &match_of, &mut connectivity, &mut candidates);
-
         let best_neighbor = select_best_neighbor(
             v,
             part,
@@ -62,7 +56,6 @@ pub(super) fn coarsen_one_level(
         for &nb in &candidates {
             connectivity[nb as usize] = 0;
         }
-
         record_match(
             v,
             best_neighbor,
@@ -71,16 +64,12 @@ pub(super) fn coarsen_one_level(
             &mut num_coarse,
         );
     }
-
     let nc = num_coarse as usize;
     if !shrank_enough(n, nc) {
         return None;
     }
-
-    let coarse_hg = build_coarse_hypergraph(hg, nc, &coarse_id);
-
     Some(CoarseningLevel {
-        hg: coarse_hg,
+        hg: build_coarse_hypergraph(hg, nc, &coarse_id),
         mapping: coarse_id,
     })
 }

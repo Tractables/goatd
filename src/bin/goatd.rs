@@ -611,62 +611,7 @@ impl RawArgs {
     fn validate_stage_gates_and_budgets(&self, order: Method) {
         self.validate_hedge_and_sampling_gates();
         self.validate_stage_gate_conflicts();
-        // Four stages take their share off a window a run with no budget does not
-        // have. The library refuses the equivalent config.
-        if self.budget.is_none() {
-            for (flag, given, stage, window) in [
-                (
-                    "--no-bipartite-lift",
-                    self.no_bipartite_lift,
-                    "bipartite lift",
-                    "soft budget",
-                ),
-                (
-                    "--bipartite-lift-rate",
-                    self.bipartite_lift_rate.is_some(),
-                    "bipartite lift",
-                    "soft budget",
-                ),
-                (
-                    "--recombine-up-to",
-                    self.recombine_up_to.is_some(),
-                    "recombination stage",
-                    "hard window",
-                ),
-                (
-                    "--no-recombine",
-                    self.no_recombine,
-                    "recombination stage",
-                    "hard window",
-                ),
-                (
-                    "--merge-up-to",
-                    self.merge_up_to.is_some(),
-                    "merge loop",
-                    "hard window",
-                ),
-                ("--no-merge", self.no_merge, "merge loop", "hard window"),
-                (
-                    "--local-merge-up-to",
-                    self.local_merge_up_to.is_some(),
-                    "local re-triangulation stage",
-                    "hard window",
-                ),
-                (
-                    "--no-local-merge",
-                    self.no_local_merge,
-                    "local re-triangulation stage",
-                    "hard window",
-                ),
-            ] {
-                if given {
-                    usage_error(&format!(
-                        "{flag} requires --budget: the {stage} runs on a share of the {window}, \
-                         and a run with no budget does not run it at all"
-                    ));
-                }
-            }
-        }
+        self.validate_budget_required_stage_flags();
         // The portfolio's trailing candidate is FlowCutter, so the winner has
         // already been cut along FlowCutter separators when the run ends.
         if self.refine && order == Method::Portfolio {
@@ -678,37 +623,69 @@ impl RawArgs {
         }
     }
 
+    fn validate_budget_required_stage_flags(&self) {
+        if self.budget.is_some() {
+            return;
+        }
+        // Four stages take their share off a window a run with no budget does not
+        // have. The library refuses the equivalent config.
+        for (flag, given, stage, window) in [
+            (
+                "--no-bipartite-lift",
+                self.no_bipartite_lift,
+                "bipartite lift",
+                "soft budget",
+            ),
+            (
+                "--bipartite-lift-rate",
+                self.bipartite_lift_rate.is_some(),
+                "bipartite lift",
+                "soft budget",
+            ),
+            (
+                "--recombine-up-to",
+                self.recombine_up_to.is_some(),
+                "recombination stage",
+                "hard window",
+            ),
+            (
+                "--no-recombine",
+                self.no_recombine,
+                "recombination stage",
+                "hard window",
+            ),
+            (
+                "--merge-up-to",
+                self.merge_up_to.is_some(),
+                "merge loop",
+                "hard window",
+            ),
+            ("--no-merge", self.no_merge, "merge loop", "hard window"),
+            (
+                "--local-merge-up-to",
+                self.local_merge_up_to.is_some(),
+                "local re-triangulation stage",
+                "hard window",
+            ),
+            (
+                "--no-local-merge",
+                self.no_local_merge,
+                "local re-triangulation stage",
+                "hard window",
+            ),
+        ] {
+            if given {
+                usage_error(&format!(
+                    "{flag} requires --budget: the {stage} runs on a share of the {window}, \
+                     and a run with no budget does not run it at all"
+                ));
+            }
+        }
+    }
+
     fn validate_hedge_and_sampling_gates(&self) {
-        // The reserve decides how many stages follow the first, so it says nothing
-        // where there is no second stage to refuse. With neither flag the series is
-        // the portfolio's own, which has more than one stage.
         if self.hedge_reserve.is_some() {
-            let stages = self
-                .hedge_dims
-                .as_ref()
-                .map(Vec::len)
-                .or(self.hedge_random)
-                .unwrap_or(DEFAULT_HEDGE_DIMS.len());
-            if stages < 2 {
-                usage_error(
-                    "--hedge-reserve decides how many weighted stages run after the first, and \
-                     the first runs on any budget; give --hedge-dims or --hedge-random with two \
-                     or more stages",
-                );
-            }
-            if self.no_hedge {
-                usage_error(
-                    "--hedge-reserve says how much of the budget the hedge's weighted stages may \
-                     spend and --no-hedge runs none; give one",
-                );
-            }
-            if self.budget.is_none() {
-                usage_error(
-                    "--hedge-reserve requires --budget: the reserve is a fraction of the time the \
-                     restarts would otherwise take, and a run with no budget leaves every stage \
-                     unbounded",
-                );
-            }
+            self.validate_hedge_reserve();
         }
         // The rate decides whether the bipartite lift runs, so it says nothing
         // where the stage is off.
@@ -740,6 +717,38 @@ impl RawArgs {
             usage_error(
                 "--sampling-patience and --no-sampling-patience both say when the restarts \
                  stop; give one",
+            );
+        }
+    }
+
+    fn validate_hedge_reserve(&self) {
+        // The reserve decides how many stages follow the first, so it says nothing
+        // where there is no second stage to refuse. With neither flag the series is
+        // the portfolio's own, which has more than one stage.
+        let stages = self
+            .hedge_dims
+            .as_ref()
+            .map(Vec::len)
+            .or(self.hedge_random)
+            .unwrap_or(DEFAULT_HEDGE_DIMS.len());
+        if stages < 2 {
+            usage_error(
+                "--hedge-reserve decides how many weighted stages run after the first, and \
+                 the first runs on any budget; give --hedge-dims or --hedge-random with two \
+                 or more stages",
+            );
+        }
+        if self.no_hedge {
+            usage_error(
+                "--hedge-reserve says how much of the budget the hedge's weighted stages may \
+                 spend and --no-hedge runs none; give one",
+            );
+        }
+        if self.budget.is_none() {
+            usage_error(
+                "--hedge-reserve requires --budget: the reserve is a fraction of the time the \
+                 restarts would otherwise take, and a run with no budget leaves every stage \
+                 unbounded",
             );
         }
     }

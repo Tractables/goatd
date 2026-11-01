@@ -209,49 +209,39 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
     mut sink: ElimSink<'_>,
     stop: ElimStop,
 ) -> ElimExit {
-    let ElimStop {
-        soft_deadline,
-        hard_deadline,
-        width_bound,
-    } = stop;
     // Preprocessing may have removed low-degree vertices, pushing density past
     // the bitset break-even even when the graph was built in adj-only mode.
     // Check once before the initial scan, a major hotspot on dense residuals.
     if P::MAINTAIN_BITSET && graph.should_promote_bitset() {
         graph.promote_bitset();
     }
-
-    let mut cheap_mode = match policy.seed(graph, soft_deadline, hard_deadline) {
+    let mut cheap_mode = match policy.seed(graph, stop.soft_deadline, stop.hard_deadline) {
         Seeded::Ready => false,
         Seeded::CheapMode => true,
         Seeded::Bailed => return ElimExit::DeadlineReached(Cutoff::Hard),
     };
-
     let mut nbrs_buf = Vec::new();
     let mut pacer = DeadlinePacer::new();
     // A clique residual stays a clique as vertices are removed from it, so
     // this only needs to latch true once — that is what lets the tail drain
     // skip all scoring work on the giant-clique endgame.
     let mut clique_residual = false;
-
     while let Some((v, snapshot)) = match pop_next_greedy_vertex(
         policy,
         graph,
         &mut pacer,
         &mut cheap_mode,
-        soft_deadline,
-        hard_deadline,
+        stop.soft_deadline,
+        stop.hard_deadline,
     ) {
         Ok(next) => next,
         Err(exit) => return exit,
     } {
         let bag = take_bag(graph, v, &mut nbrs_buf);
         let bag_len = bag.len();
-
         if !clique_residual && graph.is_residual_clique() {
             clique_residual = true;
         }
-
         let simplicial = P::ZERO_SCORE_IS_SIMPLICIAL && !cheap_mode && snapshot == 0;
         if let Some(exit) = eliminate_and_advance_greedy(
             policy,
@@ -264,8 +254,8 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
             clique_residual,
             simplicial,
             &mut cheap_mode,
-            soft_deadline,
-            width_bound,
+            stop.soft_deadline,
+            stop.width_bound,
         ) {
             return exit;
         }

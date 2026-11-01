@@ -492,25 +492,13 @@ impl FillAffected {
         // graph holds no self-loop; `outside` is its complement without v.
         // Both are taken out of the scratch for the pass so the loops below
         // can hold them beside the counters.
-        debug_assert!(
-            self.inside[vi / 64] & (1u64 << (vi % 64)) == 0,
-            "vertex {v} is its own neighbour"
-        );
         let mut inside = std::mem::take(&mut self.inside);
         let mut outside = std::mem::take(&mut self.outside);
         let mut x_inside = std::mem::take(&mut self.x_inside);
         let mut x_outside = std::mem::take(&mut self.x_outside);
         let mut v_words = std::mem::take(&mut self.v_words);
         let mut x_words = std::mem::take(&mut self.x_words);
-        v_words.clear();
-        crate::meter::charge(w as u64);
-        for (j, (out, &word)) in outside[..w].iter_mut().zip(&inside[..w]).enumerate() {
-            *out = !word;
-            if word != 0 {
-                v_words.push(j as u32);
-            }
-        }
-        outside[vi / 64] &= !(1u64 << (vi % 64));
+        Self::fill_outside_and_v_words(v, vi, w, &inside, &mut outside, &mut v_words);
         // The fill edges in the order the elimination would record them: by
         // neighbour, then by slot, each pair once from its smaller vertex.
         // Slots run in vertex-id order, so the slots say which is smaller.
@@ -543,6 +531,29 @@ impl FillAffected {
         done
     }
 
+    fn fill_outside_and_v_words(
+        v: u32,
+        vi: usize,
+        w: usize,
+        inside: &[u64],
+        outside: &mut [u64],
+        v_words: &mut Vec<u32>,
+    ) {
+        debug_assert!(
+            inside[vi / 64] & (1u64 << (vi % 64)) == 0,
+            "vertex {v} is its own neighbour"
+        );
+        v_words.clear();
+        crate::meter::charge(w as u64);
+        for (j, (out, &word)) in outside[..w].iter_mut().zip(&inside[..w]).enumerate() {
+            *out = !word;
+            if word != 0 {
+                v_words.push(j as u32);
+            }
+        }
+        outside[vi / 64] &= !(1u64 << (vi % 64));
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn prepare_neighbour_bs(
         &mut self,
@@ -560,16 +571,14 @@ impl FillAffected {
     ) -> bool {
         let w = graph.bitset_words;
         let u = graph.bitset_slot_of(u_raw);
-        let ub = u * w;
         crate::meter::charge(v_words.len() as u64);
         // u's fill edges are v's other neighbours that u's row lacks:
         // u's own bit leaves v's row while they are read, and is put
         // back after. u is never a common neighbour of its own fill
         // edge, so the pass over each edge does not see the difference.
         inside[u / 64] &= !(1u64 << (u % 64));
-        let u_row = &graph.bitset[ub..ub + w];
-        let mut gained = 0u32;
-        let mut masked = false;
+        let u_row = &graph.bitset[u * w..u * w + w];
+        let (mut gained, mut masked) = (0u32, false);
         // u's own word may have gone empty above; walking it is harmless.
         for &j in v_words {
             let j = j as usize;
@@ -710,29 +719,8 @@ impl FillAffected {
         self.v_position.clear();
         let ahead_of_walk = prefetching(self.marker.len());
         for &u in nbrs {
-            // Stamp u's row: it says which of v's other neighbours u lacks,
-            // which are its fill edges, and stays valid while they are
-            // processed since nothing below stamps again. The same walk
-            // finds v, which the elimination takes out of the row.
-            self.bump_stamp();
-            let stamp = self.stamp;
             let row = &graph.adj[u as usize];
-            crate::meter::charge((row.len() + k) as u64);
-            let mut v_position = 0usize;
-            for (position, &z) in row.iter().enumerate() {
-                if ahead_of_walk && let Some(&ahead) = row.get(position + PREFETCH_DISTANCE) {
-                    prefetch(&self.marker, ahead as usize);
-                }
-                debug_assert!((z as usize) < self.marker.len());
-                // SAFETY: a row holds vertex ids of the graph this scratch was
-                // sized for, and `marker` has an entry per vertex.
-                unsafe { *self.marker.get_unchecked_mut(z as usize) = stamp };
-                if z == v {
-                    v_position = position;
-                }
-            }
-            debug_assert_eq!(row[v_position], v, "{u} is not a neighbour of {v}");
-            self.v_position.push(v_position as u32);
+            let stamp = self.stamp_neighbour_row(row, v, k, ahead_of_walk);
             let start = self.partners.len();
             self.starts.push(start as u32);
             // The fill edges in the order the elimination would record them:
@@ -757,6 +745,32 @@ impl FillAffected {
         }
         self.starts.push(self.partners.len() as u32);
         true
+    }
+
+    fn stamp_neighbour_row(&mut self, row: &[u32], v: u32, k: usize, ahead_of_walk: bool) -> u16 {
+        // Stamp u's row: it says which of v's other neighbours u lacks,
+        // which are its fill edges, and stays valid while they are
+        // processed since nothing below stamps again. The same walk
+        // finds v, which the elimination takes out of the row.
+        self.bump_stamp();
+        let stamp = self.stamp;
+        crate::meter::charge((row.len() + k) as u64);
+        let mut v_position = 0usize;
+        for (position, &z) in row.iter().enumerate() {
+            if ahead_of_walk && let Some(&ahead) = row.get(position + PREFETCH_DISTANCE) {
+                prefetch(&self.marker, ahead as usize);
+            }
+            debug_assert!((z as usize) < self.marker.len());
+            // SAFETY: a row holds vertex ids of the graph this scratch was
+            // sized for, and `marker` has an entry per vertex.
+            unsafe { *self.marker.get_unchecked_mut(z as usize) = stamp };
+            if z == v {
+                v_position = position;
+            }
+        }
+        debug_assert_eq!(row[v_position], v, "row is not a neighbour of {v}");
+        self.v_position.push(v_position as u32);
+        stamp
     }
 
     /// The sparse form of [`fill_edge_bs`](Self::fill_edge_bs), with x's row

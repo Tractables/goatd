@@ -159,10 +159,7 @@ fn invoke_td_compute(
             let timeout_ms = duration_ms(timeout);
             let patience_ms = patience.map(duration_ms).unwrap_or(0);
             let (steps, iterations) = ffi_step_limits(steps, iterations);
-            let steps = match timeout_behavior {
-                TimeoutBehavior::AdaptSearch => steps,
-                TimeoutBehavior::StopOnly => scaled_steps(steps, num_edges),
-            };
+            let steps = timed_step_limit(steps, timeout_behavior, num_edges);
             // SAFETY: all input and output buffers remain live for the
             // call; a non-null returned handle transfers ownership.
             unsafe {
@@ -200,6 +197,13 @@ fn invoke_td_compute(
                 )
             }
         }
+    }
+}
+
+fn timed_step_limit(steps: i64, timeout_behavior: TimeoutBehavior, num_edges: usize) -> i64 {
+    match timeout_behavior {
+        TimeoutBehavior::AdaptSearch => steps,
+        TimeoutBehavior::StopOnly => scaled_steps(steps, num_edges),
     }
 }
 

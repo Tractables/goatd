@@ -177,6 +177,16 @@ fn rebuild(
     }
 
     connect_support_components(&kept, small.adjacency(), &attachment, &mut tree_edges);
+    finish_rebuilt_decomposition(graph, small, connecting, tree_edges, original)
+}
+
+fn finish_rebuilt_decomposition(
+    graph: &Graph,
+    small: TreeDecomposition,
+    connecting: Vec<Vec<u32>>,
+    tree_edges: Vec<(usize, usize)>,
+    original: impl Fn(u32) -> u32 + Copy,
+) -> Option<TreeDecomposition> {
     // The bags the rebuild did not change move into the candidate as they
     // stand; raising their ids over the restored vertex preserves their order.
     let mut bags = small.into_bags();

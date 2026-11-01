@@ -126,19 +126,13 @@ fn multilevel_pass(
         }
         let coarse_part_ref = projected_part.as_deref();
         if let Some(level) = coarsen_one_level(current, MIN_COARSEN_SIZE, rng, coarse_part_ref) {
-            if let Some(ref mut pp) = projected_part {
-                let nc = level.hg.vertex_count;
-                project_to_coarse(
-                    pp,
-                    &level.mapping,
-                    nc,
-                    &mut projection_counts,
-                    &mut projection,
-                );
-                std::mem::swap(pp, &mut projection);
-            }
-            levels.push(level);
-            current = &levels.last().unwrap().hg;
+            current = push_coarsening_level(
+                &mut levels,
+                level,
+                &mut projected_part,
+                &mut projection_counts,
+                &mut projection,
+            );
         } else {
             break;
         }
@@ -147,11 +141,8 @@ fn multilevel_pass(
     // Coarsest level: either the caller's partition projected the whole way
     // down, or a fresh one grown here. This is the only point in the sweep
     // where a partition is created rather than improved.
-    let mut part = if let Some(pp) = projected_part {
-        pp
-    } else {
-        initial_partition(current, rng, max_imbalance, scratch, stop)
-    };
+    let mut part = projected_part
+        .unwrap_or_else(|| initial_partition(current, rng, max_imbalance, scratch, stop));
 
     // Coarse hyperedges carry the summed weight of every fine hyperedge merged
     // into them, so a move here can be worth many fine hyperedges.
@@ -166,6 +157,22 @@ fn multilevel_pass(
         scratch,
         stop,
     )
+}
+
+fn push_coarsening_level<'a>(
+    levels: &'a mut Vec<CoarseningLevel>,
+    level: CoarseningLevel,
+    projected_part: &mut Option<Vec<u8>>,
+    projection_counts: &mut Vec<[u32; 2]>,
+    projection: &mut Vec<u8>,
+) -> &'a Hypergraph {
+    if let Some(pp) = projected_part {
+        let nc = level.hg.vertex_count;
+        project_to_coarse(pp, &level.mapping, nc, projection_counts, projection);
+        std::mem::swap(pp, projection);
+    }
+    levels.push(level);
+    &levels.last().unwrap().hg
 }
 
 fn uncoarsen_and_refine(

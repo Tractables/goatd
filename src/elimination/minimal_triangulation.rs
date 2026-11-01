@@ -64,8 +64,7 @@ pub(crate) fn cardinality_search(
     // interrupt, since numbering a vertex zeroes its count. The reach marks
     // are cleared after every step, so between steps a mark is either empty
     // or [`NUMBERED`].
-    let mut counts = vec![0u32; n];
-    let mut states = vec![0u8; n];
+    let (mut counts, mut states) = (vec![0u32; n], vec![0u8; n]);
     // The highest count in each run of 64 vertices, so a step scans the runs
     // and then one run rather than every vertex. A count only rises, except
     // to zero when its vertex is numbered, and that is the one time a run's
@@ -73,21 +72,18 @@ pub(crate) fn cardinality_search(
     let mut run_max = vec![0u32; n.div_ceil(64)];
     // The lowest unnumbered vertex, which is what a step takes when no
     // unnumbered vertex counts anything yet.
-    let mut lowest = 0usize;
-    let mut selected: Vec<u32> = Vec::with_capacity(n);
+    let (mut lowest, mut selected) = (0usize, Vec::with_capacity(n));
     // The vertices the current step marked, and the buckets the path search
     // walks, both kept across steps and cleared after each one so the search
     // allocates once.
-    let mut touched: Vec<u32> = Vec::new();
+    let (mut touched, mut raised) = (Vec::new(), Vec::new());
     // Only the path search walks buckets, and the plain search runs once per
     // rebuilt vertex on a graph that may have hundreds of thousands of them.
     let mut buckets: Vec<Vec<u32>> = match reach {
         Reach::LowerPaths => vec![Vec::new(); n + 1],
         Reach::Neighbours => Vec::new(),
     };
-    let mut raised: Vec<u32> = Vec::new();
     let mut pacer = DeadlinePacer::new();
-
     for _ in 0..n {
         // The step's own scan of every vertex, charged before it runs so the
         // pacer counts a search that reaches nothing else.
@@ -97,7 +93,6 @@ pub(crate) fn cardinality_search(
         }
         let chosen = number_chosen_vertex(&mut run_max, &mut counts, &mut states, &mut lowest);
         selected.push(chosen as u32);
-
         collect_unnumbered_neighbours(&adjacency[chosen], &states, &mut raised);
         if reach == Reach::LowerPaths
             && !reach_lower_paths(
@@ -209,15 +204,7 @@ fn reach_lower_paths(
     // Bucket `j` holds the vertices reachable through interior vertices
     // that all count at most `j`, so draining the buckets in increasing
     // `j` reaches every vertex by its cheapest path first.
-    touched.clear();
-    states[chosen] |= REACHED;
-    touched.push(chosen as u32);
-    for &neighbour in raised.iter() {
-        states[neighbour as usize] |= REACHED;
-        let count = counts[neighbour as usize] as usize;
-        touched.push(neighbour);
-        buckets[count].push(neighbour);
-    }
+    seed_direct_neighbours(chosen, states, counts, raised, touched, buckets);
     // A step that reaches a handful of vertices would otherwise index
     // and pop every one of the `n + 1` buckets. A vertex is only ever
     // added to the level being drained or to a higher one, so once
@@ -257,6 +244,25 @@ fn reach_lower_paths(
         states[vertex as usize] &= !REACHED;
     }
     true
+}
+
+fn seed_direct_neighbours(
+    chosen: usize,
+    states: &mut [u8],
+    counts: &[u32],
+    raised: &[u32],
+    touched: &mut Vec<u32>,
+    buckets: &mut [Vec<u32>],
+) {
+    touched.clear();
+    states[chosen] |= REACHED;
+    touched.push(chosen as u32);
+    for &neighbour in raised {
+        states[neighbour as usize] |= REACHED;
+        let count = counts[neighbour as usize] as usize;
+        touched.push(neighbour);
+        buckets[count].push(neighbour);
+    }
 }
 
 /// Number the active residual with a cardinality search of the given reach and

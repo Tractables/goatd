@@ -91,11 +91,9 @@ fn multilevel_pass(
     stop: &mut BisectionStop,
 ) -> Vec<u8> {
     let n = graph.num_vertices();
-
     // Pre-allocated once, reused across all levels: avoids O(L²) reallocation.
     let mut count_scratch: Vec<[u32; 2]> = Vec::with_capacity(n);
     let mut proj_scratch: Vec<u8> = Vec::with_capacity(n);
-
     // Coarsening. Each level contracts matched pairs, so `levels` ends up
     // ordered finest-first and `current` walks down to the coarsest graph.
     let mut levels: Vec<CoarseningLevel> = Vec::new();
@@ -111,9 +109,7 @@ fn multilevel_pass(
         if stop.reached() {
             return index_split(n);
         }
-        let level = coarsen_one_level(current, MIN_COARSEN_SIZE, rng, carried.as_deref());
-
-        if let Some(level) = level {
+        if let Some(level) = coarsen_one_level(current, MIN_COARSEN_SIZE, rng, carried.as_deref()) {
             current = push_coarsening_level(
                 &mut levels,
                 level,
@@ -125,21 +121,15 @@ fn multilevel_pass(
             break;
         }
     }
-
     // Coarsest level: either the caller's partition projected the whole way
     // down, or a fresh one grown here. This is the only point in the sweep
     // where a partition is created rather than improved.
-    let mut coarse_part = if let Some(carried) = carried {
-        carried
-    } else {
-        initial_partition(current, rng, max_imbalance, scratch, stop)
-    };
-
+    let mut coarse_part =
+        carried.unwrap_or_else(|| initial_partition(current, rng, max_imbalance, scratch, stop));
     // Coarse edges carry the summed weight of everything contracted into them,
     // so a move here is worth many fine edges and this is the cheapest place in
     // the sweep to buy cut.
     refine_level(current, &mut coarse_part, max_imbalance, scratch, stop);
-
     uncoarsen_and_refine(
         graph,
         &levels,

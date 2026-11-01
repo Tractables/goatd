@@ -218,21 +218,7 @@ fn assert_bags_and_residual_match_fill_eliminations(n: u32, edges: &[(u32, u32)]
             recorded, neighbourhood[vertex as usize],
             "bag {index} is not {vertex} and its neighbours"
         );
-
-        // Eliminating with fill: the neighbourhood becomes a clique, then the
-        // vertex leaves it.
-        let nbrs: Vec<u32> = neighbourhood[vertex as usize].iter().copied().collect();
-        for (position, &u) in nbrs.iter().enumerate() {
-            for &w in &nbrs[position + 1..] {
-                neighbourhood[u as usize].insert(w);
-                neighbourhood[w as usize].insert(u);
-            }
-        }
-        for &u in &nbrs {
-            neighbourhood[u as usize].remove(&vertex);
-        }
-        neighbourhood[vertex as usize].clear();
-        live[vertex as usize] = false;
+        eliminate_with_fill_in_neighbourhood(vertex, &mut neighbourhood, &mut live);
     }
 
     let mut residual_ends = 0usize;
@@ -255,6 +241,27 @@ fn assert_bags_and_residual_match_fill_eliminations(n: u32, edges: &[(u32, u32)]
         reduced.graph.num_active,
         live.iter().filter(|&&alive| alive).count()
     );
+}
+
+fn eliminate_with_fill_in_neighbourhood(
+    vertex: u32,
+    neighbourhood: &mut [BTreeSet<u32>],
+    live: &mut [bool],
+) {
+    // Eliminating with fill: the neighbourhood becomes a clique, then the
+    // vertex leaves it.
+    let nbrs: Vec<u32> = neighbourhood[vertex as usize].iter().copied().collect();
+    for (position, &u) in nbrs.iter().enumerate() {
+        for &w in &nbrs[position + 1..] {
+            neighbourhood[u as usize].insert(w);
+            neighbourhood[w as usize].insert(u);
+        }
+    }
+    for &u in &nbrs {
+        neighbourhood[u as usize].remove(&vertex);
+    }
+    neighbourhood[vertex as usize].clear();
+    live[vertex as usize] = false;
 }
 
 #[test]

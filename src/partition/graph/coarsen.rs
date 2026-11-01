@@ -48,14 +48,11 @@ pub(super) fn coarsen_one_level(
     let mut match_of = vec![None; n];
     let mut coarse_id: Vec<u32> = vec![0; n];
     let mut num_coarse: u32 = 0;
-
     for &vtx in &perm {
         if match_of[vtx].is_some() {
             continue;
         }
-
-        let start = graph.offsets[vtx] as usize;
-        let end = graph.offsets[vtx + 1] as usize;
+        let (start, end) = (graph.offsets[vtx] as usize, graph.offsets[vtx + 1] as usize);
         let neighbors = &graph.neighbors[start..end];
         let weights = &graph.edge_weights[start..end];
         let best_neighbor = select_best_neighbor(
@@ -67,7 +64,6 @@ pub(super) fn coarsen_one_level(
                 .zip(weights.iter().copied())
                 .filter(|&(nb, _)| match_of[nb as usize].is_none()),
         );
-
         record_match(
             vtx,
             best_neighbor,
@@ -76,14 +72,11 @@ pub(super) fn coarsen_one_level(
             &mut num_coarse,
         );
     }
-
     let nc = num_coarse as usize;
     if !shrank_enough(n, nc) {
         return None;
     }
-
     let coarse_vwgt = coarse_vertex_weights(nc, &coarse_id, &graph.vertex_weights);
-
     Some(CoarseningLevel {
         graph: build_coarse_csr(graph, nc, &coarse_id, coarse_vwgt),
         mapping: coarse_id,

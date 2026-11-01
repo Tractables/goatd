@@ -361,7 +361,6 @@ fn run_elimination_raw(
     // and copying a prefix of a million bags for each was most of what they
     // allocated.
     let mut steps = ElimSteps::after(prefix);
-
     let exit = match spec.order {
         Order::MinFill | Order::MinFillRanked { .. } => {
             eliminate_min_fill::<false>(graph, salt, steps.sink(), spec.stop)
@@ -404,7 +403,6 @@ fn run_elimination_raw(
             eliminate_cardinality_search(graph, Reach::Neighbours, steps.sink(), spec.stop)
         }
     };
-
     let residual = if spec.complete_on_deadline && matches!(exit, ElimExit::DeadlineReached(_)) {
         execution::active_vertices(graph)
     } else {
@@ -580,12 +578,10 @@ fn run_order_per_component(
     // The bags after the prefix's; the prefix is put in front of them once
     // there is a decomposition to build.
     let base = prefix.next_step();
-    let mut all_bags: Vec<Vec<u32>> = Vec::new();
-    let mut nbrs_buf: Vec<u32> = Vec::new();
+    let (mut all_bags, mut nbrs_buf) = (Vec::new(), Vec::new());
     // Components after a soft-cutoff stop run against the hard deadline alone,
     // so this changes once and applies to every later component.
-    let mut stop = spec.stop;
-    let mut soft_cutoff_passed = false;
+    let (mut stop, mut soft_cutoff_passed) = (spec.stop, false);
     for (comp_idx, comp) in components.iter().enumerate() {
         let pristine = component_subgraph(
             graph,
@@ -623,7 +619,6 @@ fn run_order_per_component(
             return early;
         }
     }
-
     // A run that bagged one component's residual on the way through stopped at
     // a deadline, whatever the components after it managed.
     let exit = if soft_cutoff_passed {

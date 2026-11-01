@@ -257,15 +257,11 @@ fn eliminate_sampled_fill_based(
         fill_store,
         bucket_storage,
     );
-
-    let mut rng = search_stream(draw.seed);
-    let mut pacer = DeadlinePacer::new();
-
+    let (mut rng, mut pacer) = (search_stream(draw.seed), DeadlinePacer::new());
     while buckets.minimum().is_some() {
         if check_sampled_fill_pacer(graph, &mut pacer, stop.hard_deadline) {
             return ElimExit::DeadlineReached(Cutoff::Hard);
         }
-
         let (v, sampled_fill, bag_len) = sample_and_record_fill_bag(
             graph,
             draw.band,
@@ -275,7 +271,6 @@ fn eliminate_sampled_fill_based(
             live_nbrs,
             &mut sink,
         );
-
         if let Err(exit) = eliminate_sampled_fill_vertex(
             graph,
             v,

@@ -65,13 +65,11 @@ pub(crate) fn local_merge(
     if sources.is_empty() {
         return None;
     }
-    let limits = pool.limits;
-    let mut state = Loop::new(graph, &adjacency, limits, seed);
+    let mut state = Loop::new(graph, &adjacency, pool.limits, seed);
     let mut scratch = Scratch::new(&adjacency);
-
     // The list begins with the answer's own bags, so the programme over it
     // cannot come back wider than the answer, and the pool's on top of them.
-    let mut list = init_local_merge_list(start, &adjacency, &sources, limits);
+    let mut list = init_local_merge_list(start, &adjacency, &sources, pool.limits);
     let mut best = start.clone();
     // The anchors, and for each of them the reach a partner has to lie in, are
     // a function of `best` alone. `best` moves only where a search below beats
@@ -97,7 +95,7 @@ pub(crate) fn local_merge(
             if !fresh || expired(deadline) {
                 continue;
             }
-            let Some(built) = search(&list.bags, graph, &adjacency, limits, deadline) else {
+            let Some(built) = search(&list.bags, graph, &adjacency, pool.limits, deadline) else {
                 break;
             };
             if built.quality_key() < best.quality_key() {

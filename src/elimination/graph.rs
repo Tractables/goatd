@@ -1022,17 +1022,7 @@ impl EliminationGraph {
             let marker = self.elim_marker.as_mut_slice();
             let v_pos = stamp_row_and_find(row, marker, u, v, s);
             let mut index = self.row_index[u].as_deref_mut();
-            if let Some(v_pos) = v_pos {
-                let last = row.len() - 1;
-                let moved = row[last];
-                row.swap_remove(v_pos);
-                if let Some(index) = index.as_deref_mut() {
-                    index.remove(&v);
-                    if v_pos != last {
-                        index.insert(moved, v_pos as u32);
-                    }
-                }
-            }
+            remove_eliminated_from_row(row, v_pos, v, &mut index);
             match index {
                 Some(index) => {
                     for &w in neighbours {
@@ -1493,6 +1483,25 @@ fn stamp_row_and_find(row: &[u32], marker: &mut [u16], u: usize, v: u32, s: u16)
     }
     marker[u] = s;
     v_pos
+}
+
+fn remove_eliminated_from_row(
+    row: &mut Vec<u32>,
+    v_pos: Option<usize>,
+    v: u32,
+    index: &mut Option<&mut FxHashMap<u32, u32>>,
+) {
+    if let Some(v_pos) = v_pos {
+        let last = row.len() - 1;
+        let moved = row[last];
+        row.swap_remove(v_pos);
+        if let Some(index) = index.as_deref_mut() {
+            index.remove(&v);
+            if v_pos != last {
+                index.insert(moved, v_pos as u32);
+            }
+        }
+    }
 }
 
 fn push_unindexed_missing_neighbours(

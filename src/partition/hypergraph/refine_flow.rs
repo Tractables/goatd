@@ -74,51 +74,9 @@ impl FlowNetwork {
         stop: &mut BisectionStop,
     ) -> i64 {
         let mut total_flow = 0i64;
-
-        loop {
-            if stop.reached() {
-                break;
-            }
-            self.parent.fill(None);
-            self.parent[source] = Some((source, 0));
-            self.queue.clear();
-            self.queue.push_back(source);
-
-            while let Some(node) = self.queue.pop_front() {
-                if node == sink {
-                    break;
-                }
-                for &(neighbor, edge) in &self.adjacency[node] {
-                    if self.parent[neighbor].is_none() && self.residual_capacity[edge] > 0 {
-                        self.parent[neighbor] = Some((node, edge));
-                        self.queue.push_back(neighbor);
-                    }
-                }
-            }
-
-            if self.parent[sink].is_none() {
-                break;
-            }
-
-            let mut path_capacity = i64::MAX;
-            let mut node = sink;
-            while node != source {
-                let (previous, edge) = self.parent[node].expect("a reached node has a parent");
-                path_capacity = path_capacity.min(self.residual_capacity[edge]);
-                node = previous;
-            }
-
-            node = sink;
-            while node != source {
-                let (previous, edge) = self.parent[node].expect("an augmenting path has parents");
-                self.residual_capacity[edge] -= path_capacity;
-                self.residual_capacity[edge ^ 1] += path_capacity;
-                node = previous;
-            }
-
-            total_flow += path_capacity;
+        while !stop.reached() && self.bfs_augmenting_path(source, sink) {
+            total_flow += self.augment_along_path(source, sink);
         }
-
         source_side.fill(false);
         source_side[source] = true;
         self.queue.clear();
@@ -131,8 +89,44 @@ impl FlowNetwork {
                 }
             }
         }
-
         total_flow
+    }
+
+    fn bfs_augmenting_path(&mut self, source: usize, sink: usize) -> bool {
+        self.parent.fill(None);
+        self.parent[source] = Some((source, 0));
+        self.queue.clear();
+        self.queue.push_back(source);
+        while let Some(node) = self.queue.pop_front() {
+            if node == sink {
+                break;
+            }
+            for &(neighbor, edge) in &self.adjacency[node] {
+                if self.parent[neighbor].is_none() && self.residual_capacity[edge] > 0 {
+                    self.parent[neighbor] = Some((node, edge));
+                    self.queue.push_back(neighbor);
+                }
+            }
+        }
+        self.parent[sink].is_some()
+    }
+
+    fn augment_along_path(&mut self, source: usize, sink: usize) -> i64 {
+        let mut path_capacity = i64::MAX;
+        let mut node = sink;
+        while node != source {
+            let (previous, edge) = self.parent[node].expect("a reached node has a parent");
+            path_capacity = path_capacity.min(self.residual_capacity[edge]);
+            node = previous;
+        }
+        node = sink;
+        while node != source {
+            let (previous, edge) = self.parent[node].expect("an augmenting path has parents");
+            self.residual_capacity[edge] -= path_capacity;
+            self.residual_capacity[edge ^ 1] += path_capacity;
+            node = previous;
+        }
+        path_capacity
     }
 }
 

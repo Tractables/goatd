@@ -1560,17 +1560,7 @@ fn run_bipartite_ladder(
             continue;
         };
         produced_any = true;
-        let mut sub = config;
-        sub.bipartite_lift = None;
-        sub.soft_budget = Some(slice / 2);
-        sub.hard_budget = Some(slice);
-        // A slice too short for the trailing candidate drops it rather than
-        // refusing the configuration: the sub-run is a search of the
-        // projection, not a place to spend a FlowCutter window that small.
-        sub.flowcutter_budget = config
-            .flowcutter_budget
-            .map(|_| slice / 2)
-            .filter(|budget| *budget >= Duration::from_millis(MIN_FLOWCUTTER_CANDIDATE_MS));
+        let sub = bipartite_sub_config(config, slice);
         let sub_weights = projection.weights(weights);
         let found = run_portfolio(
             &projection.graph,
@@ -1599,6 +1589,21 @@ fn run_bipartite_ladder(
     // it unless nothing here could be built at all. The stage reports once, on
     // the narrowest lift its rungs produced.
     Ok(produced_any.then(|| reported.unwrap_or(CandidateOutcome::WidthAborted)))
+}
+
+fn bipartite_sub_config(config: PortfolioConfig, slice: Duration) -> PortfolioConfig {
+    let mut sub = config;
+    sub.bipartite_lift = None;
+    sub.soft_budget = Some(slice / 2);
+    sub.hard_budget = Some(slice);
+    // A slice too short for the trailing candidate drops it rather than
+    // refusing the configuration: the sub-run is a search of the
+    // projection, not a place to spend a FlowCutter window that small.
+    sub.flowcutter_budget = config
+        .flowcutter_budget
+        .map(|_| slice / 2)
+        .filter(|budget| *budget >= Duration::from_millis(MIN_FLOWCUTTER_CANDIDATE_MS));
+    sub
 }
 
 /// Run a portfolio: the initial orders the residual's size allows, then extra
@@ -1643,16 +1648,7 @@ fn run_portfolio(
         &mut prepared.candidates,
         &mut trace,
     )?;
-    let initial = run_initial_orders(
-        graph,
-        &mut prepared.prebuilt,
-        &orders,
-        config,
-        prepared.soft_deadline,
-        prepared.closing.hard_deadline,
-        &mut prepared.candidates,
-        &mut trace,
-    );
+    let initial = run_initial_orders(graph, &orders, config, &mut prepared, &mut trace);
     run_sampling_phase(
         graph,
         &mut prepared.prebuilt,
@@ -1802,28 +1798,24 @@ fn initial_classification(
     (writeout, classified)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run_initial_orders(
     graph: &Graph,
-    prebuilt: &mut engine::Prebuilt,
     initial_orders: &[InitialCandidate],
     config: PortfolioConfig,
-    soft_deadline: Option<Instant>,
-    hard_deadline: Option<Instant>,
-    candidates: &mut CandidateSet,
+    prepared: &mut PreparedPortfolio,
     trace: &mut TraceSink<'_>,
 ) -> InitialOrdersResult {
+    let soft_deadline = prepared.soft_deadline;
+    let hard_deadline = prepared.closing.hard_deadline;
     let (writeout, mut classified) = initial_classification(
         graph,
-        prebuilt.num_active(),
+        prepared.prebuilt.num_active(),
         config,
         soft_deadline,
         hard_deadline,
     );
-    let mut hard_deadline_tripped = false;
-    let mut min_fill_finished = false;
-    let mut fill_pass_cost = None;
-    let mut initial_runs: u32 = 0;
+    let (mut hard_deadline_tripped, mut min_fill_finished) = (false, false);
+    let (mut fill_pass_cost, mut initial_runs) = (None, 0u32);
     for (i, candidate) in initial_orders.iter().copied().enumerate() {
         if i > 0 && expired(classified.map_or(soft_deadline, |class| class.initial_deadline)) {
             break;
@@ -1832,12 +1824,12 @@ fn run_initial_orders(
             continue;
         }
         let (tripped, cost, min_fill_done) = run_initial_candidate(
-            prebuilt,
+            &mut prepared.prebuilt,
             candidate,
             classified,
             soft_deadline,
             hard_deadline,
-            candidates,
+            &mut prepared.candidates,
             trace,
         );
         initial_runs += 1;
@@ -2168,12 +2160,9 @@ fn run_sampling_schedule(
     candidates: &mut CandidateSet,
     trace: &mut TraceSink<'_>,
 ) {
-    let mut stage_budget: Option<StageBudget> = None;
-    let mut stage_started = Duration::ZERO;
-    let mut sample_index: u64 = 0;
-    let mut restart_finished = crate::meter::now();
-    let mut previous_restart: Option<Duration> = None;
-    let mut last_improvement: Option<u64> = None;
+    let (mut stage_budget, mut stage_started) = (None, Duration::ZERO);
+    let (mut sample_index, mut restart_finished) = (0u64, crate::meter::now());
+    let (mut previous_restart, mut last_improvement) = (None, None);
     let deadlines = [restart_deadline, hard_deadline];
     while sample_index < schedule.total() && !hard_deadline_tripped && !expired(restart_deadline) {
         if sampling_patience_stopped(

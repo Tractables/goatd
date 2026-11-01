@@ -422,16 +422,7 @@ fn assert_updates_match_recounts(
             bitset,
             seed,
         );
-        touched.clear();
-        while let Some((u, delta)) = affected.pop_delta(&graph) {
-            assert!(!nbrs.contains(&u), "delta for a neighbour {u} of {v}");
-            fill[u as usize] -= delta;
-            touched.push(u);
-        }
-        for &u in &nbrs {
-            fill[u as usize] = affected.neighbour_fill(&graph, u, fill[u as usize]);
-            touched.push(u);
-        }
+        collect_and_apply_recount_deltas(&graph, &mut affected, v, &nbrs, &mut fill, &mut touched);
         if step % full_every == 0 {
             touched.clear();
             touched.extend(live.iter().copied().filter(|&u| u != v));
@@ -443,6 +434,26 @@ fn assert_updates_match_recounts(
                 "fill of {u} after eliminating {v} (bitset {bitset}, seed {seed})"
             );
         }
+    }
+}
+
+fn collect_and_apply_recount_deltas(
+    graph: &crate::elimination::graph::EliminationGraph,
+    affected: &mut super::FillAffected,
+    v: u32,
+    nbrs: &[u32],
+    fill: &mut [u64],
+    touched: &mut Vec<u32>,
+) {
+    touched.clear();
+    while let Some((u, delta)) = affected.pop_delta(graph) {
+        assert!(!nbrs.contains(&u), "delta for a neighbour {u} of {v}");
+        fill[u as usize] -= delta;
+        touched.push(u);
+    }
+    for &u in nbrs {
+        fill[u as usize] = affected.neighbour_fill(graph, u, fill[u as usize]);
+        touched.push(u);
     }
 }
 

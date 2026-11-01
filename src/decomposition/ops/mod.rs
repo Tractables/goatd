@@ -390,33 +390,7 @@ impl TreeDecomposition {
             };
         }
 
-        // Each bag chooses at most one adjacent superset. Strict containment
-        // points toward a larger bag; equal bags point toward the lower index,
-        // so these links cannot cycle.
-        let mut target: Vec<Option<usize>> = vec![None; bag_count];
-        for (bag, chosen) in target.iter_mut().enumerate() {
-            let bag_size = self.bags[bag].vertices.len();
-            for &neighbour in &self.adj[bag] {
-                let neighbour_size = self.bags[neighbour].vertices.len();
-                if bag_size > neighbour_size || (bag_size == neighbour_size && neighbour > bag) {
-                    continue;
-                }
-                // Whether this neighbour would win the choice is settled by
-                // the two sizes and the two indices, so it is settled before
-                // the bags are compared: a neighbour that loses to the one
-                // already chosen never needs the subset test at all, and that
-                // test is the dominant cost of the compaction.
-                let replace = chosen.is_none_or(|current| {
-                    let current_size = self.bags[current].vertices.len();
-                    neighbour_size > current_size
-                        || (neighbour_size == current_size && neighbour < current)
-                });
-                if replace && bag_is_subset(&self.bags[bag], &self.bags[neighbour]) {
-                    *chosen = Some(neighbour);
-                }
-            }
-        }
-
+        let target = self.choose_subsuming_targets(bag_count);
         let mut representative = vec![usize::MAX; bag_count];
         let mut total_bag_size = 0usize;
         for start in 0..bag_count {
@@ -448,6 +422,36 @@ impl TreeDecomposition {
             representative,
             total_bag_size,
         }
+    }
+
+    fn choose_subsuming_targets(&self, bag_count: usize) -> Vec<Option<usize>> {
+        // Each bag chooses at most one adjacent superset. Strict containment
+        // points toward a larger bag; equal bags point toward the lower index,
+        // so these links cannot cycle.
+        let mut target: Vec<Option<usize>> = vec![None; bag_count];
+        for (bag, chosen) in target.iter_mut().enumerate() {
+            let bag_size = self.bags[bag].vertices.len();
+            for &neighbour in &self.adj[bag] {
+                let neighbour_size = self.bags[neighbour].vertices.len();
+                if bag_size > neighbour_size || (bag_size == neighbour_size && neighbour > bag) {
+                    continue;
+                }
+                // Whether this neighbour would win the choice is settled by
+                // the two sizes and the two indices, so it is settled before
+                // the bags are compared: a neighbour that loses to the one
+                // already chosen never needs the subset test at all, and that
+                // test is the dominant cost of the compaction.
+                let replace = chosen.is_none_or(|current| {
+                    let current_size = self.bags[current].vertices.len();
+                    neighbour_size > current_size
+                        || (neighbour_size == current_size && neighbour < current)
+                });
+                if replace && bag_is_subset(&self.bags[bag], &self.bags[neighbour]) {
+                    *chosen = Some(neighbour);
+                }
+            }
+        }
+        target
     }
 
     /// Root this decomposition's bag forest and walk it breadth-first.

@@ -49,23 +49,7 @@ pub(super) fn greedy_growing(hg: &Hypergraph, seed: usize, stop: &mut BisectionS
             if grown {
                 continue;
             }
-            // Only two transitions matter for a hyperedge when `v` joins side
-            // 0: it had no pin there and now straddles the split (-w), or it
-            // was one pin short of complete and is now wholly inside (+w).
-            // Everything in between leaves the cut where it was.
-            let mut gain = 0i64;
-            for &hyperedge in hg.vertex_hyperedges(v) {
-                let hyperedge = hyperedge as usize;
-                let weight = i64::from(hg.hyperedge_weights[hyperedge]);
-                let total_pins = hg.hyperedge_size(hyperedge);
-                let count0 = pins_on_zero[hyperedge];
-                if count0 == 0 {
-                    gain -= weight;
-                }
-                if count0 + 1 == total_pins {
-                    gain += weight;
-                }
-            }
+            let gain = vertex_gain_on_zero(hg, v, &pins_on_zero);
             if best_v.is_none() || gain > best_gain {
                 best_gain = gain;
                 best_v = Some(v);
@@ -85,6 +69,27 @@ pub(super) fn greedy_growing(hg: &Hypergraph, seed: usize, stop: &mut BisectionS
     }
 
     part
+}
+
+fn vertex_gain_on_zero(hg: &Hypergraph, v: usize, pins_on_zero: &[u32]) -> i64 {
+    // Only two transitions matter for a hyperedge when `v` joins side
+    // 0: it had no pin there and now straddles the split (-w), or it
+    // was one pin short of complete and is now wholly inside (+w).
+    // Everything in between leaves the cut where it was.
+    let mut gain = 0i64;
+    for &hyperedge in hg.vertex_hyperedges(v) {
+        let hyperedge = hyperedge as usize;
+        let weight = i64::from(hg.hyperedge_weights[hyperedge]);
+        let total_pins = hg.hyperedge_size(hyperedge);
+        let count0 = pins_on_zero[hyperedge];
+        if count0 == 0 {
+            gain -= weight;
+        }
+        if count0 + 1 == total_pins {
+            gain += weight;
+        }
+    }
+    gain
 }
 
 /// Summed weight of the hyperedges with pins on both sides.
