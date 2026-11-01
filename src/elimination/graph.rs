@@ -874,14 +874,9 @@ impl EliminationGraph {
         // The sparse path's cost is not k² alone. For a neighbour whose row is
         // short, `eliminate_with_nbrs_marker` walks that whole row — once to
         // stamp it, and to find `v` in it — so it pays deg(u) before it pays
-        // the k² fill test. Around high-degree hubs that scan term used to
-        // dominate k² by orders of magnitude; charging k² alone made
-        // elimination read some fifty times cheaper than it runs, which let a
-        // configuration spend its portfolio's whole window and more while the
-        // work clock believed it had barely started. Measured on one such
-        // residual: 3.8 M units charged against 265 ms of elimination. A hub's
-        // row is now indexed and costs a probe instead, which is what
-        // `nbr_scan_units` reports.
+        // the k² fill test. A high-degree hub's row is indexed and costs a
+        // probe instead; `nbr_scan_units` prices each neighbour accordingly so
+        // the work clock tracks both row walks and k² fill tests.
         let k = neighbours.len() as u64;
         crate::meter::charge(if self.bitset_words > 0 {
             k.saturating_mul(self.bitset_words as u64)

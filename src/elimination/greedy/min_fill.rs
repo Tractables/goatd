@@ -23,10 +23,8 @@ use crate::deadline::expired;
 ///
 /// The key carries everything an entry knows — fill, degree, salt and vertex
 /// descending, and the generation the score was filed under — and the
-/// accessors read it. A seeding scan pushes one entry per active vertex and
-/// every update pushes another, so a run on a large residual holds tens of
-/// millions of these at once, and the three fields that used to repeat part of
-/// the key took nearly half of every one of them.
+/// accessors read it directly without duplicating fields on the entry, since a
+/// run on a large residual holds tens of millions of these at once.
 #[derive(Eq, PartialEq)]
 pub(super) struct HeapEntry<const RELATIVE: bool> {
     key: (
