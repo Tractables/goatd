@@ -3,8 +3,6 @@
 //! provably minimum separator derivable from that partition. goatd's
 //! nested-dissection separator step.
 
-use rustc_hash::FxHashSet;
-
 /// Extract a minimum vertex cover of the bipartite graph induced by the
 /// cross-edges of `part` over vertex set `0..n`, and return it as a list of
 /// local vertex IDs (a valid node separator).
@@ -116,22 +114,24 @@ pub(super) fn minimum_vertex_cover_separator(
 
     // Separator = (L \ Z) ∪ (R ∩ Z).
     let mut separator: Vec<u32> = Vec::new();
+    let mut in_separator = vec![false; n];
     for (i, &v) in boundary_a.iter().enumerate() {
         if !in_z_l[i] {
             separator.push(v);
+            in_separator[v as usize] = true;
         }
     }
     for (i, &v) in boundary_b.iter().enumerate() {
         if in_z_r[i] {
             separator.push(v);
+            in_separator[v as usize] = true;
         }
     }
 
-    let sep_set: FxHashSet<u32> = separator.iter().copied().collect();
     let mut side_a: Vec<u32> = Vec::new();
     let mut side_b: Vec<u32> = Vec::new();
     for v in 0..n as u32 {
-        if sep_set.contains(&v) {
+        if in_separator[v as usize] {
             continue;
         }
         if part[v as usize] == 0 {

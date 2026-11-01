@@ -106,26 +106,10 @@ impl Hypergraph {
             }
             normalized.push((pins, weight));
         }
-        normalized.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-
-        let mut canonical_hyperedges: Vec<Vec<u32>> = Vec::with_capacity(normalized.len());
-        let mut canonical_weights: Vec<u32> = Vec::with_capacity(normalized.len());
-        for (pins, weight) in normalized {
-            if canonical_hyperedges
-                .last()
-                .is_some_and(|last| last.as_slice() == pins.as_slice())
-            {
-                let combined = canonical_weights
-                    .last_mut()
-                    .expect("a repeated hyperedge has a previous weight");
-                *combined = combined.checked_add(weight).ok_or_else(|| {
-                    Error::InvalidInput("merged hyperedge weight does not fit in u32".into())
-                })?;
-            } else {
-                canonical_hyperedges.push(pins);
-                canonical_weights.push(weight);
-            }
-        }
+        let (canonical_hyperedges, canonical_weights) = merge_sorted_hyperedges(normalized)
+            .ok_or_else(|| {
+                Error::InvalidInput("merged hyperedge weight does not fit in u32".into())
+            })?;
         let total_hyperedge_weight: u64 = canonical_weights
             .iter()
             .map(|&weight| u64::from(weight))
@@ -277,4 +261,29 @@ impl Hypergraph {
     pub(super) fn vertex_degree(&self, v: usize) -> u32 {
         self.vertex_hyperedge_offsets[v + 1] - self.vertex_hyperedge_offsets[v]
     }
+}
+
+/// Sort `(pins, weight)` pairs by pin set and merge identical pin sets by
+/// summing their weights, returning `None` if a merged weight overflows `u32`.
+pub(super) fn merge_sorted_hyperedges(
+    mut weighted: Vec<(Vec<u32>, u32)>,
+) -> Option<(Vec<Vec<u32>>, Vec<u32>)> {
+    weighted.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    let mut canonical_hyperedges: Vec<Vec<u32>> = Vec::with_capacity(weighted.len());
+    let mut canonical_weights: Vec<u32> = Vec::with_capacity(weighted.len());
+    for (pins, weight) in weighted {
+        if canonical_hyperedges
+            .last()
+            .is_some_and(|last| last.as_slice() == pins.as_slice())
+        {
+            let combined = canonical_weights
+                .last_mut()
+                .expect("a repeated hyperedge has a previous weight");
+            *combined = combined.checked_add(weight)?;
+        } else {
+            canonical_hyperedges.push(pins);
+            canonical_weights.push(weight);
+        }
+    }
+    Some((canonical_hyperedges, canonical_weights))
 }

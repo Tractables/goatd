@@ -311,14 +311,51 @@ pub(super) fn select_best_neighbor(
             best_neighbor = Some(nb);
             best_same_part = true;
         } else if same_part == best_same_part
-            && (w > best_weight
-                || (w == best_weight && best_neighbor.is_none_or(|best| nb < best)))
+            && (w > best_weight || (w == best_weight && best_neighbor.is_none_or(|best| nb < best)))
         {
             best_weight = w;
             best_neighbor = Some(nb);
         }
     }
     best_neighbor
+}
+
+/// Record the coarsening choice for vertex `v` in `match_of` and `coarse_id`,
+/// advancing `num_coarse` by one coarse vertex.
+///
+/// When `best_neighbor` is `None` (every neighbor is already matched), `v`
+/// crosses the level alone, which is why a level can shrink by less than half
+/// and why [`shrank_enough`] is checked afterwards.
+pub(super) fn record_match(
+    v: usize,
+    best_neighbor: Option<u32>,
+    match_of: &mut [Option<u32>],
+    coarse_id: &mut [u32],
+    num_coarse: &mut u32,
+) {
+    if let Some(neighbor) = best_neighbor {
+        match_of[v] = Some(neighbor);
+        match_of[neighbor as usize] = Some(v as u32);
+        coarse_id[v] = *num_coarse;
+        coarse_id[neighbor as usize] = *num_coarse;
+    } else {
+        match_of[v] = Some(v as u32);
+        coarse_id[v] = *num_coarse;
+    }
+    *num_coarse += 1;
+}
+
+/// Sum fine vertex weights into coarse vertex weights according to `coarse_id`.
+pub(super) fn coarse_vertex_weights(
+    num_coarse: usize,
+    coarse_id: &[u32],
+    fine_weights: &[u32],
+) -> Vec<u32> {
+    let mut coarse = vec![0u32; num_coarse];
+    for (v, &cv) in coarse_id.iter().enumerate() {
+        coarse[cv as usize] += fine_weights[v];
+    }
+    coarse
 }
 
 /// The move a localized Fiduccia-Mattheyses pass makes next: the highest-gain

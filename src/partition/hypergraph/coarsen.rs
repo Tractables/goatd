@@ -7,8 +7,10 @@
 //! merge, a hyperedge left with one pin disappears, and hyperedges that end up
 //! with identical pin sets become one with their weights summed.
 
-use super::model::Hypergraph;
-use crate::partition::common::{matching_order, select_best_neighbor, shrank_enough};
+use super::model::{Hypergraph, merge_sorted_hyperedges};
+use crate::partition::common::{
+    coarse_vertex_weights, matching_order, record_match, select_best_neighbor, shrank_enough,
+};
 use crate::rng::Xorshift64;
 
 pub(super) struct CoarseningLevel {
@@ -71,28 +73,19 @@ pub(super) fn coarsen_one_level(
         let best_neighbor = select_best_neighbor(
             v,
             part,
-            candidates
-                .iter()
-                .map(|&nb| (nb, connectivity[nb as usize])),
+            candidates.iter().map(|&nb| (nb, connectivity[nb as usize])),
         );
         for &nb in &candidates {
             connectivity[nb as usize] = 0;
         }
 
-        if let Some(neighbor) = best_neighbor {
-            match_of[v] = Some(neighbor);
-            match_of[neighbor as usize] = Some(v as u32);
-            coarse_id[v] = num_coarse;
-            coarse_id[neighbor as usize] = num_coarse;
-            num_coarse += 1;
-        } else {
-            // Every neighbour already matched: the vertex crosses the level
-            // alone, which is why a level can shrink by less than half and why
-            // the floor below is needed at all.
-            match_of[v] = Some(v as u32);
-            coarse_id[v] = num_coarse;
-            num_coarse += 1;
-        }
+        record_match(
+            v,
+            best_neighbor,
+            &mut match_of,
+            &mut coarse_id,
+            &mut num_coarse,
+        );
     }
 
     let nc = num_coarse as usize;
@@ -100,10 +93,7 @@ pub(super) fn coarsen_one_level(
         return None;
     }
 
-    let mut coarse_vertex_weights = vec![0u32; nc];
-    for v in 0..n {
-        coarse_vertex_weights[coarse_id[v] as usize] += hg.vertex_weights[v];
-    }
+    let coarse_vertex_weights = coarse_vertex_weights(nc, &coarse_id, &hg.vertex_weights);
 
     let num_hyperedges = hg.num_hyperedges();
     let mut weighted_hyperedges: Vec<(Vec<u32>, u32)> = Vec::with_capacity(num_hyperedges);
@@ -117,24 +107,13 @@ pub(super) fn coarsen_one_level(
         }
     }
 
-    // Sorting by pin set brings identical coarse hyperedges together so the
-    // scan below can merge them by summing weights: two hyperedges that this
-    // contraction made indistinguishable are one hyperedge of their combined
-    // weight from here up.
-    weighted_hyperedges.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-    let mut coarse_hyperedges: Vec<Vec<u32>> = Vec::new();
-    let mut coarse_hyperedge_weights: Vec<u32> = Vec::new();
-    for (pins, weight) in weighted_hyperedges {
-        if !coarse_hyperedges.is_empty() && *coarse_hyperedges.last().unwrap() == pins {
-            let combined = coarse_hyperedge_weights.last_mut().unwrap();
-            *combined = combined
-                .checked_add(weight)
-                .expect("coarsening preserves the validated total hyperedge weight");
-        } else {
-            coarse_hyperedges.push(pins);
-            coarse_hyperedge_weights.push(weight);
-        }
-    }
+    // Sorting by pin set brings identical coarse hyperedges together so
+    // `merge_sorted_hyperedges` can merge them by summing weights: two
+    // hyperedges that this contraction made indistinguishable are one
+    // hyperedge of their combined weight from here up.
+    let (coarse_hyperedges, coarse_hyperedge_weights) =
+        merge_sorted_hyperedges(weighted_hyperedges)
+            .expect("coarsening preserves the validated total hyperedge weight");
 
     let mut coarse_hg =
         Hypergraph::from_hyperedges(nc, &coarse_hyperedges, Some(&coarse_hyperedge_weights));

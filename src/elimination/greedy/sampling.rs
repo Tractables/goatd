@@ -96,6 +96,33 @@ impl FillPriority {
     }
 }
 
+#[inline]
+fn fill_of(v: u32, fills: Option<&[u64]>, buckets: &BucketMap<'_>) -> u64 {
+    fills.map_or_else(
+        || {
+            buckets
+                .key_of(v)
+                .expect("an active vertex has a fill bucket")
+        },
+        |fills| fills[v as usize],
+    )
+}
+
+#[inline]
+fn set_fill_and_bucket(
+    v: u32,
+    new_fill: u64,
+    graph: &EliminationGraph,
+    fills: &mut Option<&mut [u64]>,
+    buckets: &mut BucketMap<'_>,
+    priority: FillPriority,
+) {
+    if let Some(fills) = fills.as_deref_mut() {
+        fills[v as usize] = new_fill;
+    }
+    buckets.update(v, priority.key(new_fill, graph.degree(v) as u64));
+}
+
 /// Move every neighbour of the eliminated vertex to the bucket of its updated
 /// fill, in neighbour order. This is the eager half of
 /// `eliminate_sampled_min_fill`'s bucket maintenance — the sampler cannot
@@ -111,17 +138,9 @@ fn update_neighbours(
 ) {
     for &u in nbrs {
         if graph.active[u as usize] {
-            let old_fill = match fills.as_deref() {
-                Some(fills) => fills[u as usize],
-                None => buckets
-                    .key_of(u)
-                    .expect("an active vertex has a fill bucket"),
-            };
+            let old_fill = fill_of(u, fills.as_deref(), buckets);
             let new_fill = affected.neighbour_fill(graph, u, old_fill);
-            if let Some(fills) = fills.as_deref_mut() {
-                fills[u as usize] = new_fill;
-            }
-            buckets.update(u, priority.key(new_fill, graph.degree(u) as u64));
+            set_fill_and_bucket(u, new_fill, graph, fills, buckets, priority);
         }
     }
 }
@@ -307,14 +326,7 @@ fn eliminate_sampled_fill_based(
         // The drawn vertex's own fill, not the band's smallest: the simplicial
         // path below is only correct for a vertex that adds no fill edge, and a
         // band wider than 0 can draw one that does.
-        let sampled_fill = fills.as_deref().map_or_else(
-            || {
-                buckets
-                    .key_of(v)
-                    .expect("a sampled vertex has a fill bucket")
-            },
-            |fills| fills[v as usize],
-        );
+        let sampled_fill = fill_of(v, fills.as_deref(), &buckets);
 
         buckets.remove_vertex(v);
 
@@ -361,20 +373,10 @@ fn eliminate_sampled_fill_based(
                     affected.clear_neighbours(graph, live_nbrs);
                     return ElimExit::DeadlineReached(Cutoff::Hard);
                 }
-                let old_fill = fills.as_deref().map_or_else(
-                    || {
-                        buckets
-                            .key_of(u)
-                            .expect("an active vertex has a fill bucket")
-                    },
-                    |fills| fills[u as usize],
-                );
+                let old_fill = fill_of(u, fills.as_deref(), &buckets);
                 debug_assert!(delta <= old_fill);
                 let new_fill = old_fill.saturating_sub(delta);
-                if let Some(fills) = fills.as_deref_mut() {
-                    fills[u as usize] = new_fill;
-                }
-                buckets.update(u, priority.key(new_fill, graph.degree(u) as u64));
+                set_fill_and_bucket(u, new_fill, graph, &mut fills, &mut buckets, priority);
             }
             update_neighbours(
                 affected,

@@ -175,15 +175,20 @@ impl<'g> Session<'g> {
         Ok(session)
     }
 
+    fn validate_config(graph: &Graph, config: Config) -> Result<(), Error> {
+        config.validate()?;
+        if config.eligible(graph.num_vertices() as usize, 0) {
+            separator::validate_graph_size(graph.num_vertices(), graph.edges().len())?;
+        }
+        Ok(())
+    }
+
     pub(super) fn trusted(
         graph: &'g Graph,
         tree: TreeDecomposition,
         config: Config,
     ) -> Result<Self, Error> {
-        config.validate()?;
-        if config.eligible(graph.num_vertices() as usize, 0) {
-            separator::validate_graph_size(graph.num_vertices(), graph.edges().len())?;
-        }
+        Self::validate_config(graph, config)?;
         Ok(Self {
             graph,
             config,
@@ -232,10 +237,7 @@ impl<'g> Session<'g> {
                 "finish or accept the active separator search before changing its settings".into(),
             ));
         }
-        config.validate()?;
-        if config.eligible(self.graph.num_vertices() as usize, 0) {
-            separator::validate_graph_size(self.graph.num_vertices(), self.graph.edges().len())?;
-        }
+        Self::validate_config(self.graph, config)?;
         self.config = config;
         Ok(())
     }

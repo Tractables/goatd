@@ -192,33 +192,23 @@ fn intersection_popcount_by(
     right: &[u64],
     popcount: impl Fn(u64) -> u64 + Copy,
 ) -> u64 {
-    debug_assert_eq!(left.len(), right.len());
-
-    let mut count_0 = 0u64;
-    let mut count_1 = 0u64;
-    let mut count_2 = 0u64;
-    let mut count_3 = 0u64;
-    let (left_chunks, left_tail) = left.as_chunks::<4>();
-    let (right_chunks, right_tail) = right.as_chunks::<4>();
-    for (left, right) in left_chunks.iter().zip(right_chunks) {
-        count_0 += popcount(left[0] & right[0]);
-        count_1 += popcount(left[1] & right[1]);
-        count_2 += popcount(left[2] & right[2]);
-        count_3 += popcount(left[3] & right[3]);
-    }
-    let tail = left_tail
-        .iter()
-        .zip(right_tail)
-        .map(|(&left, &right)| popcount(left & right))
-        .sum::<u64>();
-
-    count_0 + count_1 + count_2 + count_3 + tail
+    combine_popcount_by(left, right, |l, r| l & r, popcount)
 }
 
 #[inline(always)]
 fn difference_popcount_by(
     left: &[u64],
     right: &[u64],
+    popcount: impl Fn(u64) -> u64 + Copy,
+) -> u64 {
+    combine_popcount_by(left, right, |l, r| l & !r, popcount)
+}
+
+#[inline(always)]
+fn combine_popcount_by(
+    left: &[u64],
+    right: &[u64],
+    combine: impl Fn(u64, u64) -> u64 + Copy,
     popcount: impl Fn(u64) -> u64 + Copy,
 ) -> u64 {
     debug_assert_eq!(left.len(), right.len());
@@ -230,15 +220,15 @@ fn difference_popcount_by(
     let (left_chunks, left_tail) = left.as_chunks::<4>();
     let (right_chunks, right_tail) = right.as_chunks::<4>();
     for (left, right) in left_chunks.iter().zip(right_chunks) {
-        count_0 += popcount(left[0] & !right[0]);
-        count_1 += popcount(left[1] & !right[1]);
-        count_2 += popcount(left[2] & !right[2]);
-        count_3 += popcount(left[3] & !right[3]);
+        count_0 += popcount(combine(left[0], right[0]));
+        count_1 += popcount(combine(left[1], right[1]));
+        count_2 += popcount(combine(left[2], right[2]));
+        count_3 += popcount(combine(left[3], right[3]));
     }
     let tail = left_tail
         .iter()
         .zip(right_tail)
-        .map(|(&left, &right)| popcount(left & !right))
+        .map(|(&left, &right)| popcount(combine(left, right)))
         .sum::<u64>();
 
     count_0 + count_1 + count_2 + count_3 + tail
@@ -1222,9 +1212,7 @@ impl EliminationGraph {
                 self.bitset_degree[us] -= 1;
             }
             let vb = vs * w;
-            for j in 0..w {
-                self.bitset[vb + j] = 0;
-            }
+            self.bitset[vb..vb + w].fill(0);
             self.bitset_degree[vs] = 0;
         } else {
             for &u in nbrs {
