@@ -353,46 +353,29 @@ fn run_elimination_raw(
     // and copying a prefix of a million bags for each was most of what they
     // allocated.
     let mut steps = ElimSteps::after(prefix);
-    let sampled = |weights| {
-        (
-            SampleDraw {
-                weights,
-                band: spec.sample_band,
-                seed: spec.seed,
-            },
-            ElimStop {
-                soft_deadline: None,
-                ..spec.stop
-            },
-        )
-    };
 
     let exit = match spec.order {
         Order::MinFill | Order::MinFillRanked { .. } => {
             eliminate_min_fill::<false>(graph, salt, steps.sink(), spec.stop)
         }
-        Order::Ranked { .. } => {
-            let mut order = execution::active_vertices(graph);
-            order.sort_unstable_by_key(|&v| (salt[v as usize], v));
-            execution::eliminate_in_order(graph, order, &mut steps.sink(), spec.stop)
-        }
+        Order::Ranked { .. } => eliminate_ranked(graph, salt, steps.sink(), spec.stop),
         Order::RelativeFill => eliminate_min_fill::<true>(graph, salt, steps.sink(), spec.stop),
         Order::MinDegree => {
             eliminate_min_degree(graph, salt, spec.update_order_ties, steps.sink(), spec.stop)
         }
         Order::MinFillSampled { weights } => {
-            let (draw, stop) = sampled(weights);
+            let (draw, stop) = sampled_draw_and_stop(spec, weights);
             eliminate_sampled_min_fill(graph, draw, steps.sink(), stop, seed, scratch)
         }
         Order::MinDegreeSampled { weights } => {
-            let (draw, stop) = sampled(weights);
+            let (draw, stop) = sampled_draw_and_stop(spec, weights);
             eliminate_sampled_min_degree(graph, draw, steps.sink(), stop, seed.active, scratch)
         }
         Order::FillDegreeSampled {
             weights,
             degree_coefficient,
         } => {
-            let (draw, stop) = sampled(weights);
+            let (draw, stop) = sampled_draw_and_stop(spec, weights);
             eliminate_sampled_fill_degree(
                 graph,
                 draw,
@@ -420,6 +403,31 @@ fn run_elimination_raw(
         Vec::new()
     };
     (steps, exit, residual)
+}
+
+fn eliminate_ranked(
+    graph: &mut EliminationGraph,
+    salt: &[u32],
+    mut sink: execution::ElimSink<'_>,
+    stop: ElimStop,
+) -> ElimExit {
+    let mut order = execution::active_vertices(graph);
+    order.sort_unstable_by_key(|&v| (salt[v as usize], v));
+    execution::eliminate_in_order(graph, order, &mut sink, stop)
+}
+
+fn sampled_draw_and_stop<'a>(spec: RunSpec<'a>, weights: &'a [u32]) -> (SampleDraw<'a>, ElimStop) {
+    (
+        SampleDraw {
+            weights,
+            band: spec.sample_band,
+            seed: spec.seed,
+        },
+        ElimStop {
+            soft_deadline: None,
+            ..spec.stop
+        },
+    )
 }
 
 /// Build or reuse a connected component's subgraph in component-local
@@ -559,6 +567,7 @@ fn run_order_per_component(
     spec: RunSpec<'_>,
     scratch: &mut RunScratch,
 ) -> OrderRun {
+    prepare_per_component_scratch(graph.len(), prefix, components, initial_fill, scratch);
     let RunScratch {
         salt,
         sample,
@@ -568,17 +577,7 @@ fn run_order_per_component(
         component_work,
         component_fill,
     } = scratch;
-    let n = graph.len();
-    let component_fill = prepare_per_component_scratch(
-        n,
-        prefix,
-        components,
-        initial_fill,
-        component_fill,
-        global_rank,
-        local_of,
-        component_graphs,
-    );
+    let component_fill = initial_fill.and(component_fill.as_deref());
     // The bags after the prefix's; the prefix is put in front of them once
     // there is a decomposition to build.
     let base = prefix.next_step();
@@ -730,52 +729,47 @@ fn handle_component_deadline(
     false
 }
 
-#[allow(clippy::too_many_arguments)]
-fn prepare_per_component_scratch<'a>(
+fn prepare_per_component_scratch(
     n: usize,
     prefix: &ElimSteps,
     components: &[Vec<u32>],
     initial_fill: Option<&[u64]>,
-    component_fill: &'a mut Option<Vec<Vec<u64>>>,
-    global_rank: &mut Vec<u32>,
-    local_of: &mut Vec<u32>,
-    component_graphs: &mut Vec<Option<(EliminationGraph, u64)>>,
-) -> Option<&'a [Vec<u64>]> {
+    scratch: &mut RunScratch,
+) {
     // Each component's slice of the residual's fill counts, built on the first
     // candidate that has counts to slice and read by every later one.
-    let component_fill = initial_fill.map(|fill| {
-        component_fill
-            .get_or_insert_with(|| {
-                components
-                    .iter()
-                    .map(|comp| comp.iter().map(|&vertex| fill[vertex as usize]).collect())
-                    .collect()
-            })
-            .as_slice()
-    });
+    if let Some(fill) = initial_fill {
+        scratch.component_fill.get_or_insert_with(|| {
+            components
+                .iter()
+                .map(|comp| comp.iter().map(|&vertex| fill[vertex as usize]).collect())
+                .collect()
+        });
+    }
     // The decomposition is built by reading a rank for every vertex, including
     // the ones no component covers, so this one is refilled rather than left as
     // the run before it wrote it.
     crate::meter::charge(n as u64);
-    global_rank.clear();
-    global_rank.resize(n, u32::MAX);
+    scratch.rank.clear();
+    scratch.rank.resize(n, u32::MAX);
 
     // Prefix ranks: (vertex, step) where step == bag index.
     for &(v, s) in &prefix.rank_pairs {
-        global_rank[v as usize] = s as u32;
+        scratch.rank[v as usize] = s as u32;
     }
 
     // Written for every vertex of a component before that component's subgraph
     // is built, and read only at vertices of the same component, so whatever an
     // earlier run left in it is never read.
-    if local_of.len() < n {
-        local_of.resize(n, u32::MAX);
+    if scratch.local_of.len() < n {
+        scratch.local_of.resize(n, u32::MAX);
     }
-    if component_graphs.len() != components.len() {
-        component_graphs.clear();
-        component_graphs.resize_with(components.len(), || None);
+    if scratch.component_graphs.len() != components.len() {
+        scratch.component_graphs.clear();
+        scratch
+            .component_graphs
+            .resize_with(components.len(), || None);
     }
-    component_fill
 }
 
 /// Run one order over a preprocessed residual the caller owns.

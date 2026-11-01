@@ -243,48 +243,42 @@ fn a_separator_leaves_no_edge_between_its_two_sides() {
     ];
 
     for &(shape, n, edges) in shapes {
-        let n = n as usize;
-        let graph = crate::Graph::new(n as u32, edges.iter().copied());
-        let result = find(&graph, Budget::new(10_000, 3))
-            .unwrap_or_else(|error| panic!("{shape}: {error}"))
-            .unwrap_or_else(|| panic!("{shape} must have a separator"));
+        assert_separator_disconnects_sides(shape, n, edges);
+    }
+}
 
-        let mut side = vec![u8::MAX; n];
-        for &v in result.side_a() {
+fn assert_separator_disconnects_sides(shape: &str, n: u32, edges: &[(u32, u32)]) {
+    let n = n as usize;
+    let graph = crate::Graph::new(n as u32, edges.iter().copied());
+    let result = find(&graph, Budget::new(10_000, 3))
+        .unwrap_or_else(|error| panic!("{shape}: {error}"))
+        .unwrap_or_else(|| panic!("{shape} must have a separator"));
+
+    let mut side = vec![u8::MAX; n];
+    for (label, group) in [
+        (0u8, result.side_a()),
+        (1u8, result.side_b()),
+        (2u8, result.vertices()),
+    ] {
+        for &v in group {
             assert_eq!(
                 side[v as usize],
                 u8::MAX,
                 "{shape}: vertex {v} placed twice"
             );
-            side[v as usize] = 0;
+            side[v as usize] = label;
         }
-        for &v in result.side_b() {
-            assert_eq!(
-                side[v as usize],
-                u8::MAX,
-                "{shape}: vertex {v} placed twice"
-            );
-            side[v as usize] = 1;
-        }
-        for &v in result.vertices() {
-            assert_eq!(
-                side[v as usize],
-                u8::MAX,
-                "{shape}: vertex {v} placed twice"
-            );
-            side[v as usize] = 2;
-        }
+    }
+    assert!(
+        side.iter().all(|&s| s != u8::MAX),
+        "{shape}: the two sides and the separator must cover every vertex",
+    );
+
+    for &(u, v) in edges {
+        let (a, b) = (side[u as usize], side[v as usize]);
         assert!(
-            side.iter().all(|&s| s != u8::MAX),
-            "{shape}: the two sides and the separator must cover every vertex",
+            !(a < 2 && b < 2 && a != b),
+            "{shape}: edge ({u}, {v}) crosses from one side to the other",
         );
-
-        for &(u, v) in edges {
-            let (a, b) = (side[u as usize], side[v as usize]);
-            assert!(
-                !(a < 2 && b < 2 && a != b),
-                "{shape}: edge ({u}, {v}) crosses from one side to the other",
-            );
-        }
     }
 }

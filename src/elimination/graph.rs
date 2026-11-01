@@ -1020,18 +1020,7 @@ impl EliminationGraph {
             }
             let s = bump_stamp(&mut self.elim_stamp, &mut self.elim_marker);
             let marker = self.elim_marker.as_mut_slice();
-            let ahead_of_walk = prefetching(marker.len());
-            let mut v_pos = None;
-            for (idx, &w) in row.iter().enumerate() {
-                if ahead_of_walk && let Some(&ahead) = row.get(idx + PREFETCH_DISTANCE) {
-                    prefetch(marker, ahead as usize);
-                }
-                if w == v {
-                    v_pos = Some(idx);
-                }
-                marker[w as usize] = s;
-            }
-            marker[u] = s;
+            let v_pos = stamp_row_and_find(row, marker, u, v, s);
             let mut index = self.row_index[u].as_deref_mut();
             if let Some(v_pos) = v_pos {
                 let last = row.len() - 1;
@@ -1495,4 +1484,20 @@ impl EliminationGraph {
         }
         total_pairs - edges
     }
+}
+
+fn stamp_row_and_find(row: &[u32], marker: &mut [u16], u: usize, v: u32, s: u16) -> Option<usize> {
+    let ahead_of_walk = prefetching(marker.len());
+    let mut v_pos = None;
+    for (idx, &w) in row.iter().enumerate() {
+        if ahead_of_walk && let Some(&ahead) = row.get(idx + PREFETCH_DISTANCE) {
+            prefetch(marker, ahead as usize);
+        }
+        if w == v {
+            v_pos = Some(idx);
+        }
+        marker[w as usize] = s;
+    }
+    marker[u] = s;
+    v_pos
 }

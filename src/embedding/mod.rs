@@ -333,43 +333,7 @@ fn run_rounds_dim<const D: usize>(
 
     let mut settled = 0usize;
     for _ in 0..budget.max_rounds {
-        for vertex in 0..vertex_count {
-            let (start, end) = (starts[vertex], starts[vertex + 1]);
-            let base = vertex * D;
-            if start == end {
-                next[base..base + D].copy_from_slice(&coords[base..base + D]);
-                continue;
-            }
-            let mut sums = [0.0f32; D];
-            for (position, &neighbour) in targets[start..end].iter().enumerate() {
-                // The rows arrive at scattered offsets, so ask for the one a
-                // fixed number of edges further along the adjacency. The
-                // lookahead runs past the end of this vertex's own row into
-                // the rows the next vertices read, which is where the walk
-                // goes next. It reads nothing, so the sums below are the ones
-                // an unprefetched walk makes.
-                if ahead_of_walk
-                    && let Some(&ahead) = targets.get(start + position + PREFETCH_DISTANCE)
-                {
-                    prefetch(coords.as_slice(), ahead as usize * D);
-                }
-                // The neighbour's row is taken whole: the inner loop is a few
-                // adds over an array the same length as `sums`, so neither the
-                // trip count nor a bounds check reaches the hottest line of the
-                // round.
-                for (sum, value) in sums
-                    .iter_mut()
-                    .zip(row_at::<D>(coords, neighbour as usize * D))
-                {
-                    *sum += value;
-                }
-            }
-            let degree = (end - start) as f32;
-            let here = row_at::<D>(coords, base);
-            for ((slot, value), sum) in next[base..base + D].iter_mut().zip(here).zip(sums.iter()) {
-                *slot = 0.5 * (value + *sum / degree);
-            }
-        }
+        step_round_dim::<D>(coords, &mut next, starts, targets, ahead_of_walk);
         // After the swap `next` holds the previous round's whitened cloud,
         // which is what the change below is measured against.
         std::mem::swap(coords, &mut next);
@@ -388,6 +352,52 @@ fn run_rounds_dim<const D: usize>(
         }
         if stop() {
             break;
+        }
+    }
+}
+
+fn step_round_dim<const D: usize>(
+    coords: &[f32],
+    next: &mut [f32],
+    starts: &[usize],
+    targets: &[u32],
+    ahead_of_walk: bool,
+) {
+    let vertex_count = starts.len() - 1;
+    for vertex in 0..vertex_count {
+        let (start, end) = (starts[vertex], starts[vertex + 1]);
+        let base = vertex * D;
+        if start == end {
+            next[base..base + D].copy_from_slice(&coords[base..base + D]);
+            continue;
+        }
+        let mut sums = [0.0f32; D];
+        for (position, &neighbour) in targets[start..end].iter().enumerate() {
+            // The rows arrive at scattered offsets, so ask for the one a
+            // fixed number of edges further along the adjacency. The
+            // lookahead runs past the end of this vertex's own row into
+            // the rows the next vertices read, which is where the walk
+            // goes next. It reads nothing, so the sums below are the ones
+            // an unprefetched walk makes.
+            if ahead_of_walk && let Some(&ahead) = targets.get(start + position + PREFETCH_DISTANCE)
+            {
+                prefetch(coords, ahead as usize * D);
+            }
+            // The neighbour's row is taken whole: the inner loop is a few
+            // adds over an array the same length as `sums`, so neither the
+            // trip count nor a bounds check reaches the hottest line of the
+            // round.
+            for (sum, value) in sums
+                .iter_mut()
+                .zip(row_at::<D>(coords, neighbour as usize * D))
+            {
+                *sum += value;
+            }
+        }
+        let degree = (end - start) as f32;
+        let here = row_at::<D>(coords, base);
+        for ((slot, value), sum) in next[base..base + D].iter_mut().zip(here).zip(sums.iter()) {
+            *slot = 0.5 * (value + *sum / degree);
         }
     }
 }

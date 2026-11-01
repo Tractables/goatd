@@ -52,23 +52,7 @@ pub(super) fn coarsen_one_level(
         // share with `v`. This makes an explicitly weighted hyperedge, including
         // canonicalized repeats whose weights were added, influence coarsening
         // by the same amount that it influences the cut objective.
-        candidates.clear();
-        for &hei in hg.vertex_hyperedges(v) {
-            let weight = hg.hyperedge_weights[hei as usize];
-            for &u in hg.charged_hyperedge_pins(hei as usize) {
-                let u = u as usize;
-                if u != v && match_of[u].is_none() {
-                    // Hyperedge weights are positive, so a candidate's entry is
-                    // zero exactly until it is first reached.
-                    if connectivity[u] == 0 {
-                        candidates.push(u as u32);
-                    }
-                    connectivity[u] = connectivity[u]
-                        .checked_add(weight)
-                        .expect("validated total hyperedge weight fits in u32");
-                }
-            }
-        }
+        collect_neighbor_connectivity(hg, v, &match_of, &mut connectivity, &mut candidates);
 
         let best_neighbor = select_best_neighbor(
             v,
@@ -99,6 +83,32 @@ pub(super) fn coarsen_one_level(
         hg: coarse_hg,
         mapping: coarse_id,
     })
+}
+
+fn collect_neighbor_connectivity(
+    hg: &Hypergraph,
+    v: usize,
+    match_of: &[Option<u32>],
+    connectivity: &mut [u32],
+    candidates: &mut Vec<u32>,
+) {
+    candidates.clear();
+    for &hei in hg.vertex_hyperedges(v) {
+        let weight = hg.hyperedge_weights[hei as usize];
+        for &u in hg.charged_hyperedge_pins(hei as usize) {
+            let u = u as usize;
+            if u != v && match_of[u].is_none() {
+                // Hyperedge weights are positive, so a candidate's entry is
+                // zero exactly until it is first reached.
+                if connectivity[u] == 0 {
+                    candidates.push(u as u32);
+                }
+                connectivity[u] = connectivity[u]
+                    .checked_add(weight)
+                    .expect("validated total hyperedge weight fits in u32");
+            }
+        }
+    }
 }
 
 fn build_coarse_hypergraph(hg: &Hypergraph, nc: usize, coarse_id: &[u32]) -> Hypergraph {

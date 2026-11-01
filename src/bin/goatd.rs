@@ -412,6 +412,51 @@ impl RawArgs {
     }
 
     fn parse_portfolio_flag(&mut self, argv: &[String], i: &mut usize, arg: &str) -> bool {
+        if self.parse_hedge_or_lift_flag(argv, i, arg) {
+            return true;
+        }
+        match arg {
+            "--mcs-up-to" => self.mcs_up_to = Some(arg_vertices(argv, i, arg)),
+            "--no-mcs" => self.no_mcs = true,
+            "--mcsm-up-to" => self.mcsm_up_to = Some(arg_vertices(argv, i, arg)),
+            "--no-mcsm" => self.no_mcsm = true,
+            "--drop-fill-up-to" => self.drop_fill_up_to = Some(arg_vertices(argv, i, arg)),
+            "--no-drop-fill" => self.no_drop_fill = true,
+            "--recombine-up-to" => self.recombine_up_to = Some(arg_vertices(argv, i, arg)),
+            "--no-recombine" => self.no_recombine = true,
+            "--merge-up-to" => self.merge_up_to = Some(arg_vertices(argv, i, arg)),
+            "--no-merge" => self.no_merge = true,
+            "--local-merge-up-to" => self.local_merge_up_to = Some(arg_vertices(argv, i, arg)),
+            "--no-local-merge" => self.no_local_merge = true,
+            "--capped-restarts" => self.capped_restarts = true,
+            "--sample-band" => self.sample_band = Some(arg_number(argv, i, arg)),
+            "--sample-band-alternate" => self.sample_band_alternate = true,
+            "--sampling-patience" => {
+                let restarts = arg_number(argv, i, arg);
+                if restarts == 0 {
+                    usage_error(
+                        "--sampling-patience wants a positive restart floor; a floor of zero \
+                         stops the restarts before the first one runs, and \
+                         --no-sampling-patience is how the rule is turned off",
+                    );
+                }
+                self.sampling_patience = Some(restarts);
+            }
+            "--no-sampling-patience" => self.no_sampling_patience = true,
+            "--expensive-orders-up-to" => {
+                self.expensive_orders_up_to = Some(
+                    usize::try_from(arg_number(argv, i, arg)).unwrap_or_else(|_| {
+                        usage_error(&format!("{arg} wants a vertex count in 0..={}", usize::MAX))
+                    }),
+                );
+            }
+            "--trace" => self.trace = true,
+            _ => return false,
+        }
+        true
+    }
+
+    fn parse_hedge_or_lift_flag(&mut self, argv: &[String], i: &mut usize, arg: &str) -> bool {
         match arg {
             "--hedge-dims" => {
                 let list = arg_value(argv, i, arg);
@@ -438,18 +483,6 @@ impl RawArgs {
                 }
                 self.hedge_reserve = Some(fraction);
             }
-            "--mcs-up-to" => self.mcs_up_to = Some(arg_vertices(argv, i, arg)),
-            "--no-mcs" => self.no_mcs = true,
-            "--mcsm-up-to" => self.mcsm_up_to = Some(arg_vertices(argv, i, arg)),
-            "--no-mcsm" => self.no_mcsm = true,
-            "--drop-fill-up-to" => self.drop_fill_up_to = Some(arg_vertices(argv, i, arg)),
-            "--no-drop-fill" => self.no_drop_fill = true,
-            "--recombine-up-to" => self.recombine_up_to = Some(arg_vertices(argv, i, arg)),
-            "--no-recombine" => self.no_recombine = true,
-            "--merge-up-to" => self.merge_up_to = Some(arg_vertices(argv, i, arg)),
-            "--no-merge" => self.no_merge = true,
-            "--local-merge-up-to" => self.local_merge_up_to = Some(arg_vertices(argv, i, arg)),
-            "--no-local-merge" => self.no_local_merge = true,
             "--no-hedge" => self.no_hedge = true,
             "--no-bipartite-lift" => self.no_bipartite_lift = true,
             "--bipartite-lift-rate" => {
@@ -465,29 +498,6 @@ impl RawArgs {
                 }
                 self.bipartite_lift_rate = Some(rate);
             }
-            "--capped-restarts" => self.capped_restarts = true,
-            "--sample-band" => self.sample_band = Some(arg_number(argv, i, arg)),
-            "--sample-band-alternate" => self.sample_band_alternate = true,
-            "--sampling-patience" => {
-                let restarts = arg_number(argv, i, arg);
-                if restarts == 0 {
-                    usage_error(
-                        "--sampling-patience wants a positive restart floor; a floor of zero \
-                         stops the restarts before the first one runs, and \
-                         --no-sampling-patience is how the rule is turned off",
-                    );
-                }
-                self.sampling_patience = Some(restarts);
-            }
-            "--no-sampling-patience" => self.no_sampling_patience = true,
-            "--expensive-orders-up-to" => {
-                self.expensive_orders_up_to = Some(
-                    usize::try_from(arg_number(argv, i, arg)).unwrap_or_else(|_| {
-                        usage_error(&format!("{arg} wants a vertex count in 0..={}", usize::MAX))
-                    }),
-                );
-            }
-            "--trace" => self.trace = true,
             _ => return false,
         }
         true
@@ -815,6 +825,29 @@ impl RawArgs {
         if let Some(fraction) = self.hedge_reserve {
             config = config.with_hedge_reserve(fraction);
         }
+        config = self.apply_stage_gate_config(config);
+        if self.capped_restarts {
+            config = config.with_restarts_to_deadline(false);
+        }
+        if let Some(band) = self.sample_band {
+            config = config.with_sample_band(band);
+        }
+        if self.sample_band_alternate {
+            config = config.with_sample_band_alternate(true);
+        }
+        if let Some(min_restarts) = self.sampling_patience {
+            config = config.with_sampling_patience(SamplingPatience::Halving { min_restarts });
+        }
+        if self.no_sampling_patience {
+            config = config.with_sampling_patience(SamplingPatience::Off);
+        }
+        if let Some(count) = self.expensive_orders_up_to {
+            config = config.with_expensive_orders_up_to(count);
+        }
+        config
+    }
+
+    fn apply_stage_gate_config(&self, mut config: PortfolioConfig) -> PortfolioConfig {
         if let Some(count) = self.mcs_up_to {
             config = config.with_maximum_cardinality(count);
         }
@@ -850,24 +883,6 @@ impl RawArgs {
         }
         if self.no_local_merge {
             config = config.without_local_merge();
-        }
-        if self.capped_restarts {
-            config = config.with_restarts_to_deadline(false);
-        }
-        if let Some(band) = self.sample_band {
-            config = config.with_sample_band(band);
-        }
-        if self.sample_band_alternate {
-            config = config.with_sample_band_alternate(true);
-        }
-        if let Some(min_restarts) = self.sampling_patience {
-            config = config.with_sampling_patience(SamplingPatience::Halving { min_restarts });
-        }
-        if self.no_sampling_patience {
-            config = config.with_sampling_patience(SamplingPatience::Off);
-        }
-        if let Some(count) = self.expensive_orders_up_to {
-            config = config.with_expensive_orders_up_to(count);
         }
         config
     }

@@ -96,6 +96,54 @@ fn build_coarse_csr(
     coarse_id: &[u32],
     coarse_vwgt: Vec<u32>,
 ) -> CsrGraph {
+    let (offsets, mut flat) = collect_coarse_edge_entries(graph, nc, coarse_id);
+    let total = flat.len();
+
+    // Sorting each cv's slice keeps CSR order deterministic. Merging the
+    // parallel entries sums their weights, which is what makes heavy-edge
+    // matching meaningful one level up: a coarse edge's weight is the number of
+    // fine edges that would be cut by separating its two endpoints.
+    //
+    // `total` counts the entries before merging, so it is an upper bound on the
+    // merged rows: neither output array has to grow.
+    let mut coarse_offsets = Vec::with_capacity(nc + 1);
+    let mut coarse_neighbors = Vec::with_capacity(total);
+    let mut coarse_edge_weights = Vec::with_capacity(total);
+    coarse_offsets.push(0u32);
+    for v in 0..nc {
+        let start = offsets[v] as usize;
+        let end = offsets[v + 1] as usize;
+        let slice = &mut flat[start..end];
+        slice.sort_unstable_by_key(|&(nb, _)| nb);
+        let mut i = 0;
+        while i < slice.len() {
+            let nb = slice[i].0;
+            let mut wt = 0u32;
+            while i < slice.len() && slice[i].0 == nb {
+                wt = wt
+                    .checked_add(slice[i].1)
+                    .expect("a coarse edge cannot outweigh all fine edges");
+                i += 1;
+            }
+            coarse_neighbors.push(nb);
+            coarse_edge_weights.push(wt);
+        }
+        coarse_offsets.push(coarse_neighbors.len() as u32);
+    }
+
+    CsrGraph {
+        offsets: coarse_offsets,
+        neighbors: coarse_neighbors,
+        vertex_weights: coarse_vwgt,
+        edge_weights: coarse_edge_weights,
+    }
+}
+
+fn collect_coarse_edge_entries(
+    graph: &CsrGraph,
+    nc: usize,
+    coarse_id: &[u32],
+) -> (Vec<u32>, Vec<(u32, u32)>) {
     let n = graph.num_vertices();
     // Count then fill, with `counts` reused as the per-row cursor: the coarse
     // adjacency lands contiguously in one flat buffer instead of a Vec of Vecs.
@@ -138,43 +186,5 @@ fn build_coarse_csr(
             }
         }
     }
-
-    // Sorting each cv's slice keeps CSR order deterministic. Merging the
-    // parallel entries sums their weights, which is what makes heavy-edge
-    // matching meaningful one level up: a coarse edge's weight is the number of
-    // fine edges that would be cut by separating its two endpoints.
-    //
-    // `total` counts the entries before merging, so it is an upper bound on the
-    // merged rows: neither output array has to grow.
-    let mut coarse_offsets = Vec::with_capacity(nc + 1);
-    let mut coarse_neighbors = Vec::with_capacity(total);
-    let mut coarse_edge_weights = Vec::with_capacity(total);
-    coarse_offsets.push(0u32);
-    for v in 0..nc {
-        let start = offsets[v] as usize;
-        let end = offsets[v + 1] as usize;
-        let slice = &mut flat[start..end];
-        slice.sort_unstable_by_key(|&(nb, _)| nb);
-        let mut i = 0;
-        while i < slice.len() {
-            let nb = slice[i].0;
-            let mut wt = 0u32;
-            while i < slice.len() && slice[i].0 == nb {
-                wt = wt
-                    .checked_add(slice[i].1)
-                    .expect("a coarse edge cannot outweigh all fine edges");
-                i += 1;
-            }
-            coarse_neighbors.push(nb);
-            coarse_edge_weights.push(wt);
-        }
-        coarse_offsets.push(coarse_neighbors.len() as u32);
-    }
-
-    CsrGraph {
-        offsets: coarse_offsets,
-        neighbors: coarse_neighbors,
-        vertex_weights: coarse_vwgt,
-        edge_weights: coarse_edge_weights,
-    }
+    (offsets, flat)
 }

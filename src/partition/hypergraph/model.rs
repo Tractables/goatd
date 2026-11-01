@@ -74,37 +74,10 @@ impl Hypergraph {
         }
         let mut normalized = Vec::with_capacity(hyperedges.len());
         for (hyperedge, pins) in hyperedges.iter().enumerate() {
-            if pins.is_empty() {
-                return Err(Error::InvalidInput(format!(
-                    "hyperedge {hyperedge} has no pins"
-                )));
-            }
             let weight = hyperedge_weights.map_or(1, |weights| weights[hyperedge]);
-            if weight == 0 {
-                return Err(Error::InvalidInput(format!(
-                    "hyperedge {hyperedge} has weight 0; weights must be positive"
-                )));
+            if let Some(entry) = normalize_hyperedge(hyperedge, pins, weight, num_vertices)? {
+                normalized.push(entry);
             }
-            let mut pins = pins.clone();
-            pins.sort_unstable();
-            if let Some(&vertex) = pins.iter().find(|&&vertex| vertex as usize >= num_vertices) {
-                return Err(Error::InvalidInput(format!(
-                    "hyperedge {hyperedge} contains vertex {vertex}, outside 0..{num_vertices}"
-                )));
-            }
-            if let Some(vertex) = pins
-                .windows(2)
-                .find(|pair| pair[0] == pair[1])
-                .map(|pair| pair[0])
-            {
-                return Err(Error::InvalidInput(format!(
-                    "hyperedge {hyperedge} contains vertex {vertex} more than once"
-                )));
-            }
-            if pins.len() < 2 {
-                continue;
-            }
-            normalized.push((pins, weight));
         }
         let (canonical_hyperedges, canonical_weights) = merge_sorted_hyperedges(normalized)
             .ok_or_else(|| {
@@ -286,4 +259,42 @@ pub(super) fn merge_sorted_hyperedges(
         }
     }
     Some((canonical_hyperedges, canonical_weights))
+}
+
+fn normalize_hyperedge(
+    hyperedge: usize,
+    pins: &[u32],
+    weight: u32,
+    num_vertices: usize,
+) -> Result<Option<(Vec<u32>, u32)>, Error> {
+    if pins.is_empty() {
+        return Err(Error::InvalidInput(format!(
+            "hyperedge {hyperedge} has no pins"
+        )));
+    }
+    if weight == 0 {
+        return Err(Error::InvalidInput(format!(
+            "hyperedge {hyperedge} has weight 0; weights must be positive"
+        )));
+    }
+    let mut pins = pins.to_vec();
+    pins.sort_unstable();
+    if let Some(&vertex) = pins.iter().find(|&&vertex| vertex as usize >= num_vertices) {
+        return Err(Error::InvalidInput(format!(
+            "hyperedge {hyperedge} contains vertex {vertex}, outside 0..{num_vertices}"
+        )));
+    }
+    if let Some(vertex) = pins
+        .windows(2)
+        .find(|pair| pair[0] == pair[1])
+        .map(|pair| pair[0])
+    {
+        return Err(Error::InvalidInput(format!(
+            "hyperedge {hyperedge} contains vertex {vertex} more than once"
+        )));
+    }
+    if pins.len() < 2 {
+        return Ok(None);
+    }
+    Ok(Some((pins, weight)))
 }

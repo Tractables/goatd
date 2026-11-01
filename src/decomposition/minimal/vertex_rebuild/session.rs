@@ -133,47 +133,10 @@ impl<'g> Session<'g> {
                 return Advance::Paused(reason);
             }
             if self.dirty {
-                // The shared completion is a bit per ordered pair of vertices,
-                // so on a large enough graph the allocation is the whole of
-                // memory. A budget with no deadline has no estimate to decline
-                // against, and the size is the one rule left.
-                if !completion_fits(self.graph.num_vertices() as usize) {
+                if let Err(reason) = self.prepare_dirty_round(&mut slice, deadline) {
                     slice.record(&mut self.progress);
-                    return Advance::Paused(Pause::SetupEstimate);
+                    return Advance::Paused(reason);
                 }
-                let remaining = deadline
-                    .map(|end| end.saturating_duration_since(crate::meter::now()))
-                    .or_else(|| {
-                        slice
-                            .deadline()
-                            .map(|end| end.saturating_duration_since(Instant::now()))
-                    });
-                if let Some(remaining) = remaining {
-                    let n = u64::from(self.graph.num_vertices());
-                    let squares = bag_squares(&self.best);
-                    let projected = (n.saturating_mul(n) / 64).saturating_add(squares);
-                    if Duration::from_millis(crate::meter::milliseconds_for_units(projected))
-                        > remaining / 8
-                    {
-                        slice.record(&mut self.progress);
-                        return Advance::Paused(Pause::SetupEstimate);
-                    }
-                }
-                let start = Instant::now();
-                let (_, shared) = self.shared.get_or_insert_with(|| {
-                    (
-                        crate::adjacency::lists(self.graph),
-                        SharedCompletion::new(self.graph),
-                    )
-                });
-                shared.complete(&self.best);
-                if !self.custom_order {
-                    widest_first(&self.best, &mut self.order);
-                }
-                self.dirty = false;
-                self.stats.rounds += 1;
-                self.progress.setup_elapsed += start.elapsed();
-                slice.step();
                 continue;
             }
             let vertex = self.order[self.cursor as usize];
@@ -201,6 +164,53 @@ impl<'g> Session<'g> {
             }
             self.failed += 1;
         }
+    }
+
+    fn prepare_dirty_round(
+        &mut self,
+        slice: &mut polishing::Slice,
+        deadline: Option<Instant>,
+    ) -> Result<(), Pause> {
+        // The shared completion is a bit per ordered pair of vertices,
+        // so on a large enough graph the allocation is the whole of
+        // memory. A budget with no deadline has no estimate to decline
+        // against, and the size is the one rule left.
+        if !completion_fits(self.graph.num_vertices() as usize) {
+            return Err(Pause::SetupEstimate);
+        }
+        let remaining = deadline
+            .map(|end| end.saturating_duration_since(crate::meter::now()))
+            .or_else(|| {
+                slice
+                    .deadline()
+                    .map(|end| end.saturating_duration_since(Instant::now()))
+            });
+        if let Some(remaining) = remaining {
+            let n = u64::from(self.graph.num_vertices());
+            let squares = bag_squares(&self.best);
+            let projected = (n.saturating_mul(n) / 64).saturating_add(squares);
+            if Duration::from_millis(crate::meter::milliseconds_for_units(projected))
+                > remaining / 8
+            {
+                return Err(Pause::SetupEstimate);
+            }
+        }
+        let start = Instant::now();
+        let (_, shared) = self.shared.get_or_insert_with(|| {
+            (
+                crate::adjacency::lists(self.graph),
+                SharedCompletion::new(self.graph),
+            )
+        });
+        shared.complete(&self.best);
+        if !self.custom_order {
+            widest_first(&self.best, &mut self.order);
+        }
+        self.dirty = false;
+        self.stats.rounds += 1;
+        self.progress.setup_elapsed += start.elapsed();
+        slice.step();
+        Ok(())
     }
 }
 

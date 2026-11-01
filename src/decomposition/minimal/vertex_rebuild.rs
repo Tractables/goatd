@@ -155,24 +155,8 @@ fn rebuild(
     // They are the only new bags: the others go into the candidate as they
     // are, at the end.
     let mut tree_edges: Vec<(usize, usize)> = small.tree_edges().collect();
-    let mut attachment: Vec<_> = (0..kept.len()).collect();
-    let mut connecting: Vec<Vec<u32>> = Vec::new();
-    for (index, &on_support) in kept.iter().enumerate() {
-        if on_support {
-            attachment[index] = kept.len() + connecting.len();
-            let members = small.bags()[index].vertices();
-            let mut bag = Vec::with_capacity(1 + members.len());
-            bag.push(vertex);
-            bag.extend(
-                members
-                    .iter()
-                    .copied()
-                    .filter(|&v| required[v as usize])
-                    .map(original),
-            );
-            connecting.push(bag);
-        }
-    }
+    let (attachment, mut connecting) =
+        build_support_attachments(&small, &kept, &required, vertex, original);
     splice_support_edges(
         &small,
         &kept,
@@ -202,6 +186,34 @@ fn rebuild(
     bags.extend(connecting.into_iter().map(TdBag::already_sorted));
     let candidate = TreeDecomposition::from_trusted_bags(graph, bags, tree_edges).ok()?;
     Some(compact(candidate))
+}
+
+fn build_support_attachments(
+    small: &TreeDecomposition,
+    kept: &[bool],
+    required: &[bool],
+    vertex: u32,
+    original: impl Fn(u32) -> u32,
+) -> (Vec<usize>, Vec<Vec<u32>>) {
+    let mut attachment: Vec<_> = (0..kept.len()).collect();
+    let mut connecting: Vec<Vec<u32>> = Vec::new();
+    for (index, &on_support) in kept.iter().enumerate() {
+        if on_support {
+            attachment[index] = kept.len() + connecting.len();
+            let members = small.bags()[index].vertices();
+            let mut bag = Vec::with_capacity(1 + members.len());
+            bag.push(vertex);
+            bag.extend(
+                members
+                    .iter()
+                    .copied()
+                    .filter(|&v| required[v as usize])
+                    .map(&original),
+            );
+            connecting.push(bag);
+        }
+    }
+    (attachment, connecting)
 }
 
 fn splice_support_edges(

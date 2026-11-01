@@ -316,32 +316,12 @@ pub(super) fn localized_fm_pass(
         return false;
     };
 
-    scratch.prepare(n);
-    hg.fill_pin_counts(part, &mut scratch.pin_counts);
+    prepare_hypergraph_region(hg, part, seed, scratch);
     let pin_counts = scratch.pin_counts.as_mut_slice();
     let in_region = scratch.in_region.as_mut_slice();
-    let region_queue = &mut scratch.queue;
-
-    let max_region = (n / 4).max(20).min(n);
-    let region_size =
-        grow_hypergraph_region(hg, seed, max_region, pin_counts, in_region, region_queue);
-
-    // Ascending index order (not BFS discovery order) preserves the lowest-index
-    // tie-break in the move loop: `gain[v] > best_gain` keeps the first vertex
-    // reaching the max.
     let region_list = &mut scratch.region_list;
     let active = &mut scratch.active;
-    region_list.extend((0..n).filter(|&v| in_region[v]));
-    debug_assert_eq!(region_list.len(), region_size);
-
-    // Gains only for region vertices. A non-region entry is never read, so
-    // `gain` is written here and left alone rather than cleared.
     let gain = scratch.gain.as_mut_slice();
-    for &v in region_list.iter() {
-        let (g, _) = vertex_gain_and_boundary(hg, part, pin_counts, v);
-        gain[v] = g;
-    }
-
     let locked = scratch.locked.as_mut_slice();
     let log = &mut scratch.log;
     log.begin(region_list.len() / 2);
@@ -382,6 +362,39 @@ pub(super) fn localized_fm_pass(
         locked[v] = false;
     }
     improved
+}
+
+fn prepare_hypergraph_region(
+    hg: &Hypergraph,
+    part: &[u8],
+    seed: usize,
+    scratch: &mut RegionScratch,
+) {
+    let n = hg.vertex_count;
+    scratch.prepare(n);
+    hg.fill_pin_counts(part, &mut scratch.pin_counts);
+    let pin_counts = scratch.pin_counts.as_mut_slice();
+    let in_region = scratch.in_region.as_mut_slice();
+    let region_queue = &mut scratch.queue;
+
+    let max_region = (n / 4).max(20).min(n);
+    let region_size =
+        grow_hypergraph_region(hg, seed, max_region, pin_counts, in_region, region_queue);
+
+    // Ascending index order (not BFS discovery order) preserves the lowest-index
+    // tie-break in the move loop: `gain[v] > best_gain` keeps the first vertex
+    // reaching the max.
+    let region_list = &mut scratch.region_list;
+    region_list.extend((0..n).filter(|&v| in_region[v]));
+    debug_assert_eq!(region_list.len(), region_size);
+
+    // Gains only for region vertices. A non-region entry is never read, so
+    // `gain` is written here and left alone rather than cleared.
+    let gain = scratch.gain.as_mut_slice();
+    for &v in region_list.iter() {
+        let (g, _) = vertex_gain_and_boundary(hg, part, pin_counts, v);
+        gain[v] = g;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

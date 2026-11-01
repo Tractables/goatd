@@ -234,37 +234,17 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
     // skip all scoring work on the giant-clique endgame.
     let mut clique_residual = false;
 
-    while let Some(entry) = policy.pop() {
-        let v = entry.vertex();
-        if !graph.active[v as usize] {
-            continue; // lazy deletion: v was already eliminated
-        }
-        if !policy.entry_is_current(&entry) {
-            continue;
-        }
-        let snapshot = entry.snapshot();
-
-        if let Some(exit) = check_step_deadlines::<P>(
-            graph,
-            &mut pacer,
-            &mut cheap_mode,
-            soft_deadline,
-            hard_deadline,
-        ) {
-            return exit;
-        }
-
-        // Stale-snapshot guard: re-score a popped vertex and, if it moved,
-        // re-push and let the heap decide again. Skipped in cheap mode, where
-        // score accuracy is already abandoned.
-        if !cheap_mode
-            && let Some(live) = policy.rescore_on_pop(graph, v)
-            && live != snapshot
-        {
-            policy.push(graph, v, live);
-            continue;
-        }
-
+    while let Some((v, snapshot)) = match pop_next_greedy_vertex(
+        policy,
+        graph,
+        &mut pacer,
+        &mut cheap_mode,
+        soft_deadline,
+        hard_deadline,
+    ) {
+        Ok(next) => next,
+        Err(exit) => return exit,
+    } {
         let bag = take_bag(graph, v, &mut nbrs_buf);
         let bag_len = bag.len();
 
@@ -291,6 +271,45 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
         }
     }
     ElimExit::Complete
+}
+
+fn pop_next_greedy_vertex<P: ElimPolicy>(
+    policy: &mut P,
+    graph: &mut EliminationGraph,
+    pacer: &mut DeadlinePacer,
+    cheap_mode: &mut bool,
+    soft_deadline: Option<Instant>,
+    hard_deadline: Option<Instant>,
+) -> Result<Option<(u32, u64)>, ElimExit> {
+    while let Some(entry) = policy.pop() {
+        let v = entry.vertex();
+        if !graph.active[v as usize] {
+            continue; // lazy deletion: v was already eliminated
+        }
+        if !policy.entry_is_current(&entry) {
+            continue;
+        }
+        let snapshot = entry.snapshot();
+
+        if let Some(exit) =
+            check_step_deadlines::<P>(graph, pacer, cheap_mode, soft_deadline, hard_deadline)
+        {
+            return Err(exit);
+        }
+
+        // Stale-snapshot guard: re-score a popped vertex and, if it moved,
+        // re-push and let the heap decide again. Skipped in cheap mode, where
+        // score accuracy is already abandoned.
+        if !*cheap_mode
+            && let Some(live) = policy.rescore_on_pop(graph, v)
+            && live != snapshot
+        {
+            policy.push(graph, v, live);
+            continue;
+        }
+        return Ok(Some((v, snapshot)));
+    }
+    Ok(None)
 }
 
 #[allow(clippy::too_many_arguments)]

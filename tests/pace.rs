@@ -174,6 +174,11 @@ fn blank_lines_are_not_a_tree_decomposition() {
 /// whose wording belongs to it.
 #[test]
 fn a_rejected_td_names_the_offending_id_and_the_count_it_was_checked_against() {
+    check_id_and_syntax_td_rejections();
+    check_topology_and_bound_td_rejections();
+}
+
+fn check_id_and_syntax_td_rejections() {
     let cases: &[(&str, &str, &[&str])] = &[
         (
             "s td 2 2 3\nb 0 1 2\nb 2 2 3\n",
@@ -247,6 +252,14 @@ fn a_rejected_td_names_the_offending_id_and_the_count_it_was_checked_against() {
             "a declared maximum larger than every bag",
             &["maximum bag size 3", "contains 2 vertices"],
         ),
+    ];
+    for &(td_str, what, expected) in cases {
+        assert_rejection_mentions(TreeDecomposition::from_td(td_str), what, expected);
+    }
+}
+
+fn check_topology_and_bound_td_rejections() {
+    let cases: &[(&str, &str, &[&str])] = &[
         (
             "s td 1 1 1\ns td 1 1 1\nb 1 1\n",
             "a second solution line",

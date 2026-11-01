@@ -1383,7 +1383,7 @@ fn run_bipartite_lift(
         return Ok(());
     }
 
-    let Some((sides, limit, affordable, share)) = priced_bipartite_sides(
+    let Some(plan) = priced_bipartite_sides(
         graph,
         &adjacency,
         &first,
@@ -1396,16 +1396,8 @@ fn run_bipartite_lift(
         return Ok(());
     };
 
-    for (keep, drop, whole) in sides {
-        let (ladder, slice) = build_bipartite_ladder(
-            graph.edges().len(),
-            &adjacency,
-            drop,
-            whole,
-            limit,
-            affordable,
-            share,
-        );
+    for side in &plan.sides {
+        let (ladder, slice) = build_bipartite_ladder(graph.edges().len(), &adjacency, side, &plan);
         if let Some(outcome) = run_bipartite_ladder(
             graph,
             &adjacency,
@@ -1413,8 +1405,8 @@ fn run_bipartite_lift(
             seed,
             initial_orders,
             config,
-            keep,
-            drop,
+            side.keep,
+            side.drop,
             &ladder,
             slice,
             hard_deadline,
@@ -1429,12 +1421,24 @@ fn run_bipartite_lift(
     Ok(())
 }
 
+struct BipartiteSide<'a> {
+    keep: &'a [u32],
+    drop: &'a [u32],
+    whole: bipartite_lift::Price,
+}
+
+struct BipartitePlan<'a> {
+    sides: Vec<BipartiteSide<'a>>,
+    limit: usize,
+    affordable: f64,
+    share: Duration,
+}
+
 /// Both sides measured before either is built: a side whose eliminations would
 /// add too much is not a smaller search, and building it to find that out is
 /// the cost the measurement avoids. What is left is tried cheapest first, and
 /// the second side is built only if the first turns out to hold more edges than
 /// the input.
-#[allow(clippy::type_complexity)]
 fn priced_bipartite_sides<'a>(
     graph: &Graph,
     adjacency: &[Vec<u32>],
@@ -1443,26 +1447,23 @@ fn priced_bipartite_sides<'a>(
     config: PortfolioConfig,
     soft_budget: Duration,
     edge_factor: f64,
-) -> Option<(
-    Vec<(&'a [u32], &'a [u32], bipartite_lift::Price)>,
-    usize,
-    f64,
-    Duration,
-)> {
+) -> Option<BipartitePlan<'a>> {
     let num_edges = graph.edges().len();
     let limit = (edge_factor * num_edges as f64) as usize;
-    let mut sides: Vec<(&[u32], &[u32], bipartite_lift::Price)> =
-        [(first, second), (second, first)]
-            .into_iter()
-            .filter_map(|(keep, drop)| {
-                bipartite_lift::price(adjacency, drop, u32::MAX, limit)
-                    .map(|priced| (keep, drop, priced))
+    let mut sides: Vec<BipartiteSide<'a>> = [(first, second), (second, first)]
+        .into_iter()
+        .filter_map(|(keep, drop)| {
+            bipartite_lift::price(adjacency, drop, u32::MAX, limit).map(|whole| BipartiteSide {
+                keep,
+                drop,
+                whole,
             })
-            .collect();
+        })
+        .collect();
     if sides.is_empty() {
         return None;
     }
-    sides.sort_by_key(|&(_, _, priced)| priced.work());
+    sides.sort_by_key(|side| side.whole.work());
 
     // The share is of the whole window, since that is what the stage spends:
     // a sub-run stops at its own hard deadline. Inside its share it keeps the
@@ -1480,11 +1481,16 @@ fn priced_bipartite_sides<'a>(
     // refused here, and the share stays with the rest of the schedule; the same
     // graph under a longer window is not.
     let affordable = config.bipartite_lift_rate * share.as_millis() as f64;
-    let cheapest = (num_edges + sides[0].2.work()) as f64;
+    let cheapest = (num_edges + sides[0].whole.work()) as f64;
     if cheapest > affordable {
         return None;
     }
-    Some((sides, limit, affordable, share))
+    Some(BipartitePlan {
+        sides,
+        limit,
+        affordable,
+        share,
+    })
 }
 
 /// The rungs of the ladder the share pays for, and the slice each rung gets.
@@ -1492,29 +1498,26 @@ fn priced_bipartite_sides<'a>(
 /// rest are added while the total work stays under what the share buys at the
 /// rate, so how deep the ladder goes is a function of the budget rather than of
 /// the graph.
-#[allow(clippy::too_many_arguments)]
 fn build_bipartite_ladder(
     base_edges: usize,
     adjacency: &[Vec<u32>],
-    drop: &[u32],
-    whole: bipartite_lift::Price,
-    limit: usize,
-    affordable: f64,
-    share: Duration,
+    side: &BipartiteSide<'_>,
+    plan: &BipartitePlan<'_>,
 ) -> (Vec<bipartite_lift::Price>, Duration) {
     let mut ladder = Vec::new();
     let mut work = base_edges;
-    for cutoff in bipartite_lift::cutoffs(adjacency, drop) {
+    for cutoff in bipartite_lift::cutoffs(adjacency, side.drop) {
         let priced = if cutoff == u32::MAX {
-            whole
+            side.whole
         } else {
-            let Some(priced) = bipartite_lift::price(adjacency, drop, cutoff, limit) else {
+            let Some(priced) = bipartite_lift::price(adjacency, side.drop, cutoff, plan.limit)
+            else {
                 continue;
             };
             priced
         };
         let next = work.saturating_add(priced.work());
-        if !ladder.is_empty() && next as f64 > affordable {
+        if !ladder.is_empty() && next as f64 > plan.affordable {
             break;
         }
         work = next;
@@ -1527,10 +1530,10 @@ fn build_bipartite_ladder(
     // reason to give one rung more of the window than another. Where that
     // leaves a slice too short to search anything, the whole side takes the
     // share on its own, as it did before there was a ladder.
-    let mut slice = share / ladder.len().max(1) as u32;
+    let mut slice = plan.share / ladder.len().max(1) as u32;
     if slice < Duration::from_millis(2 * MIN_FLOWCUTTER_CANDIDATE_MS) {
         ladder.truncate(1);
-        slice = share;
+        slice = plan.share;
     }
     (ladder, slice)
 }
@@ -1637,19 +1640,9 @@ fn run_portfolio(
     // Where the run stands on the work clock, so estimates written in work
     // units can be read at the rate this machine is actually running them.
     let started_units = crate::meter::units_spent();
-    let deadlines =
-        crate::deadline::staged(started, config.soft_budget, config.hard_budget, "portfolio")?;
-    let closing = ClosingWindows::carve(
-        graph,
-        started,
-        config,
-        collection,
-        deadlines.soft,
-        deadlines.hard,
-    );
-    let mut prebuilt = engine::prebuild(graph, deadlines.soft);
     let orders = initial_orders(seed, weights);
-    let mut candidates = init_candidate_set(collection, orders.len(), deadlines.hard, closing);
+    let (soft_deadline, closing, mut prebuilt, mut candidates) =
+        prepare_portfolio_run(graph, started, config, collection, orders.len())?;
 
     // The bipartite lift runs before the orders that eliminate the input
     // itself, so that what it finds is the incumbent they are bounded against
@@ -1671,7 +1664,7 @@ fn run_portfolio(
         &mut prebuilt,
         &orders,
         config,
-        deadlines.soft,
+        soft_deadline,
         closing.hard_deadline,
         &mut candidates,
         &mut trace,
@@ -1683,7 +1676,7 @@ fn run_portfolio(
         seed,
         started,
         &initial,
-        deadlines.soft,
+        soft_deadline,
         closing.hard_deadline,
         initial_orders,
         weights,
@@ -1704,6 +1697,36 @@ fn run_portfolio(
         &mut trace,
     )?;
     Ok(candidates)
+}
+
+fn prepare_portfolio_run(
+    graph: &Graph,
+    started: Instant,
+    config: PortfolioConfig,
+    collection: Collection,
+    initial_count: usize,
+) -> Result<
+    (
+        Option<Instant>,
+        ClosingWindows,
+        engine::Prebuilt,
+        CandidateSet,
+    ),
+    crate::Error,
+> {
+    let deadlines =
+        crate::deadline::staged(started, config.soft_budget, config.hard_budget, "portfolio")?;
+    let closing = ClosingWindows::carve(
+        graph,
+        started,
+        config,
+        collection,
+        deadlines.soft,
+        deadlines.hard,
+    );
+    let prebuilt = engine::prebuild(graph, deadlines.soft);
+    let candidates = init_candidate_set(collection, initial_count, deadlines.hard, closing);
+    Ok((deadlines.soft, closing, prebuilt, candidates))
 }
 
 /// Above the full-schedule line the second stage of the hard window is
@@ -1801,24 +1824,22 @@ fn run_initial_orders(
         soft_deadline,
         hard_deadline,
     );
-    let tail_budget = config.flowcutter_budget;
     let mut hard_deadline_tripped = false;
     let mut min_fill_finished = false;
     let mut fill_pass_cost = None;
     let mut initial_runs: u32 = 0;
 
     for (i, candidate) in initial_orders.iter().copied().enumerate() {
-        let order = candidate.order;
-        let residual = classified.map(|class| class.residual);
-        let initial_deadline = classified.map_or(soft_deadline, |class| class.initial_deadline);
-        let initial_cutoff = classified.map_or(soft_deadline, |class| class.initial_cutoff);
-        if i > 0 && expired(initial_deadline) {
+        if i > 0 && expired(classified.map_or(soft_deadline, |class| class.initial_deadline)) {
             break;
         }
+        let order = candidate.order;
+        let residual = classified.map(|class| class.residual);
         let expensive = !is_min_degree_variant(order);
         if should_skip_initial_order(i, candidate, residual, expensive, trace) {
             continue;
         }
+        let initial_cutoff = classified.map_or(soft_deadline, |class| class.initial_cutoff);
         let candidate_started = crate::meter::now();
         let (origin, outcome, stop, own_cutoff) = run_initial_candidate(
             prebuilt,
@@ -1837,7 +1858,7 @@ fn run_initial_orders(
                 order,
                 cost,
                 writeout,
-                tail_budget,
+                config.flowcutter_budget,
                 soft_deadline,
                 hard_deadline,
             );
@@ -2156,8 +2177,6 @@ fn run_sampling_schedule(
     trace: &mut TraceSink<'_>,
 ) {
     let total_samples = schedule.total();
-    let stage_length = schedule.stage_length();
-    let stages_start = schedule.diverse_runs;
     let stages_end = schedule.passes_total();
     let mut stage_budget: Option<StageBudget> = None;
     let mut stage_started = Duration::ZERO;
@@ -2172,30 +2191,25 @@ fn run_sampling_schedule(
             config,
             seed,
             sample_index,
-            ordinary_start,
+            &schedule,
             last_improvement,
-            schedule.ordinary_runs,
             restart_deadline,
             trace,
         ) {
             break;
         }
-        if stage_length > 0
-            && (stages_start..stages_end).contains(&sample_index)
-            && (sample_index - stages_start).is_multiple_of(stage_length)
-            && !enter_weighted_stage(
-                started,
-                seed,
-                (sample_index - stages_start) / stage_length,
-                schedule.modified_stages(),
-                cardinality_search_cost,
-                restart_deadline,
-                config.hedge_reserve,
-                &mut stage_budget,
-                &mut stage_started,
-                trace,
-            )
-        {
+        if !enter_weighted_stage_if_due(
+            &schedule,
+            sample_index,
+            started,
+            seed,
+            cardinality_search_cost,
+            restart_deadline,
+            config.hedge_reserve,
+            &mut stage_budget,
+            &mut stage_started,
+            trace,
+        ) {
             sample_index = stages_end;
             continue;
         }
@@ -2233,24 +2247,23 @@ fn run_sampling_schedule(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn sampling_patience_stopped(
     config: PortfolioConfig,
     seed: u64,
     sample_index: u64,
-    ordinary_start: u64,
+    schedule: &Schedule<'_>,
     last_improvement: Option<u64>,
-    ordinary_runs: u64,
     restart_deadline: Option<Instant>,
     trace: &mut TraceSink<'_>,
 ) -> bool {
+    let ordinary_start = schedule.ordinary_start();
     if sample_index < ordinary_start {
         return false;
     }
     let restarts = sample_index - ordinary_start;
     if !config
         .sampling_patience
-        .stalled(restarts, last_improvement, ordinary_runs)
+        .stalled(restarts, last_improvement, schedule.ordinary_runs)
     {
         return false;
     }
@@ -2303,11 +2316,11 @@ fn run_extra_sample(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn enter_weighted_stage(
+fn enter_weighted_stage_if_due(
+    schedule: &Schedule<'_>,
+    sample_index: u64,
     started: Instant,
     seed: u64,
-    stage_index: u64,
-    stage_count: u64,
     cardinality_search_cost: Duration,
     restart_deadline: Option<Instant>,
     hedge_reserve: f64,
@@ -2315,6 +2328,17 @@ fn enter_weighted_stage(
     stage_started: &mut Duration,
     trace: &mut TraceSink<'_>,
 ) -> bool {
+    let stage_length = schedule.stage_length();
+    let stages_start = schedule.diverse_runs;
+    let stages_end = schedule.passes_total();
+    if stage_length == 0
+        || !(stages_start..stages_end).contains(&sample_index)
+        || !(sample_index - stages_start).is_multiple_of(stage_length)
+    {
+        return true;
+    }
+    let stage_index = (sample_index - stages_start) / stage_length;
+    let stage_count = schedule.modified_stages();
     let now = crate::meter::now();
     let elapsed = now.saturating_duration_since(started);
     let budget = stage_budget.get_or_insert_with(|| {

@@ -147,16 +147,35 @@ fn multilevel_pass(
     // the sweep to buy cut.
     refine_level(current, &mut coarse_part, max_imbalance, scratch, stop);
 
+    uncoarsen_and_refine(
+        graph,
+        &levels,
+        coarse_part,
+        &mut proj_scratch,
+        max_imbalance,
+        scratch,
+        stop,
+    )
+}
+
+fn uncoarsen_and_refine(
+    graph: &CsrGraph,
+    levels: &[CoarseningLevel],
+    mut result_part: Vec<u8>,
+    proj_scratch: &mut Vec<u8>,
+    max_imbalance: f64,
+    scratch: &mut FmScratch,
+    stop: &mut BisectionStop,
+) -> Vec<u8> {
     // Uncoarsening. Each step hands every fine vertex its coarse vertex's side,
     // then refines with the freedom the finer graph exposes; only the finest
     // level pays for the localized passes on top.
-    let mut result_part = coarse_part;
     for (li, level) in levels.iter().enumerate().rev() {
         if stop.reached() {
             break;
         }
-        lift_to_fine(&result_part, &level.mapping, &mut proj_scratch);
-        std::mem::swap(&mut result_part, &mut proj_scratch);
+        lift_to_fine(&result_part, &level.mapping, proj_scratch);
+        std::mem::swap(&mut result_part, proj_scratch);
 
         let fine_graph = if li > 0 { &levels[li - 1].graph } else { graph };
         if li == 0 {

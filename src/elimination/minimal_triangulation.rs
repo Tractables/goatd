@@ -105,13 +105,7 @@ pub(crate) fn cardinality_search(
         let chosen = number_chosen_vertex(&mut run_max, &mut counts, &mut states, lowest);
         selected.push(chosen as u32);
 
-        raised.clear();
-        crate::meter::charge(adjacency[chosen].len() as u64);
-        for &neighbour in &adjacency[chosen] {
-            if states[neighbour as usize] == 0 {
-                raised.push(neighbour);
-            }
-        }
+        collect_unnumbered_neighbours(&adjacency[chosen], &states, &mut raised);
         if reach == Reach::LowerPaths
             && !reach_lower_paths(
                 adjacency,
@@ -127,14 +121,28 @@ pub(crate) fn cardinality_search(
         {
             return None;
         }
-        for &vertex in &raised {
-            let count = counts[vertex as usize] + 1;
-            counts[vertex as usize] = count;
-            let run = &mut run_max[vertex as usize / 64];
-            *run = (*run).max(count);
-        }
+        increment_raised_counts(&raised, &mut counts, &mut run_max);
     }
     Some(selected)
+}
+
+fn collect_unnumbered_neighbours(neighbours: &[u32], states: &[u8], raised: &mut Vec<u32>) {
+    raised.clear();
+    crate::meter::charge(neighbours.len() as u64);
+    for &neighbour in neighbours {
+        if states[neighbour as usize] == 0 {
+            raised.push(neighbour);
+        }
+    }
+}
+
+fn increment_raised_counts(raised: &[u32], counts: &mut [u32], run_max: &mut [u32]) {
+    for &vertex in raised {
+        let count = counts[vertex as usize] + 1;
+        counts[vertex as usize] = count;
+        let run = &mut run_max[vertex as usize / 64];
+        *run = (*run).max(count);
+    }
 }
 
 fn number_chosen_vertex(

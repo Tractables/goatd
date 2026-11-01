@@ -267,13 +267,8 @@ fn eliminate_sampled_fill_based(
     let mut pacer = DeadlinePacer::new();
 
     while buckets.minimum().is_some() {
-        if pacer.due() {
-            if expired(hard_deadline) {
-                return ElimExit::DeadlineReached(Cutoff::Hard);
-            }
-            if graph.should_promote_bitset() {
-                graph.promote_bitset();
-            }
+        if check_sampled_fill_pacer(graph, &mut pacer, hard_deadline) {
+            return ElimExit::DeadlineReached(Cutoff::Hard);
         }
 
         crate::meter::charge(SAMPLED_FILL_STEP_UNITS);
@@ -313,6 +308,23 @@ fn eliminate_sampled_fill_based(
         }
     }
     ElimExit::Complete
+}
+
+fn check_sampled_fill_pacer(
+    graph: &mut EliminationGraph,
+    pacer: &mut DeadlinePacer,
+    hard_deadline: Option<Instant>,
+) -> bool {
+    if !pacer.due() {
+        return false;
+    }
+    if expired(hard_deadline) {
+        return true;
+    }
+    if graph.should_promote_bitset() {
+        graph.promote_bitset();
+    }
+    false
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -443,34 +455,18 @@ pub(crate) fn eliminate_sampled_min_degree(
         width_bound,
         ..
     } = stop;
-    let n = graph.len();
-    assert_eq!(weights.len(), n);
-    let uniform_mass = uniform_sampling_mass(weights);
-
     let SampleScratch {
         buckets: bucket_storage,
         live_nbrs: nbrs_buf,
         degree_stale,
         ..
     } = scratch;
-    let mut buckets = BucketMap::with_weights(bucket_storage, weights, uniform_mass);
-    for v in seeding_order(graph, active) {
-        debug_assert!(graph.active[v as usize]);
-        buckets.insert(v, graph.degree(v) as u64);
-    }
+    let (mut buckets, degree_stale) =
+        init_sampled_degree_buckets(graph, weights, active, bucket_storage, degree_stale);
 
     let mut rng = search_stream(seed);
     let mut pacer = DeadlinePacer::new();
     let mut clique_residual = false;
-    // Lazy degree tracking — defer bucket update to sample time. The flags are
-    // grown to the graph and left as the run before them wrote them: the
-    // seeding above files every degree exactly, and the elimination marks every
-    // vertex whose degree it changes, so a flag left set costs one comparison
-    // that finds the filed degree already right and changes nothing.
-    if degree_stale.len() < n {
-        degree_stale.resize(n, false);
-    }
-    let degree_stale = &mut degree_stale[..n];
 
     while buckets.minimum().is_some() {
         if pacer.due() && expired(hard_deadline) {
@@ -509,6 +505,32 @@ pub(crate) fn eliminate_sampled_min_degree(
         }
     }
     ElimExit::Complete
+}
+
+fn init_sampled_degree_buckets<'a>(
+    graph: &EliminationGraph,
+    weights: &'a [u32],
+    active: Option<&[u32]>,
+    bucket_storage: &'a mut BucketStorage,
+    degree_stale: &'a mut Vec<bool>,
+) -> (BucketMap<'a>, &'a mut [bool]) {
+    let n = graph.len();
+    assert_eq!(weights.len(), n);
+    let uniform_mass = uniform_sampling_mass(weights);
+    let mut buckets = BucketMap::with_weights(bucket_storage, weights, uniform_mass);
+    for v in seeding_order(graph, active) {
+        debug_assert!(graph.active[v as usize]);
+        buckets.insert(v, graph.degree(v) as u64);
+    }
+    // Lazy degree tracking — defer bucket update to sample time. The flags are
+    // grown to the graph and left as the run before them wrote them: the
+    // seeding above files every degree exactly, and the elimination marks every
+    // vertex whose degree it changes, so a flag left set costs one comparison
+    // that finds the filed degree already right and changes nothing.
+    if degree_stale.len() < n {
+        degree_stale.resize(n, false);
+    }
+    (buckets, &mut degree_stale[..n])
 }
 
 fn refresh_stale_degree(

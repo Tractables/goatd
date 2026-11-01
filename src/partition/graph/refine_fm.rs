@@ -275,36 +275,13 @@ pub(super) fn localized_fm_pass(
         return false;
     };
 
-    scratch.prepare(n);
+    prepare_graph_region(graph, part, seed, scratch);
     let in_region = scratch.in_region.as_mut_slice();
     let boundary = scratch.boundary.as_mut_slice();
     let boundary_touched = &mut scratch.boundary_touched;
     let region_list = &mut scratch.region_list;
     let active = &mut scratch.active;
-    let queue = &mut scratch.queue;
-
-    let max_region = (n / 4).max(20).min(n);
-    grow_graph_region(
-        graph,
-        part,
-        seed,
-        max_region,
-        in_region,
-        boundary,
-        boundary_touched,
-        region_list,
-        queue,
-    );
-
-    // Gains only for region vertices: O(region × deg), not O(n × deg). A
-    // non-region entry is never read, so `gain` is written here and left alone
-    // rather than cleared.
     let gain = scratch.gain.as_mut_slice();
-    for &v in region_list.iter() {
-        let (g, _) = vertex_gain_and_cut(graph, part, v);
-        gain[v] = g;
-    }
-
     let locked = scratch.locked.as_mut_slice();
     let log = &mut scratch.log;
     log.begin(region_list.len() / 2);
@@ -340,6 +317,38 @@ pub(super) fn localized_fm_pass(
     let improved = log.commit(part);
     reset_graph_region_marks(region_list, boundary_touched, in_region, locked, boundary);
     improved
+}
+
+fn prepare_graph_region(graph: &CsrGraph, part: &[u8], seed: usize, scratch: &mut RegionScratch) {
+    let n = graph.num_vertices();
+    scratch.prepare(n);
+    let in_region = scratch.in_region.as_mut_slice();
+    let boundary = scratch.boundary.as_mut_slice();
+    let boundary_touched = &mut scratch.boundary_touched;
+    let region_list = &mut scratch.region_list;
+    let queue = &mut scratch.queue;
+
+    let max_region = (n / 4).max(20).min(n);
+    grow_graph_region(
+        graph,
+        part,
+        seed,
+        max_region,
+        in_region,
+        boundary,
+        boundary_touched,
+        region_list,
+        queue,
+    );
+
+    // Gains only for region vertices: O(region × deg), not O(n × deg). A
+    // non-region entry is never read, so `gain` is written here and left alone
+    // rather than cleared.
+    let gain = scratch.gain.as_mut_slice();
+    for &v in region_list.iter() {
+        let (g, _) = vertex_gain_and_cut(graph, part, v);
+        gain[v] = g;
+    }
 }
 
 /// Hand the arrays back the way they were found. Only region vertices are
