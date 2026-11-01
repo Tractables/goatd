@@ -190,30 +190,8 @@ pub(crate) struct RunSpec<'a> {
 /// whole residual works on the copy kept for that, refreshed from the
 /// residual first.
 pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> OrderRun {
-    if spec.order.uses_initial_fill_cache() && prebuilt.initial_fill.is_none() {
-        let graph = &prebuilt.reduced.graph;
-        // A setup deadline is the caller asking for the pass to stop at it,
-        // whatever else the run promises. With none, the clock is read only
-        // where the run may come back without a decomposition, which is what
-        // lets the stop flag end a pass that would otherwise run to the end.
-        let abortable = spec.setup_deadline.is_some() || !spec.complete_on_deadline;
-        // The pass is charged as it always was: with no setup deadline and a
-        // bitset to count from, the count is taken straight off the bitset,
-        // which is what `FillScratch` would choose and does not charge here.
-        let fill = if spec.setup_deadline.is_none() && graph.bitset_words > 0 {
-            greedy::initial_fill(graph, None, abortable, |vertex| {
-                graph.fill_count_of_bs(vertex)
-            })
-        } else {
-            let mut scratch = greedy::FillScratch::new(graph.len());
-            greedy::initial_fill(graph, spec.setup_deadline, abortable, |vertex| {
-                scratch.fill_count_of(graph, vertex)
-            })
-        };
-        let Some(fill) = fill else {
-            return OrderRun::DeadlineAborted(Cutoff::Hard);
-        };
-        prebuilt.initial_fill = Some(fill);
+    if !ensure_initial_fill_cache(prebuilt, spec) {
+        return OrderRun::DeadlineAborted(Cutoff::Hard);
     }
     // The per-component path only reads the residual: it eliminates on the
     // component subgraphs it builds from it. Copying the residual for it would
@@ -263,6 +241,36 @@ pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> 
         spec,
         &mut prebuilt.scratch,
     )
+}
+
+fn ensure_initial_fill_cache(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> bool {
+    if !spec.order.uses_initial_fill_cache() || prebuilt.initial_fill.is_some() {
+        return true;
+    }
+    let graph = &prebuilt.reduced.graph;
+    // A setup deadline is the caller asking for the pass to stop at it,
+    // whatever else the run promises. With none, the clock is read only
+    // where the run may come back without a decomposition, which is what
+    // lets the stop flag end a pass that would otherwise run to the end.
+    let abortable = spec.setup_deadline.is_some() || !spec.complete_on_deadline;
+    // The pass is charged as it always was: with no setup deadline and a
+    // bitset to count from, the count is taken straight off the bitset,
+    // which is what `FillScratch` would choose and does not charge here.
+    let fill = if spec.setup_deadline.is_none() && graph.bitset_words > 0 {
+        greedy::initial_fill(graph, None, abortable, |vertex| {
+            graph.fill_count_of_bs(vertex)
+        })
+    } else {
+        let mut scratch = greedy::FillScratch::new(graph.len());
+        greedy::initial_fill(graph, spec.setup_deadline, abortable, |vertex| {
+            scratch.fill_count_of(graph, vertex)
+        })
+    };
+    let Some(fill) = fill else {
+        return false;
+    };
+    prebuilt.initial_fill = Some(fill);
+    true
 }
 
 /// Draw the per-vertex tie-break salt one run works from into `salt`, which
@@ -568,16 +576,7 @@ fn run_order_per_component(
     scratch: &mut RunScratch,
 ) -> OrderRun {
     prepare_per_component_scratch(graph.len(), prefix, components, initial_fill, scratch);
-    let RunScratch {
-        salt,
-        sample,
-        rank: global_rank,
-        local_of,
-        component_graphs,
-        component_work,
-        component_fill,
-    } = scratch;
-    let component_fill = initial_fill.and(component_fill.as_deref());
+    let component_fill = initial_fill.and(scratch.component_fill.as_deref());
     // The bags after the prefix's; the prefix is put in front of them once
     // there is a decomposition to build.
     let base = prefix.next_step();
@@ -591,9 +590,9 @@ fn run_order_per_component(
         let pristine = component_subgraph(
             graph,
             comp,
-            local_of,
+            &mut scratch.local_of,
             &mut nbrs_buf,
-            &mut component_graphs[comp_idx],
+            &mut scratch.component_graphs[comp_idx],
         );
         let sub_initial_fill = component_fill.map(|fill| fill[comp_idx].as_slice());
         let (comp_steps, comp_exit, comp_residual) = run_component_elimination(
@@ -601,11 +600,11 @@ fn run_order_per_component(
             comp_idx,
             comp,
             sub_initial_fill,
-            salt,
+            &scratch.salt,
             spec,
             stop,
-            component_work,
-            sample,
+            &mut scratch.component_work,
+            &mut scratch.sample,
         );
         if let Some(early) = record_component_result(
             prefix,
@@ -617,7 +616,7 @@ fn run_order_per_component(
             base,
             spec.complete_on_deadline,
             &mut all_bags,
-            global_rank,
+            &mut scratch.rank,
             &mut stop,
             &mut soft_cutoff_passed,
         ) {
@@ -632,13 +631,8 @@ fn run_order_per_component(
     } else {
         ElimExit::Complete
     };
-    finish_after(
-        prefix,
-        all_bags,
-        global_rank,
-        exit,
-        spec.complete_on_deadline,
-    )
+    let complete = spec.complete_on_deadline;
+    finish_after(prefix, all_bags, &scratch.rank, exit, complete)
 }
 
 #[allow(clippy::too_many_arguments)]

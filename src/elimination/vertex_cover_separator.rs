@@ -23,26 +23,7 @@ pub(super) fn minimum_vertex_cover_separator(
     let la = boundary_a.len();
     let lb = boundary_b.len();
 
-    // Max matching via Kuhn's algorithm. Each left vertex's search carries its
-    // own generation stamp instead of clearing a right-boundary flag array
-    // before it: the same visited set, without the `la * lb` bytes of clearing
-    // that a large boundary costs. No search stamps 0, so a fresh array reads
-    // as unvisited.
-    let mut match_l = vec![None; la];
-    let mut match_r = vec![None; lb];
-    let mut visited_r: Vec<u32> = vec![0; lb];
-    debug_assert!(la < u32::MAX as usize, "a left-side stamp has to fit u32");
-    for u in 0..la {
-        let generation = u as u32 + 1;
-        try_kuhn(
-            u,
-            &adj,
-            &mut visited_r,
-            generation,
-            &mut match_l,
-            &mut match_r,
-        );
-    }
+    let (match_l, match_r) = max_bipartite_matching(la, lb, &adj);
 
     // König's construction: Z = vertices reachable from unmatched L via
     // alternating paths. Min vertex cover = (L \ Z) ∪ (R ∩ Z).
@@ -82,6 +63,34 @@ pub(super) fn minimum_vertex_cover_separator(
         side_b,
         separator,
     }
+}
+
+fn max_bipartite_matching(
+    la: usize,
+    lb: usize,
+    adj: &[Vec<usize>],
+) -> (Vec<Option<usize>>, Vec<Option<usize>>) {
+    // Max matching via Kuhn's algorithm. Each left vertex's search carries its
+    // own generation stamp instead of clearing a right-boundary flag array
+    // before it: the same visited set, without the `la * lb` bytes of clearing
+    // that a large boundary costs. No search stamps 0, so a fresh array reads
+    // as unvisited.
+    let mut match_l = vec![None; la];
+    let mut match_r = vec![None; lb];
+    let mut visited_r: Vec<u32> = vec![0; lb];
+    debug_assert!(la < u32::MAX as usize, "a left-side stamp has to fit u32");
+    for u in 0..la {
+        let generation = u as u32 + 1;
+        try_kuhn(
+            u,
+            adj,
+            &mut visited_r,
+            generation,
+            &mut match_l,
+            &mut match_r,
+        );
+    }
+    (match_l, match_r)
 }
 
 fn build_bipartite_boundary(

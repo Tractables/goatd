@@ -246,26 +246,7 @@ pub(super) fn flow_refine(
         .network
         .max_flow(source, sink, &mut finest.reachable, stop);
 
-    let mut part_weight = [0u32; 2];
-    for vertex in 0..n {
-        part_weight[part[vertex] as usize] += hg.vertex_weights[vertex];
-    }
-
-    for &vertex in &finest.corridor {
-        let vertex_node = finest.node_by_vertex[vertex] as usize;
-        let new_side = u8::from(!finest.reachable[vertex_node]);
-        if new_side != part[vertex] {
-            let from = part[vertex] as usize;
-            let to = new_side as usize;
-            let weight_after_leaving = part_weight[from] - hg.vertex_weights[vertex];
-            let weight_after_joining = part_weight[to] + hg.vertex_weights[vertex];
-            if weight_after_leaving >= min_part_weight && weight_after_joining <= max_part_weight {
-                finest.moves.push((vertex, new_side));
-                part_weight[from] = weight_after_leaving;
-                part_weight[to] = weight_after_joining;
-            }
-        }
-    }
+    collect_balanced_flow_moves(hg, part, min_part_weight, max_part_weight, finest);
 
     if finest.moves.is_empty() {
         return false;
@@ -284,6 +265,35 @@ pub(super) fn flow_refine(
         part[vertex] = 1 - new_side;
     }
     false
+}
+
+fn collect_balanced_flow_moves(
+    hg: &Hypergraph,
+    part: &[u8],
+    min_part_weight: u32,
+    max_part_weight: u32,
+    finest: &mut FinestScratch,
+) {
+    let mut part_weight = [0u32; 2];
+    for vertex in 0..hg.vertex_count {
+        part_weight[part[vertex] as usize] += hg.vertex_weights[vertex];
+    }
+
+    for &vertex in &finest.corridor {
+        let vertex_node = finest.node_by_vertex[vertex] as usize;
+        let new_side = u8::from(!finest.reachable[vertex_node]);
+        if new_side != part[vertex] {
+            let from = part[vertex] as usize;
+            let to = new_side as usize;
+            let weight_after_leaving = part_weight[from] - hg.vertex_weights[vertex];
+            let weight_after_joining = part_weight[to] + hg.vertex_weights[vertex];
+            if weight_after_leaving >= min_part_weight && weight_after_joining <= max_part_weight {
+                finest.moves.push((vertex, new_side));
+                part_weight[from] = weight_after_leaving;
+                part_weight[to] = weight_after_joining;
+            }
+        }
+    }
 }
 
 /// Corridor: every pin of every cut hyperedge. Interior vertices are left

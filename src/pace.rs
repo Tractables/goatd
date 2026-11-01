@@ -251,33 +251,51 @@ impl TreeDecomposition {
             }
         }
 
-        if !saw_solution_line {
-            return Err(Error::Parse(
-                "no solution line in tree decomposition output".into(),
-            ));
-        }
-        if bags.is_empty() {
-            return Err(Error::Parse(
-                "no bags found in tree decomposition output".into(),
-            ));
-        }
-
-        bags.sort_by_key(|(bag_id, _)| *bag_id);
-        check_parsed_td(&bags, &adj, num_bags, declared_max_bag_size)?;
-
-        let decomposition = TreeDecomposition::from_parts(
-            declared_vertices,
-            bags.into_iter().map(|(_, bag)| bag).collect(),
+        finish_parsed_td(
+            bags,
             adj,
-        );
-        // The input graph is not available yet, but an edgeless graph over the
-        // declared vertex universe checks every decomposition invariant except
-        // coverage of the eventual graph's edges.
-        decomposition
-            .validate(&Graph::new(declared_vertices, []))
-            .map_err(|error| Error::Parse(error.to_string()))?;
-        Ok(decomposition)
+            num_bags,
+            declared_max_bag_size,
+            declared_vertices,
+            saw_solution_line,
+        )
     }
+}
+
+fn finish_parsed_td(
+    mut bags: Vec<(usize, TdBag)>,
+    adj: Vec<Vec<usize>>,
+    num_bags: usize,
+    declared_max_bag_size: u64,
+    declared_vertices: u32,
+    saw_solution_line: bool,
+) -> Result<TreeDecomposition, Error> {
+    if !saw_solution_line {
+        return Err(Error::Parse(
+            "no solution line in tree decomposition output".into(),
+        ));
+    }
+    if bags.is_empty() {
+        return Err(Error::Parse(
+            "no bags found in tree decomposition output".into(),
+        ));
+    }
+
+    bags.sort_by_key(|(bag_id, _)| *bag_id);
+    check_parsed_td(&bags, &adj, num_bags, declared_max_bag_size)?;
+
+    let decomposition = TreeDecomposition::from_parts(
+        declared_vertices,
+        bags.into_iter().map(|(_, bag)| bag).collect(),
+        adj,
+    );
+    // The input graph is not available yet, but an edgeless graph over the
+    // declared vertex universe checks every decomposition invariant except
+    // coverage of the eventual graph's edges.
+    decomposition
+        .validate(&Graph::new(declared_vertices, []))
+        .map_err(|error| Error::Parse(error.to_string()))?;
+    Ok(decomposition)
 }
 
 fn parse_tree_edge_line(

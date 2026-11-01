@@ -1028,19 +1028,7 @@ fn print_candidate(candidate: &CandidateTrace) {
             restarts,
             last_improvement,
             left,
-        } => {
-            line.push_str(&format!(" outcome=sampling-stopped restarts={restarts}"));
-            match last_improvement {
-                Some(index) => line.push_str(&format!(" last-improvement={index}")),
-                None => line.push_str(" last-improvement=none"),
-            }
-            match left {
-                Some(duration) => {
-                    line.push_str(&format!(" left-ms={}", duration.as_millis()));
-                }
-                None => line.push_str(" left-ms=none"),
-            }
-        }
+        } => push_sampling_stopped_trace(&mut line, restarts, last_improvement, left),
         CandidateOutcome::TailBounded {
             window,
             patience,
@@ -1066,6 +1054,25 @@ fn print_candidate(candidate: &CandidateTrace) {
         )),
     }
     eprintln!("{line} ms={}", candidate.elapsed.as_millis());
+}
+
+fn push_sampling_stopped_trace(
+    line: &mut String,
+    restarts: u64,
+    last_improvement: Option<u64>,
+    left: Option<Duration>,
+) {
+    line.push_str(&format!(" outcome=sampling-stopped restarts={restarts}"));
+    match last_improvement {
+        Some(index) => line.push_str(&format!(" last-improvement={index}")),
+        None => line.push_str(" last-improvement=none"),
+    }
+    match left {
+        Some(duration) => {
+            line.push_str(&format!(" left-ms={}", duration.as_millis()));
+        }
+        None => line.push_str(" left-ms=none"),
+    }
 }
 
 /// Ask the library to stop. The handler stores one byte and does nothing else,

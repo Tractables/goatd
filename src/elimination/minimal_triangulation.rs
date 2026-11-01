@@ -95,14 +95,7 @@ pub(crate) fn cardinality_search(
         if pacer.due() && expired(hard_deadline) {
             return None;
         }
-        debug_assert!(
-            states.iter().all(|&state| state & REACHED == 0),
-            "a step cleared its own marks"
-        );
-        while states[lowest] != 0 {
-            lowest += 1;
-        }
-        let chosen = number_chosen_vertex(&mut run_max, &mut counts, &mut states, lowest);
+        let chosen = number_chosen_vertex(&mut run_max, &mut counts, &mut states, &mut lowest);
         selected.push(chosen as u32);
 
         collect_unnumbered_neighbours(&adjacency[chosen], &states, &mut raised);
@@ -149,9 +142,16 @@ fn number_chosen_vertex(
     run_max: &mut [u32],
     counts: &mut [u32],
     states: &mut [u8],
-    lowest: usize,
+    lowest: &mut usize,
 ) -> usize {
-    let (best, chosen) = choose_highest_unnumbered(run_max, counts, lowest);
+    debug_assert!(
+        states.iter().all(|&state| state & REACHED == 0),
+        "a step cleared its own marks"
+    );
+    while states[*lowest] != 0 {
+        *lowest += 1;
+    }
+    let (best, chosen) = choose_highest_unnumbered(run_max, counts, *lowest);
     debug_assert!(
         chosen < counts.len(),
         "every step has an unnumbered vertex to take"

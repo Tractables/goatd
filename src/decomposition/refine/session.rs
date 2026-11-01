@@ -307,21 +307,12 @@ impl<'g> Session<'g> {
             }
             match task {
                 Task::Finish(node) => {
-                    self.tasks.pop();
-                    let refined = self.materialize(node, None);
-                    let Kind::Branch { fallback, .. } = &self.node(node).kind else {
-                        unreachable!();
-                    };
-                    let candidate =
-                        (refined.quality_key() > fallback.quality_key()).then(|| fallback.clone());
-                    slice.step();
-                    if let Some(candidate) = candidate {
+                    if let Some((candidate, refined)) = self.finish_branch_task(node, &mut slice) {
                         self.pending = Some(Pending::Fallback { node, refined });
                         self.progress.proposed += 1;
                         slice.record(&mut self.progress);
                         return polishing::proposal(self, candidate, true);
                     }
-                    self.collapse(node, refined);
                 }
                 Task::Visit(node) => {
                     if (legacy && expired(deadline))
@@ -359,6 +350,25 @@ impl<'g> Session<'g> {
                 }
             }
         }
+    }
+
+    fn finish_branch_task(
+        &mut self,
+        node: usize,
+        slice: &mut polishing::Slice,
+    ) -> Option<(TreeDecomposition, TreeDecomposition)> {
+        self.tasks.pop();
+        let refined = self.materialize(node, None);
+        let Kind::Branch { fallback, .. } = &self.node(node).kind else {
+            unreachable!();
+        };
+        let candidate = (refined.quality_key() > fallback.quality_key()).then(|| fallback.clone());
+        slice.step();
+        if let Some(candidate) = candidate {
+            return Some((candidate, refined));
+        }
+        self.collapse(node, refined);
+        None
     }
 
     fn propose_split(

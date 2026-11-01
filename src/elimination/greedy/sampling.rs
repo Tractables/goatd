@@ -239,11 +239,6 @@ fn eliminate_sampled_fill_based(
 ) -> ElimExit {
     // No cheap mode here to degrade into, so the soft deadline is not this
     // core's to read.
-    let ElimStop {
-        hard_deadline,
-        width_bound,
-        ..
-    } = stop;
     let SampleScratch {
         fill: fill_scratch,
         affected,
@@ -267,28 +262,19 @@ fn eliminate_sampled_fill_based(
     let mut pacer = DeadlinePacer::new();
 
     while buckets.minimum().is_some() {
-        if check_sampled_fill_pacer(graph, &mut pacer, hard_deadline) {
+        if check_sampled_fill_pacer(graph, &mut pacer, stop.hard_deadline) {
             return ElimExit::DeadlineReached(Cutoff::Hard);
         }
 
-        crate::meter::charge(SAMPLED_FILL_STEP_UNITS);
-        let v = buckets
-            .sample_min_band(draw.band, &mut rng)
-            .expect("a live minimum has a tie set");
-        // The drawn vertex's own fill, not the band's smallest: the simplicial
-        // path below is only correct for a vertex that adds no fill edge, and a
-        // band wider than 0 can draw one that does.
-        let sampled_fill = fill_of(v, fills.as_deref(), &buckets);
-        buckets.remove_vertex(v);
-
-        let bag = take_bag(graph, v, live_nbrs);
-        let bag_len = bag.len();
-        // Recorded before the elimination below removes `v`, because the score
-        // repair that follows reads the deadline and returns from the middle of
-        // it. A return after the removal and before the record left `v` out of
-        // the bags entirely, and the engine's residual bag does not catch it:
-        // that bag holds what is still in the graph, which `v` no longer is.
-        sink.record(v, bag);
+        let (v, sampled_fill, bag_len) = sample_and_record_fill_bag(
+            graph,
+            draw.band,
+            &mut rng,
+            &mut buckets,
+            fills.as_deref(),
+            live_nbrs,
+            &mut sink,
+        );
 
         if let Err(exit) = eliminate_sampled_fill_vertex(
             graph,
@@ -299,15 +285,45 @@ fn eliminate_sampled_fill_based(
             &mut buckets,
             &mut fills,
             priority,
-            hard_deadline,
+            stop.hard_deadline,
         ) {
             return exit;
         }
-        if exceeds_width_bound(bag_len, width_bound) {
+        if exceeds_width_bound(bag_len, stop.width_bound) {
             return ElimExit::WidthLimitExceeded;
         }
     }
     ElimExit::Complete
+}
+
+fn sample_and_record_fill_bag(
+    graph: &EliminationGraph,
+    band: u64,
+    rng: &mut Xorshift64,
+    buckets: &mut BucketMap<'_>,
+    fills: Option<&[u64]>,
+    live_nbrs: &mut Vec<u32>,
+    sink: &mut ElimSink<'_>,
+) -> (u32, u64, usize) {
+    crate::meter::charge(SAMPLED_FILL_STEP_UNITS);
+    let v = buckets
+        .sample_min_band(band, rng)
+        .expect("a live minimum has a tie set");
+    // The drawn vertex's own fill, not the band's smallest: the simplicial
+    // path below is only correct for a vertex that adds no fill edge, and a
+    // band wider than 0 can draw one that does.
+    let sampled_fill = fill_of(v, fills, buckets);
+    buckets.remove_vertex(v);
+
+    let bag = take_bag(graph, v, live_nbrs);
+    let bag_len = bag.len();
+    // Recorded before the elimination below removes `v`, because the score
+    // repair that follows reads the deadline and returns from the middle of
+    // it. A return after the removal and before the record left `v` out of
+    // the bags entirely, and the engine's residual bag does not catch it:
+    // that bag holds what is still in the graph, which `v` no longer is.
+    sink.record(v, bag);
+    (v, sampled_fill, bag_len)
 }
 
 fn check_sampled_fill_pacer(
@@ -486,14 +502,7 @@ pub(crate) fn eliminate_sampled_min_degree(
         let bag = take_bag(graph, v, nbrs_buf);
         let bag_len = bag.len();
 
-        if !clique_residual && graph.is_residual_clique() {
-            clique_residual = true;
-        }
-        if clique_residual {
-            graph.remove_without_fill_nbrs(v, nbrs_buf);
-        } else {
-            graph.eliminate_with_nbrs(v, nbrs_buf);
-        }
+        eliminate_min_degree_vertex(graph, v, nbrs_buf, &mut clique_residual);
         sink.record(v, bag);
 
         if exceeds_width_bound(bag_len, width_bound) {
@@ -505,6 +514,22 @@ pub(crate) fn eliminate_sampled_min_degree(
         }
     }
     ElimExit::Complete
+}
+
+fn eliminate_min_degree_vertex(
+    graph: &mut EliminationGraph,
+    v: u32,
+    nbrs_buf: &[u32],
+    clique_residual: &mut bool,
+) {
+    if !*clique_residual && graph.is_residual_clique() {
+        *clique_residual = true;
+    }
+    if *clique_residual {
+        graph.remove_without_fill_nbrs(v, nbrs_buf);
+    } else {
+        graph.eliminate_with_nbrs(v, nbrs_buf);
+    }
 }
 
 fn init_sampled_degree_buckets<'a>(

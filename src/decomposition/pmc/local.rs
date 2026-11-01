@@ -71,12 +71,7 @@ pub(crate) fn local_merge(
 
     // The list begins with the answer's own bags, so the programme over it
     // cannot come back wider than the answer, and the pool's on top of them.
-    let mut list = List::new(bags_of(start, &adjacency), limits);
-    for source in &sources {
-        for bag in source {
-            list.add(bag.clone());
-        }
-    }
+    let mut list = init_local_merge_list(start, &adjacency, &sources, limits);
     let mut best = start.clone();
     // The anchors, and for each of them the reach a partner has to lie in, are
     // a function of `best` alone. `best` moves only where a search below beats
@@ -120,6 +115,21 @@ pub(crate) fn local_merge(
         }
     }
     (best.quality_key() < start.quality_key()).then_some(best)
+}
+
+fn init_local_merge_list(
+    start: &TreeDecomposition,
+    adjacency: &Adjacency,
+    sources: &[Vec<VertexSet>],
+    limits: super::Limits,
+) -> List {
+    let mut list = List::new(bags_of(start, adjacency), limits);
+    for source in sources {
+        for bag in source {
+            list.add(bag.clone());
+        }
+    }
+    list
 }
 
 fn add_partner_focus_cliques(

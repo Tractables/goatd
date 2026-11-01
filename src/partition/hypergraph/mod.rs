@@ -157,6 +157,26 @@ fn multilevel_pass(
     // into them, so a move here can be worth many fine hyperedges.
     refine_level(current, &mut part, max_imbalance, scratch, stop);
 
+    uncoarsen_and_refine(
+        hg,
+        &levels,
+        part,
+        &mut projection,
+        max_imbalance,
+        scratch,
+        stop,
+    )
+}
+
+fn uncoarsen_and_refine(
+    hg: &Hypergraph,
+    levels: &[CoarseningLevel],
+    mut part: Vec<u8>,
+    projection: &mut Vec<u8>,
+    max_imbalance: f64,
+    scratch: &mut FmScratch,
+    stop: &mut BisectionStop,
+) -> Vec<u8> {
     // Uncoarsening. Each step hands every fine vertex its coarse vertex's side,
     // then refines with the freedom the finer hypergraph exposes; only the
     // finest level pays for the localized and flow passes on top.
@@ -164,8 +184,8 @@ fn multilevel_pass(
         if stop.reached() {
             break;
         }
-        lift_to_fine(&part, &level.mapping, &mut projection);
-        std::mem::swap(&mut part, &mut projection);
+        lift_to_fine(&part, &level.mapping, projection);
+        std::mem::swap(&mut part, projection);
 
         let fine_hg = if li > 0 { &levels[li - 1].hg } else { hg };
         if li == 0 {

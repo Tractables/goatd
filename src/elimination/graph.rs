@@ -1046,14 +1046,7 @@ impl EliminationGraph {
                     }
                 }
                 None => {
-                    for &w in neighbours {
-                        let wi = w as usize;
-                        if marker[wi] != s {
-                            marker[wi] = s;
-                            row.push(w);
-                            pushes += 1;
-                        }
-                    }
+                    pushes += push_unindexed_missing_neighbours(neighbours, marker, s, row);
                     if row.len() >= ROW_INDEX_THRESH {
                         build_row_index(&self.adj[u], &mut self.row_index[u]);
                     }
@@ -1500,4 +1493,22 @@ fn stamp_row_and_find(row: &[u32], marker: &mut [u16], u: usize, v: u32, s: u16)
     }
     marker[u] = s;
     v_pos
+}
+
+fn push_unindexed_missing_neighbours(
+    neighbours: &[u32],
+    marker: &mut [u16],
+    s: u16,
+    row: &mut Vec<u32>,
+) -> usize {
+    let mut pushes = 0;
+    for &w in neighbours {
+        let wi = w as usize;
+        if marker[wi] != s {
+            marker[wi] = s;
+            row.push(w);
+            pushes += 1;
+        }
+    }
+    pushes
 }

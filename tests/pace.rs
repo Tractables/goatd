@@ -174,11 +174,13 @@ fn blank_lines_are_not_a_tree_decomposition() {
 /// whose wording belongs to it.
 #[test]
 fn a_rejected_td_names_the_offending_id_and_the_count_it_was_checked_against() {
-    check_id_and_syntax_td_rejections();
-    check_topology_and_bound_td_rejections();
+    check_id_bound_td_rejections();
+    check_syntax_and_bag_size_td_rejections();
+    check_topology_td_rejections();
+    check_file_byte_bound_td_rejections();
 }
 
-fn check_id_and_syntax_td_rejections() {
+fn check_id_bound_td_rejections() {
     let cases: &[(&str, &str, &[&str])] = &[
         (
             "s td 2 2 3\nb 0 1 2\nb 2 2 3\n",
@@ -215,6 +217,14 @@ fn check_id_and_syntax_td_rejections() {
             "a self-loop in the bag tree",
             &["adjacent to itself", "1 1"],
         ),
+    ];
+    for &(td_str, what, expected) in cases {
+        assert_rejection_mentions(TreeDecomposition::from_td(td_str), what, expected);
+    }
+}
+
+fn check_syntax_and_bag_size_td_rejections() {
+    let cases: &[(&str, &str, &[&str])] = &[
         (
             "b 1 1 2\n",
             "a bag line before the solution line",
@@ -258,7 +268,7 @@ fn check_id_and_syntax_td_rejections() {
     }
 }
 
-fn check_topology_and_bound_td_rejections() {
+fn check_topology_td_rejections() {
     let cases: &[(&str, &str, &[&str])] = &[
         (
             "s td 1 1 1\ns td 1 1 1\nb 1 1\n",
@@ -295,6 +305,14 @@ fn check_topology_and_bound_td_rejections() {
             "a vertex whose bags are disconnected",
             &["vertex 0", "not connected"],
         ),
+    ];
+    for &(td_str, what, expected) in cases {
+        assert_rejection_mentions(TreeDecomposition::from_td(td_str), what, expected);
+    }
+}
+
+fn check_file_byte_bound_td_rejections() {
+    let cases: &[(&str, &str, &[&str])] = &[
         (
             "s td 18446744073709551615 1 1\nb 1 1\n",
             "a bag count wider than the input",

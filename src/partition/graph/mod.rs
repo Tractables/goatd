@@ -114,20 +114,13 @@ fn multilevel_pass(
         let level = coarsen_one_level(current, MIN_COARSEN_SIZE, rng, carried.as_deref());
 
         if let Some(level) = level {
-            levels.push(level);
-            let pushed = levels.last().expect("a level was just pushed");
-            if let Some(carried) = carried.as_mut() {
-                let nc = pushed.graph.num_vertices();
-                project_to_coarse(
-                    carried,
-                    &pushed.mapping,
-                    nc,
-                    &mut count_scratch,
-                    &mut proj_scratch,
-                );
-                std::mem::swap(carried, &mut proj_scratch);
-            }
-            current = &levels.last().expect("a level was just pushed").graph;
+            current = push_coarsening_level(
+                &mut levels,
+                level,
+                &mut carried,
+                &mut count_scratch,
+                &mut proj_scratch,
+            );
         } else {
             break;
         }
@@ -156,6 +149,23 @@ fn multilevel_pass(
         scratch,
         stop,
     )
+}
+
+fn push_coarsening_level<'a>(
+    levels: &'a mut Vec<CoarseningLevel>,
+    level: CoarseningLevel,
+    carried: &mut Option<Vec<u8>>,
+    count_scratch: &mut Vec<[u32; 2]>,
+    proj_scratch: &mut Vec<u8>,
+) -> &'a CsrGraph {
+    levels.push(level);
+    let pushed = levels.last().expect("a level was just pushed");
+    if let Some(carried) = carried.as_mut() {
+        let nc = pushed.graph.num_vertices();
+        project_to_coarse(carried, &pushed.mapping, nc, count_scratch, proj_scratch);
+        std::mem::swap(carried, proj_scratch);
+    }
+    &pushed.graph
 }
 
 fn uncoarsen_and_refine(

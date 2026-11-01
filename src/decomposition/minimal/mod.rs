@@ -503,12 +503,7 @@ fn minimalize(
     deadline: Option<Instant>,
 ) -> usize {
     crate::meter::charge(edge_count as u64);
-    let common = &mut scratch.common;
-    common.clear();
-    common.resize(completion.words, 0);
-    let touched = &mut scratch.touched;
-    touched.clear();
-    touched.resize(vertices, 0);
+    prepare_minimalize_scratch(scratch, completion.words, vertices);
     let mut removed = 0;
     let mut pacer = DeadlinePacer::new();
     let mut pass = 0u32;
@@ -540,7 +535,7 @@ fn minimalize(
                     // An endpoint touched in pass p is retested in pass p and
                     // in pass p + 1: an edge tested earlier in pass p saw the
                     // neighbourhood as it was before that removal.
-                    if touched[vertex] + 2 <= pass && touched[other] + 2 <= pass {
+                    if scratch.touched[vertex] + 2 <= pass && scratch.touched[other] + 2 <= pass {
                         continue;
                     }
                     if pacer.due() && expired(deadline) {
@@ -551,8 +546,8 @@ fn minimalize(
                         vertex,
                         other,
                         pass,
-                        touched,
-                        &mut common[..],
+                        &mut scratch.touched,
+                        &mut scratch.common[..],
                         witnesses,
                     ) {
                         removed_this_pass += 1;
@@ -565,6 +560,13 @@ fn minimalize(
             return removed;
         }
     }
+}
+
+fn prepare_minimalize_scratch(scratch: &mut Scratch, words: usize, vertices: usize) {
+    scratch.common.clear();
+    scratch.common.resize(words, 0);
+    scratch.touched.clear();
+    scratch.touched.resize(vertices, 0);
 }
 
 fn test_and_maybe_remove_edge(

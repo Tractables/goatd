@@ -413,21 +413,15 @@ fn assert_updates_match_recounts(
         let v = live[rng.below(live.len())];
         nbrs.clear();
         graph.collect_live_nbrs_into(v, &mut nbrs);
-        if fill[v as usize] == 0 {
-            assert!(affected.prepare(&graph, v, &nbrs, false, None));
-            graph.remove_without_fill_nbrs(v, &nbrs);
-        } else {
-            assert!(affected.prepare(&graph, v, &nbrs, true, None));
-            // The prepared elimination has to leave the graph exactly as
-            // the one that finds the fill edges itself does.
-            let mut twin = graph.clone();
-            twin.eliminate_with_nbrs(v, &nbrs);
-            graph.eliminate_prepared(v, &nbrs, &affected.fill_edges());
-            assert!(
-                graph.same_state_as(&twin),
-                "prepared elimination of {v} left a different graph (bitset {bitset}, seed {seed})"
-            );
-        }
+        eliminate_recount_step(
+            &mut graph,
+            &mut affected,
+            v,
+            fill[v as usize],
+            &nbrs,
+            bitset,
+            seed,
+        );
         touched.clear();
         while let Some((u, delta)) = affected.pop_delta(&graph) {
             assert!(!nbrs.contains(&u), "delta for a neighbour {u} of {v}");
@@ -449,6 +443,32 @@ fn assert_updates_match_recounts(
                 "fill of {u} after eliminating {v} (bitset {bitset}, seed {seed})"
             );
         }
+    }
+}
+
+fn eliminate_recount_step(
+    graph: &mut crate::elimination::graph::EliminationGraph,
+    affected: &mut super::FillAffected,
+    v: u32,
+    v_fill: u64,
+    nbrs: &[u32],
+    bitset: bool,
+    seed: u64,
+) {
+    if v_fill == 0 {
+        assert!(affected.prepare(graph, v, nbrs, false, None));
+        graph.remove_without_fill_nbrs(v, nbrs);
+    } else {
+        assert!(affected.prepare(graph, v, nbrs, true, None));
+        // The prepared elimination has to leave the graph exactly as
+        // the one that finds the fill edges itself does.
+        let mut twin = graph.clone();
+        twin.eliminate_with_nbrs(v, nbrs);
+        graph.eliminate_prepared(v, nbrs, &affected.fill_edges());
+        assert!(
+            graph.same_state_as(&twin),
+            "prepared elimination of {v} left a different graph (bitset {bitset}, seed {seed})"
+        );
     }
 }
 

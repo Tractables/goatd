@@ -419,14 +419,28 @@ fn assert_invalid_hedge_flags_refused() {
 
 #[test]
 fn budget_dependent_and_malformed_cli_flags_are_refused() {
+    let portfolio_budget_flags: &[(&[&str], &str)] = &[
+        (&["--hard-budget", "10"], "--hard-budget"),
+        (&["--capped-restarts"], "--capped-restarts"),
+        (&["--no-bipartite-lift"], "--no-bipartite-lift"),
+        (&["--bipartite-lift-rate", "150"], "--bipartite-lift-rate"),
+        (&["--no-recombine"], "--no-recombine"),
+        (&["--no-merge"], "--no-merge"),
+        (
+            &["--hedge-dims", "1,2", "--hedge-reserve", "0.5"],
+            "--hedge-reserve",
+        ),
+    ];
+    for &(tail, name) in portfolio_budget_flags {
+        let mut flags = vec!["--order", "portfolio"];
+        flags.extend_from_slice(tail);
+        assert_refused_with(&flags, &[name, "--budget"]);
+    }
+
     let cases: &[(&[&str], &[&str])] = &[
         (
             &["--order", "minfill", "--weights", "w.txt"],
             &["--weights", "--ties sample"],
-        ),
-        (
-            &["--order", "portfolio", "--hard-budget", "10"],
-            &["--hard-budget", "--budget"],
         ),
         (
             &[
@@ -438,37 +452,6 @@ fn budget_dependent_and_malformed_cli_flags_are_refused() {
                 "10",
             ],
             &["--hard-budget", "--budget", "at least"],
-        ),
-        (
-            &["--order", "portfolio", "--capped-restarts"],
-            &["--capped-restarts", "--budget"],
-        ),
-        (
-            &["--order", "portfolio", "--no-bipartite-lift"],
-            &["--no-bipartite-lift", "--budget"],
-        ),
-        (
-            &["--order", "portfolio", "--bipartite-lift-rate", "150"],
-            &["--bipartite-lift-rate", "--budget"],
-        ),
-        (
-            &["--order", "portfolio", "--no-recombine"],
-            &["--no-recombine", "--budget"],
-        ),
-        (
-            &["--order", "portfolio", "--no-merge"],
-            &["--no-merge", "--budget"],
-        ),
-        (
-            &[
-                "--order",
-                "portfolio",
-                "--hedge-dims",
-                "1,2",
-                "--hedge-reserve",
-                "0.5",
-            ],
-            &["--hedge-reserve", "--budget"],
         ),
         (
             &["--order", "portfolio", "--sampling-patience", "0"],
@@ -534,7 +517,24 @@ fn the_trace_names_the_candidate_the_decomposition_came_from() {
     );
 
     assert!(out.status.success(), "{}", stderr_of(&out));
+    assert_trace_candidates_and_winner(&stderr_of(&out));
+
+    let out = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            SCHEDULE_BUDGET,
+            "--capped-restarts",
+        ],
+        Some(&grid_gr()),
+    );
     let err = stderr_of(&out);
+    assert!(!err.contains("c trace"), "no trace without the flag: {err}");
+}
+
+fn assert_trace_candidates_and_winner(err: &str) {
     let mut candidates: Vec<&str> = Vec::new();
     let mut winner = None;
     for line in err.lines() {
@@ -573,20 +573,6 @@ fn the_trace_names_the_candidate_the_decomposition_came_from() {
         candidates.iter().any(|line| line.starts_with(winner)),
         "the winner must be one of the candidates: {err}"
     );
-
-    let out = goatd(
-        &[
-            "-",
-            "--order",
-            "portfolio",
-            "--budget",
-            SCHEDULE_BUDGET,
-            "--capped-restarts",
-        ],
-        Some(&grid_gr()),
-    );
-    let err = stderr_of(&out);
-    assert!(!err.contains("c trace"), "no trace without the flag: {err}");
 }
 
 /// The grid is bipartite, so the lift would take a share of the window and
@@ -609,7 +595,33 @@ fn the_default_portfolio_hedges_and_no_hedge_turns_that_off() {
     );
 
     assert!(out.status.success(), "{}", stderr_of(&out));
+    assert_default_hedge_trace(&stderr_of(&out));
+
+    let out = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            SCHEDULE_BUDGET,
+            "--capped-restarts",
+            "--no-hedge",
+            "--no-bipartite-lift",
+            "--trace",
+        ],
+        Some(&grid_gr()),
+    );
+
+    assert!(out.status.success(), "{}", stderr_of(&out));
     let err = stderr_of(&out);
+    assert!(err.contains("c trace candidate="), "{err}");
+    assert!(
+        !err.contains(" pass="),
+        "one pass, so no pass to name: {err}"
+    );
+}
+
+fn assert_default_hedge_trace(err: &str) {
     let mut modified: Vec<&str> = Vec::new();
     let mut diverse = 0usize;
     for line in err.lines() {
@@ -640,29 +652,6 @@ fn the_default_portfolio_hedges_and_no_hedge_turns_that_off() {
         diverse,
         8 * 46,
         "and the diverse pass again on that ranking: {err}"
-    );
-
-    let out = goatd(
-        &[
-            "-",
-            "--order",
-            "portfolio",
-            "--budget",
-            SCHEDULE_BUDGET,
-            "--capped-restarts",
-            "--no-hedge",
-            "--no-bipartite-lift",
-            "--trace",
-        ],
-        Some(&grid_gr()),
-    );
-
-    assert!(out.status.success(), "{}", stderr_of(&out));
-    let err = stderr_of(&out);
-    assert!(err.contains("c trace candidate="), "{err}");
-    assert!(
-        !err.contains(" pass="),
-        "one pass, so no pass to name: {err}"
     );
 }
 

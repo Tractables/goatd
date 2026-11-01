@@ -281,24 +281,6 @@ fn recorded_bags_and_the_residual_match_eliminating_with_fill() {
 /// The rules as scans of every vertex, pass after pass, which the marked
 /// passes must match bag for bag.
 fn preprocess_by_scans(mut graph: EliminationGraph) -> Vec<Vec<u32>> {
-    fn eliminate(
-        graph: &mut EliminationGraph,
-        bags: &mut Vec<Vec<u32>>,
-        vertex: u32,
-        fill: bool,
-    ) -> usize {
-        let mut bag = vec![vertex];
-        graph.collect_live_nbrs_into(vertex, &mut bag);
-        if bag.len() == 1 {
-            graph.deactivate_isolated(vertex);
-        } else if fill {
-            graph.eliminate_with_nbrs(vertex, &bag[1..]);
-        } else {
-            graph.remove_without_fill_nbrs(vertex, &bag[1..]);
-        }
-        bags.push(bag);
-        bags.last().unwrap().len() - 1
-    }
     let mut bags = Vec::new();
     let mut bound = 0usize;
     loop {
@@ -307,7 +289,7 @@ fn preprocess_by_scans(mut graph: EliminationGraph) -> Vec<Vec<u32>> {
             let mut peeled = false;
             for v in 0..graph.len() as u32 {
                 if graph.active[v as usize] && graph.degree(v) <= 1 {
-                    eliminate(&mut graph, &mut bags, v, false);
+                    eliminate_scan_vertex(&mut graph, &mut bags, v, false);
                     peeled = true;
                 }
             }
@@ -320,7 +302,7 @@ fn preprocess_by_scans(mut graph: EliminationGraph) -> Vec<Vec<u32>> {
             if graph.active[v as usize] && graph.degree(v) == 2 {
                 let n = graph.live_neighbours(v);
                 if !graph.contains_edge(n[0], n[1]) {
-                    eliminate(&mut graph, &mut bags, v, true);
+                    eliminate_scan_vertex(&mut graph, &mut bags, v, true);
                     bound = bound.max(2);
                     fired = true;
                 }
@@ -328,7 +310,7 @@ fn preprocess_by_scans(mut graph: EliminationGraph) -> Vec<Vec<u32>> {
         }
         for v in 0..graph.len() as u32 {
             if graph.active[v as usize] && graph.degree(v) >= 2 && graph.is_simplicial(v) {
-                bound = bound.max(eliminate(&mut graph, &mut bags, v, false));
+                bound = bound.max(eliminate_scan_vertex(&mut graph, &mut bags, v, false));
                 fired = true;
             }
         }
@@ -344,7 +326,7 @@ fn preprocess_by_scans(mut graph: EliminationGraph) -> Vec<Vec<u32>> {
                 }
                 if let Some((left, right)) = graph.almost_simplicial_nonedge(v) {
                     graph.add_edge(left, right);
-                    eliminate(&mut graph, &mut bags, v, false);
+                    eliminate_scan_vertex(&mut graph, &mut bags, v, false);
                     fired = true;
                 }
             }
@@ -353,6 +335,25 @@ fn preprocess_by_scans(mut graph: EliminationGraph) -> Vec<Vec<u32>> {
             return bags;
         }
     }
+}
+
+fn eliminate_scan_vertex(
+    graph: &mut EliminationGraph,
+    bags: &mut Vec<Vec<u32>>,
+    vertex: u32,
+    fill: bool,
+) -> usize {
+    let mut bag = vec![vertex];
+    graph.collect_live_nbrs_into(vertex, &mut bag);
+    if bag.len() == 1 {
+        graph.deactivate_isolated(vertex);
+    } else if fill {
+        graph.eliminate_with_nbrs(vertex, &bag[1..]);
+    } else {
+        graph.remove_without_fill_nbrs(vertex, &bag[1..]);
+    }
+    bags.push(bag);
+    bags.last().unwrap().len() - 1
 }
 
 /// A chain of `links` states, each with two pendant leaves, each state tied

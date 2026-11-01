@@ -1359,9 +1359,6 @@ fn run_bipartite_lift(
         seed,
         pass: Pass::Only,
     };
-    let give_up = |trace: &mut TraceSink<'_>| {
-        trace.report(origin, CandidateOutcome::NotStarted);
-    };
 
     // The stage needs a budget to take a share of, and a graph to colour.
     let (Some(edge_factor), Some(soft_budget)) = (config.bipartite_lift, config.soft_budget) else {
@@ -1376,13 +1373,6 @@ fn run_bipartite_lift(
     let Some([first, second]) = bipartite_lift::sides(&adjacency) else {
         return Ok(());
     };
-    // A side to keep and a side to eliminate, whichever way round they are
-    // taken: an empty one leaves nothing to project either way.
-    if first.is_empty() || second.is_empty() {
-        give_up(trace);
-        return Ok(());
-    }
-
     let Some(plan) = priced_bipartite_sides(
         graph,
         &adjacency,
@@ -1392,12 +1382,11 @@ fn run_bipartite_lift(
         soft_budget,
         edge_factor,
     ) else {
-        give_up(trace);
+        trace.report(origin, CandidateOutcome::NotStarted);
         return Ok(());
     };
 
     for side in &plan.sides {
-        let (ladder, slice) = build_bipartite_ladder(graph.edges().len(), &adjacency, side, &plan);
         if let Some(outcome) = run_bipartite_ladder(
             graph,
             &adjacency,
@@ -1405,10 +1394,8 @@ fn run_bipartite_lift(
             seed,
             initial_orders,
             config,
-            side.keep,
-            side.drop,
-            &ladder,
-            slice,
+            side,
+            &plan,
             hard_deadline,
             origin,
             candidates,
@@ -1417,7 +1404,7 @@ fn run_bipartite_lift(
             return Ok(());
         }
     }
-    give_up(trace);
+    trace.report(origin, CandidateOutcome::NotStarted);
     Ok(())
 }
 
@@ -1448,6 +1435,11 @@ fn priced_bipartite_sides<'a>(
     soft_budget: Duration,
     edge_factor: f64,
 ) -> Option<BipartitePlan<'a>> {
+    // A side to keep and a side to eliminate, whichever way round they are
+    // taken: an empty one leaves nothing to project either way.
+    if first.is_empty() || second.is_empty() {
+        return None;
+    }
     let num_edges = graph.edges().len();
     let limit = (edge_factor * num_edges as f64) as usize;
     let mut sides: Vec<BipartiteSide<'a>> = [(first, second), (second, first)]
@@ -1546,17 +1538,17 @@ fn run_bipartite_ladder(
     seed: u64,
     initial_orders: InitialOrderBuilder,
     config: PortfolioConfig,
-    keep: &[u32],
-    drop: &[u32],
-    ladder: &[bipartite_lift::Price],
-    slice: Duration,
+    side: &BipartiteSide<'_>,
+    plan: &BipartitePlan<'_>,
     hard_deadline: Option<Instant>,
     origin: CandidateOrigin,
     candidates: &mut CandidateSet,
 ) -> Result<Option<CandidateOutcome>, crate::Error> {
+    let (ladder, slice) = build_bipartite_ladder(graph.edges().len(), adjacency, side, plan);
+    let (keep, drop) = (side.keep, side.drop);
     let mut produced_any = false;
     let mut reported = None;
-    for &priced in ladder {
+    for &priced in &ladder {
         // Each rung is a whole sub-run, so a caller who asked to stop, or a
         // window the rungs before this one overran, waits out one more
         // elimination and its writeout unless it is read here. Every other
@@ -1631,19 +1623,12 @@ fn run_portfolio(
     collection: Collection,
     trace: &mut dyn FnMut(CandidateTrace),
 ) -> Result<CandidateSet, crate::Error> {
-    config::validate(config)?;
-    let started = crate::meter::now();
+    let orders = initial_orders(seed, weights);
+    let mut prepared = prepare_portfolio_run(graph, config, collection, orders.len())?;
     let mut trace = TraceSink {
-        started,
+        started: prepared.started,
         sink: trace,
     };
-    // Where the run stands on the work clock, so estimates written in work
-    // units can be read at the rate this machine is actually running them.
-    let started_units = crate::meter::units_spent();
-    let orders = initial_orders(seed, weights);
-    let (soft_deadline, closing, mut prebuilt, mut candidates) =
-        prepare_portfolio_run(graph, started, config, collection, orders.len())?;
-
     // The bipartite lift runs before the orders that eliminate the input
     // itself, so that what it finds is the incumbent they are bounded against
     // and the time it spends is time they would have spent on a graph it
@@ -1655,32 +1640,31 @@ fn run_portfolio(
         seed,
         initial_orders,
         config,
-        &mut candidates,
+        &mut prepared.candidates,
         &mut trace,
     )?;
-
     let initial = run_initial_orders(
         graph,
-        &mut prebuilt,
+        &mut prepared.prebuilt,
         &orders,
         config,
-        soft_deadline,
-        closing.hard_deadline,
-        &mut candidates,
+        prepared.soft_deadline,
+        prepared.closing.hard_deadline,
+        &mut prepared.candidates,
         &mut trace,
     );
     run_sampling_phase(
         graph,
-        &mut prebuilt,
+        &mut prepared.prebuilt,
         config,
         seed,
-        started,
+        prepared.started,
         &initial,
-        soft_deadline,
-        closing.hard_deadline,
+        prepared.soft_deadline,
+        prepared.closing.hard_deadline,
         initial_orders,
         weights,
-        &mut candidates,
+        &mut prepared.candidates,
         &mut trace,
     );
     run_closing_stages(
@@ -1688,32 +1672,37 @@ fn run_portfolio(
         weights,
         seed,
         config,
-        started,
-        started_units,
-        closing,
+        prepared.started,
+        prepared.started_units,
+        prepared.closing,
         &initial,
-        &mut prebuilt,
-        &mut candidates,
+        &mut prepared.prebuilt,
+        &mut prepared.candidates,
         &mut trace,
     )?;
-    Ok(candidates)
+    Ok(prepared.candidates)
+}
+
+struct PreparedPortfolio {
+    started: Instant,
+    started_units: u64,
+    soft_deadline: Option<Instant>,
+    closing: ClosingWindows,
+    prebuilt: engine::Prebuilt,
+    candidates: CandidateSet,
 }
 
 fn prepare_portfolio_run(
     graph: &Graph,
-    started: Instant,
     config: PortfolioConfig,
     collection: Collection,
     initial_count: usize,
-) -> Result<
-    (
-        Option<Instant>,
-        ClosingWindows,
-        engine::Prebuilt,
-        CandidateSet,
-    ),
-    crate::Error,
-> {
+) -> Result<PreparedPortfolio, crate::Error> {
+    config::validate(config)?;
+    let started = crate::meter::now();
+    // Where the run stands on the work clock, so estimates written in work
+    // units can be read at the rate this machine is actually running them.
+    let started_units = crate::meter::units_spent();
     let deadlines =
         crate::deadline::staged(started, config.soft_budget, config.hard_budget, "portfolio")?;
     let closing = ClosingWindows::carve(
@@ -1726,7 +1715,14 @@ fn prepare_portfolio_run(
     );
     let prebuilt = engine::prebuild(graph, deadlines.soft);
     let candidates = init_candidate_set(collection, initial_count, deadlines.hard, closing);
-    Ok((deadlines.soft, closing, prebuilt, candidates))
+    Ok(PreparedPortfolio {
+        started,
+        started_units,
+        soft_deadline: deadlines.soft,
+        closing,
+        prebuilt,
+        candidates,
+    })
 }
 
 /// Above the full-schedule line the second stage of the hard window is
@@ -1828,34 +1824,27 @@ fn run_initial_orders(
     let mut min_fill_finished = false;
     let mut fill_pass_cost = None;
     let mut initial_runs: u32 = 0;
-
     for (i, candidate) in initial_orders.iter().copied().enumerate() {
         if i > 0 && expired(classified.map_or(soft_deadline, |class| class.initial_deadline)) {
             break;
         }
-        let order = candidate.order;
-        let residual = classified.map(|class| class.residual);
-        let expensive = !is_min_degree_variant(order);
-        if should_skip_initial_order(i, candidate, residual, expensive, trace) {
+        if should_skip_initial_order(i, candidate, classified.map(|c| c.residual), trace) {
             continue;
         }
-        let initial_cutoff = classified.map_or(soft_deadline, |class| class.initial_cutoff);
-        let candidate_started = crate::meter::now();
-        let (origin, outcome, stop, own_cutoff) = run_initial_candidate(
+        let (tripped, cost, min_fill_done) = run_initial_candidate(
             prebuilt,
             candidate,
             classified,
-            expensive,
-            initial_cutoff,
+            soft_deadline,
             hard_deadline,
             candidates,
+            trace,
         );
         initial_runs += 1;
-        let cost = crate::meter::now().saturating_duration_since(candidate_started);
         if initial_runs == 1 {
             settle_initial_classification(
                 &mut classified,
-                order,
+                candidate.order,
                 cost,
                 writeout,
                 config.flowcutter_budget,
@@ -1863,16 +1852,12 @@ fn run_initial_orders(
                 hard_deadline,
             );
         }
-        if is_min_fill_variant(order)
-            && stop == ScheduleStop::Continue
-            && matches!(outcome, CandidateOutcome::Produced { .. })
-        {
+        if min_fill_done {
             min_fill_finished = true;
             fill_pass_cost.get_or_insert(cost);
         }
-        trace.report(origin, outcome);
-        hard_deadline_tripped = did_trip_hard_deadline(stop, outcome, own_cutoff, hard_deadline);
-        if hard_deadline_tripped {
+        if tripped {
+            hard_deadline_tripped = true;
             break;
         }
     }
@@ -1889,10 +1874,9 @@ fn should_skip_initial_order(
     index: usize,
     candidate: InitialCandidate<'_>,
     residual: Option<Residual>,
-    expensive: bool,
     trace: &mut TraceSink<'_>,
 ) -> bool {
-    if index > 0 && residual == Some(Residual::Large) && expensive {
+    if index > 0 && residual == Some(Residual::Large) && !is_min_degree_variant(candidate.order) {
         return true;
     }
     if residual == Some(Residual::Admitted) && matches!(candidate.order, Order::NestedDissection) {
@@ -1913,15 +1897,17 @@ fn run_initial_candidate(
     prebuilt: &mut engine::Prebuilt,
     candidate: InitialCandidate<'_>,
     classified: Option<Classified>,
-    expensive: bool,
-    initial_cutoff: Option<Instant>,
+    soft_deadline: Option<Instant>,
     hard_deadline: Option<Instant>,
     candidates: &mut CandidateSet,
-) -> (CandidateOrigin, CandidateOutcome, ScheduleStop, bool) {
+    trace: &mut TraceSink<'_>,
+) -> (bool, Duration, bool) {
+    let candidate_started = crate::meter::now();
     let order = candidate.order;
     let residual = classified.map(|class| class.residual);
+    let initial_cutoff = classified.map_or(soft_deadline, |class| class.initial_cutoff);
     let phase = match classified {
-        Some(class) if class.residual == Residual::Admitted && expensive => {
+        Some(class) if class.residual == Residual::Admitted && !is_min_degree_variant(order) => {
             EliminationPhase::AdmittedInitial(admitted_cutoff(
                 class.restart_deadline,
                 hard_deadline,
@@ -1956,8 +1942,14 @@ fn run_initial_candidate(
         pass: Pass::Only,
     };
     let (outcome, stop) = candidates.record_elimination(run, origin);
+    let cost = crate::meter::now().saturating_duration_since(candidate_started);
+    trace.report(origin, outcome);
     let own_cutoff = matches!(phase, EliminationPhase::AdmittedInitial(_));
-    (origin, outcome, stop, own_cutoff)
+    let tripped = did_trip_hard_deadline(stop, outcome, own_cutoff, hard_deadline);
+    let min_fill_done = is_min_fill_variant(order)
+        && stop == ScheduleStop::Continue
+        && matches!(outcome, CandidateOutcome::Produced { .. });
+    (tripped, cost, min_fill_done)
 }
 
 fn settle_initial_classification(
@@ -2176,17 +2168,14 @@ fn run_sampling_schedule(
     candidates: &mut CandidateSet,
     trace: &mut TraceSink<'_>,
 ) {
-    let total_samples = schedule.total();
-    let stages_end = schedule.passes_total();
     let mut stage_budget: Option<StageBudget> = None;
     let mut stage_started = Duration::ZERO;
     let mut sample_index: u64 = 0;
     let mut restart_finished = crate::meter::now();
     let mut previous_restart: Option<Duration> = None;
-    let ordinary_start = schedule.ordinary_start();
     let mut last_improvement: Option<u64> = None;
-
-    while sample_index < total_samples && !hard_deadline_tripped && !expired(restart_deadline) {
+    let deadlines = [restart_deadline, hard_deadline];
+    while sample_index < schedule.total() && !hard_deadline_tripped && !expired(restart_deadline) {
         if sampling_patience_stopped(
             config,
             seed,
@@ -2210,41 +2199,45 @@ fn run_sampling_schedule(
             &mut stage_started,
             trace,
         ) {
-            sample_index = stages_end;
+            sample_index = schedule.passes_total();
             continue;
         }
-        if let Some(projected) = previous_restart
-            && !restart_admitted(
-                restart_finished,
-                projected,
-                [restart_deadline, hard_deadline],
-            )
-        {
+        if !next_restart_admitted(previous_restart, restart_finished, deadlines) {
             break;
         }
-        let candidate = extra_sample(schedule, sample_index)
-            .expect("sample index is below the configured total");
-        let (origin, outcome) = run_extra_sample(
+        let sample_result = run_extra_sample(
             prebuilt,
-            candidate,
-            restart_deadline,
-            hard_deadline,
+            schedule,
+            sample_index,
+            deadlines,
+            &mut last_improvement,
             candidates,
+            trace,
         );
-        let finished = crate::meter::now();
-        previous_restart = Some(finished.saturating_duration_since(restart_finished));
-        restart_finished = finished;
-        if sample_index >= ordinary_start
-            && matches!(outcome, CandidateOutcome::Produced { best: true, .. })
-        {
-            last_improvement = Some(sample_index - ordinary_start);
-        }
-        trace.report_at(finished, origin, outcome);
-        if matches!(outcome, CandidateOutcome::DeadlineReached) {
+        if finish_sample_step(sample_result, &mut previous_restart, &mut restart_finished) {
             break;
         }
         sample_index += 1;
     }
+}
+
+fn next_restart_admitted(
+    previous_restart: Option<Duration>,
+    restart_finished: Instant,
+    deadlines: [Option<Instant>; 2],
+) -> bool {
+    previous_restart
+        .is_none_or(|projected| restart_admitted(restart_finished, projected, deadlines))
+}
+
+fn finish_sample_step(
+    (outcome, finished): (CandidateOutcome, Instant),
+    previous_restart: &mut Option<Duration>,
+    restart_finished: &mut Instant,
+) -> bool {
+    *previous_restart = Some(finished.saturating_duration_since(*restart_finished));
+    *restart_finished = finished;
+    matches!(outcome, CandidateOutcome::DeadlineReached)
 }
 
 fn sampling_patience_stopped(
@@ -2284,11 +2277,15 @@ fn sampling_patience_stopped(
 
 fn run_extra_sample(
     prebuilt: &mut engine::Prebuilt,
-    candidate: Sample<'_>,
-    restart_deadline: Option<Instant>,
-    hard_deadline: Option<Instant>,
+    schedule: Schedule<'_>,
+    sample_index: u64,
+    deadlines: [Option<Instant>; 2],
+    last_improvement: &mut Option<u64>,
     candidates: &mut CandidateSet,
-) -> (CandidateOrigin, CandidateOutcome) {
+    trace: &mut TraceSink<'_>,
+) -> (CandidateOutcome, Instant) {
+    let candidate =
+        extra_sample(schedule, sample_index).expect("sample index is below the configured total");
     let run = engine::run_order_prebuilt(
         prebuilt,
         engine::RunSpec {
@@ -2298,8 +2295,8 @@ fn run_extra_sample(
             update_order_ties: false,
             stop: elimination_stop(
                 EliminationPhase::ExtraSampling,
-                restart_deadline,
-                hard_deadline,
+                deadlines[0],
+                deadlines[1],
                 candidates.best_width(),
             ),
             complete_on_deadline: false,
@@ -2312,7 +2309,14 @@ fn run_extra_sample(
         pass: candidate.pass,
     };
     let (outcome, _) = candidates.record_elimination(run, origin);
-    (origin, outcome)
+    if let Some(restart) = sample_index.checked_sub(schedule.ordinary_start())
+        && matches!(outcome, CandidateOutcome::Produced { best: true, .. })
+    {
+        *last_improvement = Some(restart);
+    }
+    let finished = crate::meter::now();
+    trace.report_at(finished, origin, outcome);
+    (outcome, finished)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2634,17 +2638,7 @@ fn run_pooled_closing_stages(
     // the set already has; it is recorded only where it is narrower, and a
     // search that runs out of its share hands back nothing.
     if recombine && !expired(recombine_end) {
-        variety_draws(graph, weights, seed, candidates, recombine_end);
-        let found = candidates
-            .bag_pool()
-            .and_then(|pool| decomposition::recombine(pool, graph, recombine_end));
-        let before = candidates
-            .best()
-            .map(TreeDecomposition::quality_key)
-            .expect("a candidate has produced a decomposition");
-        // Nothing comes back where the pool was empty, the search ran past its
-        // share, or it would have held more than its cap allows.
-        close_stage(candidates, trace, seed, Stage::Recombined, before, found);
+        run_recombine_closing(graph, weights, seed, recombine_end, candidates, trace);
     }
     // And last, the merge loop: a decomposition built independently of
     // everything above, improved on its own until it is no wider than the best
@@ -2685,6 +2679,27 @@ fn run_pooled_closing_stages(
         // more than its cap allows.
         close_stage(candidates, trace, seed, Stage::LocallyMerged, before, found);
     }
+}
+
+fn run_recombine_closing(
+    graph: &Graph,
+    weights: &[u32],
+    seed: u64,
+    recombine_end: Option<Instant>,
+    candidates: &mut CandidateSet,
+    trace: &mut TraceSink<'_>,
+) {
+    variety_draws(graph, weights, seed, candidates, recombine_end);
+    let found = candidates
+        .bag_pool()
+        .and_then(|pool| decomposition::recombine(pool, graph, recombine_end));
+    let before = candidates
+        .best()
+        .map(TreeDecomposition::quality_key)
+        .expect("a candidate has produced a decomposition");
+    // Nothing comes back where the pool was empty, the search ran past its
+    // share, or it would have held more than its cap allows.
+    close_stage(candidates, trace, seed, Stage::Recombined, before, found);
 }
 
 /// Last, the fill edges the winner's bags do not need. The pass rebuilds the
