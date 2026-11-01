@@ -104,6 +104,13 @@ fn a_subsumed_bag_plan_reports_and_applies_the_compacted_size() {
         .expect("applying a subsumed-bag plan preserves validity");
 }
 
+fn covered_vertices(td: &TreeDecomposition) -> FxHashSet<u32> {
+    td.bags
+        .iter()
+        .flat_map(|bag| bag.vertices.iter().copied())
+        .collect()
+}
+
 #[test]
 fn glue_at_separator_preserves_rip_and_covers_all_vertices() {
     // Side A: two bags covering {0, 1, 2, 3}; S = {2, 3}.
@@ -113,12 +120,7 @@ fn glue_at_separator_preserves_rip_and_covers_all_vertices() {
     let sep = vec![2u32, 3u32];
     let glued = glue_at_separator(td_a, td_b, &sep).expect("glue should succeed");
 
-    let mut seen: FxHashSet<u32> = FxHashSet::default();
-    for bag in &glued.bags {
-        for &v in &bag.vertices {
-            seen.insert(v);
-        }
-    }
+    let seen = covered_vertices(&glued);
     for v in 0..6 {
         assert!(seen.contains(&v), "vertex {} missing from glued TD", v);
     }
@@ -175,12 +177,7 @@ fn augmenting_a_disconnected_side_for_a_separator_keeps_the_running_intersection
         .validate(&Graph::new(6, []))
         .expect("the glued decomposition is valid");
 
-    let mut seen: FxHashSet<u32> = FxHashSet::default();
-    for bag in &glued.bags {
-        for &v in &bag.vertices {
-            seen.insert(v);
-        }
-    }
+    let seen = covered_vertices(&glued);
     for v in 0..6 {
         assert!(seen.contains(&v), "vertex {v} missing from the glued tree");
     }
@@ -223,16 +220,13 @@ fn project_td_keeping_global_ids_preserves_ids() {
     let keep = [0, 1, 2, 3];
     let proj = project_td_keeping_global_ids(&td, &keep).unwrap();
 
-    let mut seen: FxHashSet<u32> = FxHashSet::default();
-    for bag in &proj.bags {
-        for &v in &bag.vertices {
-            assert!(
-                keep.contains(&v),
-                "projected bag contains non-kept vertex {}",
-                v
-            );
-            seen.insert(v);
-        }
+    let seen = covered_vertices(&proj);
+    for &v in &seen {
+        assert!(
+            keep.contains(&v),
+            "projected bag contains non-kept vertex {}",
+            v
+        );
     }
     for v in [0, 1, 2, 3] {
         assert!(seen.contains(&v), "vertex {} missing after projection", v);

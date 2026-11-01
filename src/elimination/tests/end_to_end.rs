@@ -6,7 +6,7 @@ use crate::elimination::Order;
 use crate::elimination::decompose;
 use crate::elimination::graph::EliminationGraph;
 use crate::elimination::preprocess::preprocess;
-use crate::tests::td_fixture::{GraphAtItsWidth, assert_valid_td};
+use crate::tests::td_fixture::{GraphAtItsWidth, assert_valid_td, clique_edges, grid_edges};
 
 use super::engine::run_order;
 
@@ -90,9 +90,7 @@ fn multi_seed_produces_valid_tds() {
 #[test]
 fn every_elimination_config_decomposes_every_graph_through_five_vertices() {
     for num_vertices in 0..=5u32 {
-        let possible_edges: Vec<(u32, u32)> = (0..num_vertices)
-            .flat_map(|u| ((u + 1)..num_vertices).map(move |v| (u, v)))
-            .collect();
+        let possible_edges = clique_edges(num_vertices);
         for mask in 0..(1u64 << possible_edges.len()) {
             let mut edges: Vec<(u32, u32)> = Vec::new();
             for (bit, &edge) in possible_edges.iter().enumerate() {
@@ -135,18 +133,7 @@ fn every_elimination_config_decomposes_every_graph_through_five_vertices() {
 /// both greedy orders to do work: a 4x4 grid, whose treewidth is 4.
 #[test]
 fn the_public_elimination_entry_point_decomposes_a_grid() {
-    let mut edges: Vec<(u32, u32)> = Vec::new();
-    for row in 0..4u32 {
-        for col in 0..4u32 {
-            let v = row * 4 + col;
-            if col + 1 < 4 {
-                edges.push((v, v + 1));
-            }
-            if row + 1 < 4 {
-                edges.push((v, v + 4));
-            }
-        }
-    }
+    let edges = grid_edges(4, 4);
     let graph = crate::Graph::new(16, edges.iter().copied());
     let single = decompose(&graph, Order::MinFill, 0, Some(Duration::from_secs(10))).unwrap();
     assert_valid_td(&single, 16, &edges);
@@ -227,18 +214,7 @@ fn every_elimination_config_decomposes_the_tiny_graph_family() {
 fn a_seeded_sampling_elimination_repeats_its_decomposition() {
     // A 3x4 grid: symmetric enough that every step has a tie set to draw from,
     // and dense enough that preprocessing does not reduce it away first.
-    let mut edges: Vec<(u32, u32)> = Vec::new();
-    for row in 0..3u32 {
-        for col in 0..4u32 {
-            let v = row * 4 + col;
-            if col + 1 < 4 {
-                edges.push((v, v + 1));
-            }
-            if row + 1 < 3 {
-                edges.push((v, v + 4));
-            }
-        }
-    }
+    let edges = grid_edges(3, 4);
     let weights: Vec<u32> = (0..12u32).map(|v| v + 1).collect();
     let sampled = |seed: u64| {
         run_order(

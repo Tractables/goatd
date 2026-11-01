@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::elimination::graph::EliminationGraph;
 use crate::elimination::preprocess::*;
+use crate::tests::td_fixture::clique_edges as complete_graph;
 
 #[test]
 fn a_single_edge_and_an_isolate_reduce_to_one_bag_per_vertex() {
@@ -82,17 +83,6 @@ fn almost_simplicial_skipped_without_tw_lb() {
     let g = EliminationGraph::from_edges(4, &[(0, 1), (0, 2), (1, 2), (0, 3), (1, 3)]);
     let reduced = preprocess(g, None);
     assert_eq!(reduced.graph.num_active, 0);
-}
-
-/// The complete graph on `n` vertices, in canonical edge order.
-fn complete_graph(n: u32) -> Vec<(u32, u32)> {
-    let mut edges = Vec::with_capacity((n as usize * (n as usize - 1)) / 2);
-    for u in 0..n {
-        for v in u + 1..n {
-            edges.push((u, v));
-        }
-    }
-    edges
 }
 
 #[test]

@@ -63,3 +63,27 @@ pub(crate) fn make_test_td() -> TreeDecomposition {
         vec![(0, 1), (1, 2)],
     )
 }
+
+/// Edges of the `rows` by `columns` grid in row-major vertex order.
+pub(crate) fn grid_edges(rows: u32, columns: u32) -> Vec<(u32, u32)> {
+    let mut edges = Vec::new();
+    for row in 0..rows {
+        for column in 0..columns {
+            let vertex = row * columns + column;
+            if column + 1 < columns {
+                edges.push((vertex, vertex + 1));
+            }
+            if row + 1 < rows {
+                edges.push((vertex, vertex + columns));
+            }
+        }
+    }
+    edges
+}
+
+/// Edges of the complete graph on `n` vertices in canonical `(u, v)` order.
+pub(crate) fn clique_edges(n: u32) -> Vec<(u32, u32)> {
+    (0..n)
+        .flat_map(|u| ((u + 1)..n).map(move |v| (u, v)))
+        .collect()
+}

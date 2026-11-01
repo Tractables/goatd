@@ -123,10 +123,7 @@ impl NativeDecomposition {
             } => {
                 let timeout_ms = duration_ms(timeout);
                 let patience_ms = patience.map(duration_ms).unwrap_or(0);
-                let iterations = i32::try_from(iterations)
-                    .expect("public FlowCutter validation bounds iterations");
-                let steps =
-                    i64::try_from(steps).expect("public FlowCutter validation bounds steps");
+                let (steps, iterations) = ffi_step_limits(steps, iterations);
                 let steps = match timeout_behavior {
                     TimeoutBehavior::AdaptSearch => steps,
                     TimeoutBehavior::StopOnly => scaled_steps(steps, num_edges),
@@ -152,10 +149,7 @@ impl NativeDecomposition {
                 }
             }
             BudgetKind::Steps { steps, iterations } => {
-                let steps =
-                    i64::try_from(steps).expect("public FlowCutter validation bounds steps");
-                let iterations = i32::try_from(iterations)
-                    .expect("public FlowCutter validation bounds iterations");
+                let (steps, iterations) = ffi_step_limits(steps, iterations);
                 // SAFETY: as for the timed call above.
                 unsafe {
                     ffi::td_compute(
@@ -182,6 +176,13 @@ impl NativeDecomposition {
         }
         Some(Self(raw))
     }
+}
+
+fn ffi_step_limits(steps: u64, iterations: u32) -> (i64, i32) {
+    let steps = i64::try_from(steps).expect("public FlowCutter validation bounds steps");
+    let iterations =
+        i32::try_from(iterations).expect("public FlowCutter validation bounds iterations");
+    (steps, iterations)
 }
 
 fn duration_work_units(duration: std::time::Duration) -> i64 {
@@ -225,49 +226,25 @@ fn extract(native: &NativeDecomposition, graph: &Graph) -> Result<TreeDecomposit
 
         for bag_index in 0..num_bags {
             let bag_size = ffi::td_bag_size(native.0, bag_index as c_int);
-            if bag_size < 0 || bag_size as u32 > graph.num_vertices {
-                return Err(Error::InvalidDecomposition(format!(
-                    "FlowCutter bag {bag_index} has invalid size {bag_size}"
-                )));
-            }
-            let mut vertices = vec![0; bag_size as usize];
-            ffi::td_bag_vertices(native.0, bag_index as c_int, vertices.as_mut_ptr());
-            let vertices = vertices
-                .into_iter()
-                .map(|vertex| {
-                    u32::try_from(vertex)
-                        .ok()
-                        .filter(|&vertex| vertex < graph.num_vertices)
-                        .ok_or_else(|| {
-                            Error::InvalidDecomposition(format!(
-                                "FlowCutter bag {bag_index} contains invalid vertex {vertex}"
-                            ))
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let vertices: Vec<u32> = read_bag_items(
+                bag_index,
+                bag_size,
+                graph.num_vertices as usize,
+                "size",
+                "vertex",
+                |out| ffi::td_bag_vertices(native.0, bag_index as c_int, out),
+            )?;
             bags.push(TdBag::from_algorithm_order(vertices));
 
             let neighbor_count = ffi::td_bag_num_neighbors(native.0, bag_index as c_int);
-            if neighbor_count < 0 || neighbor_count as usize > num_bags {
-                return Err(Error::InvalidDecomposition(format!(
-                    "FlowCutter bag {bag_index} has invalid neighbor count {neighbor_count}"
-                )));
-            }
-            let mut neighbors = vec![0; neighbor_count as usize];
-            ffi::td_bag_neighbors(native.0, bag_index as c_int, neighbors.as_mut_ptr());
-            let neighbors = neighbors
-                .into_iter()
-                .map(|neighbor| {
-                    usize::try_from(neighbor)
-                        .ok()
-                        .filter(|&neighbor| neighbor < num_bags)
-                        .ok_or_else(|| {
-                            Error::InvalidDecomposition(format!(
-                                "FlowCutter bag {bag_index} has invalid neighbor {neighbor}"
-                            ))
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let neighbors: Vec<usize> = read_bag_items(
+                bag_index,
+                neighbor_count,
+                num_bags,
+                "neighbor count",
+                "neighbor",
+                |out| ffi::td_bag_neighbors(native.0, bag_index as c_int, out),
+            )?;
             adjacency.push(neighbors);
         }
 
@@ -276,6 +253,36 @@ fn extract(native: &NativeDecomposition, graph: &Graph) -> Result<TreeDecomposit
         decomposition.debug_validate(graph);
         Ok(decomposition)
     }
+}
+
+fn read_bag_items<T: TryFrom<usize>>(
+    bag_index: usize,
+    count: c_int,
+    limit: usize,
+    count_what: &str,
+    item_what: &str,
+    fill: impl FnOnce(*mut c_int),
+) -> Result<Vec<T>, Error> {
+    if count < 0 || count as usize > limit {
+        return Err(Error::InvalidDecomposition(format!(
+            "FlowCutter bag {bag_index} has invalid {count_what} {count}"
+        )));
+    }
+    let mut raw = vec![0; count as usize];
+    fill(raw.as_mut_ptr());
+    raw.into_iter()
+        .map(|item| {
+            usize::try_from(item)
+                .ok()
+                .filter(|&index| index < limit)
+                .and_then(|index| T::try_from(index).ok())
+                .ok_or_else(|| {
+                    Error::InvalidDecomposition(format!(
+                        "FlowCutter bag {bag_index} contains invalid {item_what} {item}"
+                    ))
+                })
+        })
+        .collect()
 }
 
 /// Rebuild undirected adjacency in the native adapter's stable orientation:

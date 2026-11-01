@@ -22,10 +22,8 @@ impl Graph {
         push_decimal(&mut line, self.edges.len());
         write_line(&mut out, &mut line).expect("writing a graph into memory cannot fail");
         for &(u, v) in &self.edges {
-            push_decimal(&mut line, u as usize + 1);
-            line.push(b' ');
-            push_decimal(&mut line, v as usize + 1);
-            write_line(&mut out, &mut line).expect("writing a graph into memory cannot fail");
+            write_pair_line(&mut out, &mut line, u as usize + 1, v as usize + 1)
+                .expect("writing a graph into memory cannot fail");
         }
         String::from_utf8(out).expect("PACE output contains only ASCII")
     }
@@ -82,8 +80,8 @@ impl Graph {
             if tokens.next().is_some() {
                 return Err(Error::Parse(format!("malformed edge line: {line}")));
             }
-            let u: u32 = to_zero_based("vertex", parse_count("vertex id", first)?, u64::from(n))?;
-            let v: u32 = to_zero_based("vertex", parse_count("vertex id", second)?, u64::from(n))?;
+            let u: u32 = parse_zero_based("vertex", "vertex id", first, u64::from(n))?;
+            let v: u32 = parse_zero_based("vertex", "vertex id", second, u64::from(n))?;
             num_edge_lines += 1;
             edges.push((u, v));
         }
@@ -117,6 +115,18 @@ fn write_line(out: &mut impl Write, buffer: &mut Vec<u8>) -> io::Result<()> {
     out.write_all(buffer)?;
     buffer.clear();
     Ok(())
+}
+
+fn write_pair_line(
+    out: &mut impl Write,
+    buffer: &mut Vec<u8>,
+    left: usize,
+    right: usize,
+) -> io::Result<()> {
+    push_decimal(buffer, left);
+    buffer.push(b' ');
+    push_decimal(buffer, right);
+    write_line(out, buffer)
 }
 
 impl TreeDecomposition {
@@ -163,10 +173,7 @@ impl TreeDecomposition {
         for (i, nbs) in self.adj.iter().enumerate() {
             for &j in nbs {
                 if i < j {
-                    push_decimal(&mut line, i + 1);
-                    line.push(b' ');
-                    push_decimal(&mut line, j + 1);
-                    write_line(&mut out, &mut line)?;
+                    write_pair_line(&mut out, &mut line, i + 1, j + 1)?;
                 }
             }
         }
@@ -174,10 +181,7 @@ impl TreeDecomposition {
             .rooted_forest([])
             .expect("an empty root list names no bag out of range");
         for roots in forest.component_roots().windows(2) {
-            push_decimal(&mut line, roots[0] + 1);
-            line.push(b' ');
-            push_decimal(&mut line, roots[1] + 1);
-            write_line(&mut out, &mut line)?;
+            write_pair_line(&mut out, &mut line, roots[0] + 1, roots[1] + 1)?;
         }
         Ok(())
     }
@@ -275,19 +279,11 @@ impl TreeDecomposition {
                             "bag line before the solution line: {line}"
                         )));
                     }
-                    let bag_id = to_zero_based(
-                        "bag id",
-                        parse_count("bag id", tokens[1])?,
-                        num_bags as u64,
-                    )?;
+                    let bag_id = parse_zero_based("bag id", "bag id", tokens[1], num_bags as u64)?;
                     let vertices: Vec<u32> = tokens[2..]
                         .iter()
                         .map(|t| {
-                            to_zero_based(
-                                "vertex",
-                                parse_count("vertex id", t)?,
-                                u64::from(declared_vertices),
-                            )
+                            parse_zero_based("vertex", "vertex id", t, u64::from(declared_vertices))
                         })
                         .collect::<Result<_, Error>>()?;
                     let bag = TdBag::new(vertices);
@@ -314,16 +310,10 @@ impl TreeDecomposition {
                     if tokens.len() != 2 {
                         return Err(Error::Parse(format!("malformed tree edge: {line}")));
                     }
-                    let a: usize = to_zero_based(
-                        "bag id",
-                        parse_count::<u64>("bag id", tokens[0])?,
-                        num_bags as u64,
-                    )?;
-                    let b: usize = to_zero_based(
-                        "bag id",
-                        parse_count::<u64>("bag id", tokens[1])?,
-                        num_bags as u64,
-                    )?;
+                    let a: usize =
+                        parse_zero_based("bag id", "bag id", tokens[0], num_bags as u64)?;
+                    let b: usize =
+                        parse_zero_based("bag id", "bag id", tokens[1], num_bags as u64)?;
                     if a == b {
                         return Err(Error::Parse(format!(
                             "bag {} is adjacent to itself in the bag tree: {line}",
@@ -432,7 +422,13 @@ fn parse_count<T: std::str::FromStr<Err = std::num::ParseIntError>>(
 
 /// Ids are written 1-based and stored 0-based, so `0` is not an id at all;
 /// `limit` is the count the problem or solution line declared.
-fn to_zero_based<T: TryFrom<u64>>(what: &str, id: u64, limit: u64) -> Result<T, Error> {
+fn parse_zero_based<T: TryFrom<u64>>(
+    what: &str,
+    count_what: &str,
+    token: &str,
+    limit: u64,
+) -> Result<T, Error> {
+    let id: u64 = parse_count(count_what, token)?;
     if id == 0 {
         return Err(Error::Parse(format!(
             "{what} 0 is out of range; ids are 1-based"

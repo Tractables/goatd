@@ -1,4 +1,5 @@
 use crate::elimination::graph::*;
+use crate::tests::td_fixture::clique_edges;
 
 #[test]
 fn from_edges_builds_undirected_adjacency() {
@@ -86,13 +87,7 @@ fn removing_a_clique_neighbourhood_without_fill_leaves_the_fill_path_graph() {
 
     // A clique dense enough for the bitset path.
     let clique = 64u32;
-    let mut dense = Vec::new();
-    for u in 0..clique {
-        for v in u + 1..clique {
-            dense.push((u, v));
-        }
-    }
-    let bitset = (clique, dense, 7u32);
+    let bitset = (clique, clique_edges(clique), 7u32);
 
     for (n, edges, vertex) in [short_rows, indexed_row, bitset] {
         let mut with_fill = EliminationGraph::from_edges(n, &edges);
@@ -235,12 +230,7 @@ fn should_promote_bitset_triggers_when_dense() {
     // Near-complete graph on 128 vertices, dense enough to cross the
     // promotion threshold.
     let n = 128u32;
-    let mut edges = Vec::new();
-    for u in 0..n {
-        for v in (u + 1)..n {
-            edges.push((u, v));
-        }
-    }
+    let edges = clique_edges(n);
     // Construct sparse (first 10 edges only) then add_edge the rest, so the
     // graph starts adj-only regardless of what from_edges' own threshold does.
     let mut g = EliminationGraph::from_edges(n, &edges[..10]);

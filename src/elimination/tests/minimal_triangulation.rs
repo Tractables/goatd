@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::elimination::minimal_triangulation::{Reach, cardinality_search};
 use crate::elimination::{Order, decompose};
+use crate::tests::td_fixture::{clique_edges, grid_edges};
 use crate::{Graph, TreeDecomposition};
 
 /// A cycle on `n` vertices: treewidth 2.
@@ -15,19 +16,7 @@ fn cycle(n: u32) -> Graph {
 
 /// The `rows` by `columns` grid: treewidth `min(rows, columns)`.
 fn grid(rows: u32, columns: u32) -> Graph {
-    let mut edges = Vec::new();
-    for row in 0..rows {
-        for column in 0..columns {
-            let vertex = row * columns + column;
-            if column + 1 < columns {
-                edges.push((vertex, vertex + 1));
-            }
-            if row + 1 < rows {
-                edges.push((vertex, vertex + columns));
-            }
-        }
-    }
-    Graph::new(rows * columns, edges)
+    Graph::new(rows * columns, grid_edges(rows, columns))
 }
 
 /// The complete bipartite graph on `left` and `right` vertices: treewidth
@@ -109,8 +98,7 @@ fn complete_bipartite_graphs_are_triangulated_near_their_treewidth() {
 #[test]
 fn a_complete_graph_needs_no_fill() {
     let n = 6;
-    let edges = (0..n).flat_map(|a| (a + 1..n).map(move |b| (a, b)));
-    let graph = Graph::new(n, edges);
+    let graph = Graph::new(n, clique_edges(n));
     assert_eq!(minimal_triangulation(&graph).treewidth(), n - 1);
 }
 

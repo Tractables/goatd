@@ -2,6 +2,7 @@ use crate::elimination::execution::{ElimExit, ElimSink, ElimStop};
 use crate::elimination::graph::EliminationGraph;
 use crate::elimination::nested_dissection::*;
 use crate::graph::LocalIds;
+use crate::tests::td_fixture::grid_edges;
 
 /// The parameters every test here runs under, varying only the base-case
 /// threshold: no deadline, seed 0, and the balance tolerance the production
@@ -14,6 +15,16 @@ fn params<'a>(salt: &'a [u32], base_case_size: usize) -> NestedDissectionParams<
         hard_deadline: None,
         base_seed: 0,
     }
+}
+
+fn test_salt(n: u32) -> Vec<u32> {
+    (0..n).map(|i| i.wrapping_mul(2_654_435_761)).collect()
+}
+
+fn assert_permutation_of(order: &[u32], expected: &[u32]) {
+    let mut sorted = order.to_vec();
+    sorted.sort_unstable();
+    assert_eq!(sorted, expected);
 }
 
 #[test]
@@ -34,30 +45,14 @@ fn small_graph_falls_through_to_base_case() {
         &mut LocalIds::new(salt.len()),
         0,
     );
-    assert_eq!(order.len(), 3);
-    let mut s: Vec<u32> = order.clone();
-    s.sort();
-    assert_eq!(s, vec![0, 1, 2]);
+    assert_permutation_of(&order, &active);
 }
 
 #[test]
 fn grid_10x10_produces_full_order() {
-    let mut edges = Vec::new();
-    for r in 0..10u32 {
-        for c in 0..10u32 {
-            let v = r * 10 + c;
-            if c + 1 < 10 {
-                edges.push((v, v + 1));
-            }
-            if r + 1 < 10 {
-                edges.push((v, v + 10));
-            }
-        }
-    }
+    let edges = grid_edges(10, 10);
     let active: Vec<u32> = (0..100).collect();
-    let salt: Vec<u32> = (0..100)
-        .map(|i| (i as u32).wrapping_mul(2_654_435_761))
-        .collect();
+    let salt = test_salt(100);
     let order = nested_dissection_order(
         &active,
         &edges,
@@ -65,10 +60,7 @@ fn grid_10x10_produces_full_order() {
         &mut LocalIds::new(salt.len()),
         0,
     );
-    assert_eq!(order.len(), 100);
-    let mut s = order.clone();
-    s.sort();
-    assert_eq!(s, (0..100).collect::<Vec<u32>>());
+    assert_permutation_of(&order, &active);
 }
 
 #[test]
@@ -92,7 +84,7 @@ fn the_base_case_stops_at_the_hard_deadline_and_still_returns_a_full_order() {
             }
         }
     }
-    let salt: Vec<u32> = (0..n).map(|i| i.wrapping_mul(2_654_435_761)).collect();
+    let salt = test_salt(n);
 
     let epoch = std::time::Instant::now();
     let _meter = crate::meter::arm(epoch);
@@ -103,9 +95,7 @@ fn the_base_case_stops_at_the_hard_deadline_and_still_returns_a_full_order() {
     let order =
         nested_dissection_order(&active, &edges, &params, &mut LocalIds::new(salt.len()), 0);
 
-    let mut sorted = order.clone();
-    sorted.sort();
-    assert_eq!(sorted, active);
+    assert_permutation_of(&order, &active);
     let overrun = crate::meter::now().saturating_duration_since(deadline);
     assert!(
         overrun <= std::time::Duration::from_millis(2),
@@ -138,7 +128,7 @@ fn a_level_stops_inside_its_bisection_instead_of_running_it_out() {
     // bisection costs.
     let (n, edges) = graph_whose_coarsening_declines(20_000);
     let active: Vec<u32> = (0..n).collect();
-    let salt: Vec<u32> = (0..n).map(|i| i.wrapping_mul(2_654_435_761)).collect();
+    let salt = test_salt(n);
 
     let mut params = params(&salt, 32);
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
@@ -148,9 +138,7 @@ fn a_level_stops_inside_its_bisection_instead_of_running_it_out() {
         nested_dissection_order(&active, &edges, &params, &mut LocalIds::new(salt.len()), 0);
     let overrun = std::time::Instant::now().saturating_duration_since(deadline);
 
-    let mut sorted = order.clone();
-    sorted.sort();
-    assert_eq!(sorted, active);
+    assert_permutation_of(&order, &active);
     assert!(
         overrun <= std::time::Duration::from_millis(500),
         "the level ran {overrun:?} past the hard deadline"
@@ -167,7 +155,7 @@ fn a_stopped_level_still_returns_a_decomposition() {
     // against the wall, which an unoptimized build would lose.
     let (n, edges) = graph_whose_coarsening_declines(4_000);
     let mut graph = EliminationGraph::from_edges(n, &edges);
-    let salt: Vec<u32> = (0..n).map(|i| i.wrapping_mul(2_654_435_761)).collect();
+    let salt = test_salt(n);
     let mut bags = Vec::new();
     let mut ranks = Vec::new();
     let sink = ElimSink::new(&mut bags, &mut ranks, 0);

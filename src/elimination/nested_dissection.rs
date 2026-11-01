@@ -200,9 +200,7 @@ pub(super) fn nested_dissection_order(
         depth + 1,
     ));
 
-    let mut sep_sorted = sep_global;
-    sep_sorted.sort_by_key(|&v| salt[v as usize]);
-    order.extend(sep_sorted);
+    order.extend(salt_order(&sep_global, salt));
     order
 }
 
