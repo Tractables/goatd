@@ -226,45 +226,6 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
     // this only needs to latch true once — that is what lets the tail drain
     // skip all scoring work on the giant-clique endgame.
     let mut clique_residual = false;
-    while let Some((v, snapshot)) = match pop_next_greedy_vertex(
-        policy,
-        graph,
-        &mut pacer,
-        &mut cheap_mode,
-        stop.soft_deadline,
-        stop.hard_deadline,
-    ) {
-        Ok(next) => next,
-        Err(exit) => return exit,
-    } {
-        let bag = take_bag(graph, v, &mut nbrs_buf);
-        if !clique_residual && graph.is_residual_clique() {
-            clique_residual = true;
-        }
-        let simplicial = P::ZERO_SCORE_IS_SIMPLICIAL && !cheap_mode && snapshot == 0;
-        if let Some(exit) = eliminate_and_advance_greedy(
-            policy,
-            graph,
-            (v, bag),
-            &mut sink,
-            &mut nbrs_buf,
-            (clique_residual, simplicial, &mut cheap_mode),
-            stop,
-        ) {
-            return exit;
-        }
-    }
-    ElimExit::Complete
-}
-
-fn pop_next_greedy_vertex<P: ElimPolicy>(
-    policy: &mut P,
-    graph: &mut EliminationGraph,
-    pacer: &mut DeadlinePacer,
-    cheap_mode: &mut bool,
-    soft_deadline: Option<Instant>,
-    hard_deadline: Option<Instant>,
-) -> Result<Option<(u32, u64)>, ElimExit> {
     while let Some(entry) = policy.pop() {
         let v = entry.vertex();
         if !graph.active[v as usize] {
@@ -275,115 +236,93 @@ fn pop_next_greedy_vertex<P: ElimPolicy>(
         }
         let snapshot = entry.snapshot();
 
-        if let Some(exit) =
-            check_step_deadlines::<P>(graph, pacer, cheap_mode, soft_deadline, hard_deadline)
-        {
-            return Err(exit);
+        if cheap_mode {
+            // Score maintenance is off, so the only thing left to respect is
+            // the hard deadline — checked every pop, because a single cheap
+            // elimination on a dense residual can still take a while.
+            if expired(stop.hard_deadline) {
+                return ElimExit::DeadlineReached(Cutoff::Hard);
+            }
+        } else if pacer.due() {
+            if expired(stop.hard_deadline) {
+                return ElimExit::DeadlineReached(Cutoff::Hard);
+            }
+            if P::CHEAP_MODE && expired(stop.soft_deadline) {
+                // On a large residual even a cheap elimination can
+                // overshoot the hard deadline by seconds, so stop at the
+                // soft cutoff and let the engine complete the residual.
+                if graph.num_active > CHEAP_MODE_MAX_ACTIVE {
+                    return ElimExit::DeadlineReached(Cutoff::Soft);
+                }
+                cheap_mode = true;
+            }
+            // Fill edges can push an initially sparse graph past the
+            // density break-even mid-elimination, turning scoring into
+            // the hotspot.
+            if P::MAINTAIN_BITSET && graph.should_promote_bitset() {
+                graph.promote_bitset();
+            }
         }
 
         // Stale-snapshot guard: re-score a popped vertex and, if it moved,
         // re-push and let the heap decide again. Skipped in cheap mode, where
         // score accuracy is already abandoned.
-        if !*cheap_mode
+        if !cheap_mode
             && let Some(live) = policy.rescore_on_pop(graph, v)
             && live != snapshot
         {
             policy.push(graph, v, live);
             continue;
         }
-        return Ok(Some((v, snapshot)));
-    }
-    Ok(None)
-}
 
-fn eliminate_and_advance_greedy<P: ElimPolicy>(
-    policy: &mut P,
-    graph: &mut EliminationGraph,
-    (v, bag): (u32, Vec<u32>),
-    sink: &mut ElimSink<'_>,
-    nbrs_buf: &mut Vec<u32>,
-    (clique_residual, simplicial, cheap_mode): (bool, bool, &mut bool),
-    stop: ElimStop,
-) -> Option<ElimExit> {
-    let bag_len = bag.len();
-    if clique_residual {
-        graph.remove_without_fill_nbrs(v, nbrs_buf);
-    } else if simplicial {
-        policy.eliminate_simplicial(graph, v, nbrs_buf);
-    } else if *cheap_mode {
-        graph.eliminate_with_nbrs(v, nbrs_buf);
-    } else {
-        policy.eliminate_with_fill(graph, v, nbrs_buf, stop.soft_deadline);
-    }
-    sink.record(v, bag);
-
-    if exceeds_width_bound(bag_len, stop.width_bound) {
-        return Some(ElimExit::WidthLimitExceeded);
-    }
-
-    if clique_residual {
-        // The drain below will put every remaining vertex in one bag;
-        // check the bound against that now rather than after draining.
-        if exceeds_width_bound(graph.num_active, stop.width_bound) {
-            return Some(ElimExit::WidthLimitExceeded);
+        let bag = take_bag(graph, v, &mut nbrs_buf);
+        let bag_len = bag.len();
+        if !clique_residual && graph.is_residual_clique() {
+            clique_residual = true;
         }
-        drain_clique_tail(graph, sink, policy, nbrs_buf);
-        return Some(ElimExit::Complete);
-    }
+        let simplicial = P::ZERO_SCORE_IS_SIMPLICIAL && !cheap_mode && snapshot == 0;
+        if clique_residual {
+            graph.remove_without_fill_nbrs(v, &nbrs_buf);
+        } else if simplicial {
+            policy.eliminate_simplicial(graph, v, &nbrs_buf);
+        } else if cheap_mode {
+            graph.eliminate_with_nbrs(v, &nbrs_buf);
+        } else {
+            policy.eliminate_with_fill(graph, v, &nbrs_buf, stop.soft_deadline);
+        }
+        sink.record(v, bag);
 
-    match policy.after_eliminate(
-        graph,
-        nbrs_buf,
-        *cheap_mode,
-        stop.soft_deadline,
-        !simplicial,
-    ) {
-        AfterElim::Continue => None,
-        AfterElim::EnterCheapMode => {
-            debug_assert!(P::CHEAP_MODE, "core without cheap mode asked to enter it");
-            *cheap_mode = true;
-            None
+        if exceeds_width_bound(bag_len, stop.width_bound) {
+            return ElimExit::WidthLimitExceeded;
         }
-        // The residual is too large to finish even in cheap mode, and it
-        // is the soft cutoff that has passed: the engine completes what is
-        // left and the portfolio keeps its remaining hard-deadline time.
-        AfterElim::Bail => Some(ElimExit::DeadlineReached(Cutoff::Soft)),
-    }
-}
 
-fn check_step_deadlines<P: ElimPolicy>(
-    graph: &mut EliminationGraph,
-    pacer: &mut DeadlinePacer,
-    cheap_mode: &mut bool,
-    soft_deadline: Option<Instant>,
-    hard_deadline: Option<Instant>,
-) -> Option<ElimExit> {
-    if *cheap_mode {
-        // Score maintenance is off, so the only thing left to respect is
-        // the hard deadline — checked every pop, because a single cheap
-        // elimination on a dense residual can still take a while.
-        if expired(hard_deadline) {
-            return Some(ElimExit::DeadlineReached(Cutoff::Hard));
-        }
-    } else if pacer.due() {
-        if expired(hard_deadline) {
-            return Some(ElimExit::DeadlineReached(Cutoff::Hard));
-        }
-        if P::CHEAP_MODE && expired(soft_deadline) {
-            // On a large residual even a cheap elimination can
-            // overshoot the hard deadline by seconds, so stop at the
-            // soft cutoff and let the engine complete the residual.
-            if graph.num_active > CHEAP_MODE_MAX_ACTIVE {
-                return Some(ElimExit::DeadlineReached(Cutoff::Soft));
+        if clique_residual {
+            // The drain below will put every remaining vertex in one bag;
+            // check the bound against that now rather than after draining.
+            if exceeds_width_bound(graph.num_active, stop.width_bound) {
+                return ElimExit::WidthLimitExceeded;
             }
-            *cheap_mode = true;
+            drain_clique_tail(graph, &mut sink, policy, &mut nbrs_buf);
+            return ElimExit::Complete;
         }
-        // Fill edges can push an initially sparse graph past the
-        // density break-even mid-elimination, turning scoring into
-        // the hotspot.
-        if P::MAINTAIN_BITSET && graph.should_promote_bitset() {
-            graph.promote_bitset();
+
+        match policy.after_eliminate(
+            graph,
+            &nbrs_buf,
+            cheap_mode,
+            stop.soft_deadline,
+            !simplicial,
+        ) {
+            AfterElim::Continue => {}
+            AfterElim::EnterCheapMode => {
+                debug_assert!(P::CHEAP_MODE, "core without cheap mode asked to enter it");
+                cheap_mode = true;
+            }
+            // The residual is too large to finish even in cheap mode, and it
+            // is the soft cutoff that has passed: the engine completes what is
+            // left and the portfolio keeps its remaining hard-deadline time.
+            AfterElim::Bail => return ElimExit::DeadlineReached(Cutoff::Soft),
         }
     }
-    None
+    ElimExit::Complete
 }

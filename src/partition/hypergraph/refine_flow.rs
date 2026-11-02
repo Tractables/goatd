@@ -240,36 +240,8 @@ pub(super) fn flow_refine(
         .network
         .max_flow(source, sink, &mut finest.reachable, stop);
 
-    collect_balanced_flow_moves(hg, part, min_part_weight, max_part_weight, finest);
-
-    if finest.moves.is_empty() {
-        return false;
-    }
-
-    // The proposal goes onto `part` and comes back off where it does not pay.
-    // There are two sides, so a move's other side is the one it came from.
-    let old_cut = hyperedge_cut(hg, part);
-    for &(vertex, new_side) in &finest.moves {
-        part[vertex] = new_side;
-    }
-    if hyperedge_cut(hg, part) < old_cut {
-        return true;
-    }
-    for &(vertex, new_side) in &finest.moves {
-        part[vertex] = 1 - new_side;
-    }
-    false
-}
-
-fn collect_balanced_flow_moves(
-    hg: &Hypergraph,
-    part: &[u8],
-    min_part_weight: u32,
-    max_part_weight: u32,
-    finest: &mut FinestScratch,
-) {
     let mut part_weight = [0u32; 2];
-    for vertex in 0..hg.vertex_count {
+    for vertex in 0..n {
         part_weight[part[vertex] as usize] += hg.vertex_weights[vertex];
     }
 
@@ -288,6 +260,24 @@ fn collect_balanced_flow_moves(
             }
         }
     }
+
+    if finest.moves.is_empty() {
+        return false;
+    }
+
+    // The proposal goes onto `part` and comes back off where it does not pay.
+    // There are two sides, so a move's other side is the one it came from.
+    let old_cut = hyperedge_cut(hg, part);
+    for &(vertex, new_side) in &finest.moves {
+        part[vertex] = new_side;
+    }
+    if hyperedge_cut(hg, part) < old_cut {
+        return true;
+    }
+    for &(vertex, new_side) in &finest.moves {
+        part[vertex] = 1 - new_side;
+    }
+    false
 }
 
 /// Corridor: every pin of every cut hyperedge. Interior vertices are left
@@ -374,16 +364,6 @@ fn build_flow_network(
 
     // Boundary-vertex-to-cut-hyperedge capacity equals the hyperedge weight,
     // so the min-cut cost matches the hg cut it approximates.
-    add_cut_hyperedge_arcs(hg, part, finest, hyperedge_node_start);
-    total_nodes
-}
-
-fn add_cut_hyperedge_arcs(
-    hg: &Hypergraph,
-    part: &[u8],
-    finest: &mut FinestScratch,
-    hyperedge_node_start: usize,
-) {
     for (cut_index, &hyperedge) in finest.cut_hyperedges.iter().enumerate() {
         let hyperedge_node = hyperedge_node_start + cut_index;
         let hyperedge_weight = i64::from(hg.hyperedge_weights[hyperedge]);
@@ -405,6 +385,7 @@ fn add_cut_hyperedge_arcs(
             }
         }
     }
+    total_nodes
 }
 
 /// FM refinement with multi-try localized passes and flow-based refinement.

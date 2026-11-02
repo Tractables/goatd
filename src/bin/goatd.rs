@@ -374,9 +374,108 @@ impl RawArgs {
                     raw.sample = true;
                 }
                 "--weights" => raw.weights = Some(arg_value(argv, &mut i, arg)),
+                "--budget" => {
+                    let milliseconds = arg_number(argv, &mut i, arg);
+                    if milliseconds == 0 {
+                        usage_error("--budget wants a positive millisecond count");
+                    }
+                    raw.budget = Some(Duration::from_millis(milliseconds));
+                }
+                "--hard-budget" => {
+                    let milliseconds = arg_number(argv, &mut i, arg);
+                    if milliseconds == 0 {
+                        usage_error("--hard-budget wants a positive millisecond count");
+                    }
+                    raw.hard_budget = Some(Duration::from_millis(milliseconds));
+                }
+                "--hedge-dims" => {
+                    let list = arg_value(argv, &mut i, arg);
+                    raw.hedge_dims = Some(parse_hedge_dims(&list));
+                }
+                "--hedge-random" => {
+                    let stages = arg_number(argv, &mut i, arg);
+                    if stages == 0 || stages > MAX_HEDGE_PASSES as u64 {
+                        usage_error(&format!(
+                            "--hedge-random wants a stage count in 1..={MAX_HEDGE_PASSES}"
+                        ));
+                    }
+                    raw.hedge_random = Some(stages as usize);
+                }
+                "--hedge-reserve" => {
+                    let text = arg_value(argv, &mut i, arg);
+                    let fraction: f64 = text.parse().unwrap_or_else(|_| {
+                        usage_error(&format!(
+                            "--hedge-reserve wants a fraction in 0 < f <= 1, such as 0.5, not {text:?}"
+                        ))
+                    });
+                    if !fraction.is_finite() || fraction <= 0.0 || fraction > 1.0 {
+                        usage_error("--hedge-reserve wants a fraction in 0 < f <= 1");
+                    }
+                    raw.hedge_reserve = Some(fraction);
+                }
+                "--mcs-up-to" => raw.mcs_up_to = Some(arg_vertices(argv, &mut i, arg)),
+                "--no-mcs" => raw.no_mcs = true,
+                "--mcsm-up-to" => raw.mcsm_up_to = Some(arg_vertices(argv, &mut i, arg)),
+                "--no-mcsm" => raw.no_mcsm = true,
+                "--drop-fill-up-to" => raw.drop_fill_up_to = Some(arg_vertices(argv, &mut i, arg)),
+                "--no-drop-fill" => raw.no_drop_fill = true,
+                "--recombine-up-to" => raw.recombine_up_to = Some(arg_vertices(argv, &mut i, arg)),
+                "--no-recombine" => raw.no_recombine = true,
+                "--merge-up-to" => raw.merge_up_to = Some(arg_vertices(argv, &mut i, arg)),
+                "--no-merge" => raw.no_merge = true,
+                "--local-merge-up-to" => {
+                    raw.local_merge_up_to = Some(arg_vertices(argv, &mut i, arg))
+                }
+                "--no-local-merge" => raw.no_local_merge = true,
+                "--no-hedge" => raw.no_hedge = true,
+                "--no-bipartite-lift" => raw.no_bipartite_lift = true,
+                "--bipartite-lift-rate" => {
+                    let text = arg_value(argv, &mut i, arg);
+                    let rate: f64 = text.parse().unwrap_or_else(|_| {
+                        usage_error(&format!(
+                            "--bipartite-lift-rate wants edges per millisecond above zero, \
+                             such as 150, not {text:?}"
+                        ))
+                    });
+                    if !rate.is_finite() || rate <= 0.0 {
+                        usage_error("--bipartite-lift-rate wants edges per millisecond above zero");
+                    }
+                    raw.bipartite_lift_rate = Some(rate);
+                }
+                "--capped-restarts" => raw.capped_restarts = true,
+                "--sample-band" => raw.sample_band = Some(arg_number(argv, &mut i, arg)),
+                "--sample-band-alternate" => raw.sample_band_alternate = true,
+                "--sampling-patience" => {
+                    let restarts = arg_number(argv, &mut i, arg);
+                    if restarts == 0 {
+                        usage_error(
+                            "--sampling-patience wants a positive restart floor; a floor of zero \
+                             stops the restarts before the first one runs, and \
+                             --no-sampling-patience is how the rule is turned off",
+                        );
+                    }
+                    raw.sampling_patience = Some(restarts);
+                }
+                "--no-sampling-patience" => raw.no_sampling_patience = true,
+                "--expensive-orders-up-to" => {
+                    raw.expensive_orders_up_to = Some(
+                        usize::try_from(arg_number(argv, &mut i, arg)).unwrap_or_else(|_| {
+                            usage_error(&format!(
+                                "{arg} wants a vertex count in 0..={}",
+                                usize::MAX
+                            ))
+                        }),
+                    );
+                }
+                "--trace" => raw.trace = true,
+                "--steps" => {
+                    let n = arg_number(argv, &mut i, arg);
+                    if n == 0 {
+                        usage_error("--steps wants a positive step count");
+                    }
+                    raw.steps = Some(n);
+                }
                 "--refine" => raw.refine = true,
-                _ if raw.parse_budget_or_steps_flag(argv, &mut i, arg) => {}
-                _ if raw.parse_portfolio_flag(argv, &mut i, arg) => {}
                 _ if arg.starts_with('-') && arg != "-" => {
                     usage_error(&format!("unknown option {arg:?}"))
                 }
@@ -389,126 +488,6 @@ impl RawArgs {
             i += 1;
         }
         raw
-    }
-
-    fn parse_budget_or_steps_flag(&mut self, argv: &[String], i: &mut usize, arg: &str) -> bool {
-        match arg {
-            "--budget" => {
-                let milliseconds = arg_number(argv, i, arg);
-                if milliseconds == 0 {
-                    usage_error("--budget wants a positive millisecond count");
-                }
-                self.budget = Some(Duration::from_millis(milliseconds));
-            }
-            "--hard-budget" => {
-                let milliseconds = arg_number(argv, i, arg);
-                if milliseconds == 0 {
-                    usage_error("--hard-budget wants a positive millisecond count");
-                }
-                self.hard_budget = Some(Duration::from_millis(milliseconds));
-            }
-            "--steps" => {
-                let n = arg_number(argv, i, arg);
-                if n == 0 {
-                    usage_error("--steps wants a positive step count");
-                }
-                self.steps = Some(n);
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    fn parse_portfolio_flag(&mut self, argv: &[String], i: &mut usize, arg: &str) -> bool {
-        if self.parse_hedge_or_lift_flag(argv, i, arg) {
-            return true;
-        }
-        match arg {
-            "--mcs-up-to" => self.mcs_up_to = Some(arg_vertices(argv, i, arg)),
-            "--no-mcs" => self.no_mcs = true,
-            "--mcsm-up-to" => self.mcsm_up_to = Some(arg_vertices(argv, i, arg)),
-            "--no-mcsm" => self.no_mcsm = true,
-            "--drop-fill-up-to" => self.drop_fill_up_to = Some(arg_vertices(argv, i, arg)),
-            "--no-drop-fill" => self.no_drop_fill = true,
-            "--recombine-up-to" => self.recombine_up_to = Some(arg_vertices(argv, i, arg)),
-            "--no-recombine" => self.no_recombine = true,
-            "--merge-up-to" => self.merge_up_to = Some(arg_vertices(argv, i, arg)),
-            "--no-merge" => self.no_merge = true,
-            "--local-merge-up-to" => self.local_merge_up_to = Some(arg_vertices(argv, i, arg)),
-            "--no-local-merge" => self.no_local_merge = true,
-            "--capped-restarts" => self.capped_restarts = true,
-            "--sample-band" => self.sample_band = Some(arg_number(argv, i, arg)),
-            "--sample-band-alternate" => self.sample_band_alternate = true,
-            "--sampling-patience" => {
-                let restarts = arg_number(argv, i, arg);
-                if restarts == 0 {
-                    usage_error(
-                        "--sampling-patience wants a positive restart floor; a floor of zero \
-                         stops the restarts before the first one runs, and \
-                         --no-sampling-patience is how the rule is turned off",
-                    );
-                }
-                self.sampling_patience = Some(restarts);
-            }
-            "--no-sampling-patience" => self.no_sampling_patience = true,
-            "--expensive-orders-up-to" => {
-                self.expensive_orders_up_to = Some(
-                    usize::try_from(arg_number(argv, i, arg)).unwrap_or_else(|_| {
-                        usage_error(&format!("{arg} wants a vertex count in 0..={}", usize::MAX))
-                    }),
-                );
-            }
-            "--trace" => self.trace = true,
-            _ => return false,
-        }
-        true
-    }
-
-    fn parse_hedge_or_lift_flag(&mut self, argv: &[String], i: &mut usize, arg: &str) -> bool {
-        match arg {
-            "--hedge-dims" => {
-                let list = arg_value(argv, i, arg);
-                self.hedge_dims = Some(parse_hedge_dims(&list));
-            }
-            "--hedge-random" => {
-                let stages = arg_number(argv, i, arg);
-                if stages == 0 || stages > MAX_HEDGE_PASSES as u64 {
-                    usage_error(&format!(
-                        "--hedge-random wants a stage count in 1..={MAX_HEDGE_PASSES}"
-                    ));
-                }
-                self.hedge_random = Some(stages as usize);
-            }
-            "--hedge-reserve" => {
-                let text = arg_value(argv, i, arg);
-                let fraction: f64 = text.parse().unwrap_or_else(|_| {
-                    usage_error(&format!(
-                        "--hedge-reserve wants a fraction in 0 < f <= 1, such as 0.5, not {text:?}"
-                    ))
-                });
-                if !fraction.is_finite() || fraction <= 0.0 || fraction > 1.0 {
-                    usage_error("--hedge-reserve wants a fraction in 0 < f <= 1");
-                }
-                self.hedge_reserve = Some(fraction);
-            }
-            "--no-hedge" => self.no_hedge = true,
-            "--no-bipartite-lift" => self.no_bipartite_lift = true,
-            "--bipartite-lift-rate" => {
-                let text = arg_value(argv, i, arg);
-                let rate: f64 = text.parse().unwrap_or_else(|_| {
-                    usage_error(&format!(
-                        "--bipartite-lift-rate wants edges per millisecond above zero, \
-                         such as 150, not {text:?}"
-                    ))
-                });
-                if !rate.is_finite() || rate <= 0.0 {
-                    usage_error("--bipartite-lift-rate wants edges per millisecond above zero");
-                }
-                self.bipartite_lift_rate = Some(rate);
-            }
-            _ => return false,
-        }
-        true
     }
 
     fn validate_order_and_hedge(&self, order: Method) {
@@ -693,7 +672,35 @@ impl RawArgs {
 
     fn validate_hedge_and_sampling_gates(&self) {
         if self.hedge_reserve.is_some() {
-            self.validate_hedge_reserve();
+            // The reserve decides how many stages follow the first, so it says nothing
+            // where there is no second stage to refuse. With neither flag the series is
+            // the portfolio's own, which has more than one stage.
+            let stages = self
+                .hedge_dims
+                .as_ref()
+                .map(Vec::len)
+                .or(self.hedge_random)
+                .unwrap_or(DEFAULT_HEDGE_DIMS.len());
+            if stages < 2 {
+                usage_error(
+                    "--hedge-reserve decides how many weighted stages run after the first, and \
+                     the first runs on any budget; give --hedge-dims or --hedge-random with two \
+                     or more stages",
+                );
+            }
+            if self.no_hedge {
+                usage_error(
+                    "--hedge-reserve says how much of the budget the hedge's weighted stages may \
+                     spend and --no-hedge runs none; give one",
+                );
+            }
+            if self.budget.is_none() {
+                usage_error(
+                    "--hedge-reserve requires --budget: the reserve is a fraction of the time the \
+                     restarts would otherwise take, and a run with no budget leaves every stage \
+                     unbounded",
+                );
+            }
         }
         // The rate decides whether the bipartite lift runs, so it says nothing
         // where the stage is off.
@@ -725,38 +732,6 @@ impl RawArgs {
             usage_error(
                 "--sampling-patience and --no-sampling-patience both say when the restarts \
                  stop; give one",
-            );
-        }
-    }
-
-    fn validate_hedge_reserve(&self) {
-        // The reserve decides how many stages follow the first, so it says nothing
-        // where there is no second stage to refuse. With neither flag the series is
-        // the portfolio's own, which has more than one stage.
-        let stages = self
-            .hedge_dims
-            .as_ref()
-            .map(Vec::len)
-            .or(self.hedge_random)
-            .unwrap_or(DEFAULT_HEDGE_DIMS.len());
-        if stages < 2 {
-            usage_error(
-                "--hedge-reserve decides how many weighted stages run after the first, and \
-                 the first runs on any budget; give --hedge-dims or --hedge-random with two \
-                 or more stages",
-            );
-        }
-        if self.no_hedge {
-            usage_error(
-                "--hedge-reserve says how much of the budget the hedge's weighted stages may \
-                 spend and --no-hedge runs none; give one",
-            );
-        }
-        if self.budget.is_none() {
-            usage_error(
-                "--hedge-reserve requires --budget: the reserve is a fraction of the time the \
-                 restarts would otherwise take, and a run with no budget leaves every stage \
-                 unbounded",
             );
         }
     }
@@ -842,29 +817,6 @@ impl RawArgs {
         if let Some(fraction) = self.hedge_reserve {
             config = config.with_hedge_reserve(fraction);
         }
-        config = self.apply_stage_gate_config(config);
-        if self.capped_restarts {
-            config = config.with_restarts_to_deadline(false);
-        }
-        if let Some(band) = self.sample_band {
-            config = config.with_sample_band(band);
-        }
-        if self.sample_band_alternate {
-            config = config.with_sample_band_alternate(true);
-        }
-        if let Some(min_restarts) = self.sampling_patience {
-            config = config.with_sampling_patience(SamplingPatience::Halving { min_restarts });
-        }
-        if self.no_sampling_patience {
-            config = config.with_sampling_patience(SamplingPatience::Off);
-        }
-        if let Some(count) = self.expensive_orders_up_to {
-            config = config.with_expensive_orders_up_to(count);
-        }
-        config
-    }
-
-    fn apply_stage_gate_config(&self, mut config: PortfolioConfig) -> PortfolioConfig {
         if let Some(count) = self.mcs_up_to {
             config = config.with_maximum_cardinality(count);
         }
@@ -900,6 +852,24 @@ impl RawArgs {
         }
         if self.no_local_merge {
             config = config.without_local_merge();
+        }
+        if self.capped_restarts {
+            config = config.with_restarts_to_deadline(false);
+        }
+        if let Some(band) = self.sample_band {
+            config = config.with_sample_band(band);
+        }
+        if self.sample_band_alternate {
+            config = config.with_sample_band_alternate(true);
+        }
+        if let Some(min_restarts) = self.sampling_patience {
+            config = config.with_sampling_patience(SamplingPatience::Halving { min_restarts });
+        }
+        if self.no_sampling_patience {
+            config = config.with_sampling_patience(SamplingPatience::Off);
+        }
+        if let Some(count) = self.expensive_orders_up_to {
+            config = config.with_expensive_orders_up_to(count);
         }
         config
     }
@@ -1045,7 +1015,19 @@ fn print_candidate(candidate: &CandidateTrace) {
             restarts,
             last_improvement,
             left,
-        } => push_sampling_stopped_trace(&mut line, restarts, last_improvement, left),
+        } => {
+            line.push_str(&format!(" outcome=sampling-stopped restarts={restarts}"));
+            match last_improvement {
+                Some(index) => line.push_str(&format!(" last-improvement={index}")),
+                None => line.push_str(" last-improvement=none"),
+            }
+            match left {
+                Some(duration) => {
+                    line.push_str(&format!(" left-ms={}", duration.as_millis()));
+                }
+                None => line.push_str(" left-ms=none"),
+            }
+        }
         CandidateOutcome::TailBounded {
             window,
             patience,
@@ -1071,25 +1053,6 @@ fn print_candidate(candidate: &CandidateTrace) {
         )),
     }
     eprintln!("{line} ms={}", candidate.elapsed.as_millis());
-}
-
-fn push_sampling_stopped_trace(
-    line: &mut String,
-    restarts: u64,
-    last_improvement: Option<u64>,
-    left: Option<Duration>,
-) {
-    line.push_str(&format!(" outcome=sampling-stopped restarts={restarts}"));
-    match last_improvement {
-        Some(index) => line.push_str(&format!(" last-improvement={index}")),
-        None => line.push_str(" last-improvement=none"),
-    }
-    match left {
-        Some(duration) => {
-            line.push_str(&format!(" left-ms={}", duration.as_millis()));
-        }
-        None => line.push_str(" left-ms=none"),
-    }
 }
 
 /// Ask the library to stop. The handler stores one byte and does nothing else,

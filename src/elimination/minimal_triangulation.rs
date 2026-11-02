@@ -64,7 +64,8 @@ pub(crate) fn cardinality_search(
     // interrupt, since numbering a vertex zeroes its count. The reach marks
     // are cleared after every step, so between steps a mark is either empty
     // or [`NUMBERED`].
-    let (mut counts, mut states) = (vec![0u32; n], vec![0u8; n]);
+    let mut counts = vec![0u32; n];
+    let mut states = vec![0u8; n];
     // The highest count in each run of 64 vertices, so a step scans the runs
     // and then one run rather than every vertex. A count only rises, except
     // to zero when its vertex is numbered, and that is the one time a run's
@@ -72,11 +73,14 @@ pub(crate) fn cardinality_search(
     let mut run_max = vec![0u32; n.div_ceil(64)];
     // The lowest unnumbered vertex, which is what a step takes when no
     // unnumbered vertex counts anything yet.
-    let (mut lowest, mut selected) = (0usize, Vec::with_capacity(n));
+    let mut lowest = 0usize;
+    let mut selected = Vec::with_capacity(n);
+
     // The vertices the current step marked, and the buckets the path search
     // walks, both kept across steps and cleared after each one so the search
     // allocates once.
-    let (mut touched, mut raised) = (Vec::new(), Vec::new());
+    let mut touched: Vec<u32> = Vec::new();
+    let mut raised: Vec<u32> = Vec::new();
     // Only the path search walks buckets, and the plain search runs once per
     // rebuilt vertex on a graph that may have hundreds of thousands of them.
     let mut buckets: Vec<Vec<u32>> = match reach {
@@ -84,6 +88,7 @@ pub(crate) fn cardinality_search(
         Reach::Neighbours => Vec::new(),
     };
     let mut pacer = DeadlinePacer::new();
+
     for _ in 0..n {
         // The step's own scan of every vertex, charged before it runs so the
         // pacer counts a search that reaches nothing else.
@@ -91,171 +96,115 @@ pub(crate) fn cardinality_search(
         if pacer.due() && expired(hard_deadline) {
             return None;
         }
-        let chosen = number_chosen_vertex(&mut run_max, &mut counts, &mut states, &mut lowest);
-        selected.push(chosen as u32);
-        collect_unnumbered_neighbours(&adjacency[chosen], &states, &mut raised);
-        if reach == Reach::LowerPaths
-            && !reach_lower_paths(
-                adjacency,
-                chosen,
-                (&mut states, &counts),
-                (&mut raised, &mut touched, &mut buckets),
-                &mut pacer,
-                hard_deadline,
-            )
-        {
-            return None;
+        debug_assert!(
+            states.iter().all(|&state| state & REACHED == 0),
+            "a step cleared its own marks"
+        );
+        // The highest count, then the first vertex holding it: a numbered
+        // vertex counts zero, so it is never that vertex unless nothing
+        // unnumbered counts either, and then the lowest unnumbered one is
+        // taken instead. Ties go to the smallest index either way.
+        while states[lowest] != 0 {
+            lowest += 1;
         }
-        increment_raised_counts(&raised, &mut counts, &mut run_max);
-    }
-    Some(selected)
-}
-
-fn collect_unnumbered_neighbours(neighbours: &[u32], states: &[u8], raised: &mut Vec<u32>) {
-    raised.clear();
-    crate::meter::charge(neighbours.len() as u64);
-    for &neighbour in neighbours {
-        if states[neighbour as usize] == 0 {
-            raised.push(neighbour);
-        }
-    }
-}
-
-fn increment_raised_counts(raised: &[u32], counts: &mut [u32], run_max: &mut [u32]) {
-    for &vertex in raised {
-        let count = counts[vertex as usize] + 1;
-        counts[vertex as usize] = count;
-        let run = &mut run_max[vertex as usize / 64];
-        *run = (*run).max(count);
-    }
-}
-
-fn number_chosen_vertex(
-    run_max: &mut [u32],
-    counts: &mut [u32],
-    states: &mut [u8],
-    lowest: &mut usize,
-) -> usize {
-    debug_assert!(
-        states.iter().all(|&state| state & REACHED == 0),
-        "a step cleared its own marks"
-    );
-    while states[*lowest] != 0 {
-        *lowest += 1;
-    }
-    let (best, chosen) = choose_highest_unnumbered(run_max, counts, *lowest);
-    debug_assert!(
-        chosen < counts.len(),
-        "every step has an unnumbered vertex to take"
-    );
-    debug_assert!(states[chosen] == 0 && counts[chosen] == best);
-    states[chosen] = NUMBERED;
-    counts[chosen] = 0;
-    if best != 0 {
-        let run = chosen / 64;
-        run_max[run] = counts[run * 64..]
-            .iter()
-            .take(64)
-            .copied()
-            .max()
-            .unwrap_or(0);
-    }
-    chosen
-}
-
-/// The highest count, then the first vertex holding it: a numbered
-/// vertex counts zero, so it is never that vertex unless nothing
-/// unnumbered counts either, and then the lowest unnumbered one is
-/// taken instead. Ties go to the smallest index either way.
-fn choose_highest_unnumbered(run_max: &[u32], counts: &[u32], lowest: usize) -> (u32, usize) {
-    let best = run_max.iter().copied().max().unwrap_or(0);
-    let chosen = if best == 0 {
-        lowest
-    } else {
-        let run = run_max.iter().position(|&max| max == best).unwrap_or(0);
-        run * 64
-            + counts[run * 64..]
+        let best = run_max.iter().copied().max().unwrap_or(0);
+        let chosen = if best == 0 {
+            lowest
+        } else {
+            let run = run_max.iter().position(|&max| max == best).unwrap_or(0);
+            run * 64
+                + counts[run * 64..]
+                    .iter()
+                    .take(64)
+                    .position(|&count| count == best)
+                    .unwrap_or(0)
+        };
+        debug_assert!(chosen < n, "every step has an unnumbered vertex to take");
+        debug_assert!(states[chosen] == 0 && counts[chosen] == best);
+        states[chosen] = NUMBERED;
+        counts[chosen] = 0;
+        if best != 0 {
+            let run = chosen / 64;
+            run_max[run] = counts[run * 64..]
                 .iter()
                 .take(64)
-                .position(|&count| count == best)
-                .unwrap_or(0)
-    };
-    (best, chosen)
-}
-
-fn reach_lower_paths(
-    adjacency: &[Vec<u32>],
-    chosen: usize,
-    (states, counts): (&mut [u8], &[u32]),
-    (raised, touched, buckets): (&mut Vec<u32>, &mut Vec<u32>, &mut [Vec<u32>]),
-    pacer: &mut DeadlinePacer,
-    hard_deadline: Option<Instant>,
-) -> bool {
-    let n = adjacency.len();
-    // The neighbours are the paths of length one; each of them can then
-    // carry a path on to a vertex counting higher than it does.
-    // Bucket `j` holds the vertices reachable through interior vertices
-    // that all count at most `j`, so draining the buckets in increasing
-    // `j` reaches every vertex by its cheapest path first.
-    seed_direct_neighbours(chosen, states, counts, raised, touched, buckets);
-    // A step that reaches a handful of vertices would otherwise index
-    // and pop every one of the `n + 1` buckets. A vertex is only ever
-    // added to the level being drained or to a higher one, so once
-    // every bucket is empty no later level can fill.
-    let mut bucketed = raised.len();
-    for level in 0..=n {
-        if bucketed == 0 {
-            break;
+                .copied()
+                .max()
+                .unwrap_or(0);
         }
-        while let Some(interior) = buckets[level].pop() {
-            bucketed -= 1;
-            crate::meter::charge(adjacency[interior as usize].len() as u64);
-            if pacer.due() && expired(hard_deadline) {
-                return false;
-            }
-            for &next in &adjacency[interior as usize] {
-                // Numbered and reached are both disqualifying, so the
-                // step reads one byte and tests it once.
-                let state = &mut states[next as usize];
-                if *state != 0 {
-                    continue;
-                }
-                *state = REACHED;
-                let count = counts[next as usize] as usize;
-                touched.push(next);
-                bucketed += 1;
-                if count > level {
-                    raised.push(next);
-                    buckets[count].push(next);
-                } else {
-                    buckets[level].push(next);
-                }
+        selected.push(chosen as u32);
+
+        raised.clear();
+        crate::meter::charge(adjacency[chosen].len() as u64);
+        for &neighbour in &adjacency[chosen] {
+            if states[neighbour as usize] == 0 {
+                raised.push(neighbour);
             }
         }
-    }
-    for &vertex in touched.iter() {
-        states[vertex as usize] &= !REACHED;
-    }
-    true
-}
+        if reach == Reach::LowerPaths {
+            // The neighbours are the paths of length one; each of them can then
+            // carry a path on to a vertex counting higher than it does.
+            // Bucket `j` holds the vertices reachable through interior vertices
+            // that all count at most `j`, so draining the buckets in increasing
+            // `j` reaches every vertex by its cheapest path first.
+            touched.clear();
+            states[chosen] |= REACHED;
+            touched.push(chosen as u32);
+            for &neighbour in &raised {
+                states[neighbour as usize] |= REACHED;
+                let count = counts[neighbour as usize] as usize;
+                touched.push(neighbour);
+                buckets[count].push(neighbour);
+            }
+            // A step that reaches a handful of vertices would otherwise index
+            // and pop every one of the `n + 1` buckets. A vertex is only ever
+            // added to the level being drained or to a higher one, so once
+            // every bucket is empty no later level can fill.
+            let mut bucketed = raised.len();
+            for level in 0..=n {
+                if bucketed == 0 {
+                    break;
+                }
+                while let Some(interior) = buckets[level].pop() {
+                    bucketed -= 1;
+                    crate::meter::charge(adjacency[interior as usize].len() as u64);
+                    if pacer.due() && expired(hard_deadline) {
+                        return None;
+                    }
+                    for &next in &adjacency[interior as usize] {
+                        // Numbered and reached are both disqualifying, so the
+                        // step reads one byte and tests it once.
+                        let state = &mut states[next as usize];
+                        if *state != 0 {
+                            continue;
+                        }
+                        *state = REACHED;
+                        let count = counts[next as usize] as usize;
+                        touched.push(next);
+                        bucketed += 1;
+                        if count > level {
+                            raised.push(next);
+                            buckets[count].push(next);
+                        } else {
+                            buckets[level].push(next);
+                        }
+                    }
+                }
+            }
+            for &vertex in &touched {
+                states[vertex as usize] &= !REACHED;
+            }
+        }
 
-fn seed_direct_neighbours(
-    chosen: usize,
-    states: &mut [u8],
-    counts: &[u32],
-    raised: &[u32],
-    touched: &mut Vec<u32>,
-    buckets: &mut [Vec<u32>],
-) {
-    touched.clear();
-    states[chosen] |= REACHED;
-    touched.push(chosen as u32);
-    for &neighbour in raised {
-        states[neighbour as usize] |= REACHED;
-        let count = counts[neighbour as usize] as usize;
-        touched.push(neighbour);
-        buckets[count].push(neighbour);
+        for &vertex in &raised {
+            let count = counts[vertex as usize] + 1;
+            counts[vertex as usize] = count;
+            let run = &mut run_max[vertex as usize / 64];
+            *run = (*run).max(count);
+        }
     }
+
+    Some(selected)
 }
 
 /// Number the active residual with a cardinality search of the given reach and

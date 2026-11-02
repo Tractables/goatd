@@ -72,33 +72,6 @@ pub(super) fn bump_stamp(stamp: &mut u16, marker: &mut [u16]) -> u16 {
     *stamp
 }
 
-fn eliminate_neighbour_via_index(
-    v: u32,
-    u_raw: u32,
-    neighbours: &[u32],
-    row: &mut Vec<u32>,
-    index: &mut FxHashMap<u32, u32>,
-) -> usize {
-    if let Some(position) = index.remove(&v) {
-        let position = position as usize;
-        let last = row.len() - 1;
-        let moved = row[last];
-        row.swap_remove(position);
-        if position != last {
-            index.insert(moved, position as u32);
-        }
-    }
-    let mut pushes = 0;
-    for &w in neighbours {
-        if w != u_raw && !index.contains_key(&w) {
-            index.insert(w, row.len() as u32);
-            row.push(w);
-            pushes += 1;
-        }
-    }
-    pushes
-}
-
 /// Whether an edge list holds each undirected edge at most once, which is the
 /// contract [`EliminationGraph::from_unique_edges`] builds on. It sorts a copy
 /// of the list, so it is only called from a `debug_assert!`, and only up to a
@@ -680,8 +653,20 @@ impl EliminationGraph {
     /// indexes it over the active vertices; otherwise slots are vertex ids.
     fn build_bitset(&mut self, compact: bool) {
         let n = self.adj.len();
-        let (bitset_slot, slot_vertex, slots) =
-            assign_bitset_slots(&self.active, n, self.num_active, compact);
+        let (bitset_slot, slot_vertex, slots) = if compact {
+            let mut bitset_slot = vec![NO_SLOT; n];
+            let mut slot_vertex = Vec::with_capacity(self.num_active);
+            for (v, &active) in self.active.iter().enumerate() {
+                if active {
+                    bitset_slot[v] = slot_vertex.len() as u32;
+                    slot_vertex.push(v as u32);
+                }
+            }
+            let slots = slot_vertex.len();
+            (bitset_slot, slot_vertex, slots)
+        } else {
+            (Vec::new(), Vec::new(), n)
+        };
         self.bitset_compact = compact;
         let w = slots.div_ceil(64);
         let mut bitset = vec![0u64; slots * w];
@@ -989,6 +974,7 @@ impl EliminationGraph {
         // whichever way its question was answered, and a map stays in step
         // with its row.
         let walk_limit = neighbours.len().saturating_mul(WALK_ROW_FACTOR);
+        let ahead_of_walk = prefetching(self.elim_marker.len());
         let mut pushes: usize = 0;
         for &u_raw in neighbours {
             let u = u_raw as usize;
@@ -996,14 +982,49 @@ impl EliminationGraph {
             if row.len() > walk_limit
                 && let Some(index) = self.row_index[u].as_deref_mut()
             {
-                pushes += eliminate_neighbour_via_index(v, u_raw, neighbours, row, index);
+                if let Some(position) = index.remove(&v) {
+                    let position = position as usize;
+                    let last = row.len() - 1;
+                    let moved = row[last];
+                    row.swap_remove(position);
+                    if position != last {
+                        index.insert(moved, position as u32);
+                    }
+                }
+                for &w in neighbours {
+                    if w != u_raw && !index.contains_key(&w) {
+                        index.insert(w, row.len() as u32);
+                        row.push(w);
+                        pushes += 1;
+                    }
+                }
                 continue;
             }
             let s = bump_stamp(&mut self.elim_stamp, &mut self.elim_marker);
             let marker = self.elim_marker.as_mut_slice();
-            let v_pos = stamp_row_and_find(row, marker, u, v, s);
+            let mut v_pos = None;
+            for (idx, &w) in row.iter().enumerate() {
+                if ahead_of_walk && let Some(&ahead) = row.get(idx + PREFETCH_DISTANCE) {
+                    prefetch(marker, ahead as usize);
+                }
+                if w == v {
+                    v_pos = Some(idx);
+                }
+                marker[w as usize] = s;
+            }
+            marker[u] = s; // skip self-loop
             let mut index = self.row_index[u].as_deref_mut();
-            remove_eliminated_from_row(row, v_pos, v, &mut index);
+            if let Some(v_pos) = v_pos {
+                let last = row.len() - 1;
+                let moved = row[last];
+                row.swap_remove(v_pos);
+                if let Some(index) = index.as_deref_mut() {
+                    index.remove(&v);
+                    if v_pos != last {
+                        index.insert(moved, v_pos as u32);
+                    }
+                }
+            }
             match index {
                 Some(index) => {
                     for &w in neighbours {
@@ -1017,7 +1038,14 @@ impl EliminationGraph {
                     }
                 }
                 None => {
-                    pushes += push_unindexed_missing_neighbours(neighbours, marker, s, row);
+                    for &w in neighbours {
+                        let wi = w as usize;
+                        if marker[wi] != s {
+                            marker[wi] = s;
+                            row.push(w);
+                            pushes += 1;
+                        }
+                    }
                     if row.len() >= ROW_INDEX_THRESH {
                         build_row_index(&self.adj[u], &mut self.row_index[u]);
                     }
@@ -1448,80 +1476,4 @@ impl EliminationGraph {
         }
         total_pairs - edges
     }
-}
-
-fn stamp_row_and_find(row: &[u32], marker: &mut [u16], u: usize, v: u32, s: u16) -> Option<usize> {
-    let ahead_of_walk = prefetching(marker.len());
-    let mut v_pos = None;
-    for (idx, &w) in row.iter().enumerate() {
-        if ahead_of_walk && let Some(&ahead) = row.get(idx + PREFETCH_DISTANCE) {
-            prefetch(marker, ahead as usize);
-        }
-        if w == v {
-            v_pos = Some(idx);
-        }
-        marker[w as usize] = s;
-    }
-    marker[u] = s;
-    v_pos
-}
-
-fn remove_eliminated_from_row(
-    row: &mut Vec<u32>,
-    v_pos: Option<usize>,
-    v: u32,
-    index: &mut Option<&mut FxHashMap<u32, u32>>,
-) {
-    if let Some(v_pos) = v_pos {
-        let last = row.len() - 1;
-        let moved = row[last];
-        row.swap_remove(v_pos);
-        if let Some(index) = index.as_deref_mut() {
-            index.remove(&v);
-            if v_pos != last {
-                index.insert(moved, v_pos as u32);
-            }
-        }
-    }
-}
-
-fn push_unindexed_missing_neighbours(
-    neighbours: &[u32],
-    marker: &mut [u16],
-    s: u16,
-    row: &mut Vec<u32>,
-) -> usize {
-    let mut pushes = 0;
-    for &w in neighbours {
-        let wi = w as usize;
-        if marker[wi] != s {
-            marker[wi] = s;
-            row.push(w);
-            pushes += 1;
-        }
-    }
-    pushes
-}
-
-/// Slots are vertex ids unless the graph is too large for that, in which case
-/// only the active vertices get one.
-fn assign_bitset_slots(
-    active: &[bool],
-    n: usize,
-    num_active: usize,
-    compact: bool,
-) -> (Vec<u32>, Vec<u32>, usize) {
-    if !compact {
-        return (Vec::new(), Vec::new(), n);
-    }
-    let mut bitset_slot = vec![NO_SLOT; n];
-    let mut slot_vertex = Vec::with_capacity(num_active);
-    for (v, &live) in active.iter().enumerate() {
-        if live {
-            bitset_slot[v] = slot_vertex.len() as u32;
-            slot_vertex.push(v as u32);
-        }
-    }
-    let slots = slot_vertex.len();
-    (bitset_slot, slot_vertex, slots)
 }

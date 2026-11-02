@@ -184,17 +184,6 @@ pub(super) fn nested_dissection_order(
         return base_min_fill_order(active, edges, params, local);
     }
 
-    recurse_on_separator_sides(active, edges, &sep, params, local, depth)
-}
-
-fn recurse_on_separator_sides(
-    active: &[u32],
-    edges: &[(u32, u32)],
-    sep: &vertex_cover_separator::SeparatorResult,
-    params: &NestedDissectionParams<'_>,
-    local: &mut LocalIds,
-    depth: u32,
-) -> Vec<u32> {
     let side_a_global = local_to_global(&sep.side_a, active);
     let side_b_global = local_to_global(&sep.side_b, active);
     let sep_global = local_to_global(&sep.separator, active);
@@ -211,7 +200,11 @@ fn recurse_on_separator_sides(
         depth + 1,
     ));
 
-    order.extend(salt_order(&sep_global, params.salt));
+    // Order the separator by salt. In a valid TD every separator vertex sits
+    // in the root bag above both sides, so their internal order only breaks
+    // ties among bags of equal size.
+    order.extend(salt_order(&sep_global, salt));
+
     order
 }
 

@@ -1288,51 +1288,45 @@ pub(super) fn validate(config: PortfolioConfig) -> Result<(), Error> {
             config.hedge_reserve
         )));
     }
-    validate_soft_budget_stages(config)?;
+    // Four stages take their time off a window a run with no soft budget does
+    // not have, so each gate set without one asks for a stage that cannot run.
+    // The command line refuses the equivalent flags; this is where a library
+    // caller meets the same rule. `standard` leaves all four off, and the
+    // bipartite lift's sub-runs carry the parent's budget, so neither reaches
+    // this.
+    if config.soft_budget.is_none() {
+        for (gated, stage, window) in [
+            (
+                config.bipartite_lift.is_some(),
+                "bipartite lift",
+                "soft budget",
+            ),
+            (
+                config.recombination.is_some(),
+                "recombination stage",
+                "hard window",
+            ),
+            (config.merge_loop.is_some(), "merge loop", "hard window"),
+            (
+                config.local_merge.is_some(),
+                "local re-triangulation stage",
+                "hard window",
+            ),
+        ] {
+            if gated {
+                return Err(Error::InvalidInput(format!(
+                    "portfolio {stage} runs on a share of the {window}, and a run with \
+                     no soft budget has none"
+                )));
+            }
+        }
+    }
     // A band of zero is the exact minimum on every restart, so alternating
     // between it and itself decides nothing.
     if config.sample_band_alternate && config.sample_band == 0 {
         return Err(Error::InvalidInput(
             "portfolio alternating sample band needs a band above zero to alternate with".into(),
         ));
-    }
-    Ok(())
-}
-
-/// Four stages take their time off a window a run with no soft budget does
-/// not have, so each gate set without one asks for a stage that cannot run.
-/// The command line refuses the equivalent flags; this is where a library
-/// caller meets the same rule. `standard` leaves all four off, and the
-/// bipartite lift's sub-runs carry the parent's budget, so neither reaches
-/// this.
-fn validate_soft_budget_stages(config: PortfolioConfig) -> Result<(), Error> {
-    if config.soft_budget.is_some() {
-        return Ok(());
-    }
-    for (gated, stage, window) in [
-        (
-            config.bipartite_lift.is_some(),
-            "bipartite lift",
-            "soft budget",
-        ),
-        (
-            config.recombination.is_some(),
-            "recombination stage",
-            "hard window",
-        ),
-        (config.merge_loop.is_some(), "merge loop", "hard window"),
-        (
-            config.local_merge.is_some(),
-            "local re-triangulation stage",
-            "hard window",
-        ),
-    ] {
-        if gated {
-            return Err(Error::InvalidInput(format!(
-                "portfolio {stage} runs on a share of the {window}, and a run with \
-                 no soft budget has none"
-            )));
-        }
     }
     Ok(())
 }

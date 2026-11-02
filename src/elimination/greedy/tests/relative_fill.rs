@@ -21,7 +21,31 @@ fn check_order<const RELATIVE: bool>(edges: &[(u32, u32)], salt: &[u32]) -> Vec<
         adjacent[v as usize][u as usize] = true;
     }
     for bag in &bags {
-        let expected = expected_next_vertex::<RELATIVE>(&active, &adjacent, salt);
+        let scores: Vec<_> = (0..n)
+            .filter(|&v| active[v])
+            .map(|v| {
+                let neighbours: Vec<_> = (0..n).filter(|&u| active[u] && adjacent[v][u]).collect();
+                let mut fill = 0u128;
+                for (i, &u) in neighbours.iter().enumerate() {
+                    for &w in &neighbours[i + 1..] {
+                        fill += u128::from(!adjacent[u][w]);
+                    }
+                }
+                (v, fill, neighbours.len())
+            })
+            .collect();
+        let expected = scores
+            .iter()
+            .min_by(|&&(v, f, d), &&(w, g, e)| {
+                let primary = if RELATIVE {
+                    (f * e.max(1) as u128).cmp(&(g * d.max(1) as u128))
+                } else {
+                    f.cmp(&g)
+                };
+                primary.then_with(|| (d, salt[v], v).cmp(&(e, salt[w], w)))
+            })
+            .unwrap()
+            .0;
         assert_eq!(
             bag[0] as usize, expected,
             "relative={RELATIVE}, edges={edges:?}"
@@ -40,39 +64,6 @@ fn check_order<const RELATIVE: bool>(edges: &[(u32, u32)], salt: &[u32]) -> Vec<
         active[v] = false;
     }
     bags.iter().map(|bag| bag[0]).collect()
-}
-
-fn expected_next_vertex<const RELATIVE: bool>(
-    active: &[bool],
-    adjacent: &[Vec<bool>],
-    salt: &[u32],
-) -> usize {
-    let n = salt.len();
-    let scores: Vec<_> = (0..n)
-        .filter(|&v| active[v])
-        .map(|v| {
-            let neighbours: Vec<_> = (0..n).filter(|&u| active[u] && adjacent[v][u]).collect();
-            let mut fill = 0u128;
-            for (i, &u) in neighbours.iter().enumerate() {
-                for &w in &neighbours[i + 1..] {
-                    fill += u128::from(!adjacent[u][w]);
-                }
-            }
-            (v, fill, neighbours.len())
-        })
-        .collect();
-    scores
-        .iter()
-        .min_by(|&&(v, f, d), &&(w, g, e)| {
-            let primary = if RELATIVE {
-                (f * e.max(1) as u128).cmp(&(g * d.max(1) as u128))
-            } else {
-                f.cmp(&g)
-            };
-            primary.then_with(|| (d, salt[v], v).cmp(&(e, salt[w], w)))
-        })
-        .unwrap()
-        .0
 }
 
 #[test]

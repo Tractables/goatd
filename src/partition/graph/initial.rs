@@ -64,59 +64,45 @@ pub(super) fn greedy_graph_growing(
         if stop.reached() {
             break;
         }
-        let Some(v) = pop_next_growth_vertex(&mut heap, &in_set, &gain) else {
+        let chosen = loop {
+            let Some((g, Reverse(v))) = heap.pop() else {
+                break None;
+            };
+            if !in_set[v] && g == gain[v] {
+                break Some(v);
+            }
+        };
+        let Some(v) = chosen else {
             break;
         };
+
         part[v] = 0;
         in_set[v] = true;
         set_weight += graph.vertex_weights[v];
 
-        update_grown_set_neighbor_gains(graph, v, &in_set, &mut gain, &mut heap);
+        let start = graph.offsets[v] as usize;
+        let end = graph.offsets[v + 1] as usize;
+        for (&nb, &w) in graph.neighbors[start..end]
+            .iter()
+            .zip(&graph.edge_weights[start..end])
+        {
+            let nb = nb as usize;
+            if !in_set[nb] {
+                // `2 * w`: the edge leaves the not-in-set sum and enters the
+                // in-set sum, so the difference between them moves by twice its
+                // weight. The seed's own edges above were added at `w`, so an
+                // edge to the seed counts half of what every later edge does,
+                // and a candidate's edges to vertices still outside the set are
+                // never subtracted at all — the score ranks candidates but is
+                // not the cut reduction the textbook version tracks. See "Where
+                // the two bisectors differ" in the shared partition bookkeeping.
+                gain[nb] += 2 * w as i64;
+                heap.push((gain[nb], Reverse(nb)));
+            }
+        }
     }
 
     part
-}
-
-fn pop_next_growth_vertex(
-    heap: &mut BinaryHeap<(i64, Reverse<usize>)>,
-    in_set: &[bool],
-    gain: &[i64],
-) -> Option<usize> {
-    while let Some((g, Reverse(v))) = heap.pop() {
-        if !in_set[v] && g == gain[v] {
-            return Some(v);
-        }
-    }
-    None
-}
-
-fn update_grown_set_neighbor_gains(
-    graph: &CsrGraph,
-    v: usize,
-    in_set: &[bool],
-    gain: &mut [i64],
-    heap: &mut BinaryHeap<(i64, Reverse<usize>)>,
-) {
-    let start = graph.offsets[v] as usize;
-    let end = graph.offsets[v + 1] as usize;
-    for (&nb, &w) in graph.neighbors[start..end]
-        .iter()
-        .zip(&graph.edge_weights[start..end])
-    {
-        let nb = nb as usize;
-        if !in_set[nb] {
-            // `2 * w`: the edge leaves the not-in-set sum and enters the
-            // in-set sum, so the difference between them moves by twice its
-            // weight. The seed's own edges above were added at `w`, so an
-            // edge to the seed counts half of what every later edge does,
-            // and a candidate's edges to vertices still outside the set are
-            // never subtracted at all — the score ranks candidates but is
-            // not the cut reduction the textbook version tracks. See "Where
-            // the two bisectors differ" in the shared partition bookkeeping.
-            gain[nb] += 2 * w as i64;
-            heap.push((gain[nb], Reverse(nb)));
-        }
-    }
 }
 
 /// Summed weight of the cut edges, each counted once: the scan visits only

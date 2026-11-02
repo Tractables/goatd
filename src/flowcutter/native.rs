@@ -70,19 +70,39 @@ impl Drop for NativeDecomposition {
     }
 }
 
-struct FfiWorkUnits {
-    patience_unit_budget: i64,
-    search_budget: i64,
-    units_per_iteration: i64,
-}
-
 impl NativeDecomposition {
     /// Run the backend. `None` means it returned no decomposition or its share
     /// of a metered budget could not pay for setup.
     fn compute(num_vertices: u32, flat_edges: &[c_int], budget: Budget) -> Option<Self> {
         let num_edges = flat_edges.len() / 2;
         let vertices = u64::from(num_vertices);
-        let units = compute_work_units(vertices, num_edges as u64, budget)?;
+        let edges = num_edges as u64;
+        let elements = graph_elements(vertices, edges);
+
+        // A timed budget is measured on the work clock while the meter is
+        // armed, so converting it at that clock's rate gives the native loop
+        // the same share in work units. Zero means no work-unit limit.
+        let metered = crate::meter::is_armed();
+        let (unit_budget, patience_unit_budget) = match budget.kind {
+            BudgetKind::Timed {
+                timeout, patience, ..
+            } if metered => (
+                duration_work_units(timeout),
+                patience.map(duration_work_units).unwrap_or(0),
+            ),
+            _ => (0, 0),
+        };
+
+        let setup_units = SETUP_UNITS_PER_ELEMENT.saturating_mul(elements);
+        if unit_budget > 0 && setup_units >= unit_budget as u64 {
+            crate::meter::charge(DECLINE_UNITS_PER_ELEMENT.saturating_mul(elements));
+            return None;
+        }
+
+        let search_units = (unit_budget.max(0) as u64).saturating_sub(setup_units);
+        let search_budget = i64::try_from(search_units).unwrap_or(i64::MAX);
+        let units_per_iteration =
+            i64::try_from(iteration_work_units(vertices, edges)).unwrap_or(i64::MAX);
 
         // The backend tests this byte where it tests its deadline, so a caller
         // that sets the stop flag also ends a build already inside the backend.
@@ -90,117 +110,67 @@ impl NativeDecomposition {
         // process; the backend only reads it.
         unsafe { ffi::td_set_stop_flag(crate::stop::flag_address()) };
 
-        let (mut iterations_done, mut greedy_touches) = (0i64, 0i64);
-        let raw = invoke_td_compute(
-            (num_vertices, num_edges, flat_edges),
-            budget,
-            units,
-            (&mut iterations_done, &mut greedy_touches),
-        );
+        let mut iterations_done: i64 = 0;
+        let mut greedy_touches: i64 = 0;
+        let raw = match budget.kind {
+            BudgetKind::Timed {
+                timeout,
+                patience,
+                iterations,
+                steps,
+                timeout_behavior,
+            } => {
+                let timeout_ms = duration_ms(timeout);
+                let patience_ms = patience.map(duration_ms).unwrap_or(0);
+                let (steps, iterations) = ffi_step_limits(steps, iterations);
+                let steps = match timeout_behavior {
+                    TimeoutBehavior::AdaptSearch => steps,
+                    TimeoutBehavior::StopOnly => scaled_steps(steps, num_edges),
+                };
+                // SAFETY: all input and output buffers remain live for the
+                // call; a non-null returned handle transfers ownership.
+                unsafe {
+                    ffi::td_compute_timed_patience(
+                        num_vertices as c_int,
+                        num_edges as c_int,
+                        flat_edges.as_ptr(),
+                        steps,
+                        iterations,
+                        timeout_ms,
+                        patience_ms,
+                        patience_unit_budget,
+                        timeout_behavior.as_ffi(),
+                        &raw mut iterations_done,
+                        &raw mut greedy_touches,
+                        search_budget,
+                        units_per_iteration,
+                    )
+                }
+            }
+            BudgetKind::Steps { steps, iterations } => {
+                let (steps, iterations) = ffi_step_limits(steps, iterations);
+                // SAFETY: as for the timed call above.
+                unsafe {
+                    ffi::td_compute(
+                        num_vertices as c_int,
+                        num_edges as c_int,
+                        flat_edges.as_ptr(),
+                        scaled_steps(steps, num_edges),
+                        iterations,
+                        &raw mut iterations_done,
+                        &raw mut greedy_touches,
+                        search_budget,
+                        units_per_iteration,
+                    )
+                }
+            }
+        };
 
-        charge_build(vertices, num_edges as u64, iterations_done, greedy_touches);
+        charge_build(vertices, edges, iterations_done, greedy_touches);
 
         // Only a live handle is wrapped: `then_some` takes its argument by
         // value, so it built a null one and dropped it again.
         (!raw.is_null()).then_some(Self(raw))
-    }
-}
-
-fn compute_work_units(vertices: u64, edges: u64, budget: Budget) -> Option<FfiWorkUnits> {
-    let elements = graph_elements(vertices, edges);
-    // A timed budget is measured on the work clock while the meter is
-    // armed, so converting it at that clock's rate gives the native loop
-    // the same share in work units. Zero means no work-unit limit.
-    let metered = crate::meter::is_armed();
-    let (unit_budget, patience_unit_budget) = match budget.kind {
-        BudgetKind::Timed {
-            timeout, patience, ..
-        } if metered => (
-            duration_work_units(timeout),
-            patience.map(duration_work_units).unwrap_or(0),
-        ),
-        _ => (0, 0),
-    };
-
-    let setup_units = SETUP_UNITS_PER_ELEMENT.saturating_mul(elements);
-    if unit_budget > 0 && setup_units >= unit_budget as u64 {
-        crate::meter::charge(DECLINE_UNITS_PER_ELEMENT.saturating_mul(elements));
-        return None;
-    }
-
-    let search_units = (unit_budget.max(0) as u64).saturating_sub(setup_units);
-    let search_budget = i64::try_from(search_units).unwrap_or(i64::MAX);
-    let units_per_iteration =
-        i64::try_from(iteration_work_units(vertices, edges)).unwrap_or(i64::MAX);
-    Some(FfiWorkUnits {
-        patience_unit_budget,
-        search_budget,
-        units_per_iteration,
-    })
-}
-
-fn invoke_td_compute(
-    (num_vertices, num_edges, flat_edges): (u32, usize, &[c_int]),
-    budget: Budget,
-    units: FfiWorkUnits,
-    (iterations_done, greedy_touches): (&mut i64, &mut i64),
-) -> *mut ffi::TdResult {
-    match budget.kind {
-        BudgetKind::Timed {
-            timeout,
-            patience,
-            iterations,
-            steps,
-            timeout_behavior,
-        } => {
-            let timeout_ms = duration_ms(timeout);
-            let patience_ms = patience.map(duration_ms).unwrap_or(0);
-            let (steps, iterations) = ffi_step_limits(steps, iterations);
-            let steps = timed_step_limit(steps, timeout_behavior, num_edges);
-            // SAFETY: all input and output buffers remain live for the
-            // call; a non-null returned handle transfers ownership.
-            unsafe {
-                ffi::td_compute_timed_patience(
-                    num_vertices as c_int,
-                    num_edges as c_int,
-                    flat_edges.as_ptr(),
-                    steps,
-                    iterations,
-                    timeout_ms,
-                    patience_ms,
-                    units.patience_unit_budget,
-                    timeout_behavior.as_ffi(),
-                    iterations_done,
-                    greedy_touches,
-                    units.search_budget,
-                    units.units_per_iteration,
-                )
-            }
-        }
-        BudgetKind::Steps { steps, iterations } => {
-            let (steps, iterations) = ffi_step_limits(steps, iterations);
-            // SAFETY: as for the timed call above.
-            unsafe {
-                ffi::td_compute(
-                    num_vertices as c_int,
-                    num_edges as c_int,
-                    flat_edges.as_ptr(),
-                    scaled_steps(steps, num_edges),
-                    iterations,
-                    iterations_done,
-                    greedy_touches,
-                    units.search_budget,
-                    units.units_per_iteration,
-                )
-            }
-        }
-    }
-}
-
-fn timed_step_limit(steps: i64, timeout_behavior: TimeoutBehavior, num_edges: usize) -> i64 {
-    match timeout_behavior {
-        TimeoutBehavior::AdaptSearch => steps,
-        TimeoutBehavior::StopOnly => scaled_steps(steps, num_edges),
     }
 }
 

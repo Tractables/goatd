@@ -507,8 +507,14 @@ fn minimalize(
     scratch: &mut Scratch,
     deadline: Option<Instant>,
 ) -> usize {
+    let words = completion.words;
     crate::meter::charge(edge_count as u64);
-    prepare_minimalize_scratch(scratch, completion.words, vertices);
+    let common = &mut scratch.common;
+    common.clear();
+    common.resize(words, 0);
+    let touched = &mut scratch.touched;
+    touched.clear();
+    touched.resize(vertices, 0);
     let mut removed = 0;
     let mut pacer = DeadlinePacer::new();
     let mut pass = 0u32;
@@ -516,11 +522,10 @@ fn minimalize(
         pass += 1;
         let mut removed_this_pass = 0;
         for vertex in 0..vertices {
-            crate::meter::charge(completion.words as u64);
+            crate::meter::charge(words as u64);
             if pacer.due() && expired(deadline) {
                 return removed + removed_this_pass;
             }
-            let words = completion.words;
             let base = vertex * words;
             let first = vertex / 64;
             witnesses.start_row(vertex);
@@ -531,96 +536,56 @@ fn minimalize(
                     // tested from their smaller endpoint instead.
                     bits &= (!1u64) << (vertex % 64);
                 }
-                let Some(word_removed) = minimalize_word_bits(
-                    completion,
-                    (vertex, word, bits, pass),
-                    scratch,
-                    witnesses,
-                    &mut pacer,
-                    deadline,
-                ) else {
-                    return removed + removed_this_pass;
-                };
-                removed_this_pass += word_removed;
+                // A removal below clears bits of this row, but only the bit of
+                // the member being tested, which this walk has already taken
+                // out of `bits`.
+                while bits != 0 {
+                    let other = word * 64 + bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    // An endpoint touched in pass p is retested in pass p and
+                    // in pass p + 1: an edge tested earlier in pass p saw the
+                    // neighbourhood as it was before that removal.
+                    if touched[vertex] + 2 <= pass && touched[other] + 2 <= pass {
+                        continue;
+                    }
+                    if pacer.due() && expired(deadline) {
+                        return removed + removed_this_pass;
+                    }
+                    let untouched = touched[vertex] == 0 && touched[other] == 0;
+                    let hint = match witnesses.lookup(vertex, other, untouched) {
+                        Known::Fails(size) => {
+                            // What the test would have charged for its rows.
+                            crate::meter::charge(size.saturating_mul(words as u64));
+                            continue;
+                        }
+                        Known::Hint(pair) => Some(pair),
+                        Known::Nothing => None,
+                    };
+                    match common_neighbourhood_is_clique(
+                        completion,
+                        vertex,
+                        other,
+                        &mut common[..],
+                        hint,
+                    ) {
+                        (_, None) => {
+                            completion.remove(vertex, other);
+                            touched[vertex] = pass;
+                            touched[other] = pass;
+                            removed_this_pass += 1;
+                        }
+                        (size, Some((a, b))) => {
+                            if untouched && touched[a] == 0 && touched[b] == 0 {
+                                witnesses.record(size, (a, b));
+                            }
+                        }
+                    }
+                }
             }
         }
         removed += removed_this_pass;
         if removed_this_pass == 0 {
             return removed;
-        }
-    }
-}
-
-/// Tests set bits in `bits` for `vertex`'s `word`; returns `None` when the
-/// deadline expires mid-word.
-fn minimalize_word_bits(
-    completion: &mut RowSet,
-    (vertex, word, mut bits, pass): (usize, usize, u64, u32),
-    scratch: &mut Scratch,
-    witnesses: &mut impl Witnesses,
-    pacer: &mut DeadlinePacer,
-    deadline: Option<Instant>,
-) -> Option<usize> {
-    let mut removed = 0;
-    // A removal below clears bits of this row, but only the bit of the member
-    // being tested, which this walk has already taken out of `bits`.
-    while bits != 0 {
-        let other = word * 64 + bits.trailing_zeros() as usize;
-        bits &= bits - 1;
-        // An endpoint touched in pass p is retested in pass p and in pass p + 1:
-        // an edge tested earlier in pass p saw the neighbourhood as it was before
-        // that removal.
-        if scratch.touched[vertex] + 2 <= pass && scratch.touched[other] + 2 <= pass {
-            continue;
-        }
-        if pacer.due() && expired(deadline) {
-            return None;
-        }
-        if test_and_maybe_remove_edge(completion, vertex, other, pass, scratch, witnesses) {
-            removed += 1;
-        }
-    }
-    Some(removed)
-}
-
-fn prepare_minimalize_scratch(scratch: &mut Scratch, words: usize, vertices: usize) {
-    scratch.common.clear();
-    scratch.common.resize(words, 0);
-    scratch.touched.clear();
-    scratch.touched.resize(vertices, 0);
-}
-
-fn test_and_maybe_remove_edge(
-    completion: &mut RowSet,
-    vertex: usize,
-    other: usize,
-    pass: u32,
-    scratch: &mut Scratch,
-    witnesses: &mut impl Witnesses,
-) -> bool {
-    let words = completion.words;
-    let untouched = scratch.touched[vertex] == 0 && scratch.touched[other] == 0;
-    let hint = match witnesses.lookup(vertex, other, untouched) {
-        Known::Fails(size) => {
-            // What the test would have charged for its rows.
-            crate::meter::charge(size.saturating_mul(words as u64));
-            return false;
-        }
-        Known::Hint(pair) => Some(pair),
-        Known::Nothing => None,
-    };
-    match common_neighbourhood_is_clique(completion, vertex, other, &mut scratch.common[..], hint) {
-        (_, None) => {
-            completion.remove(vertex, other);
-            scratch.touched[vertex] = pass;
-            scratch.touched[other] = pass;
-            true
-        }
-        (size, Some((a, b))) => {
-            if untouched && scratch.touched[a] == 0 && scratch.touched[b] == 0 {
-                witnesses.record(size, (a, b));
-            }
-            false
         }
     }
 }

@@ -110,74 +110,49 @@ fn multilevel_pass(
             return index_split(n);
         }
         if let Some(level) = coarsen_one_level(current, MIN_COARSEN_SIZE, rng, carried.as_deref()) {
-            current = push_coarsening_level(
-                &mut levels,
-                level,
-                &mut carried,
-                &mut count_scratch,
-                &mut proj_scratch,
-            );
+            levels.push(level);
+            let pushed = levels.last().expect("a level was just pushed");
+            if let Some(carried) = carried.as_mut() {
+                let nc = pushed.graph.num_vertices();
+                project_to_coarse(
+                    carried,
+                    &pushed.mapping,
+                    nc,
+                    &mut count_scratch,
+                    &mut proj_scratch,
+                );
+                std::mem::swap(carried, &mut proj_scratch);
+            }
+            current = &pushed.graph;
         } else {
             break;
         }
     }
+
     // Coarsest level: either the caller's partition projected the whole way
     // down, or a fresh one grown here. This is the only point in the sweep
     // where a partition is created rather than improved.
     let mut coarse_part =
         carried.unwrap_or_else(|| initial_partition(current, rng, max_imbalance, scratch, stop));
+
     // Coarse edges carry the summed weight of everything contracted into them,
     // so a move here is worth many fine edges and this is the cheapest place in
     // the sweep to buy cut.
     refine_level(current, &mut coarse_part, max_imbalance, scratch, stop);
-    uncoarsen_and_refine(
-        graph,
-        &levels,
-        coarse_part,
-        &mut proj_scratch,
-        max_imbalance,
-        scratch,
-        stop,
-    )
-}
 
-fn push_coarsening_level<'a>(
-    levels: &'a mut Vec<CoarseningLevel>,
-    level: CoarseningLevel,
-    carried: &mut Option<Vec<u8>>,
-    count_scratch: &mut Vec<[u32; 2]>,
-    proj_scratch: &mut Vec<u8>,
-) -> &'a CsrGraph {
-    levels.push(level);
-    let pushed = levels.last().expect("a level was just pushed");
-    if let Some(carried) = carried.as_mut() {
-        let nc = pushed.graph.num_vertices();
-        project_to_coarse(carried, &pushed.mapping, nc, count_scratch, proj_scratch);
-        std::mem::swap(carried, proj_scratch);
-    }
-    &pushed.graph
-}
-
-fn uncoarsen_and_refine(
-    graph: &CsrGraph,
-    levels: &[CoarseningLevel],
-    mut result_part: Vec<u8>,
-    proj_scratch: &mut Vec<u8>,
-    max_imbalance: f64,
-    scratch: &mut FmScratch,
-    stop: &mut BisectionStop,
-) -> Vec<u8> {
     // Uncoarsening. Each step hands every fine vertex its coarse vertex's side,
     // then refines with the freedom the finer graph exposes; only the finest
     // level pays for the localized passes on top.
+    let mut result_part = coarse_part;
     for (li, level) in levels.iter().enumerate().rev() {
         if stop.reached() {
             break;
         }
-        lift_to_fine(&result_part, &level.mapping, proj_scratch);
-        std::mem::swap(&mut result_part, proj_scratch);
+        lift_to_fine(&result_part, &level.mapping, &mut proj_scratch);
+        std::mem::swap(&mut result_part, &mut proj_scratch);
 
         let fine_graph = if li > 0 { &levels[li - 1].graph } else { graph };
+
         if li == 0 {
             refine_finest_level(fine_graph, &mut result_part, max_imbalance, scratch, stop);
         } else {

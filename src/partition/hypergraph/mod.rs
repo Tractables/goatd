@@ -126,13 +126,19 @@ fn multilevel_pass(
         }
         let coarse_part_ref = projected_part.as_deref();
         if let Some(level) = coarsen_one_level(current, MIN_COARSEN_SIZE, rng, coarse_part_ref) {
-            current = push_coarsening_level(
-                &mut levels,
-                level,
-                &mut projected_part,
-                &mut projection_counts,
-                &mut projection,
-            );
+            if let Some(ref mut pp) = projected_part {
+                let nc = level.hg.vertex_count;
+                project_to_coarse(
+                    pp,
+                    &level.mapping,
+                    nc,
+                    &mut projection_counts,
+                    &mut projection,
+                );
+                std::mem::swap(pp, &mut projection);
+            }
+            levels.push(level);
+            current = &levels.last().unwrap().hg;
         } else {
             break;
         }
@@ -148,42 +154,6 @@ fn multilevel_pass(
     // into them, so a move here can be worth many fine hyperedges.
     refine_level(current, &mut part, max_imbalance, scratch, stop);
 
-    uncoarsen_and_refine(
-        hg,
-        &levels,
-        part,
-        &mut projection,
-        max_imbalance,
-        scratch,
-        stop,
-    )
-}
-
-fn push_coarsening_level<'a>(
-    levels: &'a mut Vec<CoarseningLevel>,
-    level: CoarseningLevel,
-    projected_part: &mut Option<Vec<u8>>,
-    projection_counts: &mut Vec<[u32; 2]>,
-    projection: &mut Vec<u8>,
-) -> &'a Hypergraph {
-    if let Some(pp) = projected_part {
-        let nc = level.hg.vertex_count;
-        project_to_coarse(pp, &level.mapping, nc, projection_counts, projection);
-        std::mem::swap(pp, projection);
-    }
-    levels.push(level);
-    &levels.last().unwrap().hg
-}
-
-fn uncoarsen_and_refine(
-    hg: &Hypergraph,
-    levels: &[CoarseningLevel],
-    mut part: Vec<u8>,
-    projection: &mut Vec<u8>,
-    max_imbalance: f64,
-    scratch: &mut FmScratch,
-    stop: &mut BisectionStop,
-) -> Vec<u8> {
     // Uncoarsening. Each step hands every fine vertex its coarse vertex's side,
     // then refines with the freedom the finer hypergraph exposes; only the
     // finest level pays for the localized and flow passes on top.
@@ -191,10 +161,11 @@ fn uncoarsen_and_refine(
         if stop.reached() {
             break;
         }
-        lift_to_fine(&part, &level.mapping, projection);
-        std::mem::swap(&mut part, projection);
+        lift_to_fine(&part, &level.mapping, &mut projection);
+        std::mem::swap(&mut part, &mut projection);
 
         let fine_hg = if li > 0 { &levels[li - 1].hg } else { hg };
+
         if li == 0 {
             refine_finest_level(fine_hg, &mut part, max_imbalance, scratch, stop);
         } else {

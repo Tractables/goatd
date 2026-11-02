@@ -221,7 +221,21 @@ fn project_bags_where(
         old_to_new[old_i] = Some(new_i);
     }
 
-    let new_adj = project_bag_tree_adjacency(&td.adj, &non_empty, &old_to_new);
+    let mut new_adj: Vec<Vec<usize>> = vec![Vec::new(); non_empty.len()];
+    let parent_in_td = walk_bag_forest(&td.adj, 0..n, |_, _| ControlFlow::Continue(()));
+
+    for &old_i in &non_empty {
+        let new_i = old_to_new[old_i].unwrap();
+        let mut ancestor = parent_in_td[old_i];
+        while let Some(old_ancestor) = ancestor {
+            if let Some(new_j) = old_to_new[old_ancestor] {
+                new_adj[new_i].push(new_j);
+                new_adj[new_j].push(new_i);
+                break;
+            }
+            ancestor = parent_in_td[old_ancestor];
+        }
+    }
 
     // Dropping vertices from a bag leaves the rest in the order they were in,
     // so a bag that was in order needs neither a copy nor a sort here.
@@ -242,29 +256,6 @@ fn project_bags_where(
         new_bags,
         new_adj,
     ))
-}
-
-fn project_bag_tree_adjacency(
-    adj: &[Vec<usize>],
-    non_empty: &[usize],
-    old_to_new: &[Option<usize>],
-) -> Vec<Vec<usize>> {
-    let mut new_adj: Vec<Vec<usize>> = vec![Vec::new(); non_empty.len()];
-    let parent_in_td = walk_bag_forest(adj, 0..adj.len(), |_, _| ControlFlow::Continue(()));
-
-    for &old_i in non_empty {
-        let new_i = old_to_new[old_i].unwrap();
-        let mut ancestor = parent_in_td[old_i];
-        while let Some(old_ancestor) = ancestor {
-            if let Some(new_j) = old_to_new[old_ancestor] {
-                new_adj[new_i].push(new_j);
-                new_adj[new_j].push(new_i);
-                break;
-            }
-            ancestor = parent_in_td[old_ancestor];
-        }
-    }
-    new_adj
 }
 
 /// Whether every vertex of `left` is also in `right`, reading each bag's
@@ -572,7 +563,18 @@ fn augment_for_separator(td: &mut TreeDecomposition, sep: &[u32]) -> Option<usiz
             .count()
     })?;
 
-    let first_holder = first_holders_for_separator(&td.bags, &sep_set);
+    // The loop below only ever pushes the separator vertex it is currently
+    // carrying, so an earlier iteration cannot move a later one's first
+    // holder. One sweep over the bags answers every lookup; the ascending
+    // bag order makes `or_insert` keep the same bag the scan would find.
+    let mut first_holder: FxHashMap<u32, usize> = FxHashMap::default();
+    for (index, bag) in td.bags.iter().enumerate() {
+        for &vertex in &bag.vertices {
+            if sep_set.contains(&vertex) {
+                first_holder.entry(vertex).or_insert(index);
+            }
+        }
+    }
 
     for &v in sep {
         if td.bags[anchor].vertices.contains(&v) {
@@ -615,22 +617,6 @@ fn augment_for_separator(td: &mut TreeDecomposition, sep: &[u32]) -> Option<usiz
     }
 
     Some(anchor)
-}
-
-fn first_holders_for_separator(bags: &[TdBag], sep_set: &FxHashSet<u32>) -> FxHashMap<u32, usize> {
-    // The loop below only ever pushes the separator vertex it is currently
-    // carrying, so an earlier iteration cannot move a later one's first
-    // holder. One sweep over the bags answers every lookup; the ascending
-    // bag order makes `or_insert` keep the same bag the scan would find.
-    let mut first_holder: FxHashMap<u32, usize> = FxHashMap::default();
-    for (index, bag) in bags.iter().enumerate() {
-        for &vertex in &bag.vertices {
-            if sep_set.contains(&vertex) {
-                first_holder.entry(vertex).or_insert(index);
-            }
-        }
-    }
-    first_holder
 }
 
 /// Shortest path between two bag indices in the bag tree. Returns the

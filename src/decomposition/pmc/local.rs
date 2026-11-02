@@ -69,7 +69,12 @@ pub(crate) fn local_merge(
     let mut scratch = Scratch::new(&adjacency);
     // The list begins with the answer's own bags, so the programme over it
     // cannot come back wider than the answer, and the pool's on top of them.
-    let mut list = init_local_merge_list(start, &adjacency, &sources, pool.limits);
+    let mut list = List::new(bags_of(start, &adjacency), pool.limits);
+    for source in &sources {
+        for bag in source {
+            list.add(bag.clone());
+        }
+    }
     let mut best = start.clone();
     // The anchors, and for each of them the reach a partner has to lie in, are
     // a function of `best` alone. `best` moves only where a search below beats
@@ -82,13 +87,42 @@ pub(crate) fn local_merge(
             if expired(deadline) {
                 break;
             }
-            let fresh = add_partner_focus_cliques(
-                &mut state,
-                (&reaches, partners, best.treewidth()),
-                &mut list,
-                &mut scratch,
-                deadline,
-            );
+            let width = best.treewidth();
+            let mut fresh = false;
+            for (anchor, inside) in &reaches {
+                if expired(deadline) {
+                    break;
+                }
+                let focuses = state.focuses_against(
+                    anchor,
+                    inside,
+                    partners,
+                    width as usize,
+                    &mut scratch,
+                    deadline,
+                );
+                for focus in focuses {
+                    if expired(deadline) || list.full() {
+                        break;
+                    }
+                    let draws = if focus.len() <= BASE_SIZE {
+                        SMALL_PIECE_DRAWS
+                    } else {
+                        1
+                    };
+                    let cliques = state.triangulate_pooled(
+                        &focus,
+                        width,
+                        draws,
+                        &list.held,
+                        &mut scratch,
+                        deadline,
+                    );
+                    for clique in cliques {
+                        fresh |= list.add(clique);
+                    }
+                }
+            }
             if !fresh || expired(deadline) {
                 continue;
             }
@@ -98,8 +132,11 @@ pub(crate) fn local_merge(
             if built.quality_key() < best.quality_key() {
                 best = built;
                 round_moved = true;
-                reaches =
-                    refresh_local_merge_best(&state, &best, &adjacency, &mut list, &mut scratch);
+                // At width k no tree of width k or less has a bag of more than
+                // k + 2 vertices, so the list drops them: they are what the
+                // merges would otherwise pile up.
+                list.trim(best.treewidth() as usize + 2);
+                reaches = anchor_reaches(&state, &best, &adjacency, &mut scratch);
             }
         }
         if !round_moved {
@@ -107,68 +144,6 @@ pub(crate) fn local_merge(
         }
     }
     (best.quality_key() < start.quality_key()).then_some(best)
-}
-
-fn refresh_local_merge_best(
-    state: &Loop<'_>,
-    best: &TreeDecomposition,
-    adjacency: &Adjacency,
-    list: &mut List,
-    scratch: &mut Scratch,
-) -> Vec<(VertexSet, VertexSet)> {
-    // At width k no tree of width k or less has a bag of more than
-    // k + 2 vertices, so the list drops them: they are what the
-    // merges would otherwise pile up.
-    list.trim(best.treewidth() as usize + 2);
-    anchor_reaches(state, best, adjacency, scratch)
-}
-
-fn init_local_merge_list(
-    start: &TreeDecomposition,
-    adjacency: &Adjacency,
-    sources: &[Vec<VertexSet>],
-    limits: super::Limits,
-) -> List {
-    let mut list = List::new(bags_of(start, adjacency), limits);
-    for source in sources {
-        for bag in source {
-            list.add(bag.clone());
-        }
-    }
-    list
-}
-
-fn add_partner_focus_cliques(
-    state: &mut Loop<'_>,
-    (reaches, partners, width): (&[(VertexSet, VertexSet)], &[VertexSet], u32),
-    list: &mut List,
-    scratch: &mut Scratch,
-    deadline: Option<Instant>,
-) -> bool {
-    let mut fresh = false;
-    for (anchor, inside) in reaches {
-        if expired(deadline) {
-            break;
-        }
-        let focuses =
-            state.focuses_against(anchor, inside, partners, width as usize, scratch, deadline);
-        for focus in focuses {
-            if expired(deadline) || list.full() {
-                break;
-            }
-            let draws = if focus.len() <= BASE_SIZE {
-                SMALL_PIECE_DRAWS
-            } else {
-                1
-            };
-            let cliques =
-                state.triangulate_pooled(&focus, width, draws, &list.held, scratch, deadline);
-            for clique in cliques {
-                fresh |= list.add(clique);
-            }
-        }
-    }
-    fresh
 }
 
 /// Each anchor of `answer` with the reach a partner of it has to lie inside.

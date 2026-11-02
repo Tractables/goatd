@@ -29,8 +29,10 @@ pub(super) fn coarsen_one_level(
     if n <= min_vertices {
         return None;
     }
+
     // A vertex's degree here is the number of hyperedges it is a pin of.
     let perm = matching_order(n, |v| hg.vertex_degree(v), &hg.vertex_weights, rng);
+
     let mut match_of = vec![None; n];
     let mut coarse_id: Vec<u32> = vec![0; n];
     let mut num_coarse: u32 = 0;
@@ -39,6 +41,7 @@ pub(super) fn coarsen_one_level(
     // allocation for every vertex of every level of every restart.
     let mut connectivity: Vec<u32> = vec![0; n];
     let mut candidates: Vec<u32> = Vec::new();
+
     for &v in &perm {
         if match_of[v].is_some() {
             continue;
@@ -47,7 +50,24 @@ pub(super) fn coarsen_one_level(
         // share with `v`. This makes an explicitly weighted hyperedge, including
         // canonicalized repeats whose weights were added, influence coarsening
         // by the same amount that it influences the cut objective.
-        collect_neighbor_connectivity(hg, v, &match_of, &mut connectivity, &mut candidates);
+        candidates.clear();
+        for &hei in hg.vertex_hyperedges(v) {
+            let weight = hg.hyperedge_weights[hei as usize];
+            for &u in hg.charged_hyperedge_pins(hei as usize) {
+                let u = u as usize;
+                if u != v && match_of[u].is_none() {
+                    // Hyperedge weights are positive, so a candidate's entry is
+                    // zero exactly until it is first reached.
+                    if connectivity[u] == 0 {
+                        candidates.push(u as u32);
+                    }
+                    connectivity[u] = connectivity[u]
+                        .checked_add(weight)
+                        .expect("validated total hyperedge weight fits in u32");
+                }
+            }
+        }
+
         let best_neighbor = select_best_neighbor(
             v,
             part,
@@ -56,6 +76,7 @@ pub(super) fn coarsen_one_level(
         for &nb in &candidates {
             connectivity[nb as usize] = 0;
         }
+
         record_match(
             v,
             best_neighbor,
@@ -64,44 +85,13 @@ pub(super) fn coarsen_one_level(
             &mut num_coarse,
         );
     }
+
     let nc = num_coarse as usize;
     if !shrank_enough(n, nc) {
         return None;
     }
-    Some(CoarseningLevel {
-        hg: build_coarse_hypergraph(hg, nc, &coarse_id),
-        mapping: coarse_id,
-    })
-}
 
-fn collect_neighbor_connectivity(
-    hg: &Hypergraph,
-    v: usize,
-    match_of: &[Option<u32>],
-    connectivity: &mut [u32],
-    candidates: &mut Vec<u32>,
-) {
-    candidates.clear();
-    for &hei in hg.vertex_hyperedges(v) {
-        let weight = hg.hyperedge_weights[hei as usize];
-        for &u in hg.charged_hyperedge_pins(hei as usize) {
-            let u = u as usize;
-            if u != v && match_of[u].is_none() {
-                // Hyperedge weights are positive, so a candidate's entry is
-                // zero exactly until it is first reached.
-                if connectivity[u] == 0 {
-                    candidates.push(u as u32);
-                }
-                connectivity[u] = connectivity[u]
-                    .checked_add(weight)
-                    .expect("validated total hyperedge weight fits in u32");
-            }
-        }
-    }
-}
-
-fn build_coarse_hypergraph(hg: &Hypergraph, nc: usize, coarse_id: &[u32]) -> Hypergraph {
-    let coarse_vertex_weights = coarse_vertex_weights(nc, coarse_id, &hg.vertex_weights);
+    let coarse_vertex_weights = coarse_vertex_weights(nc, &coarse_id, &hg.vertex_weights);
 
     let num_hyperedges = hg.num_hyperedges();
     let mut weighted_hyperedges: Vec<(Vec<u32>, u32)> = Vec::with_capacity(num_hyperedges);
@@ -126,5 +116,9 @@ fn build_coarse_hypergraph(hg: &Hypergraph, nc: usize, coarse_id: &[u32]) -> Hyp
     let mut coarse_hg =
         Hypergraph::from_hyperedges(nc, &coarse_hyperedges, Some(&coarse_hyperedge_weights));
     coarse_hg.vertex_weights = coarse_vertex_weights;
-    coarse_hg
+
+    Some(CoarseningLevel {
+        hg: coarse_hg,
+        mapping: coarse_id,
+    })
 }

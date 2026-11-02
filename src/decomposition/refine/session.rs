@@ -307,109 +307,96 @@ impl<'g> Session<'g> {
             }
             match task {
                 Task::Finish(node) => {
-                    if let Some((candidate, refined)) = self.finish_branch_task(node, &mut slice) {
+                    self.tasks.pop();
+                    let refined = self.materialize(node, None);
+                    let Kind::Branch { fallback, .. } = &self.node(node).kind else {
+                        unreachable!();
+                    };
+                    let candidate =
+                        (refined.quality_key() > fallback.quality_key()).then(|| fallback.clone());
+                    slice.step();
+                    if let Some(candidate) = candidate {
                         self.pending = Some(Pending::Fallback { node, refined });
                         self.progress.proposed += 1;
                         slice.record(&mut self.progress);
                         return polishing::proposal(self, candidate, true);
                     }
+                    self.collapse(node, refined);
                 }
                 Task::Visit(node) => {
-                    if let Some((candidate, split, recommended, finished)) =
-                        self.advance_visit_task(node, legacy, deadline, &mut slice)
+                    if (legacy && expired(deadline))
+                        || !self
+                            .config
+                            .eligible(self.node(node).vertices.len(), self.node(node).depth)
                     {
-                        return self.propose_split(slice, candidate, split, recommended, finished);
+                        self.active = None;
+                        self.tasks.pop();
+                        slice.step();
+                        continue;
+                    }
+                    if self.active.is_none() {
+                        let proposal = self.prepare_visit_search(node);
+                        slice.step();
+                        if let Some((candidate, split, recommended)) = proposal {
+                            self.pending = Some(Pending::Split {
+                                split,
+                                finish_on_reject: true,
+                            });
+                            self.progress.proposed += 1;
+                            slice.record(&mut self.progress);
+                            return polishing::proposal(self, candidate, recommended);
+                        }
+                        continue;
+                    }
+                    let active = self.active.as_mut().expect("search was prepared");
+                    if active.search.exhausted() {
+                        let active = self
+                            .active
+                            .take()
+                            .expect("completed search remains available");
+                        let best = active.search.into_vertices();
+                        let proposal = if legacy && let Some(vertices) = best {
+                            self.make_split(node, &active.graph, vertices)
+                        } else {
+                            None
+                        };
+                        slice.step();
+                        if let Some((candidate, split, recommended)) = proposal {
+                            self.pending = Some(Pending::Split {
+                                split,
+                                finish_on_reject: true,
+                            });
+                            self.progress.proposed += 1;
+                            slice.record(&mut self.progress);
+                            return polishing::proposal(self, candidate, recommended);
+                        }
+                        self.tasks.pop();
+                        continue;
+                    }
+                    let before = active.search.attempts();
+                    let candidate = active.search.step(!legacy);
+                    self.progress.attempted += active.search.attempts() - before;
+                    slice.step();
+                    if let Some(vertices) = candidate {
+                        let active = self
+                            .active
+                            .as_ref()
+                            .expect("a search owns its restart result");
+                        if let Some((candidate, split, recommended)) =
+                            self.make_split(node, &active.graph, vertices)
+                        {
+                            self.pending = Some(Pending::Split {
+                                split,
+                                finish_on_reject: false,
+                            });
+                            self.progress.proposed += 1;
+                            slice.record(&mut self.progress);
+                            return polishing::proposal(self, candidate, recommended);
+                        }
                     }
                 }
             }
         }
-    }
-
-    fn advance_visit_task(
-        &mut self,
-        node: usize,
-        legacy: bool,
-        deadline: Option<Instant>,
-        slice: &mut polishing::Slice,
-    ) -> Option<(TreeDecomposition, Split, bool, bool)> {
-        if (legacy && expired(deadline))
-            || !self
-                .config
-                .eligible(self.node(node).vertices.len(), self.node(node).depth)
-        {
-            self.active = None;
-            self.tasks.pop();
-            slice.step();
-            return None;
-        }
-        if self.active.is_none() {
-            let proposal = self.prepare_visit_search(node);
-            slice.step();
-            return proposal.map(|(c, s, r)| (c, s, r, true));
-        }
-        let active = self.active.as_mut().expect("search was prepared");
-        if active.search.exhausted() {
-            let proposal = self.finish_exhausted_search(node, legacy);
-            slice.step();
-            return proposal.map(|(c, s, r)| (c, s, r, true));
-        }
-        self.step_active_search(node, legacy, slice)
-            .map(|(c, s, r)| (c, s, r, false))
-    }
-
-    fn finish_branch_task(
-        &mut self,
-        node: usize,
-        slice: &mut polishing::Slice,
-    ) -> Option<(TreeDecomposition, TreeDecomposition)> {
-        self.tasks.pop();
-        let refined = self.materialize(node, None);
-        let Kind::Branch { fallback, .. } = &self.node(node).kind else {
-            unreachable!();
-        };
-        let candidate = (refined.quality_key() > fallback.quality_key()).then(|| fallback.clone());
-        slice.step();
-        if let Some(candidate) = candidate {
-            return Some((candidate, refined));
-        }
-        self.collapse(node, refined);
-        None
-    }
-
-    fn propose_split(
-        &mut self,
-        slice: polishing::Slice,
-        candidate: TreeDecomposition,
-        split: Split,
-        recommended: bool,
-        finish_on_reject: bool,
-    ) -> Advance<'_> {
-        self.pending = Some(Pending::Split {
-            split,
-            finish_on_reject,
-        });
-        self.progress.proposed += 1;
-        slice.record(&mut self.progress);
-        polishing::proposal(self, candidate, recommended)
-    }
-
-    fn step_active_search(
-        &mut self,
-        node: usize,
-        legacy: bool,
-        slice: &mut polishing::Slice,
-    ) -> Option<(TreeDecomposition, Split, bool)> {
-        let active = self.active.as_mut().expect("search was prepared");
-        let before = active.search.attempts();
-        let candidate = active.search.step(!legacy);
-        self.progress.attempted += active.search.attempts() - before;
-        slice.step();
-        let vertices = candidate?;
-        let active = self
-            .active
-            .as_ref()
-            .expect("a search owns its restart result");
-        self.make_split(node, &active.graph, vertices)
     }
 
     fn prepare_visit_search(&mut self, node: usize) -> Option<(TreeDecomposition, Split, bool)> {
@@ -461,26 +448,6 @@ impl<'g> Session<'g> {
         // region is the whole graph, so one isolated vertex would end the pass
         // before it found anything.
         if let Some(proposal) = self.make_component_split(node, &graph) {
-            return Some(proposal);
-        }
-        self.tasks.pop();
-        None
-    }
-
-    fn finish_exhausted_search(
-        &mut self,
-        node: usize,
-        legacy: bool,
-    ) -> Option<(TreeDecomposition, Split, bool)> {
-        let active = self
-            .active
-            .take()
-            .expect("completed search remains available");
-        let best = active.search.into_vertices();
-        if legacy
-            && let Some(vertices) = best
-            && let Some(proposal) = self.make_split(node, &active.graph, vertices)
-        {
             return Some(proposal);
         }
         self.tasks.pop();

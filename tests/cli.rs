@@ -517,24 +517,7 @@ fn the_trace_names_the_candidate_the_decomposition_came_from() {
     );
 
     assert!(out.status.success(), "{}", stderr_of(&out));
-    assert_trace_candidates_and_winner(&stderr_of(&out));
-
-    let out = goatd(
-        &[
-            "-",
-            "--order",
-            "portfolio",
-            "--budget",
-            SCHEDULE_BUDGET,
-            "--capped-restarts",
-        ],
-        Some(&grid_gr()),
-    );
     let err = stderr_of(&out);
-    assert!(!err.contains("c trace"), "no trace without the flag: {err}");
-}
-
-fn assert_trace_candidates_and_winner(err: &str) {
     let mut candidates: Vec<&str> = Vec::new();
     let mut winner = None;
     for line in err.lines() {
@@ -573,6 +556,20 @@ fn assert_trace_candidates_and_winner(err: &str) {
         candidates.iter().any(|line| line.starts_with(winner)),
         "the winner must be one of the candidates: {err}"
     );
+
+    let out = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            SCHEDULE_BUDGET,
+            "--capped-restarts",
+        ],
+        Some(&grid_gr()),
+    );
+    let err = stderr_of(&out);
+    assert!(!err.contains("c trace"), "no trace without the flag: {err}");
 }
 
 /// The grid is bipartite, so the lift would take a share of the window and
@@ -595,33 +592,7 @@ fn the_default_portfolio_hedges_and_no_hedge_turns_that_off() {
     );
 
     assert!(out.status.success(), "{}", stderr_of(&out));
-    assert_default_hedge_trace(&stderr_of(&out));
-
-    let out = goatd(
-        &[
-            "-",
-            "--order",
-            "portfolio",
-            "--budget",
-            SCHEDULE_BUDGET,
-            "--capped-restarts",
-            "--no-hedge",
-            "--no-bipartite-lift",
-            "--trace",
-        ],
-        Some(&grid_gr()),
-    );
-
-    assert!(out.status.success(), "{}", stderr_of(&out));
     let err = stderr_of(&out);
-    assert!(err.contains("c trace candidate="), "{err}");
-    assert!(
-        !err.contains(" pass="),
-        "one pass, so no pass to name: {err}"
-    );
-}
-
-fn assert_default_hedge_trace(err: &str) {
     let mut modified: Vec<&str> = Vec::new();
     let mut diverse = 0usize;
     for line in err.lines() {
@@ -652,6 +623,29 @@ fn assert_default_hedge_trace(err: &str) {
         diverse,
         8 * 46,
         "and the diverse pass again on that ranking: {err}"
+    );
+
+    let out = goatd(
+        &[
+            "-",
+            "--order",
+            "portfolio",
+            "--budget",
+            SCHEDULE_BUDGET,
+            "--capped-restarts",
+            "--no-hedge",
+            "--no-bipartite-lift",
+            "--trace",
+        ],
+        Some(&grid_gr()),
+    );
+
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let err = stderr_of(&out);
+    assert!(err.contains("c trace candidate="), "{err}");
+    assert!(
+        !err.contains(" pass="),
+        "one pass, so no pass to name: {err}"
     );
 }
 
@@ -883,23 +877,7 @@ fn a_reserve_the_stages_cannot_fit_in_leaves_the_budget_to_the_restarts() {
 
     assert!(reserved.status.success(), "{}", stderr_of(&reserved));
     assert!(unhedged.status.success(), "{}", stderr_of(&unhedged));
-    assert_skipped_weighted_stages(&reserved, 2);
-
-    // What the refused stages did not take, the restarts get: the seeds a
-    // portfolio that hedges nothing runs, from the start and in order.
     let err = stderr_of(&reserved);
-    let seeds = restart_seeds(&reserved);
-    assert!(!seeds.is_empty(), "no restart ran: {err}");
-    let plain = restart_seeds(&unhedged);
-    assert!(
-        plain.starts_with(&seeds),
-        "the restarts left the sequence a portfolio without a hedge runs: \
-         {seeds:?} against {plain:?}",
-    );
-}
-
-fn assert_skipped_weighted_stages(reserved: &std::process::Output, expected_skipped: usize) {
-    let err = stderr_of(reserved);
     let skipped: Vec<&str> = err
         .lines()
         .filter(|line| line.starts_with("c trace candidate=weighted-stage "))
@@ -907,11 +885,7 @@ fn assert_skipped_weighted_stages(reserved: &std::process::Output, expected_skip
 
     // One line per stage left unrun, each naming its stage and the numbers the
     // rule read. The first stage is not one of them: it runs on any reserve.
-    assert_eq!(
-        skipped.len(),
-        expected_skipped,
-        "one line per stage left unrun: {err}"
-    );
+    assert_eq!(skipped.len(), 2, "one line per stage left unrun: {err}");
     for (index, line) in skipped.iter().enumerate() {
         let pass = format!(" pass=modified:{} ", index + 1);
         assert!(
@@ -926,18 +900,29 @@ fn assert_skipped_weighted_stages(reserved: &std::process::Output, expected_skip
         );
     }
     assert_eq!(
-        modified_fixed_orders(reserved, 0),
+        modified_fixed_orders(&reserved, 0),
         ["min-degree", "min-fill", "min-degree"],
         "the first stage ran its candidates: {err}"
     );
-    for index in 1..=expected_skipped {
+    for index in [1, 2] {
         assert!(
-            modified_fixed_orders(reserved, index)
+            modified_fixed_orders(&reserved, index)
                 .iter()
                 .all(|stage| stage == "weighted-stage"),
             "a refused stage ran a candidate: {err}"
         );
     }
+
+    // What the refused stages did not take, the restarts get: the seeds a
+    // portfolio that hedges nothing runs, from the start and in order.
+    let seeds = restart_seeds(&reserved);
+    assert!(!seeds.is_empty(), "no restart ran: {err}");
+    let plain = restart_seeds(&unhedged);
+    assert!(
+        plain.starts_with(&seeds),
+        "the restarts left the sequence a portfolio without a hedge runs: \
+         {seeds:?} against {plain:?}",
+    );
 }
 
 #[test]
