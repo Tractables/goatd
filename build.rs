@@ -19,10 +19,10 @@ fn main() {
         assert!(
             have(&cxx),
             "goatd's vendored FlowCutter needs a C++20 compiler, and `{cxx}` does not run — \
-             install one (gcc 12 or newer, or a recent clang), or name another in GOATD_CXX."
+             install one (GCC 11 or newer, or Clang 14 or newer), or name another in CXX \
+             or GOATD_CXX."
         );
-        // The compiler comes from `find_cxx`, not from `cc`'s own `CXX` lookup,
-        // so `GOATD_CXX` chooses it whole.
+        // Named here, the compiler is taken whole: `cc` does not read `CXX`.
         build.compiler(&cxx);
     }
 
@@ -50,17 +50,23 @@ fn main() {
     println!("cargo:rerun-if-changed=vendor/treedecomp/");
 }
 
-/// An explicit `GOATD_CXX` wins everywhere. On Linux, where the default `g++`
-/// can predate C++20 (Ubuntu 22.04 still ships gcc-11), fall back to the
-/// newest versioned gcc on PATH, then plain `g++`. Elsewhere `None`: `cc`
-/// picks the platform's own compiler (Apple clang on macOS, MSVC on Windows),
-/// and a g++ found on PATH there could be one that cannot link with the rest
-/// of the build.
+/// An explicit `GOATD_CXX` wins everywhere. Next, a compiler named in the
+/// variables `cc` reads (`CXX` and its target-specific forms) is left to
+/// `cc`, which also splits a wrapper or flags off it (`CXX="ccache g++"`).
+/// Otherwise, on Linux, where the default `g++` can predate C++20 (Ubuntu
+/// 20.04 ships gcc 9), fall back to the newest versioned gcc on PATH, then
+/// plain `g++`. Elsewhere `None`: `cc` picks the platform's own compiler
+/// (Apple clang on macOS, MSVC on Windows, `em++` for Emscripten), and a g++
+/// found on PATH there could be one that cannot link with the rest of the
+/// build.
 fn find_cxx() -> Option<String> {
     if let Ok(cxx) = std::env::var("GOATD_CXX")
         && !cxx.is_empty()
     {
         return Some(cxx);
+    }
+    if cxx_from_env() {
+        return None;
     }
     // Set by cargo for build scripts; the target's OS, not the host's.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
@@ -73,6 +79,31 @@ fn find_cxx() -> Option<String> {
         }
     }
     Some("g++".into())
+}
+
+/// Whether `cc` would take the C++ compiler from the environment. It reads
+/// `CXX_<target>`, `CXX_<target with underscores>`, `HOST_CXX` (`TARGET_CXX`
+/// when cross-compiling) and `CXX`, in that order; the first one set decides,
+/// and an empty value means `cc`'s default. Each is a rerun trigger here,
+/// since `cc` does not read them, and so does not report them, when this
+/// script names the compiler.
+fn cxx_from_env() -> bool {
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let host = std::env::var("HOST").unwrap_or_default();
+    let kind = if host == target { "HOST" } else { "TARGET" };
+    let names = [
+        format!("CXX_{target}"),
+        format!("CXX_{}", target.replace(['-', '.'], "_")),
+        format!("{kind}_CXX"),
+        "CXX".to_string(),
+    ];
+    for name in &names {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
+    names
+        .iter()
+        .find_map(std::env::var_os)
+        .is_some_and(|cxx| !cxx.to_string_lossy().trim().is_empty())
 }
 
 fn have(tool: &str) -> bool {

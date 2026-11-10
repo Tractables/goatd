@@ -8,12 +8,14 @@ cargo build
 cargo test --all-targets
 ```
 
-On Linux `build.rs` tries `g++-14`, `g++-13`, `g++-12`, and then `g++`; on
-macOS and Windows it uses the platform compiler (Apple clang, MSVC). Set
-`GOATD_CXX` to use another GCC 12-or-newer compiler or a recent Clang:
+GCC 11 or newer and Clang 14 or newer work. On Linux `build.rs` tries
+`g++-14`, `g++-13`, `g++-12`, and then `g++`; on macOS and Windows it uses
+the platform compiler (Apple clang, MSVC). To use another, name it in `CXX`
+(or `CXX_<target>`, as for any crate built with `cc`), or in `GOATD_CXX`,
+which takes precedence over both:
 
 ```sh
-GOATD_CXX=clang++ cargo build
+CXX=clang++ cargo build
 ```
 
 The minimum supported Rust version is recorded as `rust-version` in
