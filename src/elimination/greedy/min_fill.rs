@@ -111,16 +111,21 @@ impl<const RELATIVE: bool> ElimEntry for HeapEntry<RELATIVE> {
 fn scan_fill(
     scratch: &mut FillScratch,
     graph: &EliminationGraph,
+    weights: Option<&[u64]>,
     fill_count: &mut [u64],
     deadline: Option<Instant>,
     hard_deadline: Option<Instant>,
 ) -> Seeded {
     let mut pacer = DeadlinePacer::new();
+    let mut nbrs = Vec::new();
     for (v, slot) in fill_count.iter_mut().enumerate() {
         if !graph.active[v] {
             continue;
         }
-        *slot = scratch.fill_count_of(graph, v as u32);
+        *slot = match weights {
+            Some(weights) => scratch.weighted_fill_of(graph, v as u32, weights, &mut nbrs),
+            None => scratch.fill_count_of(graph, v as u32),
+        };
         // Paced by what the scores have cost, not by how many were taken: one
         // score on a dense residual runs into milliseconds, and 64 of them used
         // to carry the scan seconds past the hard deadline.
@@ -157,6 +162,21 @@ struct MinFill<'a, const RELATIVE: bool> {
     /// leaves this false.
     prepared: bool,
     salt: &'a [u32],
+    options: FillOptions<'a>,
+    /// A buffer for the neighbours a weighted fill is read from.
+    nbrs: Vec<u32>,
+}
+
+/// What a min-fill run may be asked beyond its salt.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct FillOptions<'a> {
+    /// Per-vertex weights: a missing pair counts the product of its ends'
+    /// weights rather than one. Each fill that changes is then counted again
+    /// rather than corrected, which is slower.
+    pub(crate) weights: Option<&'a [u64]>,
+    /// Whether the vertices found left as one clique go by salt and then
+    /// number, as the ties do, rather than in their entries' order.
+    pub(crate) ranked_tail: bool,
 }
 
 impl<const RELATIVE: bool> MinFill<'_, RELATIVE> {
@@ -199,7 +219,16 @@ impl<const RELATIVE: bool> ElimPolicy for MinFill<'_, RELATIVE> {
     }
 
     fn live_score(&mut self, graph: &EliminationGraph, v: u32) -> u64 {
-        self.scratch.fill_count_of(graph, v)
+        match self.options.weights {
+            Some(weights) => self
+                .scratch
+                .weighted_fill_of(graph, v, weights, &mut self.nbrs),
+            None => self.scratch.fill_count_of(graph, v),
+        }
+    }
+
+    fn tail_rank(&self, v: u32) -> Option<(u32, u32)> {
+        self.options.ranked_tail.then(|| (self.salt[v as usize], v))
     }
 
     fn seed(
@@ -212,6 +241,7 @@ impl<const RELATIVE: bool> ElimPolicy for MinFill<'_, RELATIVE> {
         let outcome = scan_fill(
             &mut self.scratch,
             graph,
+            self.options.weights,
             &mut fill_count,
             deadline,
             hard_deadline,
@@ -273,6 +303,26 @@ impl<const RELATIVE: bool> ElimPolicy for MinFill<'_, RELATIVE> {
         if !self.prepared {
             return self.deadline_outcome(graph);
         }
+        if let Some(weights) = self.options.weights {
+            // The prepare found the vertices outside N(v) whose fill changed;
+            // weighted, each is counted again, as is each neighbour of v.
+            while let Some((vertex, _)) = self.affected.pop_delta(graph) {
+                let score = self
+                    .scratch
+                    .weighted_fill_of(graph, vertex, weights, &mut self.nbrs);
+                self.push(graph, vertex, score);
+            }
+            self.affected.clear_neighbours(graph, nbrs);
+            for &vertex in nbrs {
+                if graph.active[vertex as usize] {
+                    let score =
+                        self.scratch
+                            .weighted_fill_of(graph, vertex, weights, &mut self.nbrs);
+                    self.push(graph, vertex, score);
+                }
+            }
+            return AfterElim::Continue;
+        }
         if filled_neighbourhood {
             // Applying one delta is a bucket move, so this loop reads the
             // deadline on the pacer's stride.
@@ -316,6 +366,17 @@ pub(crate) fn eliminate_min_fill<const RELATIVE: bool>(
     sink: ElimSink<'_>,
     stop: ElimStop,
 ) -> ElimExit {
+    eliminate_min_fill_with::<RELATIVE>(graph, salt, FillOptions::default(), sink, stop)
+}
+
+/// [`eliminate_min_fill`] with `options`.
+pub(crate) fn eliminate_min_fill_with<const RELATIVE: bool>(
+    graph: &mut EliminationGraph,
+    salt: &[u32],
+    options: FillOptions<'_>,
+    sink: ElimSink<'_>,
+    stop: ElimStop,
+) -> ElimExit {
     let n = graph.len();
     assert_eq!(salt.len(), n);
     let mut policy = MinFill::<RELATIVE> {
@@ -326,6 +387,8 @@ pub(crate) fn eliminate_min_fill<const RELATIVE: bool>(
         affected: FillAffected::new(n),
         prepared: false,
         salt,
+        options,
+        nbrs: Vec::new(),
     };
     eliminate_greedy(&mut policy, graph, sink, stop)
 }

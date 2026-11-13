@@ -19,7 +19,9 @@
 //!   * **maximum cardinality** — the plain MCS numbering, the same search with
 //!     a shorter reach and no minimality guarantee.
 //!
-//! [`decompose`] runs one order once. [`crate::portfolio`] combines
+//! [`decompose`] runs one order once. [`trace`] runs one over every vertex,
+//! unreduced, and returns the order it took and each vertex's neighbours when
+//! it went rather than the decomposition. [`crate::portfolio`] combines
 //! several orders, [`crate::decomposition::refine_with_flowcutter`] improves an
 //! existing decomposition with FlowCutter separators, and
 //! [`crate::decomposition::minimalize_triangulation`] drops the fill edges its
@@ -43,6 +45,9 @@ mod tests;
 
 mod prepared;
 pub use prepared::{Cutoff, Preparation, Prepared, RunConfig, RunOutcome};
+
+mod trace;
+pub use trace::{Trace, TraceOutcome, trace};
 
 pub use order::Order;
 
