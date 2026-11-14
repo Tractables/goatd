@@ -299,7 +299,11 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
         }
 
         let bag = take_bag(graph, v, &mut nbrs_buf);
-        let bag_len = bag.len();
+        // Checked before the elimination: a run past the bound is discarded,
+        // and the fill of a vertex over it can be the square of its bag.
+        if exceeds_width_bound(bag.len(), stop.width_bound) {
+            return ElimExit::WidthLimitExceeded;
+        }
         if !clique_residual && graph.is_residual_clique() {
             clique_residual = true;
         }
@@ -314,10 +318,6 @@ pub(super) fn eliminate_greedy<P: ElimPolicy>(
             policy.eliminate_with_fill(graph, v, &nbrs_buf, stop.soft_deadline);
         }
         sink.record(v, bag);
-
-        if exceeds_width_bound(bag_len, stop.width_bound) {
-            return ElimExit::WidthLimitExceeded;
-        }
 
         if clique_residual {
             // The drain below will put every remaining vertex in one bag;
