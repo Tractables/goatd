@@ -26,6 +26,19 @@ pub enum Order<'a> {
         /// Per-vertex ranks, one entry per input graph vertex.
         ranks: &'a [u32],
     },
+    /// [`Order::MinFillRanked`] on a graph whose vertices weigh: a fill edge
+    /// counts the product of its ends' weights, so that where a vertex is a
+    /// variable and its weight the number of values it takes, a vertex's fill
+    /// is the entries of the tables its elimination would add. Ties on fill
+    /// go by degree, then by rank. At weight one each it is
+    /// [`Order::MinFillRanked`].
+    MinFillWeighted {
+        /// Per-vertex ranks, one entry per input graph vertex.
+        ranks: &'a [u32],
+        /// Per-vertex weights, one entry per input graph vertex, each at
+        /// least 1 and summing to less than 2^32.
+        weights: &'a [u64],
+    },
     /// Eliminate in the caller's order: by rank, the smaller first, ties by
     /// vertex number. On a handle without the reductions
     /// ([`Prepared::unreduced`](super::Prepared::unreduced)) every vertex
@@ -78,6 +91,7 @@ impl<'a> Order<'a> {
             | Order::FillDegreeSampled { weights, .. } => Some(weights),
             Order::MinFill
             | Order::MinFillRanked { .. }
+            | Order::MinFillWeighted { .. }
             | Order::Ranked { .. }
             | Order::RelativeFill
             | Order::MinDegree
@@ -96,6 +110,7 @@ impl<'a> Order<'a> {
             // A ranked order has no weights; its ranks travel as the salt.
             Order::MinFill => Order::MinFill,
             Order::MinFillRanked { ranks } => Order::MinFillRanked { ranks },
+            Order::MinFillWeighted { ranks, weights } => Order::MinFillWeighted { ranks, weights },
             Order::Ranked { ranks } => Order::Ranked { ranks },
             Order::RelativeFill => Order::RelativeFill,
             Order::MinDegree => Order::MinDegree,
@@ -121,6 +136,7 @@ impl<'a> Order<'a> {
             self,
             Order::MinFill
                 | Order::MinFillRanked { .. }
+                | Order::MinFillWeighted { .. }
                 | Order::Ranked { .. }
                 | Order::RelativeFill
                 | Order::MinDegree
@@ -131,9 +147,39 @@ impl<'a> Order<'a> {
     /// The caller's tie ranks, for a ranked order.
     pub(crate) fn tie_ranks(self) -> Option<&'a [u32]> {
         match self {
-            Order::MinFillRanked { ranks } | Order::Ranked { ranks } => Some(ranks),
+            Order::MinFillRanked { ranks }
+            | Order::MinFillWeighted { ranks, .. }
+            | Order::Ranked { ranks } => Some(ranks),
             _ => None,
         }
+    }
+
+    /// The vertex weights a weighted min-fill counts its fill by.
+    pub(crate) fn vertex_weights(self) -> Option<&'a [u64]> {
+        match self {
+            Order::MinFillWeighted { weights, .. } => Some(weights),
+            _ => None,
+        }
+    }
+
+    /// Replace the vertex weights after a graph has been reindexed.
+    pub(super) fn with_vertex_weights<'b>(self, weights: &'b [u64]) -> Order<'b>
+    where
+        'a: 'b,
+    {
+        match self {
+            Order::MinFillWeighted { ranks, .. } => Order::MinFillWeighted { ranks, weights },
+            other => other,
+        }
+    }
+
+    /// Whether the vertices a min-fill finds left as one clique go by rank,
+    /// as its ties do, rather than in whatever order their stale scores pop.
+    pub(super) fn ranks_its_tail(self) -> bool {
+        matches!(
+            self,
+            Order::MinFillRanked { .. } | Order::MinFillWeighted { .. }
+        )
     }
 
     /// Whether repeated runs can reuse the residual's initial fill counts.

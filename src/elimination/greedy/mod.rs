@@ -43,7 +43,7 @@ mod sampling;
 mod tests;
 
 pub(super) use min_degree::eliminate_min_degree;
-pub(super) use min_fill::eliminate_min_fill;
+pub(super) use min_fill::{FillOptions, eliminate_min_fill, eliminate_min_fill_with};
 pub(super) use sampling::{
     SampleDraw, SampleSeed, eliminate_sampled_fill_degree, eliminate_sampled_min_degree,
     eliminate_sampled_min_fill,
@@ -188,6 +188,68 @@ impl FillScratch {
         }
         let total_pairs = (k as u64) * (k as u64 - 1) / 2;
         total_pairs - doubled / 2
+    }
+
+    /// [`fill_count_of`](Self::fill_count_of) with each missing pair of
+    /// neighbours counted as the product of their weights: the weight of the
+    /// pairs of N(v), less that of the edges inside it. `nbrs` is a buffer.
+    pub(super) fn weighted_fill_of(
+        &mut self,
+        graph: &EliminationGraph,
+        v: u32,
+        weights: &[u64],
+        nbrs: &mut Vec<u32>,
+    ) -> u64 {
+        nbrs.clear();
+        graph.collect_live_nbrs_into(v, nbrs);
+        if nbrs.len() < 2 {
+            return 0;
+        }
+        let (sum, squares) = nbrs.iter().fold((0u64, 0u64), |(s, q), &u| {
+            let w = weights[u as usize];
+            (s + w, q + w * w)
+        });
+        // Each edge inside N(v) is met from both of its ends.
+        let mut doubled = 0u64;
+        if graph.bitset_words > 0 {
+            let words = graph.bitset_words;
+            let row_v = graph.bitset_slot_of(v) * words;
+            let mut met = 0u64;
+            for &u in nbrs.iter() {
+                let row_u = graph.bitset_slot_of(u) * words;
+                let mut around = 0u64;
+                for j in 0..words {
+                    let mut bits = graph.bitset[row_u + j] & graph.bitset[row_v + j];
+                    while bits != 0 {
+                        let slot = j * 64 + bits.trailing_zeros() as usize;
+                        around += weights[graph.bitset_vertex_at(slot) as usize];
+                        met += 1;
+                        bits &= bits - 1;
+                    }
+                }
+                doubled += weights[u as usize] * around;
+            }
+            crate::meter::charge((nbrs.len() * words) as u64 + met);
+        } else {
+            self.bump_stamp();
+            let s = self.stamp;
+            for &u in nbrs.iter() {
+                self.marker[u as usize] = s;
+            }
+            let mut read = 0u64;
+            for &u in nbrs.iter() {
+                let row = &graph.adj[u as usize];
+                read += row.len() as u64;
+                let around: u64 = row
+                    .iter()
+                    .filter(|&&x| self.marker[x as usize] == s)
+                    .map(|&x| weights[x as usize])
+                    .sum();
+                doubled += weights[u as usize] * around;
+            }
+            crate::meter::charge(read);
+        }
+        (sum * sum - squares) / 2 - doubled / 2
     }
 }
 

@@ -26,10 +26,10 @@ pub struct Preparation {
 #[derive(Clone, Copy, Debug)]
 #[must_use]
 pub struct RunConfig {
-    soft_budget: Option<Duration>,
-    hard_budget: Option<Duration>,
-    width_bound: Option<u32>,
-    complete_on_deadline: bool,
+    pub(super) soft_budget: Option<Duration>,
+    pub(super) hard_budget: Option<Duration>,
+    pub(super) width_bound: Option<u32>,
+    pub(super) complete_on_deadline: bool,
 }
 
 impl Default for RunConfig {
@@ -245,6 +245,25 @@ pub(super) fn validate_order(graph: &Graph, order: Order<'_>) -> Result<(), Erro
             ranks.len(),
             graph.num_vertices()
         )));
+    }
+    if let Some(weights) = order.vertex_weights() {
+        if weights.len() != graph.num_vertices() as usize {
+            return Err(Error::InvalidInput(format!(
+                "weighted min-fill has {} weights for {} vertices",
+                weights.len(),
+                graph.num_vertices()
+            )));
+        }
+        // A vertex's fill is taken as the weight of the pairs of its
+        // neighbours, the square of a sum of weights: under 2^32 it fits.
+        let total = weights.iter().try_fold(0u64, |sum, &w| {
+            (w >= 1).then(|| sum.checked_add(w)).flatten()
+        });
+        if total.is_none_or(|total| total >= 1 << 32) {
+            return Err(Error::InvalidInput(
+                "weighted min-fill needs weights of at least 1 summing to less than 2^32".into(),
+            ));
+        }
     }
     Ok(())
 }

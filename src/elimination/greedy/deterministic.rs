@@ -159,6 +159,12 @@ pub(super) trait ElimPolicy {
         graph.remove_without_fill_nbrs(v, nbrs);
     }
 
+    /// Where a clique residual is drained by rank rather than in queue
+    /// order, `v`'s place in it: the default drains in queue order.
+    fn tail_rank(&self, _v: u32) -> Option<(u32, u32)> {
+        None
+    }
+
     /// React to `v`'s elimination; `nbrs` were its live neighbours. The
     /// default owes them nothing and lets the stale-snapshot guard sort them
     /// out when they surface.
@@ -185,6 +191,23 @@ fn drain_clique_tail<P: ElimPolicy>(
     policy: &mut P,
     nbrs_buf: &mut Vec<u32>,
 ) {
+    // A ranked core's queue holds the scores the clique's vertices had when
+    // last filed, which no longer tie them; they all tie now, at no fill
+    // and the same degree, so they go by rank.
+    let mut ranked: Vec<(u32, u32)> = (0..graph.len() as u32)
+        .filter(|&v| graph.active[v as usize])
+        .map_while(|v| policy.tail_rank(v))
+        .collect();
+    if !ranked.is_empty() {
+        crate::meter::charge(graph.len() as u64);
+        ranked.sort_unstable();
+        for (_, v) in ranked {
+            let bag = take_bag(graph, v, nbrs_buf);
+            graph.remove_without_fill_nbrs(v, nbrs_buf);
+            sink.record(v, bag);
+        }
+        return;
+    }
     while let Some(entry) = policy.pop() {
         let v = entry.vertex();
         if !graph.active[v as usize] || !policy.entry_is_current(&entry) {

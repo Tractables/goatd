@@ -4,4 +4,5 @@ mod graph;
 mod minimal_triangulation;
 mod nested_dissection;
 mod preprocess;
+mod trace;
 mod vertex_cover_separator;

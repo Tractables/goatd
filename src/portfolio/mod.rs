@@ -111,7 +111,10 @@ fn is_min_degree_variant(order: Order<'_>) -> bool {
 fn is_min_fill_variant(order: Order<'_>) -> bool {
     matches!(
         order,
-        Order::MinFill | Order::MinFillRanked { .. } | Order::MinFillSampled { .. }
+        Order::MinFill
+            | Order::MinFillRanked { .. }
+            | Order::MinFillWeighted { .. }
+            | Order::MinFillSampled { .. }
     )
 }
 
@@ -705,7 +708,9 @@ fn stage_of(order: Order<'_>, phase: EliminationPhase) -> Stage {
         (Order::MinimalTriangulation, _) => Stage::MinimalTriangulation,
         (Order::MaximumCardinality, _) => Stage::MaximumCardinality,
         (Order::RelativeFill, _) => Stage::RelativeFill,
-        (Order::Ranked { .. }, _) => unreachable!("the portfolio runs no caller-ranked order"),
+        (Order::Ranked { .. } | Order::MinFillWeighted { .. }, _) => {
+            unreachable!("the portfolio runs no caller-ranked order")
+        }
     }
 }
 

@@ -8,8 +8,9 @@ use super::build_td::build_td_from_ranked_bags;
 use super::execution::{self, Cutoff, ElimExit, ElimSteps};
 use super::graph::EliminationGraph;
 use super::greedy::{
-    self, SampleDraw, SampleSeed, eliminate_min_degree, eliminate_min_fill,
-    eliminate_sampled_fill_degree, eliminate_sampled_min_degree, eliminate_sampled_min_fill,
+    self, FillOptions, SampleDraw, SampleSeed, eliminate_min_degree, eliminate_min_fill,
+    eliminate_min_fill_with, eliminate_sampled_fill_degree, eliminate_sampled_min_degree,
+    eliminate_sampled_min_fill,
 };
 use super::minimal_triangulation::{Reach, eliminate_cardinality_search};
 use super::nested_dissection::eliminate_nested_dissection;
@@ -272,6 +273,30 @@ pub(crate) fn run_order_prebuilt(prebuilt: &mut Prebuilt, spec: RunSpec<'_>) -> 
     )
 }
 
+/// Run one order over the whole of `graph`, unsplit, and return its bags in
+/// the order eliminated (each vertex first, then its neighbours when it
+/// went), how it ended, and the vertices a cutoff left where the run
+/// completes after one.
+pub(super) fn run_traced(
+    graph: &mut EliminationGraph,
+    spec: RunSpec<'_>,
+) -> (Vec<Vec<u32>>, ElimExit, Vec<u32>) {
+    let mut salt = Vec::new();
+    draw_salt(&mut salt, graph.len(), spec.order, spec.seed);
+    let (steps, exit, residual) = run_elimination_raw(
+        graph,
+        &ElimSteps::default(),
+        &salt,
+        SampleSeed {
+            initial_fill: None,
+            active: None,
+        },
+        spec,
+        &mut greedy::SampleScratch::new(),
+    );
+    (steps.bags, exit, residual)
+}
+
 /// Draw the per-vertex tie-break salt one run works from into `salt`, which
 /// keeps its storage from the run before, or leave it empty for an order that
 /// never reads one: a sampled order breaks its ties from its own stream, and
@@ -370,8 +395,12 @@ fn run_elimination_raw(
         ..spec.stop
     };
     let exit = match spec.order {
-        Order::MinFill | Order::MinFillRanked { .. } => {
-            eliminate_min_fill::<false>(graph, salt, steps.sink(), spec.stop)
+        Order::MinFill | Order::MinFillRanked { .. } | Order::MinFillWeighted { .. } => {
+            let options = FillOptions {
+                weights: spec.order.vertex_weights(),
+                ranked_tail: spec.order.ranks_its_tail(),
+            };
+            eliminate_min_fill_with::<false>(graph, salt, options, steps.sink(), spec.stop)
         }
         Order::Ranked { .. } => {
             let mut order = execution::active_vertices(graph);
@@ -585,14 +614,19 @@ fn run_order_per_component(
             .order
             .tie_weights()
             .map(|w| comp.iter().map(|&v| w[v as usize]).collect());
+        let sub_vertex_weight: Option<Vec<u64>> = spec
+            .order
+            .vertex_weights()
+            .map(|w| comp.iter().map(|&v| w[v as usize]).collect());
         let sub_initial_fill = component_fill.map(|fill| fill[comp_idx].as_slice());
 
         // Vary seed per component so sampling orders get independent randomness.
         let sub_spec = RunSpec {
             seed: spec.seed.wrapping_add(comp_idx as u64 + 1),
-            order: match sub_weight.as_deref() {
-                Some(weights) => spec.order.with_tie_weights(weights),
-                None => spec.order,
+            order: match (sub_weight.as_deref(), sub_vertex_weight.as_deref()) {
+                (Some(weights), _) => spec.order.with_tie_weights(weights),
+                (None, Some(weights)) => spec.order.with_vertex_weights(weights),
+                (None, None) => spec.order,
             },
             stop,
             ..spec
