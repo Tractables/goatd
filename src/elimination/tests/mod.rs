@@ -1,5 +1,6 @@
 mod end_to_end;
 mod engine;
+mod execution;
 mod graph;
 mod minimal_triangulation;
 mod nested_dissection;
