@@ -245,12 +245,13 @@ pub(super) fn eliminate_in_order(
             return ElimExit::DeadlineReached(Cutoff::Hard);
         }
         let bag = take_bag(graph, vertex, &mut neighbours);
-        let bag_len = bag.len();
-        graph.eliminate_with_nbrs(vertex, &neighbours);
-        sink.record(vertex, bag);
-        if exceeds_width_bound(bag_len, stop.width_bound) {
+        // Checked before the elimination: a run past the bound is discarded,
+        // and the fill of a vertex over it can be the square of its bag.
+        if exceeds_width_bound(bag.len(), stop.width_bound) {
             return ElimExit::WidthLimitExceeded;
         }
+        graph.eliminate_with_nbrs(vertex, &neighbours);
+        sink.record(vertex, bag);
     }
     ElimExit::Complete
 }

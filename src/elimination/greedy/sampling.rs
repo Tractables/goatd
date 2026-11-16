@@ -314,7 +314,11 @@ fn eliminate_sampled_fill_based(
         buckets.remove_vertex(v);
 
         let bag = take_bag(graph, v, live_nbrs);
-        let bag_len = bag.len();
+        // Checked before the elimination: a run past the bound is discarded,
+        // and the fill of a vertex over it can be the square of its bag.
+        if exceeds_width_bound(bag.len(), stop.width_bound) {
+            return ElimExit::WidthLimitExceeded;
+        }
         // Recorded before the elimination below removes `v`, because the score
         // repair that follows reads the deadline and returns from the middle of
         // it. A return after the removal and before the record left `v` out of
@@ -368,10 +372,6 @@ fn eliminate_sampled_fill_based(
                 &mut fills,
                 priority,
             );
-        }
-
-        if exceeds_width_bound(bag_len, stop.width_bound) {
-            return ElimExit::WidthLimitExceeded;
         }
     }
 
@@ -444,7 +444,11 @@ pub(crate) fn eliminate_sampled_min_degree(
         buckets.remove_vertex(v);
         crate::meter::charge(SAMPLED_DEGREE_STEP_UNITS);
         let bag = take_bag(graph, v, nbrs_buf);
-        let bag_len = bag.len();
+        // Checked before the elimination: a run past the bound is discarded,
+        // and the fill of a vertex over it can be the square of its bag.
+        if exceeds_width_bound(bag.len(), stop.width_bound) {
+            return ElimExit::WidthLimitExceeded;
+        }
         if !clique_residual && graph.is_residual_clique() {
             clique_residual = true;
         }
@@ -454,10 +458,6 @@ pub(crate) fn eliminate_sampled_min_degree(
             graph.eliminate_with_nbrs(v, nbrs_buf);
         }
         sink.record(v, bag);
-
-        if exceeds_width_bound(bag_len, stop.width_bound) {
-            return ElimExit::WidthLimitExceeded;
-        }
 
         for &u in nbrs_buf.iter() {
             degree_stale[u as usize] = true;
