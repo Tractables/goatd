@@ -260,9 +260,10 @@ fn a_timeout_stops_a_separator_search_that_is_already_running() {
 
 #[test]
 fn a_passed_wall_cutoff_ends_a_metered_or_step_build_at_its_first_decomposition() {
-    let graph = grid_graph(250);
-    // Either budget alone keeps the backend restarting for tens of seconds on
-    // this grid; the work budget is on the work clock and ignores the wall.
+    // Small enough that its first decomposition is quick beside the other
+    // tests, while either budget alone keeps the backend restarting for
+    // thousands of iterations; the work budget ignores the wall.
+    let graph = grid_graph(100);
     for budget in [
         Budget::timed(Duration::from_secs(600), None, 100_000),
         Budget::steps(1_000_000_000, 100_000),
