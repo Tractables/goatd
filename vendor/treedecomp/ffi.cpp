@@ -1,4 +1,6 @@
 // C FFI wrapper for meelgroup/treedecomp (in-process FlowCutter).
+#include <algorithm>
+#include <chrono>
 #include <cstddef>  // goatd: size_t — not guaranteed transitively on all stdlibs
 #include <cstdint>  // goatd: int64_t
 #include <memory>
@@ -49,6 +51,17 @@ static std::unique_ptr<TWD::IFlowCutter> import_graph(int num_nodes, int num_edg
     return fc;
 }
 
+// The caller's wall cutoff counts from its call, and importing the graph has
+// already spent part of it; the search counts from its own start. A cutoff that
+// the import used up stays armed at one millisecond, since zero would mean none.
+static int64_t wall_stop_after_import(std::chrono::steady_clock::time_point called,
+                                      int64_t wall_stop_ms) {
+    if (wall_stop_ms <= 0) return 0;
+    const int64_t spent = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - called).count();
+    return std::max<int64_t>(1, wall_stop_ms - spent);
+}
+
 static TdResult* store_result(TWD::TreeDecomposition td) {
     auto result = std::make_unique<TdResult>();
     result->td = std::move(td);
@@ -65,12 +78,15 @@ extern "C" {
 TdResult* td_compute(int num_nodes, int num_edges,
                      const int* edges, int64_t steps, int iters,
                      int64_t* iters_done, int64_t* greedy_touches,
-                     int64_t unit_budget, int64_t units_per_iter) {
+                     int64_t unit_budget, int64_t units_per_iter,
+                     int64_t wall_stop_ms) {
+    const auto called = std::chrono::steady_clock::now();
     try {
         auto fc = import_graph(num_nodes, num_edges, edges);
         return store_result(fc->constructTD(steps, iters, iters_done,
                                             greedy_touches, unit_budget,
-                                            units_per_iter));
+                                            units_per_iter,
+                                            wall_stop_after_import(called, wall_stop_ms)));
     } catch (...) {
         return nullptr;
     }
@@ -82,13 +98,16 @@ TdResult* td_compute_timed_patience(int num_nodes, int num_edges,
                                     int64_t patience_unit_budget,
                                     int tight_gates, int64_t* iters_done,
                                     int64_t* greedy_touches,
-                                    int64_t unit_budget, int64_t units_per_iter) {
+                                    int64_t unit_budget, int64_t units_per_iter,
+                                    int64_t wall_stop_ms) {
+    const auto called = std::chrono::steady_clock::now();
     try {
         auto fc = import_graph(num_nodes, num_edges, edges);
         return store_result(fc->constructTD_timed_patience(
             steps, iters, timeout_ms, patience_ms, patience_unit_budget,
             tight_gates != 0,
-            iters_done, greedy_touches, unit_budget, units_per_iter));
+            iters_done, greedy_touches, unit_budget, units_per_iter,
+            wall_stop_after_import(called, wall_stop_ms)));
     } catch (...) {
         return nullptr;
     }

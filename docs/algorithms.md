@@ -206,7 +206,9 @@ checks only in debug builds.
 Seeded, step-budgeted runs are reproducible. Wall-clock budgets are not,
 since machine speed changes where they stop; while a caller holds the guard
 from `meter::arm`, a duration budget advances by charged graph work instead,
-and a budgeted run repeats.
+and a budgeted run repeats. `deadline::WallGuard` bounds such a run in wall
+time: every search, FlowCutter included, stops at its instant with the best
+decomposition so far, and a run that never reaches it is unchanged.
 
 ## References
 

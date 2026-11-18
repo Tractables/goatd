@@ -59,6 +59,9 @@ a `// goatd:` comment naming the reason:
   `constructTD_timed_patience`, in `IFlowCutter.{cpp,hpp}`, so a caller metering
   construction can bound and charge the search by the work it does rather than
   by the clock; the timed entry also measures patience on that work budget;
+- a `wall_stop_ms` cutoff on the same three entries, in `IFlowCutter.{cpp,hpp}`,
+  which ends the search and the greedy passes at a caller's wall-clock instant
+  whether or not that work budget is armed;
 - a per-thread touch counter and a touch budget on the two greedy elimination
   passes, in `flow-cutter-pace17/src/greedy_order.{cpp,hpp}`, which is what lets
   those passes be bounded and charged the same way;

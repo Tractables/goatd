@@ -46,6 +46,7 @@
 #include "TreeDecomposition.hpp"
 #include "time_mem.hpp"
 
+#include <algorithm>  // goatd: std::min for the wall cutoff
 #include <cstdint>  // goatd: int64_t — not guaranteed transitively on all stdlibs
 #include <queue>
 // goatd: <sys/time.h> dropped — nothing here used it, and MSVC has no such header.
@@ -655,19 +656,19 @@ TreeDecomposition IFlowCutter::output_tree_decompostion_of_multilevel_partition(
   return better_td;
 }
 
-TreeDecomposition IFlowCutter::constructTD(const int64_t conf_steps, int conf_iters, int64_t* iters_done, int64_t* greedy_touches, int64_t unit_budget, int64_t units_per_iter)
+TreeDecomposition IFlowCutter::constructTD(const int64_t conf_steps, int conf_iters, int64_t* iters_done, int64_t* greedy_touches, int64_t unit_budget, int64_t units_per_iter, int64_t wall_stop_ms)
 {
-  return constructTD_timed(conf_steps, conf_iters, 0, iters_done, greedy_touches, unit_budget, units_per_iter);
+  return constructTD_timed(conf_steps, conf_iters, 0, iters_done, greedy_touches, unit_budget, units_per_iter, wall_stop_ms);
 }
 
-TreeDecomposition IFlowCutter::constructTD_timed(int64_t conf_steps, int conf_iters, int64_t timeout_ms, int64_t* iters_done, int64_t* greedy_touches, int64_t unit_budget, int64_t units_per_iter)
+TreeDecomposition IFlowCutter::constructTD_timed(int64_t conf_steps, int conf_iters, int64_t timeout_ms, int64_t* iters_done, int64_t* greedy_touches, int64_t unit_budget, int64_t units_per_iter, int64_t wall_stop_ms)
 {
   // goatd: this entry has always meant "a deadline is present and expected to
   // bite", so it keeps the tight heuristic gates.
-  return constructTD_timed_patience(conf_steps, conf_iters, timeout_ms, 0, 0, /*tight_gates=*/true, iters_done, greedy_touches, unit_budget, units_per_iter);
+  return constructTD_timed_patience(conf_steps, conf_iters, timeout_ms, 0, 0, /*tight_gates=*/true, iters_done, greedy_touches, unit_budget, units_per_iter, wall_stop_ms);
 }
 
-TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, int conf_iters, int64_t timeout_ms, int64_t patience_ms, int64_t patience_unit_budget, bool tight_gates, int64_t* iters_done, int64_t* greedy_touches, int64_t unit_budget, int64_t units_per_iter)
+TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, int conf_iters, int64_t timeout_ms, int64_t patience_ms, int64_t patience_unit_budget, bool tight_gates, int64_t* iters_done, int64_t* greedy_touches, int64_t unit_budget, int64_t units_per_iter, int64_t wall_stop_ms)
 {
   TreeDecomposition td;
   // goatd: declared at FUNCTION scope, outside every try, so the single
@@ -699,7 +700,8 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
   // iterations and how many greedy touches this build spends, and those are the
   // numbers that pick the decomposition. A clock read taken under load answers
   // differently from run to run, so every clock-driven stopping point below
-  // stands down while a unit budget is armed. Nothing loses a bound by standing
+  // but the caller's wall cutoff (`wall_stop` below) stands down while a unit
+  // budget is armed. Nothing loses a bound by standing
   // down: the restart loop breaks on the budget and the greedy pre-passes carry
   // it as a touch budget, so the wall bound is traded for a work bound rather
   // than dropped.
@@ -708,6 +710,16 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
   // no other bound, and the deadline is all that stops a build that would
   // otherwise run on.
   const bool clock_decides = has_deadline && !metered;
+  // goatd: the caller's wall cutoff is the exception. It is not this search's
+  // timing decision but a bound the caller holds the whole run to, so it stops
+  // a metered build too. Where it never fires, the build is the one it would
+  // have been without it.
+  const auto never = std::chrono::steady_clock::time_point::max();
+  const auto wall_stop = wall_stop_ms > 0
+    ? start + std::chrono::milliseconds(wall_stop_ms)
+    : never;
+  // goatd: the one instant every clock-driven stop below reads.
+  const auto stop_at = std::min(clock_decides ? deadline : never, wall_stop);
 
   const bool has_clock_patience = patience_ms > 0 && !metered;
   const bool has_unit_patience = patience_unit_budget > 0 && metered;
@@ -735,21 +747,19 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
   // tight node gates already produce whenever they skip both passes, and a
   // partition is normally far cheaper than the min-shortcut pass it replaces.
   //
-  // Under metering this stands down with the rest of the clock (see
+  // Under metering the timeout stands down with the rest of the clock (see
   // `clock_decides`). The same `unit_budget` reaches these passes as a touch
   // budget, which abandons them at a point that does not depend on how loaded
-  // the machine was.
-  const auto order_deadline = clock_decides
-    ? deadline
-    : std::chrono::steady_clock::time_point::max();
+  // the machine was. The caller's wall cutoff still abandons them.
+  const auto order_deadline = stop_at;
 
   // Deadline only fires once we already have *some* TD.  Otherwise we would
   // return an empty TreeDecomposition on graphs where every heuristic was
   // skipped (size gates) and the first flow-cutter iteration didn't finish in
   // time. Producing a decomposition late beats producing none at all.
   // goatd: the caller's stop flag joins the clock here. It ends the search
-  // whether or not the clock decides, since a metered build has no wall bound
-  // of its own and the caller asking to stop is not a timing decision. It also
+  // whether or not the clock decides, since a metered build may have no wall
+  // bound at all and the caller asking to stop is not a timing decision. It also
   // ends a build that has produced nothing yet, which the deadline deliberately
   // does not: the deadline holds off so that a late decomposition beats none,
   // while a caller that has asked to stop wants the search abandoned, and the
@@ -757,9 +767,9 @@ TreeDecomposition IFlowCutter::constructTD_timed_patience(int64_t conf_steps, in
   auto deadline_fired = [&]() {
     if(external_stop_requested())
       return true;
-    return clock_decides
+    return stop_at != never
       && best_bag_size < std::numeric_limits<int>::max()
-      && std::chrono::steady_clock::now() >= deadline;
+      && std::chrono::steady_clock::now() >= stop_at;
   };
   // goatd: the same predicate as a callable the separator search can hold, so
   // a cut being computed when the deadline passes is abandoned rather than
