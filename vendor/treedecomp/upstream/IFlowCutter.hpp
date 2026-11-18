@@ -59,7 +59,7 @@ public:
   IFlowCutter(int n, int m, int verb = 0);
 
   void importGraph(const Graph& g);
-  // goatd: the four optional trailing arguments let a caller that meters
+  // goatd: the first four optional trailing arguments let a caller that meters
   // construction work bound and charge this search deterministically.
   // `iters_done` reports how many restart iterations the loop actually
   // consumed, and `greedy_touches` how many graph elements the two greedy
@@ -71,16 +71,23 @@ public:
   // leaves the search exactly as the deadline arguments make it. Both
   // out-parameters may be null, and are written on every exit path because the
   // function has a single `return`.
+  //
+  // goatd: `wall_stop_ms` is the caller's own wall cutoff, counted from the
+  // call. Unlike `timeout_ms` it holds whether or not `unit_budget` meters the
+  // build: the search ends there with the best decomposition it holds, and the
+  // greedy pre-passes are abandoned there. Zero sets no cutoff.
   TreeDecomposition constructTD(const int64_t steps = 1e5, const int iters = 900,
                                 int64_t* iters_done = nullptr,
                                 int64_t* greedy_touches = nullptr,
                                 int64_t unit_budget = 0,
-                                int64_t units_per_iter = 0);
+                                int64_t units_per_iter = 0,
+                                int64_t wall_stop_ms = 0);
   TreeDecomposition constructTD_timed(int64_t steps, int iters, int64_t timeout_ms,
                                       int64_t* iters_done = nullptr,
                                       int64_t* greedy_touches = nullptr,
                                       int64_t unit_budget = 0,
-                                      int64_t units_per_iter = 0);
+                                      int64_t units_per_iter = 0,
+                                      int64_t wall_stop_ms = 0);
   // goatd: `tight_gates` is independent of whether a deadline exists.
   //   false — the deadline is a BOUND the caller does not expect to reach. The
   //           pre-loop heuristics keep their untimed node gates, so the search
@@ -96,7 +103,8 @@ public:
                                                int64_t* iters_done = nullptr,
                                                int64_t* greedy_touches = nullptr,
                                                int64_t unit_budget = 0,
-                                               int64_t units_per_iter = 0);
+                                               int64_t units_per_iter = 0,
+                                               int64_t wall_stop_ms = 0);
   // Compute one top-level balanced separator (no TD construction).
   // Runs ComputeSeparator up to `iters` times with different seeds, keeping the
   // smallest valid separator.  `timeout_ms == 0` means step-budget only.

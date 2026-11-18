@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use goatd::deadline::WallGuard;
 use goatd::flowcutter::{Budget, TimeoutBehavior, decompose};
 use goatd::meter::{UNITS_PER_MS, arm, units_spent};
 use goatd::{Error, Graph, TreeDecomposition};
@@ -255,4 +256,49 @@ fn a_timeout_stops_a_separator_search_that_is_already_running() {
         elapsed < Duration::from_millis(1_500),
         "a {timeout:?} budget returned after {elapsed:?}",
     );
+}
+
+#[test]
+fn a_passed_wall_cutoff_ends_a_metered_or_step_build_at_its_first_decomposition() {
+    // Small enough that its first decomposition is quick beside the other
+    // tests, while either budget alone keeps the backend restarting for
+    // thousands of iterations; the work budget ignores the wall.
+    let graph = grid_graph(100);
+    for budget in [
+        Budget::timed(Duration::from_secs(600), None, 100_000),
+        Budget::steps(1_000_000_000, 100_000),
+    ] {
+        let start = Instant::now();
+        let decomposition = {
+            let _meter = arm(Instant::now());
+            let _cutoff = WallGuard::new(Some(Instant::now()));
+            decompose(&graph, budget).unwrap()
+        };
+        let elapsed = start.elapsed();
+
+        decomposition.validate(&graph).unwrap();
+        assert!(
+            elapsed < Duration::from_millis(1_500),
+            "{budget:?} under a passed cutoff returned after {elapsed:?}",
+        );
+    }
+}
+
+#[test]
+fn a_wall_cutoff_that_does_not_fire_leaves_a_metered_build_unchanged() {
+    let graph = circulant_incidence(700);
+    let build = |cutoff: Option<Instant>| {
+        let _meter = arm(Instant::now());
+        let _cutoff = WallGuard::new(cutoff);
+        decompose(
+            &graph,
+            Budget::timed(Duration::from_millis(120), None, 1_000),
+        )
+        .unwrap()
+    };
+
+    let free = build(None);
+    let bounded = build(Some(Instant::now() + Duration::from_secs(3_600)));
+
+    assert_eq!(bag_sets(&free), bag_sets(&bounded));
 }

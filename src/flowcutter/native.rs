@@ -33,6 +33,7 @@ mod ffi {
             greedy_touches: *mut i64,
             unit_budget: i64,
             units_per_iteration: i64,
+            wall_stop_ms: i64,
         ) -> *mut TdResult;
         pub(super) fn td_compute_timed_patience(
             num_nodes: c_int,
@@ -48,6 +49,7 @@ mod ffi {
             greedy_touches: *mut i64,
             unit_budget: i64,
             units_per_iteration: i64,
+            wall_stop_ms: i64,
         ) -> *mut TdResult;
         pub(super) fn td_num_bags(td: *const TdResult) -> c_int;
         pub(super) fn td_bag_size(td: *const TdResult, bag_index: c_int) -> c_int;
@@ -109,6 +111,7 @@ impl NativeDecomposition {
         // SAFETY: the flag is a `static`, so the address stays valid for the
         // process; the backend only reads it.
         unsafe { ffi::td_set_stop_flag(crate::stop::flag_address()) };
+        let wall_stop_ms = wall_stop_ms();
 
         let mut iterations_done: i64 = 0;
         let mut greedy_touches: i64 = 0;
@@ -144,6 +147,7 @@ impl NativeDecomposition {
                         &raw mut greedy_touches,
                         search_budget,
                         units_per_iteration,
+                        wall_stop_ms,
                     )
                 }
             }
@@ -161,6 +165,7 @@ impl NativeDecomposition {
                         &raw mut greedy_touches,
                         search_budget,
                         units_per_iteration,
+                        wall_stop_ms,
                     )
                 }
             }
@@ -179,6 +184,17 @@ fn ffi_step_limits(steps: u64, iterations: u32) -> (i64, i32) {
     let iterations =
         i32::try_from(iterations).expect("public FlowCutter validation bounds iterations");
     (steps, iterations)
+}
+
+/// The wall cutoff in force ([`crate::deadline::WallGuard`]) as the backend's
+/// `wall_stop_ms`, which holds whether or not the build is metered. Zero means
+/// no cutoff, so one that has already passed asks for the earliest stop: the
+/// backend's first decomposition.
+fn wall_stop_ms() -> i64 {
+    crate::deadline::wall_cutoff().map_or(0, |end| {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        i64::try_from(left.as_millis()).unwrap_or(i64::MAX).max(1)
+    })
 }
 
 fn duration_work_units(duration: std::time::Duration) -> i64 {
