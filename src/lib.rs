@@ -19,7 +19,8 @@
 //! the bags pays and [`TreeDecomposition::max_separator`] what it carries
 //! between two of them. The library is single-threaded. [`meter::arm`] makes
 //! duration budgets advance by charged graph work instead of wall time when
-//! repeatable stopping points are needed. [`stop_flag`] ends a running solve
+//! repeatable stopping points are needed; [`deadline::WallGuard`] still stops
+//! such a run at a wall-clock instant. [`stop_flag`] ends a running solve
 //! early and returns the best decomposition found so far; it is one flag for
 //! the whole process.
 //!
@@ -42,7 +43,7 @@
 #![deny(missing_docs)]
 
 mod adjacency;
-mod deadline;
+pub mod deadline;
 pub mod decomposition;
 pub mod elimination;
 pub mod embedding;

@@ -1,7 +1,10 @@
-//! Shared construction and inspection of absolute deadlines. `None` is an
-//! unbounded run and never expires.
+//! A wall-clock cutoff for every search on a thread, held by [`WallGuard`].
+//!
+//! Inside the crate, this module also builds and reads the deadlines the
+//! searches pace themselves with. `None` is an unbounded run and never expires.
 
 use std::cell::Cell;
+use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
 use crate::Error;
@@ -57,7 +60,7 @@ pub(crate) fn staged(
 /// on a run that was given no deadline at all.
 pub(crate) fn expired(deadline: Option<Instant>) -> bool {
     crate::stop::requested()
-        || WALL_DEADLINE.with(|limit| limit.get().is_some_and(|end| Instant::now() >= end))
+        || wall_cutoff().is_some_and(|end| Instant::now() >= end)
         || deadline.is_some_and(|deadline| crate::meter::now() >= deadline)
 }
 
@@ -65,14 +68,28 @@ thread_local! {
     static WALL_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
-/// A cooperative wall cutoff independent of the construction meter. A nested
-/// operation cannot extend an enclosing cutoff, and returning a proposal drops
-/// the guard before the caller begins scoring it.
+/// A wall-clock cutoff for every search on this thread while the guard is held.
+///
+/// Once the instant passes, each search returns the best decomposition it
+/// holds, as it does at its own deadline; the vendored FlowCutter still
+/// finishes its first decomposition. The cutoff holds whether or not
+/// [`crate::meter::arm`] has put the run's budgets on the work clock, so a
+/// metered run is repeatable up to the cutoff and bounded in wall time after
+/// it.
+///
+/// Guards nest: an inner guard cannot extend the cutoff of an enclosing one,
+/// and dropping a guard restores the cutoff in force before it. `None` adds no
+/// cutoff. The guard belongs to the thread that made it.
 #[must_use = "the cutoff lasts as long as the guard is held"]
-pub(crate) struct WallGuard(Option<Instant>);
+pub struct WallGuard {
+    previous: Option<Instant>,
+    _thread: PhantomData<*const ()>,
+}
 
 impl WallGuard {
-    pub(crate) fn new(deadline: Option<Instant>) -> Self {
+    /// Stop searches on this thread at `deadline`, or at the cutoff already in
+    /// force if that is earlier.
+    pub fn new(deadline: Option<Instant>) -> Self {
         let previous = WALL_DEADLINE.with(|limit| {
             let previous = limit.get();
             limit.set(match (previous, deadline) {
@@ -81,14 +98,24 @@ impl WallGuard {
             });
             previous
         });
-        Self(previous)
+        Self {
+            previous,
+            _thread: PhantomData,
+        }
     }
 }
 
 impl Drop for WallGuard {
     fn drop(&mut self) {
-        WALL_DEADLINE.with(|limit| limit.set(self.0));
+        WALL_DEADLINE.with(|limit| limit.set(self.previous));
     }
+}
+
+/// The wall-clock cutoff in force on this thread: the earliest instant of the
+/// [`WallGuard`]s held, or `None` without one.
+#[must_use]
+pub fn wall_cutoff() -> Option<Instant> {
+    WALL_DEADLINE.with(Cell::get)
 }
 
 /// How long there is until `deadline` — zero once it has passed, and zero
